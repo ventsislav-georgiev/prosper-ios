@@ -4,10 +4,22 @@ import SwiftUI
 struct ProsperApp: App {
     var body: some Scene {
         WindowGroup {
-            HomeView()
+            // Screenshot hook (env-gated, never set for real users): jump straight
+            // to a screen so App Store captures are deterministic.
+            if uiScreen == "demo-terminal" {
+                NavigationStack {
+                    TerminalScreen(transport: DemoTransport(),
+                                   session: DchSession(name: "demo", alias: "Demo session"))
+                }
+            } else {
+                HomeView()
+            }
         }
     }
 }
+
+/// Optional deep-link target for reproducible screenshots. Unset in normal use.
+let uiScreen = ProcessInfo.processInfo.environment["PROSPER_UI_SCREEN"]
 
 /// Navigation routes for the Remote Terminal feature. `connect` = the machine
 /// picker; `sessions` = the dch session list for a given host.
@@ -38,7 +50,18 @@ func removeHost(_ h: String, from raw: Binding<String>) {
 /// or the machine picker if there's no history yet.
 struct HomeView: View {
     @AppStorage("hostHistory") private var historyRaw = ""
-    @State private var path = NavigationPath()
+    @State private var path: NavigationPath
+    @State private var showHelp = false
+
+    init() {
+        var p = NavigationPath()
+        switch uiScreen {                        // screenshot deep-links (env-gated)
+        case "connect": p.append(Route.connect)
+        case "demo-sessions": p.append(Route.sessions(demoHost))
+        default: break
+        }
+        _path = State(initialValue: p)
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -48,18 +71,37 @@ struct HomeView: View {
                 }
             }
             .navigationTitle("Prosper")
+            .toolbar { helpButton($showHelp) }
+            .sheet(isPresented: $showHelp) { HelpView() }
             .navigationDestination(for: Route.self) { route in
                 switch route {
                 case .connect:
                     ConnectScreen(historyRaw: $historyRaw) { host in
-                        recordHost(host, into: $historyRaw)
+                        if !isDemoHost(host) { recordHost(host, into: $historyRaw) }
                         path.append(Route.sessions(host))
                     }
                 case .sessions(let host):
-                    SessionListView(transport: ProsperTransport(host: host), host: host)
+                    SessionListView(transport: transport(for: host), host: host)
                 }
             }
         }
+    }
+}
+
+/// Sentinel host that routes to the offline demo instead of a real connection.
+let demoHost = "Demo"
+func isDemoHost(_ h: String) -> Bool { h == demoHost }
+
+func transport(for host: String) -> SessionTransport {
+    isDemoHost(host) ? DemoTransport() : ProsperTransport(host: host)
+}
+
+/// Unobtrusive `?` toolbar item shared by Home and the machine picker.
+@ToolbarContentBuilder
+func helpButton(_ shown: Binding<Bool>) -> some ToolbarContent {
+    ToolbarItem(placement: .topBarTrailing) {
+        Button { shown.wrappedValue = true } label: { Image(systemName: "questionmark.circle") }
+            .accessibilityLabel("How it works")
     }
 }
 
@@ -69,17 +111,19 @@ struct ConnectScreen: View {
     @Binding var historyRaw: String
     let onConnect: (String) -> Void
     @State private var newHost = ""
+    @State private var showHelp = false
 
     var body: some View {
         List {
-            Section("Connect to a machine") {
+            Section {
                 TextField("my-mac.tailnet.ts.net or 100.x.y.z", text: $newHost)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
                 Button("Connect") { onConnect(newHost) }
                     .disabled(newHost.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
+            } header: { Text("Connect to a machine") }
+            footer: { Text("The machine's [Tailscale](https://tailscale.com) name or IP, running Prosper. [How it works](prosper://help)") }
             let hosts = hostList(historyRaw)
             if !hosts.isEmpty {
                 Section("Recent") {
@@ -97,8 +141,21 @@ struct ConnectScreen: View {
                     }
                 }
             }
+            // Secondary: an offline sample so the app is explorable before a real
+            // machine is set up. Tucked at the bottom, out of the daily path.
+            Section {
+                Button { onConnect(demoHost) } label: {
+                    Label("Try the demo", systemImage: "play.circle")
+                }
+            } footer: { Text("Explore a sample session — no machine required.") }
         }
         .navigationTitle("Machines")
+        .toolbar { helpButton($showHelp) }
+        .sheet(isPresented: $showHelp) { HelpView() }
+        .environment(\.openURL, OpenURLAction { url in
+            if url.absoluteString == "prosper://help" { showHelp = true; return .handled }
+            return .systemAction
+        })
     }
 }
 
