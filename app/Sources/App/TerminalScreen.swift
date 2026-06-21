@@ -8,7 +8,8 @@ struct TerminalScreen: View {
     let transport: SessionTransport
     let session: DchSession
     @StateObject private var conn: SessionConnection
-    @State private var handle = TermHandle()
+    @StateObject private var handle = TermHandle()
+    @State private var editingShortcuts = false
 
     init(transport: SessionTransport, session: DchSession) {
         self.transport = transport
@@ -29,11 +30,17 @@ struct TerminalScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
+                Button { editingShortcuts = true } label: { Image(systemName: "slider.horizontal.3") }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
                 // SwiftTerm has no dismiss control of its own.
                 Button { handle.vc?.toggleKeyboard() } label: {
-                    Image(systemName: "keyboard.chevron.compact.down")
+                    Image(systemName: handle.keyboardShown ? "keyboard.chevron.compact.down" : "keyboard")
                 }
             }
+        }
+        .sheet(isPresented: $editingShortcuts, onDismiss: { handle.vc?.reloadShortcuts() }) {
+            ShortcutEditor()
         }
         .onDisappear { conn.close() }
     }
@@ -54,9 +61,12 @@ struct TerminalScreen: View {
     }
 }
 
-/// Bridges the SwiftUI nav bar to the UIKit view controller (a plain reference, so
-/// no SwiftUI state write happens during a view update).
-final class TermHandle { weak var vc: TerminalHostVC? }
+/// Bridges the SwiftUI nav bar to the UIKit view controller. `keyboardShown` drives
+/// the toolbar toggle icon; the VC publishes it on show/hide.
+final class TermHandle: ObservableObject {
+    weak var vc: TerminalHostVC?
+    @Published var keyboardShown = false
+}
 
 /// Hosts SwiftTerm's `TerminalView` in a view controller — needed for
 /// `view.keyboardLayoutGuide` (iOS 15+), which tracks the keyboard frame and
@@ -65,7 +75,7 @@ private struct TerminalHost: UIViewControllerRepresentable {
     let conn: SessionConnection
     let handle: TermHandle
     func makeUIViewController(context: Context) -> TerminalHostVC {
-        let vc = TerminalHostVC(conn: conn)
+        let vc = TerminalHostVC(conn: conn, handle: handle)
         handle.vc = vc
         return vc
     }
@@ -74,27 +84,41 @@ private struct TerminalHost: UIViewControllerRepresentable {
 
 final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRecognizerDelegate {
     private let conn: SessionConnection
+    private let handle: TermHandle
     private var tv: DchTerminalView!
     private var started = false
     private var scrollRemainder: CGFloat = 0
     private var kbConstraint: NSLayoutConstraint!
+    private var barHeight: NSLayoutConstraint!
+    private var ctrlArmed = false   // sticky Ctrl from the shortcut bar
+    private var shortcutBar: ShortcutBar?
 
-    init(conn: SessionConnection) {
+    /// macOS Terminal.app's vibrant 16-color ANSI palette (SwiftTerm's default is
+    /// muted). 8-bit values widened to 16-bit (×257 maps 255→65535).
+    static let ansiPalette: [SwiftTerm.Color] = [
+        (0, 0, 0), (194, 54, 33), (37, 188, 36), (173, 173, 39),
+        (73, 46, 225), (211, 56, 211), (51, 187, 200), (203, 204, 205),
+        (129, 131, 131), (252, 57, 31), (49, 231, 34), (234, 236, 35),
+        (88, 51, 255), (249, 53, 248), (20, 240, 240), (233, 235, 235),
+    ].map { SwiftTerm.Color(red: UInt16($0.0) * 257, green: UInt16($0.1) * 257, blue: UInt16($0.2) * 257) }
+
+    init(conn: SessionConnection, handle: TermHandle) {
         self.conn = conn
+        self.handle = handle
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        NSLog("DCHDIAG[boot] viewDidLoad")
         view.backgroundColor = .black
 
-        let tv = DchTerminalView(frame: .zero, font: nil)
+        let tv = DchTerminalView(frame: .zero, font: TerminalFont.mono(size: 13))
         self.tv = tv
         tv.terminalDelegate = self
         tv.backgroundColor = .black
         tv.nativeBackgroundColor = .black
+        tv.installColors(TerminalHostVC.ansiPalette)   // vibrant 16-color ANSI (matches macOS Terminal)
         tv.contentInsetAdjustmentBehavior = .never
         // Default .scaleToFill stretches the cached layer on bounds change instead
         // of redrawing — that's the "frozen old frame" after a keyboard resize.
@@ -104,25 +128,49 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // We drive scrolling ourselves (SwiftTerm's iOS UIScrollView scrollback is
         // unreliable: it slams to the bottom on every redraw). Kill native pan-scroll.
         tv.isScrollEnabled = false
+        // SwiftTerm installs its own TerminalAccessory as inputAccessoryView; drop it —
+        // we render our own shortcut bar in the VC hierarchy instead.
+        tv.inputAccessoryView = nil
         tv.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tv)
 
-        // `keyboardLayoutGuide` shrinks the grid on show but doesn't reliably
-        // reclaim the space on hide (leaves a blank band). Drive the bottom
-        // constraint from keyboard notifications instead — constant returns to 0
-        // on dismiss, guaranteeing the grid grows back.
-        kbConstraint = tv.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+        // DECOUPLED keyboard avoidance: the terminal keeps its FULL height at all
+        // times so the grid NEVER resizes on keyboard show/hide. Resizing the grid
+        // forced the remote TUI to reflow, and Claude Code defers its repaint to its
+        // own render tick (~1s) — leaving the freed rows blank after the keyboard
+        // hides. With a fixed grid there is no reflow and no repaint gap.
+        // Instead, on show we translate the terminal UP (see kbChange) so the cursor/
+        // input row stays visible above the keyboard; the top rows clip off-screen.
+        // The shortcut bar lives in our own hierarchy (not inputAccessoryView — the
+        // keyboard's remote input window swallowed its touches), glued to the top of
+        // the keyboard via kbConstraint, and OVERLAYS the terminal's lower rows.
+        view.clipsToBounds = true   // clip the translated-up terminal at the view top
+        let bar = ShortcutBar()
+        bar.onKey = { [weak self] key in self?.handleKey(key) }
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.clipsToBounds = true
+        view.addSubview(bar)
+        shortcutBar = bar
+
+        kbConstraint = bar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+        barHeight = bar.heightAnchor.constraint(equalToConstant: 0)   // hidden until keyboard shows
         NSLayoutConstraint.activate([
             tv.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             tv.leftAnchor.constraint(equalTo: view.leftAnchor),
             tv.rightAnchor.constraint(equalTo: view.rightAnchor),
+            tv.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor), // FULL height, fixed
+            bar.leftAnchor.constraint(equalTo: view.leftAnchor),
+            bar.rightAnchor.constraint(equalTo: view.rightAnchor),
             kbConstraint,
+            barHeight,
         ])
         let nc = NotificationCenter.default
         nc.addObserver(self, selector: #selector(kbChange(_:)),
                        name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         nc.addObserver(self, selector: #selector(kbHide(_:)),
                        name: UIResponder.keyboardWillHideNotification, object: nil)
+        // A clean repaint on foreground (the system usually does this, but the
+        // forced path guarantees no stale pixels survive a background round-trip).
         nc.addObserver(self, selector: #selector(onForeground),
                        name: UIApplication.didBecomeActiveNotification, object: nil)
 
@@ -130,7 +178,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         addScrollGesture()
         addTapGesture()
 
-        conn.onBytes = { [weak tv] slice in tv?.feed(byteArray: slice) }
+        conn.onBytes = { [weak tv] slice in
+            tv?.feed(byteArray: slice)
+        }
         tv.onResize = { [weak self] cols, rows in
             MainActor.assumeIsolated { self?.conn.resize(cols: cols, rows: rows) }
         }
@@ -154,6 +204,33 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     func toggleKeyboard() {
         if tv.isFirstResponder { _ = tv.resignFirstResponder() }
         else { _ = tv.becomeFirstResponder() }
+    }
+
+    /// Rebuild the shortcut bar after the editor changed the key set.
+    func reloadShortcuts() {
+        shortcutBar?.reload()
+    }
+
+    /// A shortcut-bar key was tapped.
+    private func handleKey(_ key: ShortcutKey) {
+        switch key.kind {
+        case .ctrl:
+            ctrlArmed.toggle()
+            shortcutBar?.ctrlArmed = ctrlArmed
+        case .pasteText:
+            if let s = UIPasteboard.general.string, let d = s.data(using: .utf8), !d.isEmpty {
+                conn.send(ArraySlice(d))
+            }
+        case .bytes:
+            conn.send(ArraySlice(key.bytes))
+        }
+        if tv.isFirstResponder == false { _ = tv.becomeFirstResponder() }
+    }
+
+    /// Map a byte to its control-char form (a–z/A–Z → ^A–^Z, others via `& 0x1f`).
+    private func controlByte(_ b: UInt8) -> UInt8 {
+        let upper = (b >= 0x61 && b <= 0x7a) ? b - 0x20 : b
+        return upper & 0x1f
     }
 
     // MARK: - Scroll by swipe → terminal input
@@ -210,56 +287,38 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         else { return }
         let endInView = view.convert(end, from: nil)
         let safeBottomY = view.bounds.maxY - view.safeAreaInsets.bottom
-        kbConstraint.constant = -max(0, safeBottomY - endInView.minY)
-        view.layoutIfNeeded()
-        diag("kbChange")
-        refreshAfterKeyboard(n)
+        let overlap = max(0, safeBottomY - endInView.minY)
+        let shown = overlap > 0
+        kbConstraint.constant = -overlap   // glue the shortcut bar to the keyboard top
+        barHeight.constant = shown ? ShortcutBar.barHeight : 0
+        handle.keyboardShown = shown
+        // Lift the terminal so its bottom (cursor/input) row clears the bar+keyboard.
+        // ponytail: offset = covered height keeps the BOTTOM rows visible (correct for
+        // shell/Claude where input is anchored at the bottom). If a full-screen editor
+        // needs the mid-screen cursor visible, switch to a cursor-Y-based offset.
+        let offset = shown ? overlap + ShortcutBar.barHeight : 0
+        animateKeyboard(n, offset: offset)
     }
 
     @objc private func kbHide(_ n: Notification) {
         kbConstraint.constant = 0
-        view.layoutIfNeeded()
-        diag("kbHide")
-        refreshAfterKeyboard(n)
+        barHeight.constant = 0
+        handle.keyboardShown = false
+        animateKeyboard(n, offset: 0)
     }
 
-    /// The grid resizes correctly on keyboard show/hide, but SwiftTerm's iOS view
-    /// leaves stale pixels until something forces a full redraw — backgrounding then
-    /// foregrounding the app fixes it. Reproduce that: after the keyboard animation
-    /// settles AND the app's SIGWINCH repaint round-trips, force a full relayout +
-    /// display invalidation. Two ticks (settle, then post-repaint) cover both.
-    private func refreshAfterKeyboard(_ n: Notification) {
+    /// Slide the terminal up by `offset` and lay out the bar, riding the keyboard's
+    /// own animation curve/duration. The grid never resizes (tv bounds are fixed), so
+    /// there is no SIGWINCH and no remote repaint — the freed-rows blank gap is gone.
+    private func animateKeyboard(_ n: Notification, offset: CGFloat) {
         let dur = (n.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
-        forceRedraw()
-        DispatchQueue.main.asyncAfter(deadline: .now() + dur) { [weak self] in self?.forceRedraw() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + dur + 0.2) { [weak self] in self?.forceRedraw() }
+        UIView.animate(withDuration: dur) {
+            self.tv.transform = offset > 0 ? CGAffineTransform(translationX: 0, y: -offset) : .identity
+            self.view.layoutIfNeeded()
+        }
     }
 
-    /// Reproduce what background→foreground does: re-send the terminal size to the
-    /// server. TIOCSWINSZ fires SIGWINCH even when the dimensions are unchanged, so
-    /// the inner app (Claude Code) does a full reflow + repaint. The grid resize
-    /// during the keyboard animation lands on intermediate sizes and the final one's
-    /// reflow gets lost; this corrective resize after settle is what sticks. Also
-    /// mark all rows dirty + empty feed so SwiftTerm's own view repaints.
-    private func forceRedraw() {
-        tv.setNeedsLayout()
-        tv.layoutIfNeeded()
-        let t = tv.getTerminal()
-        conn.resize(cols: t.cols, rows: t.rows)
-        t.refresh(startRow: 0, endRow: t.rows)
-        tv.feed(byteArray: ArraySlice<UInt8>())
-        diag("forceRedraw")
-    }
-
-    @objc private func onForeground() {
-        diag("foreground-before")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.diag("foreground-after") }
-    }
-
-    private func diag(_ tag: String) {
-        let t = tv.getTerminal()
-        NSLog("DCHDIAG[\(tag)] cols=\(t.cols) rows=\(t.rows) bounds=\(tv.bounds.size) offY=\(tv.contentOffset.y) contentH=\(tv.contentSize.height) lines=\(t.getTopVisibleRow()) alt=\(t.isCurrentBufferAlternate)")
-    }
+    @objc private func onForeground() { conn.redraw() }
 
     @objc private func onPan(_ g: UIPanGestureRecognizer) {
         switch g.state {
@@ -303,7 +362,15 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     // MARK: - TerminalViewDelegate (nonisolated; SwiftTerm calls on main)
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        MainActor.assumeIsolated { conn.send(data) }
+        MainActor.assumeIsolated {
+            if ctrlArmed, let b = data.first {
+                ctrlArmed = false
+                shortcutBar?.ctrlArmed = false
+                conn.send(ArraySlice([controlByte(b)]))
+            } else {
+                conn.send(data)
+            }
+        }
     }
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
     func setTerminalTitle(source: TerminalView, title: String) {}
@@ -318,6 +385,27 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 }
 
 /// Reports view-driven grid changes so the pty resizes to match.
+/// FiraCode Nerd Font Mono, bundled so folder/git/powerline glyphs (Nerd Font
+/// private-use codepoints) render instead of `?`/.notdef. Registered once at process
+/// scope; falls back to the system monospace if the bundle is missing the files.
+enum TerminalFont {
+    private static let registered: Bool = {
+        var ok = false
+        for file in ["FiraCodeNerdFontMono-Regular", "FiraCodeNerdFontMono-Bold"] {
+            if let url = Bundle.main.url(forResource: file, withExtension: "ttf") {
+                ok = CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) || ok
+            }
+        }
+        return ok
+    }()
+
+    static func mono(size: CGFloat) -> UIFont {
+        _ = registered
+        return UIFont(name: "FiraCodeNFM-Reg", size: size)
+            ?? .monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+}
+
 private final class DchTerminalView: TerminalView {
     var onResize: ((Int, Int) -> Void)?
     private var lastCols = 0

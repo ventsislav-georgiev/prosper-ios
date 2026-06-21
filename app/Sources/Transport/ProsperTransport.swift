@@ -19,7 +19,7 @@ final class ProsperTransport: SessionTransport {
     // Mirror of the server's DchFrame type bytes.
     private enum F {
         static let attach: UInt8 = 0x01, create: UInt8 = 0x02, list: UInt8 = 0x03
-        static let kill: UInt8 = 0x04, resize: UInt8 = 0x05, data: UInt8 = 0x10
+        static let kill: UInt8 = 0x04, resize: UInt8 = 0x05, rename: UInt8 = 0x06, data: UInt8 = 0x10
         static let listResp: UInt8 = 0x11, exit: UInt8 = 0x12, error: UInt8 = 0x13, ok: UInt8 = 0x14
     }
 
@@ -32,6 +32,10 @@ final class ProsperTransport: SessionTransport {
 
     func kill(name: String) async throws {
         _ = try await oneShot(send: F.kill, payload: json(["name": name]))
+    }
+
+    func rename(name: String, alias: String?) async throws {
+        _ = try await oneShot(send: F.rename, payload: json(["name": name, "alias": alias ?? ""]))
     }
 
     func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream {
@@ -142,7 +146,7 @@ final class ProsperStream: TerminalStream {
     private var buf = Data()
     private var closed = false
 
-    private enum F { static let resize: UInt8 = 0x05, data: UInt8 = 0x10, exit: UInt8 = 0x12 }
+    private enum F { static let resize: UInt8 = 0x05, redraw: UInt8 = 0x07, data: UInt8 = 0x10, exit: UInt8 = 0x12 }
 
     init(conn: NWConnection) {
         self.conn = conn
@@ -178,6 +182,10 @@ final class ProsperStream: TerminalStream {
     func resize(cols: Int, rows: Int) {
         let p = (try? JSONSerialization.data(withJSONObject: ["cols": cols, "rows": rows])) ?? Data()
         conn.send(content: FrameCodec.encode(F.resize, p), completion: .contentProcessed { _ in })
+    }
+
+    func requestRedraw() {
+        conn.send(content: FrameCodec.encode(F.redraw, Data()), completion: .contentProcessed { _ in })
     }
 
     func close() {

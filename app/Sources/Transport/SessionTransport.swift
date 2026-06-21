@@ -20,6 +20,9 @@ protocol TerminalStream: AnyObject {
     func send(_ bytes: ArraySlice<UInt8>)
     /// Notify the pty of a new terminal size.
     func resize(cols: Int, rows: Int)
+    /// Force the remote program to repaint (after a soft-keyboard relayout),
+    /// without reattaching the socket.
+    func requestRedraw()
     /// Detach this client (session keeps running).
     func close()
 }
@@ -34,6 +37,8 @@ protocol SessionTransport: AnyObject {
     /// Start a new session running `command` (default name when nil).
     func create(name: String?, command: [String], cols: Int, rows: Int) async throws -> TerminalStream
     func kill(name: String) async throws
+    /// Set (or clear, when nil/empty) a session's display alias.
+    func rename(name: String, alias: String?) async throws
 }
 
 enum TransportError: Error, LocalizedError {

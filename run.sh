@@ -16,6 +16,9 @@ PROJ=Prosper.xcodeproj
 TEAM="${DEVELOPMENT_TEAM:-V5XV3994L8}"
 
 echo "==> xcodegen"
+# ponytail: OMC hooks drop .omc/ state dirs inside Sources/; xcodegen bundles them
+# as duplicate resources and the build fails. Strip them before generating.
+find Sources -name .omc -type d -prune -exec rm -rf {} + 2>/dev/null || true
 xcodegen generate
 
 MODE="${1:-catalyst}"

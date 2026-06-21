@@ -42,6 +42,8 @@ final class SessionConnection: ObservableObject {
         stream?.resize(cols: cols, rows: rows)
     }
 
+    func redraw() { stream?.requestRedraw() }
+
     func close() {
         userClosed = true
         loop?.cancel()
