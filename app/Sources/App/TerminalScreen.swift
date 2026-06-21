@@ -90,6 +90,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var scrollRemainder: CGFloat = 0
     private var kbConstraint: NSLayoutConstraint!
     private var barHeight: NSLayoutConstraint!
+    private var kbOverlap: CGFloat = 0   // keyboard cover height while shown (for live re-lift)
     private var ctrlArmed = false   // sticky Ctrl from the shortcut bar
     private var shortcutBar: ShortcutBar?
 
@@ -178,8 +179,12 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         addScrollGesture()
         addTapGesture()
 
-        conn.onBytes = { [weak tv] slice in
+        conn.onBytes = { [weak self, weak tv] slice in
             tv?.feed(byteArray: slice)
+            // Dynamic re-lift: as output streams and the caret moves down, keep the
+            // bottom row above the keyboard. rangeChanged doesn't fire reliably on
+            // stream (verified in the spike) — the feed path is the dependable hook.
+            MainActor.assumeIsolated { self?.relift() }
         }
         tv.onResize = { [weak self] cols, rows in
             MainActor.assumeIsolated { self?.conn.resize(cols: cols, rows: rows) }
@@ -292,6 +297,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         kbConstraint.constant = -overlap   // glue the shortcut bar to the keyboard top
         barHeight.constant = shown ? ShortcutBar.barHeight : 0
         handle.keyboardShown = shown
+        kbOverlap = shown ? overlap : 0
         animateKeyboard(n, offset: shown ? caretLiftOffset(overlap: overlap) : 0)
     }
 
@@ -299,7 +305,19 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         kbConstraint.constant = 0
         barHeight.constant = 0
         handle.keyboardShown = false
+        kbOverlap = 0
         animateKeyboard(n, offset: 0)
+    }
+
+    /// Re-run the lift as content streams in (output fills the screen, the caret
+    /// drops to the bottom) while the keyboard is already up — so the bottom row
+    /// keeps tracking just above the keyboard. Instant (no animation) to follow
+    /// output smoothly; a no-op when the offset hasn't changed.
+    private func relift() {
+        guard kbOverlap > 0 else { return }
+        let offset = caretLiftOffset(overlap: kbOverlap)
+        let t = offset > 0 ? CGAffineTransform(translationX: 0, y: -offset) : .identity
+        if tv.transform != t { tv.transform = t }
     }
 
     /// How far to lift the terminal so the lowest non-empty row clears the bar+keyboard.
@@ -386,7 +404,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     func clipboardCopy(source: TerminalView, content: Data) {}
     func clipboardRead(source: TerminalView) -> Data? { nil }
     func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
-    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+    func rangeChanged(source: TerminalView, startY: Int, endY: Int) { relift() }
 }
 
 /// Reports view-driven grid changes so the pty resizes to match.
