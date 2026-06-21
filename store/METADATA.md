@@ -6,11 +6,7 @@ Prepare for Submission**. Character limits noted; everything here is within them
 ---
 
 ## App name  (max 30)
-> "Prosper" alone is almost certainly taken. Pick one — all ≤ 30 chars:
-
-- **Prosper Terminal**  ← recommended (17)
-- Prosper Remote Terminal (24)
-- Prosper · dch (14)
+**Prosper Remote** (14)
 
 ## Subtitle  (max 30)
 **Your Mac's terminal, anywhere** (30)

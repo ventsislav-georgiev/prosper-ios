@@ -1,0 +1,1 @@
+Attach your Mac's terminal sessions from your phone over Tailscale — the exact same session, output and all. No passwords, survives drops, picks up where you left off.

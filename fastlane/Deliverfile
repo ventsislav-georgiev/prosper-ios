@@ -1,0 +1,9 @@
+# Metadata + screenshots only — binary ships via the testflight workflow.
+app_identifier "eu.illegible.prosperios"
+skip_binary_upload true
+overwrite_screenshots true
+force true                 # no HTML preview prompt in CI
+submit_for_review false    # user submits manually at the end
+precheck_include_in_app_purchases false
+# Categories, age rating and the App Privacy nutrition label are set once in
+# App Store Connect (the API maps for these are brittle) — see store/METADATA.md.
