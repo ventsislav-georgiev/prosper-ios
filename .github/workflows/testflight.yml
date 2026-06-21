@@ -25,7 +25,9 @@ concurrency:
 
 jobs:
   testflight:
-    runs-on: macos-15
+    # Apple requires the iOS 26 SDK for App Store uploads → needs Xcode 26,
+    # which ships as the default on the macos-26 runner image.
+    runs-on: macos-26
     env:
       DERIVED: ${{ github.workspace }}/app/.build-xcode
       ARCHIVE: ${{ github.workspace }}/build/Prosper.xcarchive
