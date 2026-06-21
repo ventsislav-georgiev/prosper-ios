@@ -33,12 +33,66 @@ jobs:
             '{key_id:$kid, issuer_id:$iss, key:$key, in_house:false, duration:1200}' \
             > "$RUNNER_TEMP/asc_key.json"
 
-      - name: Upload metadata + screenshots
+      - name: Diagnose ASC app/version state
+        run: |
+          cat > /tmp/diag.rb <<'RUBY'
+          require 'spaceship'
+          token = Spaceship::ConnectAPI::Token.from_json_file(ENV['KEY'])
+          Spaceship::ConnectAPI.token = token
+          app = Spaceship::ConnectAPI::App.find('eu.illegible.prosperios')
+          unless app
+            puts 'APP: not found for this API key'; exit 0
+          end
+          puts "APP: id=#{app.id} name=#{app.name}"
+          vers = app.get_app_store_versions
+          if vers.empty?
+            puts 'VERSIONS: none (no editable App Store version exists)'
+          else
+            vers.each { |v| puts "VER #{v.version_string} state=#{v.app_store_state} platform=#{v.platform}" }
+          end
+          RUBY
+          KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/diag.rb
+
+      - name: Ensure an editable 0.1 version exists
+        run: |
+          cat > /tmp/ensure.rb <<'RUBY'
+          require 'spaceship'
+          token = Spaceship::ConnectAPI::Token.from_json_file(ENV['KEY'])
+          Spaceship::ConnectAPI.token = token
+          app = Spaceship::ConnectAPI::App.find('eu.illegible.prosperios')
+          abort 'APP not found' unless app
+          editable = app.get_edit_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS)
+          if editable
+            puts "EDITABLE version already present: #{editable.version_string}"
+          else
+            puts 'Creating editable iOS version 0.1...'
+            app.ensure_version!('0.1', platform: Spaceship::ConnectAPI::Platform::IOS)
+            puts 'Created 0.1.'
+          end
+          RUBY
+          KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/ensure.rb
+
+      - name: Upload screenshots
         run: |
           fastlane deliver \
             --api_key_path "$RUNNER_TEMP/asc_key.json" \
+            --app_version "0.1" \
             --skip_binary_upload true \
+            --skip_metadata true \
+            --skip_screenshots false \
             --overwrite_screenshots true \
+            --force true \
+            --submit_for_review false \
+            --precheck_include_in_app_purchases false
+
+      - name: Upload text metadata
+        run: |
+          fastlane deliver \
+            --api_key_path "$RUNNER_TEMP/asc_key.json" \
+            --app_version "0.1" \
+            --skip_binary_upload true \
+            --skip_metadata false \
+            --skip_screenshots true \
             --force true \
             --submit_for_review false \
             --precheck_include_in_app_purchases false
