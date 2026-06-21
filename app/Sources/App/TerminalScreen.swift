@@ -292,12 +292,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         kbConstraint.constant = -overlap   // glue the shortcut bar to the keyboard top
         barHeight.constant = shown ? ShortcutBar.barHeight : 0
         handle.keyboardShown = shown
-        // Lift the terminal so its bottom (cursor/input) row clears the bar+keyboard.
-        // ponytail: offset = covered height keeps the BOTTOM rows visible (correct for
-        // shell/Claude where input is anchored at the bottom). If a full-screen editor
-        // needs the mid-screen cursor visible, switch to a cursor-Y-based offset.
-        let offset = shown ? overlap + ShortcutBar.barHeight : 0
-        animateKeyboard(n, offset: offset)
+        animateKeyboard(n, offset: shown ? caretLiftOffset(overlap: overlap) : 0)
     }
 
     @objc private func kbHide(_ n: Notification) {
@@ -305,6 +300,16 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         barHeight.constant = 0
         handle.keyboardShown = false
         animateKeyboard(n, offset: 0)
+    }
+
+    /// How far to lift the terminal so the lowest non-empty row clears the bar+keyboard.
+    /// Content-aware, not bottom-anchored: a fresh session (content at the TOP, empty
+    /// bottom) gets ~0 lift so its input stays visible, while Claude (input + 3 HUD
+    /// lines at the bottom) lifts the full covered height. Lift only what's needed.
+    private func caretLiftOffset(overlap: CGFloat) -> CGFloat {
+        let visibleH = tv.bounds.height - ShortcutBar.barHeight - overlap
+        let contentBottom = tv.contentBottomY() + 8   // small breathing room below content
+        return max(0, contentBottom - visibleH)
     }
 
     /// Slide the terminal up by `offset` and lay out the bar, riding the keyboard's
@@ -419,5 +424,18 @@ private final class DchTerminalView: TerminalView {
             lastRows = t.rows
             onResize?(t.cols, t.rows)
         }
+    }
+
+    /// Y (tv-local, pre-transform) of the bottom edge of the lowest non-empty row.
+    /// Drives the keyboard lift so the real content bottom — not the empty grid
+    /// bottom — clears the keyboard. Handles Claude's input + 3 HUD footer lines
+    /// (lifted as a block) and a fresh top-anchored prompt (no lift) identically.
+    func contentBottomY() -> CGFloat {
+        let t = getTerminal()
+        let cellH = caretFrame.height > 0 ? caretFrame.height
+                  : bounds.height / CGFloat(max(1, t.rows))
+        var r = t.rows - 1
+        while r > 0, !(t.getLine(row: r)?.hasAnyContent() ?? false) { r -= 1 }
+        return CGFloat(r + 1) * cellH
     }
 }
