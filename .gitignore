@@ -28,3 +28,6 @@ DerivedData/
 # OMC / tooling state
 .omc/
 **/.omc/
+
+# Local docs (untracked)
+docs/
