@@ -85,6 +85,30 @@ jobs:
             --submit_for_review false \
             --precheck_include_in_app_purchases false
 
+      - name: Ensure review-detail record exists (fixes first-version "No data")
+        run: |
+          cat > /tmp/review.rb <<'RUBY'
+          require 'spaceship'
+          token = Spaceship::ConnectAPI::Token.from_json_file(ENV['KEY'])
+          Spaceship::ConnectAPI.token = token
+          app = Spaceship::ConnectAPI::App.find('eu.illegible.prosperios')
+          abort 'APP not found' unless app
+          v = app.get_edit_app_store_version(platform: Spaceship::ConnectAPI::Platform::IOS)
+          abort 'No editable version' unless v
+          begin
+            v.fetch_app_store_review_detail
+            puts 'Review detail already present.'
+          rescue => e
+            puts "No review detail (#{e.message}) — creating one..."
+            Spaceship::ConnectAPI.post_app_store_review_detail(
+              app_store_version_id: v.id,
+              attributes: { contactEmail: 'ventsislav.georgiev@yahoo.com', demoAccountRequired: false }
+            )
+            puts 'Created review detail.'
+          end
+          RUBY
+          KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/review.rb
+
       - name: Upload text metadata
         run: |
           fastlane deliver \
