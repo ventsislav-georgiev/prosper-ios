@@ -1,0 +1,30 @@
+# Xcode / build
+app/.build-xcode/
+build/
+*.xcarchive
+DerivedData/
+*.ipa
+*.dSYM.zip
+
+# XcodeGen output (regenerated from project.yml)
+*.xcodeproj/
+
+# Old throwaway spike (not part of the product)
+/spike/
+
+# SwiftPM
+.swiftpm/
+.build/
+
+# macOS
+.DS_Store
+
+# Signing material — never commit
+*.p8
+*.p12
+*.mobileprovision
+*.cer
+
+# OMC / tooling state
+.omc/
+**/.omc/

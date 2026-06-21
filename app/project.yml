@@ -1,0 +1,35 @@
+name: Prosper
+options:
+  bundleIdPrefix: eu.illegible
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    branch: main
+targets:
+  Prosper:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - package: SwiftTerm
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Prosper
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        # Catalyst gives same-app e2e on the Mac (PLAN §8). Client is
+        # connect-only; com.apple.security.network.client added with the app's
+        # sandbox/entitlements when networking is wired to a real server.
+        SUPPORTS_MACCATALYST: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # ponytail: local dev builds run unsigned (no team needed). CI signs for
+        # TestFlight via the App Store Connect API key (see .github/workflows).
+        CODE_SIGNING_ALLOWED: NO
