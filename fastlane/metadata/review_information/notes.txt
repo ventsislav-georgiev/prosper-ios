@@ -1,0 +1,32 @@
+App Review notes — Prosper Remote Terminal
+
+WHAT THE APP DOES
+Prosper attaches to terminal sessions running on the user's own Mac (which runs
+the companion Prosper desktop app) and streams them to iPhone/iPad. The phone and
+Mac communicate over the user's private Tailscale network — there is no account,
+no login, and no backend service operated by us. Terminal traffic flows directly
+device-to-Mac.
+
+HOW TO REVIEW WITHOUT A MAC OR TAILSCALE
+You do not need any external setup. The app ships with a fully offline DEMO:
+
+  1. Launch the app. Tap "Remote Terminal".
+  2. On the "Machines" screen, tap "Try the demo" (bottom of the list).
+  3. Tap the "Demo session". A sample terminal session opens and is fully
+     interactive — the on-screen keyboard and shortcut bar work; typed text is
+     echoed. (No real shell runs on-device; iOS sandboxing prevents that, which
+     is exactly why real sessions are hosted on the user's Mac.)
+
+The "?" button (top-right on the home and Machines screens) opens an in-app
+"How it works" guide explaining the Prosper + Tailscale model.
+
+CONNECTIVITY
+The "Connect" field expects the user's own Mac's Tailscale hostname or IP. A
+reviewer not on the user's tailnet cannot and is not expected to reach a real
+machine — please use the built-in demo to evaluate functionality.
+
+ENCRYPTION
+Uses only standard/exempt encryption (no proprietary crypto).
+
+CONTACT
+ventsislav.georgiev@yahoo.com

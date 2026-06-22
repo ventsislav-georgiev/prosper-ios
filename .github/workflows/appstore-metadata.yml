@@ -102,7 +102,13 @@ jobs:
             puts "No review detail (#{e.message}) — creating one..."
             Spaceship::ConnectAPI.post_app_store_review_detail(
               app_store_version_id: v.id,
-              attributes: { contactEmail: 'ventsislav.georgiev@yahoo.com', demoAccountRequired: false }
+              attributes: {
+                contactFirstName: 'Ventsislav',
+                contactLastName: 'Georgiev',
+                contactPhone: 'REDACTED',
+                contactEmail: 'ventsislav.georgiev@yahoo.com',
+                demoAccountRequired: false
+              }
             )
             puts 'Created review detail.'
           end
