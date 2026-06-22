@@ -85,7 +85,26 @@ jobs:
             --submit_for_review false \
             --precheck_include_in_app_purchases false
 
+      - name: Materialize App Review contact (from secrets, never committed)
+        env:
+          R_FIRST: ${{ secrets.ASC_REVIEW_FIRST }}
+          R_LAST: ${{ secrets.ASC_REVIEW_LAST }}
+          R_PHONE: ${{ secrets.ASC_REVIEW_PHONE }}
+          R_EMAIL: ${{ secrets.ASC_REVIEW_EMAIL }}
+        run: |
+          d=fastlane/metadata/review_information
+          mkdir -p "$d"
+          printf '%s' "$R_FIRST" > "$d/first_name.txt"
+          printf '%s' "$R_LAST"  > "$d/last_name.txt"
+          printf '%s' "$R_PHONE" > "$d/phone_number.txt"
+          printf '%s' "$R_EMAIL" > "$d/email_address.txt"
+
       - name: Ensure review-detail record exists (fixes first-version "No data")
+        env:
+          R_FIRST: ${{ secrets.ASC_REVIEW_FIRST }}
+          R_LAST: ${{ secrets.ASC_REVIEW_LAST }}
+          R_PHONE: ${{ secrets.ASC_REVIEW_PHONE }}
+          R_EMAIL: ${{ secrets.ASC_REVIEW_EMAIL }}
         run: |
           cat > /tmp/review.rb <<'RUBY'
           require 'spaceship'
@@ -103,10 +122,10 @@ jobs:
             Spaceship::ConnectAPI.post_app_store_review_detail(
               app_store_version_id: v.id,
               attributes: {
-                contactFirstName: 'Ventsislav',
-                contactLastName: 'Georgiev',
-                contactPhone: 'REDACTED',
-                contactEmail: 'ventsislav.georgiev@yahoo.com',
+                contactFirstName: ENV.fetch('R_FIRST'),
+                contactLastName: ENV.fetch('R_LAST'),
+                contactPhone: ENV.fetch('R_PHONE'),
+                contactEmail: ENV.fetch('R_EMAIL'),
                 demoAccountRequired: false
               }
             )
