@@ -61,7 +61,7 @@ https://github.com/ventsislav-georgiev/prosper
 
 ## Privacy Policy URL  (required)
 > Host store/PRIVACY.md (e.g. GitHub Pages / a gist) and paste the URL. Suggested:
-https://ventsislav-georgiev.github.io/prosper-ios/privacy
+https://ventsislav-georgiev.github.io/prosper-ios/
 
 ## Category
 - Primary: **Developer Tools**
