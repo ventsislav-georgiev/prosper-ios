@@ -1,0 +1,75 @@
+name: ASC Status
+
+# Read-only snapshot of the App Store Connect submission state: version state,
+# attached/processing builds, and which metadata fields are filled. No writes.
+on:
+  workflow_dispatch:
+
+jobs:
+  status:
+    runs-on: macos-26
+    steps:
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - run: gem install fastlane --no-document
+      - name: Build API key file
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          jq -n --arg kid "$ASC_KEY_ID" --arg iss "$ASC_ISSUER_ID" --arg key "$ASC_KEY_P8" \
+            '{key_id:$kid, issuer_id:$iss, key:$key, in_house:false, duration:1200}' \
+            > "$RUNNER_TEMP/asc_key.json"
+      - name: Snapshot
+        run: |
+          cat > /tmp/status.rb <<'RUBY'
+          require 'spaceship'
+          Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from_json_file(ENV['KEY'])
+          app = Spaceship::ConnectAPI::App.find('eu.illegible.prosperios')
+          puts "APP: #{app.name} (#{app.id})"
+
+          # Builds (so you know if one is done processing and selectable)
+          builds = Spaceship::ConnectAPI::Build.all(app_id: app.id, sort: '-uploadedDate', limit: 5)
+          puts "\n== BUILDS (latest 5) =="
+          builds.each { |b| puts "  v#{b.version} state=#{b.processing_state} expired=#{b.expired}" }
+
+          v = app.get_edit_app_store_version
+          unless v
+            puts "\nNo editable version found."; exit 0
+          end
+          puts "\n== VERSION #{v.version_string} =="
+          puts "  state: #{v.app_store_state}"
+          puts "  release_type: #{v.release_type}"
+          b = v.build rescue nil
+          puts "  build attached: #{b ? "v#{b.version}" : 'NONE — pick one'}"
+
+          loc = v.get_app_store_version_localizations.find { |l| l.locale == 'en-US' } ||
+                v.get_app_store_version_localizations.first
+          if loc
+            fld = ->(s){ (s && !s.to_s.strip.empty?) ? 'OK' : 'BLANK' }
+            puts "\n== en-US METADATA =="
+            puts "  description:  #{fld.(loc.description)}"
+            puts "  keywords:     #{fld.(loc.keywords)}"
+            puts "  promo:        #{fld.(loc.promotional_text)}"
+            puts "  support_url:  #{fld.(loc.support_url)}"
+            puts "  marketing_url:#{fld.(loc.marketing_url)}"
+            scr = loc.get_app_screenshot_sets rescue []
+            total = scr.sum { |s| (s.app_screenshots || []).size }
+            puts "  screenshots:  #{total} across #{scr.size} sets"
+          end
+
+          ar = v.fetch_age_rating_declaration rescue nil
+          puts "\n== AGE RATING =="
+          puts(ar ? "  declaration present (questionnaire likely done)" : "  NONE — fill questionnaire")
+
+          rd = v.fetch_app_store_review_detail rescue nil
+          puts "\n== REVIEW CONTACT =="
+          if rd
+            puts "  #{rd.contact_first_name} #{rd.contact_last_name} / #{rd.contact_email} / #{rd.contact_phone}"
+          else
+            puts "  NONE"
+          end
+          RUBY
+          KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/status.rb
