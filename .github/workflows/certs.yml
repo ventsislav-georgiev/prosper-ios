@@ -50,7 +50,9 @@ jobs:
             puts "#{c.certificate_type}\t#{c.id}\t#{c.display_name}\texp=#{c.expiration_date}"
           end
           if ENV['ACTION'] == 'revoke-dev'
-            victims = certs.select { |c| DEV.include?(c.certificate_type) }
+            # Only the CI-minted garbage: development certs named "Created via API".
+            # Named ("Ventsislav Georgiev") dev cert + all distribution/Developer ID survive.
+            victims = certs.select { |c| DEV.include?(c.certificate_type) && c.display_name == 'Created via API' }
             puts "\nRevoking #{victims.size} development certs (keeping #{certs.size - victims.size})..."
             victims.each do |c|
               Spaceship::ConnectAPI.delete_certificate(certificate_id: c.id)
