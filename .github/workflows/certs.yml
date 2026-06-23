@@ -1,0 +1,62 @@
+name: Certificates
+
+# List or clean up Apple signing certificates via the App Store Connect API.
+# Default = list only (safe). To revoke, dispatch with action=revoke-dev — it
+# revokes ONLY development-type certs (the garbage CI minted), never
+# distribution or Developer ID certs (those sign TestFlight / notarize macOS).
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "list (safe) or revoke-dev (revokes development certs)"
+        type: choice
+        default: list
+        options: [list, revoke-dev]
+
+jobs:
+  certs:
+    runs-on: macos-26
+    steps:
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - run: gem install fastlane --no-document
+
+      - name: Build API key file
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          jq -n --arg kid "$ASC_KEY_ID" --arg iss "$ASC_ISSUER_ID" --arg key "$ASC_KEY_P8" \
+            '{key_id:$kid, issuer_id:$iss, key:$key, in_house:false, duration:1200}' \
+            > "$RUNNER_TEMP/asc_key.json"
+
+      - name: ${{ inputs.action }} certificates
+        env:
+          ACTION: ${{ inputs.action }}
+        run: |
+          cat > /tmp/certs.rb <<'RUBY'
+          require 'spaceship'
+          Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from_json_file(ENV['KEY'])
+          # Never touch these — they sign releases / notarize the macOS app.
+          KEEP = %w[IOS_DISTRIBUTION DISTRIBUTION MAC_APP_DISTRIBUTION
+                    DEVELOPER_ID_APPLICATION DEVELOPER_ID_KEXT DEVELOPER_ID_INSTALLER
+                    MAC_INSTALLER_DISTRIBUTION]
+          DEV = %w[IOS_DEVELOPMENT DEVELOPMENT MAC_DEVELOPMENT]
+          certs = Spaceship::ConnectAPI::Certificate.all
+          puts "TOTAL: #{certs.size}"
+          certs.sort_by { |c| c.certificate_type.to_s }.each do |c|
+            puts "#{c.certificate_type}\t#{c.id}\t#{c.display_name}\texp=#{c.expiration_date}"
+          end
+          if ENV['ACTION'] == 'revoke-dev'
+            victims = certs.select { |c| DEV.include?(c.certificate_type) }
+            puts "\nRevoking #{victims.size} development certs (keeping #{certs.size - victims.size})..."
+            victims.each do |c|
+              Spaceship::ConnectAPI.delete_certificate(certificate_id: c.id)
+              puts "revoked #{c.certificate_type} #{c.id} #{c.display_name}"
+            end
+            puts "Done. Remaining: #{Spaceship::ConnectAPI::Certificate.all.size}"
+          end
+          RUBY
+          KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/certs.rb
