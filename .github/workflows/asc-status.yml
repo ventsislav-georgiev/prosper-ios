@@ -65,11 +65,10 @@ jobs:
           puts(ar ? "  declaration present (questionnaire likely done)" : "  NONE — fill questionnaire")
 
           rd = v.fetch_app_store_review_detail rescue nil
+          # Never print the actual contact (public repo → public Actions logs).
           puts "\n== REVIEW CONTACT =="
-          if rd
-            puts "  #{rd.contact_first_name} #{rd.contact_last_name} / #{rd.contact_email} / #{rd.contact_phone}"
-          else
-            puts "  NONE"
-          end
+          ok = rd && [rd.contact_first_name, rd.contact_last_name,
+                      rd.contact_email, rd.contact_phone].all? { |x| x && !x.to_s.strip.empty? }
+          puts(ok ? "  OK (all fields set)" : "  MISSING")
           RUBY
           KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/status.rb
