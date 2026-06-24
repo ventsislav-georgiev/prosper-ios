@@ -93,23 +93,25 @@ struct HomeView: View {
         }
     }
 
-    /// Replace the stack instead of pushing, so switching machines stays at depth 1
-    /// (Home → machine, never Home → machine → machine → …). Back always returns Home.
+    /// Pick a machine from the picker → collapse back to a single Home → Sessions level
+    /// (so Back from the new session list returns Home, never machine→machine→…).
     private func go(_ route: Route) {
         path = NavigationPath()
         path.append(route)
     }
 
     @ViewBuilder private func sessionList(for ref: MachineRef) -> some View {
+        // "Change" PUSHES the picker on top of Sessions (Home → Sessions → Machines),
+        // so Back from Machines returns to Sessions — the expected hierarchy.
         switch ref {
         case .demo:
             SessionListView(transport: DemoTransport(), title: demoTitle, machine: nil,
-                            store: store, account: account, onChangeMachine: { go(.connect) })
+                            store: store, account: account, onChangeMachine: { path.append(Route.connect) })
         case .machine(let id):
             if let m = store.machines.first(where: { $0.id == id }) {
                 SessionListView(transport: ProsperTransport(host: m.addresses.first ?? m.name),
                                 title: m.name, machine: m, store: store, account: account,
-                                onChangeMachine: { go(.connect) })
+                                onChangeMachine: { path.append(Route.connect) })
             } else {
                 ConnectScreen(store: store) { r in go(.sessions(r)) }
             }
@@ -252,7 +254,7 @@ struct SessionListView: View {
     @State var transport: SessionTransport
     let title: String
     let machine: Machine?              // nil for the demo
-    let store: MachineStore
+    @ObservedObject var store: MachineStore   // observed so handshake-populated cachedWake redraws the badge
     @ObservedObject var account: AccountStore
     var onChangeMachine: () -> Void = {}
     @State private var sessions: [DchSession] = []
@@ -266,6 +268,13 @@ struct SessionListView: View {
     @State private var creating = false            // new-session alert
     @State private var newName = ""
 
+    // Live store snapshot so the badge tracks cachedWake after handshake (the `machine`
+    // prop is a stale value-type copy captured at navigation time).
+    private var liveMachine: Machine? {
+        guard let id = machine?.id else { return nil }
+        return store.machines.first { $0.id == id }
+    }
+
     var body: some View {
         List {
             // Machine row → back to the picker to switch/manage connections.
@@ -273,7 +282,7 @@ struct SessionListView: View {
                 HStack {
                     Image(systemName: "desktopcomputer")
                     Text(title).font(.headline)
-                    WakeBadge(wake: machine?.cachedWake)
+                    WakeBadge(wake: liveMachine?.cachedWake)
                     Spacer()
                     Text("Change").font(.caption).foregroundStyle(.secondary)
                     Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
@@ -371,13 +380,14 @@ struct SessionListView: View {
 
     private func refresh() async {
         loading = true
-        defer { loading = false }
         do {
             sessions = try await transport.listSessions()
             error = nil
             unreachable = nil
-            await handshake()
+            loading = false          // connected: stop spinning + re-enable +/refresh BEFORE the slow handshake
+            await handshake()        // opportunistic, may take ~2s — must not gate the toolbar
         } catch let e as TransportError {
+            loading = false
             // Host-unreachable on a real machine → surface the Wake card; other errors
             // (protocol/rejected) are plain text since waking won't help.
             if case .hostUnreachable = e, machine != nil {
@@ -388,6 +398,7 @@ struct SessionListView: View {
                 unreachable = nil
             }
         } catch {
+            loading = false
             self.error = error.localizedDescription
             unreachable = nil
         }

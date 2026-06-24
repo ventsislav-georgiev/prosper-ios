@@ -83,21 +83,36 @@ final class ProsperTransport: SessionTransport {
         (try? JSONSerialization.data(withJSONObject: o)) ?? Data()
     }
 
-    private func connect() async throws -> NWConnection {
+    private func connect(timeout: TimeInterval = 6) async throws -> NWConnection {
         let conn = NWConnection(host: NWEndpoint.Host(host),
                                 port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            let lock = NSLock()
             var resumed = false
-            conn.stateUpdateHandler = { state in
+            func finish(_ result: Result<Void, Error>) {
+                lock.lock(); defer { lock.unlock() }
                 guard !resumed else { return }
+                resumed = true
+                switch result {
+                case .success:        cont.resume()
+                case .failure(let e): cont.resume(throwing: e)
+                }
+            }
+            conn.stateUpdateHandler = { state in
                 switch state {
-                case .ready: resumed = true; cont.resume()
-                case .failed(let e): resumed = true; cont.resume(throwing: TransportError.hostUnreachable("\(e)"))
-                case .cancelled: resumed = true; cont.resume(throwing: TransportError.notConnected)
-                default: break
+                case .ready:         finish(.success(()))
+                case .failed(let e): finish(.failure(TransportError.hostUnreachable("\(e)")))
+                case .cancelled:     finish(.failure(TransportError.notConnected))
+                default: break       // .waiting (no route to an unreachable host) sits here — the timeout below resolves it
                 }
             }
             conn.start(queue: .global())
+            // NWConnection waits indefinitely for a path to an unreachable host; bound it
+            // so listSessions surfaces hostUnreachable instead of spinning forever.
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                conn.cancel()
+                finish(.failure(TransportError.hostUnreachable("timed out")))
+            }
         }
         return conn
     }
