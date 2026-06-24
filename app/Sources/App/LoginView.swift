@@ -91,7 +91,11 @@ struct LoginView: View {
     private func startPolling(pickup: String) {
         pollTask?.cancel()
         pollTask = Task {
-            // Poll every ~2s until ready, expired, or cancelled.
+            // Poll every ~2s until ready or expired. Backgrounding the app (to open the
+            // link in Mail) suspends URLSession → the request throws cancelled/network;
+            // that's transient, NOT a reason to abort — keep waiting so the poll resumes
+            // on foreground and the login completes on-device. Only an explicit Cancel
+            // (Task cancellation) or an expired pickup stops the loop.
             while !Task.isCancelled {
                 do {
                     if let s = try await client.poll(pickup: pickup) {
@@ -100,13 +104,12 @@ struct LoginView: View {
                         dismiss()
                         return
                     }
+                    error = nil                       // a clean pending poll clears a prior blip
                 } catch AuthError.expired {
                     phase = .expired
                     return
                 } catch {
-                    self.error = error.localizedDescription
-                    phase = .entry
-                    return
+                    // Transient (backgrounded / network blip) — swallow and retry next tick.
                 }
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }

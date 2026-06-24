@@ -83,7 +83,7 @@ struct HomeView: View {
             .navigationDestination(for: Route.self) { route in
                 switch route {
                 case .connect:
-                    ConnectScreen(store: store) { ref in path.append(Route.sessions(ref)) }
+                    ConnectScreen(store: store) { ref in go(.sessions(ref)) }
                 case .sessions(let ref):
                     sessionList(for: ref)
                 case .settings:
@@ -93,17 +93,25 @@ struct HomeView: View {
         }
     }
 
+    /// Replace the stack instead of pushing, so switching machines stays at depth 1
+    /// (Home → machine, never Home → machine → machine → …). Back always returns Home.
+    private func go(_ route: Route) {
+        path = NavigationPath()
+        path.append(route)
+    }
+
     @ViewBuilder private func sessionList(for ref: MachineRef) -> some View {
         switch ref {
         case .demo:
             SessionListView(transport: DemoTransport(), title: demoTitle, machine: nil,
-                            store: store, account: account)
+                            store: store, account: account, onChangeMachine: { go(.connect) })
         case .machine(let id):
             if let m = store.machines.first(where: { $0.id == id }) {
                 SessionListView(transport: ProsperTransport(host: m.addresses.first ?? m.name),
-                                title: m.name, machine: m, store: store, account: account)
+                                title: m.name, machine: m, store: store, account: account,
+                                onChangeMachine: { go(.connect) })
             } else {
-                ConnectScreen(store: store) { r in path.append(Route.sessions(r)) }
+                ConnectScreen(store: store) { r in go(.sessions(r)) }
             }
         }
     }
@@ -149,6 +157,7 @@ struct ConnectScreen: View {
                                 }
                             }
                             Spacer()
+                            WakeBadge(wake: m.cachedWake)
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }
                     }
@@ -245,8 +254,10 @@ struct SessionListView: View {
     let machine: Machine?              // nil for the demo
     let store: MachineStore
     @ObservedObject var account: AccountStore
+    var onChangeMachine: () -> Void = {}
     @State private var sessions: [DchSession] = []
     @State private var error: String?
+    @State private var loading = false             // connect/list round-trip in flight
     @State private var unreachable: String?        // host-unreachable → offer Wake
     @State private var open: DchSession?          // programmatic push target
     @State private var renaming: DchSession?       // rename alert
@@ -258,12 +269,22 @@ struct SessionListView: View {
     var body: some View {
         List {
             // Machine row → back to the picker to switch/manage connections.
-            NavigationLink(value: Route.connect) {
+            Button { onChangeMachine() } label: {
                 HStack {
                     Image(systemName: "desktopcomputer")
                     Text(title).font(.headline)
+                    WakeBadge(wake: machine?.cachedWake)
                     Spacer()
                     Text("Change").font(.caption).foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+            .foregroundStyle(.primary)
+            // Connecting: a real round-trip is in flight and nothing resolved yet.
+            if loading && sessions.isEmpty && error == nil && unreachable == nil {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Connecting to \(title)…").foregroundStyle(.secondary)
                 }
             }
             // Host unreachable + a real machine → the Wake gating/waking card.
@@ -285,7 +306,9 @@ struct SessionListView: View {
         .navigationTitle("Sessions")
         .toolbar {
             Button { newName = ""; creating = true } label: { Image(systemName: "plus") }
+                .disabled(unreachable != nil || error != nil || loading)   // no new session on an unreachable Mac
             Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
+                .disabled(loading)
         }
         .task { await refresh() }
         // Programmatic push for tap-to-attach and newly created sessions.
@@ -347,6 +370,8 @@ struct SessionListView: View {
     }
 
     private func refresh() async {
+        loading = true
+        defer { loading = false }
         do {
             sessions = try await transport.listSessions()
             error = nil
@@ -388,6 +413,27 @@ struct SessionListView: View {
                 case .unknown:           break
                 }
             }
+        }
+    }
+}
+
+/// Small "remote-wake ready" chip shown on machine rows (picker + session header).
+/// Renders only when wake is known-enabled; the minutes come from the cached battery
+/// cadence we inferred from `/wake/:id/meta` (falls back to the AC cadence).
+struct WakeBadge: View {
+    let wake: WakeInfo?
+    var body: some View {
+        if let w = wake, w.enabled {
+            let secs = w.intervalBatt ?? w.intervalAC
+            HStack(spacing: 3) {
+                Image(systemName: "sunrise.fill")
+                Text(secs.map { "\(max(1, $0 / 60)) min" } ?? "Wake")
+            }
+            .font(.caption2.weight(.medium))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(.orange.opacity(0.18), in: Capsule())
+            .foregroundStyle(.orange)
+            .accessibilityLabel(secs.map { "Remote wake ready, checks every \($0 / 60) minutes" } ?? "Remote wake ready")
         }
     }
 }

@@ -40,11 +40,8 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showLogin) { LoginView(account: account) }
-        .alert("Delete account?", isPresented: $confirmDelete) {
-            Button("Delete", role: .destructive) { Task { await delete() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This permanently deletes your account and remote-wake settings. It can't be undone.")
+        .sheet(isPresented: $confirmDelete) {
+            DeleteAccountSheet(busy: $busy) { await delete() }
         }
     }
 
@@ -53,5 +50,51 @@ struct SettingsView: View {
         defer { busy = false }
         do { try await account.deleteAccount(); error = nil }
         catch { self.error = error.localizedDescription }
+    }
+}
+
+/// Type-to-confirm account deletion (GitHub-style): the destructive button stays
+/// disabled until the user types DELETE, so it can't be hit by a stray tap. Dismisses
+/// itself after the work runs; on success the parent's Delete section disappears anyway.
+struct DeleteAccountSheet: View {
+    @Binding var busy: Bool
+    var onConfirm: () async -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+
+    private var armed: Bool { text == "DELETE" }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("This permanently deletes your account and all remote-wake settings from the server. It can't be undone.")
+                        .font(.callout)
+                }
+                Section {
+                    TextField("DELETE", text: $text)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .disabled(busy)
+                } header: { Text("Type DELETE to confirm") }
+                Section {
+                    Button(role: .destructive) {
+                        Task { await onConfirm(); dismiss() }
+                    } label: {
+                        HStack {
+                            Text("Delete Account")
+                            if busy { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(!armed || busy)
+                }
+            }
+            .navigationTitle("Delete account")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() }.disabled(busy) }
+            }
+        }
+        .interactiveDismissDisabled(busy)
     }
 }
