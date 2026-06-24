@@ -85,14 +85,25 @@ Answer the questionnaire with **None** across the board → rating **4+**.
   (`ITSAppUsesNonExemptEncryption = NO`). Confirm "uses only exempt encryption".
 
 ## App Privacy ("nutrition label")
-**Data collection: None.**
-- No account, no analytics, no third-party SDKs.
-- Host addresses you type are stored **only on your device** (UserDefaults) and
-  never transmitted to us.
-- Terminal traffic goes directly from your device to your own Mac over your
-  Tailscale network; it never touches our servers (there are none).
+**Data collection: Yes — only if the user signs in for the optional Remote Wake feature.**
+The terminal and demo collect nothing; sign-in is the only path that sends data to us.
 
-Answer "Do you collect data?" → **No**.
+Answer "Do you collect data?" → **Yes**, then declare exactly one type:
+
+- **Contact Info → Email Address**
+  - Used for: **App Functionality** (account identity for Remote Wake).
+  - Linked to the user's identity: **Yes**.
+  - Used for tracking: **No**.
+
+Do NOT declare anything else:
+- The hashed session token and remote-wake config are not a separate ASC data
+  category (no analytics, no advertising, no identifiers used for tracking).
+- Host addresses you type stay **only on your device** (UserDefaults) and are never
+  transmitted — not collected.
+- Terminal traffic flows directly device→Mac over Tailscale; it never touches our
+  servers — not collected.
+
+No analytics, no third-party SDKs, no tracking.
 
 ## Pricing & Availability
 - Price: **Free**
