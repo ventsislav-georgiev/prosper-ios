@@ -30,9 +30,11 @@ targets:
         MARKETING_VERSION: "0.1"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
-        # Catalyst gives same-app e2e on the Mac (PLAN §8). Client is
-        # connect-only; com.apple.security.network.client added with the app's
-        # sandbox/entitlements when networking is wired to a real server.
+        # Catalyst gives same-app e2e on the Mac (PLAN §8). Client is connect-only;
+        # com.apple.security.network.client (in Prosper.entitlements) lets the
+        # Catalyst sandbox reach the Mac (dch over Tailscale) and the account server
+        # (auth + remote wake). iOS doesn't sandbox, but the key is harmless there.
+        CODE_SIGN_ENTITLEMENTS: Sources/Prosper.entitlements
         SUPPORTS_MACCATALYST: YES
         TARGETED_DEVICE_FAMILY: "1,2"
         # ponytail: local dev builds run unsigned (no team needed). CI signs for

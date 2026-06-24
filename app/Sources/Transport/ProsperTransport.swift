@@ -19,8 +19,37 @@ final class ProsperTransport: SessionTransport {
     // Mirror of the server's DchFrame type bytes.
     private enum F {
         static let attach: UInt8 = 0x01, create: UInt8 = 0x02, list: UInt8 = 0x03
-        static let kill: UInt8 = 0x04, resize: UInt8 = 0x05, rename: UInt8 = 0x06, data: UInt8 = 0x10
+        static let kill: UInt8 = 0x04, resize: UInt8 = 0x05, rename: UInt8 = 0x06
+        static let machineInfo: UInt8 = 0x08, data: UInt8 = 0x10
         static let listResp: UInt8 = 0x11, exit: UInt8 = 0x12, error: UInt8 = 0x13, ok: UInt8 = 0x14
+        static let machineInfoResp: UInt8 = 0x18
+    }
+
+    /// One-shot identity handshake (PLAN §2a). Sends `0x08`, reads the `0x18` reply
+    /// `{device_id, hostname, wakeId?}`. Bounded by `timeout` — a legacy Mac hits the
+    /// server's `default: break` and never answers, so we return `nil` rather than
+    /// block the connect path. wakeId may be absent (wake feature off / not configured).
+    func machineInfo(timeout: TimeInterval = 2) async throws -> MachineInfo? {
+        let conn = try await connect()
+        defer { conn.cancel() }
+        conn.send(content: FrameCodec.encode(F.machineInfo, Data()), completion: .contentProcessed { _ in })
+        // Race the read against a timeout; legacy Macs simply never reply.
+        let reply: (UInt8, Data)? = try? await withThrowingTaskGroup(of: (UInt8, Data)?.self) { group in
+            group.addTask { try await FrameCodec.readOne(from: conn) }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return nil
+            }
+            let first = try await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        guard let (type, payload) = reply, type == F.machineInfoResp,
+              let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              let deviceId = o["device_id"] as? String else { return nil }
+        return MachineInfo(deviceId: deviceId,
+                           hostname: o["hostname"] as? String,
+                           wakeId: o["wakeId"] as? String)
     }
 
     func listSessions() async throws -> [DchSession] {
@@ -99,25 +128,28 @@ enum FrameCodec {
         return out
     }
 
+    static let maxFrame = 8 << 20   // 8 MB — keeps a rogue tailnet peer from OOM-ing us
+
     /// Read frames off `conn` until one whole frame is assembled, return it.
     static func readOne(from conn: NWConnection) async throws -> (UInt8, Data) {
         var buf = Data()
         while true {
-            if let frame = pop(&buf) { return frame }
+            if let frame = try pop(&buf) { return frame }
             let chunk = try await receive(conn)
             if chunk.isEmpty { throw TransportError.protocolError("closed before a full frame") }
             buf.append(chunk)
         }
     }
 
-    /// Pop one complete frame from `buf` if present (consumes it).
-    static func pop(_ buf: inout Data) -> (UInt8, Data)? {
+    /// Pop one complete frame from `buf` if present (consumes it). Throws on oversized frames.
+    static func pop(_ buf: inout Data) throws -> (UInt8, Data)? {
         guard buf.count >= 5 else { return nil }
         let type = buf[buf.startIndex]
         let len = buf.withUnsafeBytes { raw -> Int in
             let b = raw.baseAddress!.advanced(by: 1).assumingMemoryBound(to: UInt8.self)
             return (Int(b[0]) << 24) | (Int(b[1]) << 16) | (Int(b[2]) << 8) | Int(b[3])
         }
+        guard len <= maxFrame else { throw TransportError.protocolError("frame too large") }
         guard buf.count >= 5 + len else { return nil }
         let start = buf.index(buf.startIndex, offsetBy: 5)
         let payload = buf.subdata(in: start..<buf.index(start, offsetBy: len))
@@ -162,7 +194,11 @@ final class ProsperStream: TerminalStream {
             guard let self else { return }
             if let data, !data.isEmpty {
                 self.buf.append(data)
-                while let (type, payload) = FrameCodec.pop(&self.buf) {
+                frameLoop: while true {
+                    let frame: (UInt8, Data)?
+                    do { frame = try FrameCodec.pop(&self.buf) }
+                    catch { self.close(); return }   // oversized frame — kill the stream
+                    guard let (type, payload) = frame else { break frameLoop }
                     switch type {
                     case F.data: self.cont.yield(ArraySlice([UInt8](payload)))
                     case F.exit: self.close(); return

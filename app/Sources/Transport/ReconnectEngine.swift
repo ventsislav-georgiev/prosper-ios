@@ -8,6 +8,7 @@ enum ConnectionState: Equatable {
     case stalled          // transient: drop detected, retrying silently
     case reconnecting(attempt: Int)
     case failed(String)   // permanent: backoff exhausted / rejected
+    case waking(deadline: Date)   // remote wake sent; retrying TCP until the Mac answers
 }
 
 /// Fast backoff for invisible recovery (PLAN §15.1): 0, 150ms, 400ms, 1s, 2s …

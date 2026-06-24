@@ -2,6 +2,16 @@ import SwiftUI
 
 @main
 struct ProsperApp: App {
+    init() {
+        #if DEBUG
+        // ponytail: run the cheap assert-based self-checks once at launch so a broken
+        // backoff schedule / Machine migration / wakeId derivation trips in dev.
+        _backoffSelfCheck()
+        _wakeSelfCheck()
+        _machineSelfCheck()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             // Screenshot hook (env-gated, never set for real users): jump straight
@@ -22,34 +32,28 @@ struct ProsperApp: App {
 let uiScreen = ProcessInfo.processInfo.environment["PROSPER_UI_SCREEN"]
 
 /// Navigation routes for the Remote Terminal feature. `connect` = the machine
-/// picker; `sessions` = the dch session list for a given host.
+/// picker; `sessions` = the dch session list for a machine (id, or the demo sentinel);
+/// `settings` = the account screen.
 enum Route: Hashable {
     case connect
-    case sessions(String)
+    case sessions(MachineRef)
+    case settings
 }
 
-// MARK: - Host history (newline-joined string in @AppStorage, most-recent first)
-
-func hostList(_ raw: String) -> [String] { raw.split(separator: "\n").map(String.init) }
-
-func recordHost(_ h: String, into raw: Binding<String>) {
-    let t = h.trimmingCharacters(in: .whitespaces)
-    guard !t.isEmpty else { return }
-    var list = hostList(raw.wrappedValue).filter { $0 != t }
-    list.insert(t, at: 0)
-    raw.wrappedValue = list.joined(separator: "\n")
-}
-
-func removeHost(_ h: String, from raw: Binding<String>) {
-    raw.wrappedValue = hostList(raw.wrappedValue).filter { $0 != h }.joined(separator: "\n")
+/// What `Route.sessions` points at: a saved Machine (by id) or the offline demo.
+/// `id`-based so renames/reorders don't break an in-flight navigation.
+enum MachineRef: Hashable {
+    case machine(UUID)
+    case demo
 }
 
 /// App home. A list of Prosper features; tap one to open it. Remote Terminal
 /// (the dch/dtach client over Tailscale) is the first and currently only one.
-/// Tapping it jumps straight to the last machine's session list (auto-connect),
-/// or the machine picker if there's no history yet.
+/// Tapping it jumps straight to the first machine's session list (auto-connect),
+/// or the machine picker if there's no machine saved yet.
 struct HomeView: View {
-    @AppStorage("hostHistory") private var historyRaw = ""
+    @StateObject private var store = MachineStore()
+    @StateObject private var account = AccountStore()
     @State private var path: NavigationPath
     @State private var showHelp = false
 
@@ -57,7 +61,7 @@ struct HomeView: View {
         var p = NavigationPath()
         switch uiScreen {                        // screenshot deep-links (env-gated)
         case "connect": p.append(Route.connect)
-        case "demo-sessions": p.append(Route.sessions(demoHost))
+        case "demo-sessions": p.append(Route.sessions(.demo))
         default: break
         }
         _path = State(initialValue: p)
@@ -66,8 +70,11 @@ struct HomeView: View {
     var body: some View {
         NavigationStack(path: $path) {
             List {
-                NavigationLink(value: hostList(historyRaw).first.map(Route.sessions) ?? Route.connect) {
+                NavigationLink(value: store.machines.first.map { Route.sessions(.machine($0.id)) } ?? Route.connect) {
                     Label("Remote Terminal", systemImage: "terminal")
+                }
+                NavigationLink(value: Route.settings) {
+                    Label("Settings", systemImage: "gearshape")
                 }
             }
             .navigationTitle("Prosper")
@@ -76,25 +83,34 @@ struct HomeView: View {
             .navigationDestination(for: Route.self) { route in
                 switch route {
                 case .connect:
-                    ConnectScreen(historyRaw: $historyRaw) { host in
-                        if !isDemoHost(host) { recordHost(host, into: $historyRaw) }
-                        path.append(Route.sessions(host))
-                    }
-                case .sessions(let host):
-                    SessionListView(transport: transport(for: host), host: host)
+                    ConnectScreen(store: store) { ref in path.append(Route.sessions(ref)) }
+                case .sessions(let ref):
+                    sessionList(for: ref)
+                case .settings:
+                    SettingsView(account: account)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder private func sessionList(for ref: MachineRef) -> some View {
+        switch ref {
+        case .demo:
+            SessionListView(transport: DemoTransport(), title: demoTitle, machine: nil,
+                            store: store, account: account)
+        case .machine(let id):
+            if let m = store.machines.first(where: { $0.id == id }) {
+                SessionListView(transport: ProsperTransport(host: m.addresses.first ?? m.name),
+                                title: m.name, machine: m, store: store, account: account)
+            } else {
+                ConnectScreen(store: store) { r in path.append(Route.sessions(r)) }
             }
         }
     }
 }
 
-/// Sentinel host that routes to the offline demo instead of a real connection.
-let demoHost = "Demo"
-func isDemoHost(_ h: String) -> Bool { h == demoHost }
-
-func transport(for host: String) -> SessionTransport {
-    isDemoHost(host) ? DemoTransport() : ProsperTransport(host: host)
-}
+/// Display title for the offline demo machine row.
+let demoTitle = "Demo"
 
 /// Unobtrusive `?` toolbar item shared by Home and the machine picker.
 @ToolbarContentBuilder
@@ -105,46 +121,54 @@ func helpButton(_ shown: Binding<Bool>) -> some ToolbarContent {
     }
 }
 
-/// Machine picker: type a new host or pick a previously-connected one. Each
-/// remembered host has a delete button; tapping a host connects to it.
+/// Machine picker (PLAN §3): a list of saved Machines, each with one or more
+/// priority-ordered addresses. Tapping a machine connects; an editor adds machines and
+/// reorders their addresses by drag. The offline demo lives at the bottom.
 struct ConnectScreen: View {
-    @Binding var historyRaw: String
-    let onConnect: (String) -> Void
-    @State private var newHost = ""
+    @ObservedObject var store: MachineStore
+    let onConnect: (MachineRef) -> Void
+    @State private var editing: Machine?           // nil = sheet closed; .some = add/edit
     @State private var showHelp = false
 
     var body: some View {
         List {
-            Section {
-                TextField("my-mac.tailnet.ts.net or 100.x.y.z", text: $newHost)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                Button("Connect") { onConnect(newHost) }
-                    .disabled(newHost.trimmingCharacters(in: .whitespaces).isEmpty)
-            } header: { Text("Connect to a machine") }
-            footer: { Text("The machine's [Tailscale](https://tailscale.com) name or IP, running Prosper. [How it works](prosper://help)") }
-            let hosts = hostList(historyRaw)
-            if !hosts.isEmpty {
-                Section("Recent") {
-                    ForEach(hosts, id: \.self) { h in
+            if store.machines.isEmpty {
+                Section {
+                    Text("Add your Mac to get started — its Tailscale name or IP, running Prosper.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            ForEach(store.machines) { m in
+                Section {
+                    Button { onConnect(.machine(m.id)) } label: {
                         HStack {
-                            Button(h) { onConnect(h) }
-                                .foregroundStyle(.primary)
-                            Spacer()
-                            Button { removeHost(h, from: $historyRaw) } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(m.name).font(.headline).foregroundStyle(.primary)
+                                if let first = m.addresses.first {
+                                    Text(first).font(.caption).foregroundStyle(.secondary)
+                                }
                             }
-                            .buttonStyle(.borderless)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }
                     }
+                    Button { editing = m } label: { Label("Edit", systemImage: "pencil") }
+                        .font(.callout)
+                    Button(role: .destructive) { store.remove(m) } label: { Label("Remove", systemImage: "trash") }
+                        .font(.callout)
                 }
+            }
+            Section {
+                Button { editing = Machine(name: "", addresses: [""]) } label: {
+                    Label("Add machine", systemImage: "plus")
+                }
+            } footer: {
+                Text("Each machine's [Tailscale](https://tailscale.com) name(s) or IP(s), running Prosper. [How it works](prosper://help)")
             }
             // Secondary: an offline sample so the app is explorable before a real
             // machine is set up. Tucked at the bottom, out of the daily path.
             Section {
-                Button { onConnect(demoHost) } label: {
+                Button { onConnect(.demo) } label: {
                     Label("Try the demo", systemImage: "play.circle")
                 }
             } footer: { Text("Explore a sample session — no machine required.") }
@@ -152,6 +176,7 @@ struct ConnectScreen: View {
         .navigationTitle("Machines")
         .toolbar { helpButton($showHelp) }
         .sheet(isPresented: $showHelp) { HelpView() }
+        .sheet(item: $editing) { m in MachineEditor(store: store, draft: m) }
         .environment(\.openURL, OpenURLAction { url in
             if url.absoluteString == "prosper://help" { showHelp = true; return .handled }
             return .systemAction
@@ -159,11 +184,70 @@ struct ConnectScreen: View {
     }
 }
 
+/// Add/edit a Machine: a name plus an editable, drag-reorderable address list (PLAN §3
+/// — addresses are tried in priority order, so order matters).
+struct MachineEditor: View {
+    @ObservedObject var store: MachineStore
+    @State var draft: Machine
+    @Environment(\.dismiss) private var dismiss
+    @State private var editMode: EditMode = .active   // keep .onMove handles visible
+
+    private var isNew: Bool { !store.machines.contains { $0.id == draft.id } }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Name") {
+                    TextField("Studio Mac", text: $draft.name)
+                        .autocorrectionDisabled()
+                }
+                Section {
+                    ForEach(draft.addresses.indices, id: \.self) { i in
+                        TextField("my-mac.tailnet.ts.net or 100.x.y.z", text: $draft.addresses[i])
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                    }
+                    .onMove { from, to in draft.addresses.move(fromOffsets: from, toOffset: to) }
+                    .onDelete { draft.addresses.remove(atOffsets: $0) }
+                    Button { draft.addresses.append("") } label: { Label("Add address", systemImage: "plus") }
+                } header: { Text("Addresses (drag to set priority)") }
+                footer: { Text("Tried top-to-bottom; the first that connects wins.") }
+            }
+            .environment(\.editMode, $editMode)
+            .navigationTitle(isNew ? "Add machine" : "Edit machine")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button("Save") { save() }.disabled(!valid) }
+            }
+        }
+        .interactiveDismissDisabled()   // swipe-down would discard unsaved reorder/name edits
+    }
+
+    private var valid: Bool {
+        !draft.name.trimmingCharacters(in: .whitespaces).isEmpty
+            && draft.addresses.contains { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+
+    private func save() {
+        var m = draft
+        m.name = m.name.trimmingCharacters(in: .whitespaces)
+        m.addresses = m.addresses.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if isNew { store.add(m) } else { store.update(m.id) { $0 = m } }
+        dismiss()
+    }
+}
+
 struct SessionListView: View {
-    let transport: SessionTransport
-    let host: String
+    @State var transport: SessionTransport
+    let title: String
+    let machine: Machine?              // nil for the demo
+    let store: MachineStore
+    @ObservedObject var account: AccountStore
     @State private var sessions: [DchSession] = []
     @State private var error: String?
+    @State private var unreachable: String?        // host-unreachable → offer Wake
     @State private var open: DchSession?          // programmatic push target
     @State private var renaming: DchSession?       // rename alert
     @State private var renameText = ""
@@ -177,12 +261,25 @@ struct SessionListView: View {
             NavigationLink(value: Route.connect) {
                 HStack {
                     Image(systemName: "desktopcomputer")
-                    Text(host).font(.headline)
+                    Text(title).font(.headline)
                     Spacer()
                     Text("Change").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if let error { Text(error).foregroundStyle(.secondary) }
+            // Host unreachable + a real machine → the Wake gating/waking card.
+            if let msg = unreachable, let m = machine {
+                Section {
+                    WakeFailedView(machine: m, message: msg, account: account, machines: store) { t, _ in
+                        transport = t
+                        unreachable = nil
+                        Task { await refresh() }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .listRowBackground(Color.clear)
+                }
+            } else if let error {
+                Text(error).foregroundStyle(.secondary)
+            }
             ForEach(sessions) { s in row(s) }
         }
         .navigationTitle("Sessions")
@@ -215,7 +312,7 @@ struct SessionListView: View {
             TextField("Name (optional)", text: $newName)
             Button("Create") { startNew() }
             Button("Cancel", role: .cancel) {}
-        } message: { Text("Opens a fresh dch session on \(host).") }
+        } message: { Text("Opens a fresh dch session on \(title).") }
     }
 
     @ViewBuilder private func row(_ s: DchSession) -> some View {
@@ -250,8 +347,48 @@ struct SessionListView: View {
     }
 
     private func refresh() async {
-        do { sessions = try await transport.listSessions(); error = nil }
-        catch { self.error = error.localizedDescription }
+        do {
+            sessions = try await transport.listSessions()
+            error = nil
+            unreachable = nil
+            await handshake()
+        } catch let e as TransportError {
+            // Host-unreachable on a real machine → surface the Wake card; other errors
+            // (protocol/rejected) are plain text since waking won't help.
+            if case .hostUnreachable = e, machine != nil {
+                unreachable = e.localizedDescription
+                error = nil
+            } else {
+                error = e.localizedDescription
+                unreachable = nil
+            }
+        } catch {
+            self.error = error.localizedDescription
+            unreachable = nil
+        }
+    }
+
+    /// Opportunistic identity handshake (PLAN §3): send 0x08, and if a 0x18 reply lands
+    /// within the timeout, overwrite the machine's serverDeviceId/wakeId (refresh, not
+    /// first-write-wins) and refresh cachedWake from /meta when signed in. Legacy Macs
+    /// never reply → left untouched.
+    private func handshake() async {
+        guard let m = machine, let t = transport as? ProsperTransport else { return }
+        guard let info = try? await t.machineInfo() else { return }
+        store.update(m.id) {
+            $0.serverDeviceId = info.deviceId
+            if let w = info.wakeId { $0.wakeId = w }
+        }
+        if let session = account.session, let wakeId = info.wakeId {
+            let meta = await WakeClient(session: session).meta(wakeId: wakeId)
+            store.update(m.id) { mm in
+                switch meta {
+                case .enabled(let batt, _): mm.cachedWake = WakeInfo(enabled: true, intervalAC: nil, intervalBatt: batt)
+                case .disabled:          mm.cachedWake = WakeInfo(enabled: false, intervalAC: nil, intervalBatt: nil)
+                case .unknown:           break
+                }
+            }
+        }
     }
 }
 

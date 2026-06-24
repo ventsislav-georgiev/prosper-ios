@@ -3,12 +3,16 @@ App Review notes — Prosper Remote Terminal
 WHAT THE APP DOES
 Prosper attaches to terminal sessions running on the user's own Mac (which runs
 the companion Prosper desktop app) and streams them to iPhone/iPad. The phone and
-Mac communicate over the user's private Tailscale network — there is no account,
-no login, and no backend service operated by us. Terminal traffic flows directly
-device-to-Mac.
+Mac communicate over the user's private Tailscale network — terminal traffic flows
+directly device-to-Mac and does not pass through any service we operate.
+
+An OPTIONAL feature, "Remote Wake", lets a signed-in user wake their own sleeping
+Mac. This is the ONLY feature that requires an account; everything else (terminal,
+demo) works fully signed-out.
 
 HOW TO REVIEW WITHOUT A MAC OR TAILSCALE
-You do not need any external setup. The app ships with a fully offline DEMO:
+You do not need any external setup, and you do NOT need to sign in. The app ships
+with a fully offline DEMO:
 
   1. Launch the app. Tap "Remote Terminal".
   2. On the "Machines" screen, tap "Try the demo" (bottom of the list).
@@ -20,13 +24,28 @@ You do not need any external setup. The app ships with a fully offline DEMO:
 The "?" button (top-right on the home and Machines screens) opens an in-app
 "How it works" guide explaining the Prosper + Tailscale model.
 
-CONNECTIVITY
-The "Connect" field expects the user's own Mac's Tailscale hostname or IP. A
-reviewer not on the user's tailnet cannot and is not expected to reach a real
-machine — please use the built-in demo to evaluate functionality.
+ABOUT THE OPTIONAL "WAKE" BUTTON
+The Wake button only appears when the app actually FAILS to reach a real, saved
+Mac (i.e. that Mac is asleep/unreachable). In a review environment there is no
+real Mac on your tailnet, so this surface is not reachable through normal use and
+is EXPECTED to be non-functional. Wake requires signing in (passwordless email
+magic link) and only ever wakes a Mac the same account owns. The terminal and
+demo do not depend on it.
+
+ACCOUNTS / SIGN IN
+Sign-in is passwordless: the user enters an email address and taps a one-time
+magic link. We do not use third-party sign-in, and "Sign in with Apple" is not
+required here because we do not offer any third-party/social login option
+(Guideline 4.8 does not apply — email is our only login mechanism and is used
+solely to operate the optional Remote Wake feature).
+
+ACCOUNT DELETION
+A signed-in user can delete their account in-app: Settings → Delete Account. This
+permanently removes their account and remote-wake data from our server and signs
+the device out.
 
 ENCRYPTION
-Uses only standard/exempt encryption (no proprietary crypto).
+Uses only standard/exempt encryption (standard TLS, no proprietary crypto).
 
 CONTACT
 ventsislav.georgiev@yahoo.com
