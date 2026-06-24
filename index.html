@@ -7,38 +7,87 @@
 <style>
   body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
          max-width: 42rem; margin: 3rem auto; padding: 0 1.25rem; color: #1c2530; }
-  h1 { font-size: 1.6rem; } h2 { font-size: 1.15rem; margin-top: 2rem; }
+  h1 { font-size: 1.6rem; } h2 { font-size: 1.15rem; margin-top: 2rem; } h3 { font-size: 1rem; margin-top: 1.25rem; }
   .meta { color: #6b7785; font-size: .9rem; }
   a { color: #1184c2; }
   code { background: #f0f3f6; padding: .1em .35em; border-radius: 4px; }
+  ul { padding-left: 1.25rem; }
 </style>
 </head>
 <body>
 <h1>Privacy Policy — Prosper Remote</h1>
-<p class="meta">Last updated: 2026-06-22</p>
+<p class="meta">Last updated: 2026-06-25</p>
 
-<p>Prosper Remote (“the app”) is designed to collect <strong>no personal data</strong>.</p>
+<p>Prosper Remote (“the app”) lets you attach to terminal sessions running on your own Mac, and
+optionally wake that Mac from sleep. It is built to collect as little data as possible.
+<strong>You can use the terminal and the demo without an account.</strong> Only the optional Remote
+Wake feature requires signing in.</p>
 
 <h2>What we collect</h2>
-<p><strong>Nothing.</strong> The app has no user accounts, no analytics, no advertising, and no
-third-party tracking SDKs. We operate no servers that your data passes through.</p>
+
+<h3>If you never use Remote Wake</h3>
+<p><strong>Nothing leaves your device for us.</strong> No account, no analytics, no advertising, no
+third-party tracking SDKs. Machine addresses you enter and terminal traffic stay between your device
+and your Mac (see below).</p>
+
+<h3>If you sign in to use Remote Wake</h3>
+<p>To wake a sleeping Mac, the app talks to our account server. Signing in is passwordless: you
+enter your <strong>email address</strong> and we send a one-time magic link.</p>
+<p>We store on the server only what the feature needs:</p>
+<ul>
+  <li><strong>Email address</strong> — to identify your account. Stored in plain form, linked to
+  your account.</li>
+  <li><strong>A hashed session token</strong> — proves your device is signed in. We store only a
+  SHA-256 hash, never the token itself.</li>
+  <li><strong>Remote-wake configuration</strong> — for each of your Macs that has the feature
+  enabled: a non-secret device identifier and the wake-poll cadence (how often the Mac checks for a
+  wake request). Stored so another of your devices can tell whether a Mac can be woken and roughly
+  how long it will take.</li>
+  <li><strong>A transient wake flag</strong> — when you tap “Wake”, we set a short-lived flag your
+  Mac reads on its next scheduled check, then it wakes. It carries no personal data.</li>
+</ul>
+<p>We do <strong>not</strong> collect your machine addresses on the server — your Mac’s Tailscale
+names and IPs are stored <strong>only on your device</strong> (see below). We do <strong>not</strong>
+track you across apps or sites, and we run no advertising.</p>
 
 <h2>Data stored on your device</h2>
-<p>Machine addresses you type (your Mac’s Tailscale name or IP) and recent connection history are
-stored locally on your device only, so you don’t have to retype them. They are never transmitted to
-us and never leave your device except to connect to the machine you chose.</p>
+<p>Machine names and addresses you enter (your Mac’s Tailscale name or IP) are stored
+<strong>locally on your device only</strong>, so you don’t have to retype them. They are never
+transmitted to us. Your sign-in session is held in the device Keychain and never synced to iCloud.</p>
 
 <h2>Terminal traffic</h2>
 <p>When you connect to your Mac, terminal input and output flow <strong>directly</strong> between
 your device and your Mac over your private Tailscale network. This traffic does not pass through any
 service operated by us — we cannot see it.</p>
 
+<h2>How long we keep data</h2>
+<ul>
+  <li><strong>Session tokens (hashed):</strong> up to about 365 days, or until you sign out
+  (sign-out revokes them immediately on the server).</li>
+  <li><strong>Remote-wake configuration:</strong> up to about 1 year after a Mac last updated it,
+  then automatically removed.</li>
+  <li><strong>Transient wake flag:</strong> automatically expires within about 7 days (it is a
+  one-time signal, normally consumed within minutes).</li>
+  <li><strong>Account record after deletion:</strong> when you delete your account we remove your
+  sessions, devices, settings, and wake data. Your <strong>email is retained in a deletion record
+  (tombstone)</strong> so the account cannot be silently re-created or re-used; it is not used for
+  any other purpose.</li>
+</ul>
+<p>If you have ever supported the project (a separate, optional one-time contribution), a supporter
+record may be retained for accounting and to display your supporter status.</p>
+
+<h2>Deleting your account</h2>
+<p>Open <strong>Settings → Delete Account</strong> in the app. This permanently deletes your account
+and remote-wake settings from the server (subject to the email tombstone described above) and signs
+you out on this device. It cannot be undone.</p>
+
 <h2>Tailscale</h2>
 <p>Connections rely on Tailscale, a third-party network. Your use of Tailscale is governed by
 Tailscale’s own privacy policy: <a href="https://tailscale.com/privacy-policy">tailscale.com/privacy-policy</a>.</p>
 
 <h2>Children</h2>
-<p>The app is not directed at children and collects no data from anyone.</p>
+<p>The app is not directed at children and collects no data from anyone beyond what is described
+above.</p>
 
 <h2>Changes</h2>
 <p>If this policy changes, the updated version will be posted at this URL.</p>
