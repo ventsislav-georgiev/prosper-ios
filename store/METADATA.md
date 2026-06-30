@@ -9,7 +9,7 @@ Prepare for Submission**. Character limits noted; everything here is within them
 **Prosper Remote** (14)
 
 ## Subtitle  (max 30)
-**Your Mac's terminal, anywhere** (30)
+**Your desktop terminal anywhere** (30)
 
 ## Promotional text  (max 170, editable without review)
 Attach your Mac's terminal sessions from your phone over Tailscale — the exact
