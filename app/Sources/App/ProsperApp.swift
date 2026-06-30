@@ -267,6 +267,7 @@ struct SessionListView: View {
     @State private var killing: DchSession?        // kill-confirm alert
     @State private var creating = false            // new-session alert
     @State private var newName = ""
+    @State private var sleeping = false            // sleep round-trip in flight
 
     // Live store snapshot so the badge tracks cachedWake after handshake (the `machine`
     // prop is a stale value-type copy captured at navigation time).
@@ -314,10 +315,14 @@ struct SessionListView: View {
         }
         .navigationTitle("Sessions")
         .toolbar {
+            Button { Task { await sleepMachine() } } label: {
+                if sleeping { ProgressView() } else { Image(systemName: "moon") }
+            }
+            .disabled(sleeping || unreachable != nil || error != nil || loading)   // can't sleep an unreachable Mac
             Button { newName = ""; creating = true } label: { Image(systemName: "plus") }
-                .disabled(unreachable != nil || error != nil || loading)   // no new session on an unreachable Mac
+                .disabled(sleeping || unreachable != nil || error != nil || loading)   // no new session on an unreachable Mac
             Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
-                .disabled(loading)
+                .disabled(sleeping || loading)
         }
         .task { await refresh() }
         // Programmatic push for tap-to-attach and newly created sessions.
@@ -376,6 +381,40 @@ struct SessionListView: View {
         let name = typed.isEmpty ? "ses-\(String(Int(Date().timeIntervalSince1970), radix: 36))" : typed
         newName = ""
         open = DchSession(name: name, alias: nil)
+    }
+
+    /// Open a throwaway session that triggers `prosper://sleep` on the Mac, then
+    /// drop it. `open` runs the URL through the local Prosper app (PowerSleepControl)
+    /// which sleeps the machine; the session exits on its own and we close our end.
+    /// The Mac then goes unreachable, so we pop back to the machine picker — staying
+    /// on a session list whose host just fell asleep would only show dead rows.
+    private func sleepMachine() async {
+        sleeping = true
+        defer { sleeping = false }
+        do {
+            let stream = try await withTimeout(seconds: 8) {
+                try await transport.create(
+                    name: nil, command: ["sh", "-c", "open prosper://sleep; exit 0;"], cols: 80, rows: 24)
+            }
+            stream.close()
+            onChangeMachine()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    /// Race `op` against a deadline so a hung connect can't leave the button
+    /// spinning forever. Mirrors the connect timeout the transport applies per-frame.
+    private func withTimeout<T>(seconds: TimeInterval, _ op: @escaping () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw TransportError.hostUnreachable("timed out")
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
     }
 
     private func refresh() async {

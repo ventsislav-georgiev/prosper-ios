@@ -133,7 +133,7 @@ struct WakeFailedView: View {
         case .enabled(let batt, let floor):
             let n = batt + wakeSlackSeconds
             Button { Task { await triggerWake() } } label: {
-                Label("Wake \(machine.name)", systemImage: "sunrise")
+                Label("Wake \(machine.name)", systemImage: "sunrise.fill")
             }
             .buttonStyle(.borderedProminent)
             Text("Expected ~\(n) s").font(.caption).foregroundStyle(.secondary)
@@ -159,12 +159,29 @@ struct WakeFailedView: View {
         let total = max(1, deadline.timeIntervalSince(armedAt))
         let elapsed = max(0, now.timeIntervalSince(armedAt))
         if now < deadline {
-            ProgressView().padding(.bottom, 2)
+            let fraction = min(1, elapsed / total)
+            let remaining = max(0, Int((total - elapsed).rounded()))
+            ZStack {
+                Circle().stroke(.orange.opacity(0.15), lineWidth: 9)
+                Circle()
+                    .trim(from: 0, to: fraction)
+                    .stroke(AngularGradient(colors: [.orange, .yellow, .orange], center: .center),
+                            style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeInOut(duration: 0.9), value: fraction)
+                VStack(spacing: 1) {
+                    Image(systemName: "sunrise.fill").font(.title3).foregroundStyle(.orange)
+                    Text("\(remaining)").font(.system(size: 36, weight: .bold, design: .rounded))
+                        .monospacedDigit().contentTransition(.numericText())
+                    Text("sec left").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 128, height: 128)
+            .padding(.vertical, 4)
             Text("Waking \(machine.name)…").font(.headline)
-            Text("Up to ~\(Int(total.rounded())) s").font(.caption).foregroundStyle(.secondary)
-            ProgressView(value: min(elapsed, total), total: total)
-            Text("\(Int(elapsed)) s").font(.caption2).foregroundStyle(.secondary)
-            Button("Cancel") { stopWaiting() }.font(.callout)
+            Text("Usually ready in ~\(Int(total.rounded())) s")
+                .font(.subheadline).foregroundStyle(.secondary)
+            Button("Cancel") { stopWaiting() }.font(.callout).padding(.top, 2)
         } else {
             Label("Still asleep.", systemImage: "moon.zzz").font(.headline)
             Text("It may be powered off, off the network, have remote wake disabled, or in deep standby (which can stretch the wake cadence several times over).")
