@@ -315,10 +315,14 @@ struct SessionListView: View {
         }
         .navigationTitle("Sessions")
         .toolbar {
-            Button { Task { await sleepMachine() } } label: {
-                if sleeping { ProgressView() } else { Image(systemName: "moon") }
+            // Only offer Sleep when remote wake is known-enabled — otherwise a tap would
+            // strand the Mac asleep with no way to wake it back.
+            if liveMachine?.cachedWake?.enabled == true {
+                Button { Task { await sleepMachine() } } label: {
+                    if sleeping { ProgressView() } else { Image(systemName: "moon") }
+                }
+                .disabled(sleeping || unreachable != nil || error != nil || loading)   // can't sleep an unreachable Mac
             }
-            .disabled(sleeping || unreachable != nil || error != nil || loading)   // can't sleep an unreachable Mac
             Button { newName = ""; creating = true } label: { Image(systemName: "plus") }
                 .disabled(sleeping || unreachable != nil || error != nil || loading)   // no new session on an unreachable Mac
             Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
