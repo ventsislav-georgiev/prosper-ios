@@ -16,6 +16,9 @@ struct DchSession: Identifiable, Hashable {
 protocol TerminalStream: AnyObject {
     /// Async sequence of raw output bytes, in order, never dropped.
     var output: AsyncStream<ArraySlice<UInt8>> { get }
+    /// True once the remote process exited (server sent the exit frame). Lets the
+    /// reconnect loop tell a clean `exit` apart from a dropped link.
+    var exited: Bool { get }
     /// Send keystrokes / pasted bytes to the pty.
     func send(_ bytes: ArraySlice<UInt8>)
     /// Notify the pty of a new terminal size.

@@ -341,9 +341,9 @@ struct SessionListView: View {
             Button("Clear", role: .destructive) { commitRename("") }
             Button("Cancel", role: .cancel) { renaming = nil }
         } message: { Text("Empty alias reverts to the real name.") }
-        .alert("Kill \(killing?.title ?? "")?", isPresented: Binding(get: { killing != nil },
+        .alert("Stop \(killing?.title ?? "")?", isPresented: Binding(get: { killing != nil },
                                                                      set: { if !$0 { killing = nil } })) {
-            Button("Kill", role: .destructive) {
+            Button("Stop", role: .destructive) {
                 if let k = killing { Task { try? await transport.kill(name: k.name); await refresh() } }
                 killing = nil
             }

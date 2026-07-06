@@ -8,6 +8,7 @@ enum ConnectionState: Equatable {
     case stalled          // transient: drop detected, retrying silently
     case reconnecting(attempt: Int)
     case failed(String)   // permanent: backoff exhausted / rejected
+    case ended            // clean exit: the remote process finished (e.g. `exit`)
     case waking(deadline: Date)   // remote wake sent; retrying TCP until the Mac answers
 }
 

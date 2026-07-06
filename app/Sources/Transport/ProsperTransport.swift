@@ -89,14 +89,17 @@ final class ProsperTransport: SessionTransport {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             let lock = NSLock()
             var resumed = false
-            func finish(_ result: Result<Void, Error>) {
+            /// Returns true if this call won the race and resumed the continuation.
+            @discardableResult
+            func finish(_ result: Result<Void, Error>) -> Bool {
                 lock.lock(); defer { lock.unlock() }
-                guard !resumed else { return }
+                guard !resumed else { return false }
                 resumed = true
                 switch result {
                 case .success:        cont.resume()
                 case .failure(let e): cont.resume(throwing: e)
                 }
+                return true
             }
             conn.stateUpdateHandler = { state in
                 switch state {
@@ -109,9 +112,12 @@ final class ProsperTransport: SessionTransport {
             conn.start(queue: .global())
             // NWConnection waits indefinitely for a path to an unreachable host; bound it
             // so listSessions surfaces hostUnreachable instead of spinning forever.
+            // Only cancel if the connect is still pending — cancelling after .ready
+            // would tear down the live connection (~6s reconnect loop regression).
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                conn.cancel()
-                finish(.failure(TransportError.hostUnreachable("timed out")))
+                if finish(.failure(TransportError.hostUnreachable("timed out"))) {
+                    conn.cancel()
+                }
             }
         }
         return conn
@@ -192,6 +198,7 @@ final class ProsperStream: TerminalStream {
     private var cont: AsyncStream<ArraySlice<UInt8>>.Continuation!
     private var buf = Data()
     private var closed = false
+    private(set) var exited = false
 
     private enum F { static let resize: UInt8 = 0x05, redraw: UInt8 = 0x07, data: UInt8 = 0x10, exit: UInt8 = 0x12 }
 
@@ -216,7 +223,7 @@ final class ProsperStream: TerminalStream {
                     guard let (type, payload) = frame else { break frameLoop }
                     switch type {
                     case F.data: self.cont.yield(ArraySlice([UInt8](payload)))
-                    case F.exit: self.close(); return
+                    case F.exit: self.exited = true; self.close(); return
                     default: break
                     }
                 }

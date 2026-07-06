@@ -9,7 +9,7 @@ WHY IT'S DIFFERENT
 • Fast, lightweight, native. A real terminal renderer with true color, proper reflow, and a tuned on-screen key bar — Esc, Tab, Ctrl, arrows, Home/End, Ctrl-C, Ctrl-D and more, styled to stay out of your way.
 
 BUILT FOR REAL WORK
-• Manage multiple sessions per machine — create, rename, attach, kill.
+• Manage multiple sessions per machine — create, rename, attach, stop.
 • Switch between machines you've connected to before.
 • Keyboard-aware layout keeps your prompt and its footer visible as output streams in.
 

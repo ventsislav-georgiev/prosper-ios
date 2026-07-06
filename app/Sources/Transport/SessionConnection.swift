@@ -65,8 +65,9 @@ final class SessionConnection: ObservableObject {
                 for await chunk in s.output {
                     onBytes?(chunk)
                 }
-                // Stream ended. User close → done; otherwise the link dropped.
+                // Stream ended. Clean exit / user close → done; otherwise the link dropped.
                 stream = nil
+                if s.exited { state = .ended; return }
                 if userClosed { return }
             } catch {
                 stream = nil

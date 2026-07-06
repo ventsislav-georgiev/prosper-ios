@@ -26,6 +26,7 @@ final class DemoStream: TerminalStream {
     enum Kind { case shell, claude }
 
     let output: AsyncStream<ArraySlice<UInt8>>
+    let exited = false   // demo sessions never exit on their own
     private let cont: AsyncStream<ArraySlice<UInt8>>.Continuation
     private var line: [UInt8] = []
     private let kind: Kind

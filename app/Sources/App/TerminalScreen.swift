@@ -10,6 +10,8 @@ struct TerminalScreen: View {
     @StateObject private var conn: SessionConnection
     @StateObject private var handle = TermHandle()
     @State private var editingShortcuts = false
+    @State private var confirmKill = false
+    @Environment(\.dismiss) private var dismiss
 
     init(transport: SessionTransport, session: DchSession) {
         self.transport = transport
@@ -30,6 +32,13 @@ struct TerminalScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
+                // Kill the session from inside the terminal — `exit` alone can't
+                // end it when the server predates the exit frame.
+                Button(role: .destructive) { confirmKill = true } label: {
+                    Image(systemName: "rectangle.portrait.and.arrow.right")
+                }
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Button { editingShortcuts = true } label: { Image(systemName: "slider.horizontal.3") }
             }
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -41,6 +50,21 @@ struct TerminalScreen: View {
         }
         .sheet(isPresented: $editingShortcuts, onDismiss: { handle.vc?.reloadShortcuts() }) {
             ShortcutEditor()
+        }
+        .alert("Stop \(session.title)?", isPresented: $confirmKill) {
+            Button("Stop", role: .destructive) {
+                Task {
+                    conn.close()
+                    try? await transport.kill(name: session.name)
+                    dismiss()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .onReceive(conn.$state) { state in
+            // Remote process finished (`exit`) — pop back to the session list
+            // instead of reattaching (which would recreate the session).
+            if state == .ended { dismiss() }
         }
         .onDisappear { conn.close() }
     }
