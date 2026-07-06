@@ -53,7 +53,7 @@ jobs:
           RUBY
           KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/diag.rb
 
-      - name: Ensure an editable 0.1 version exists
+      - name: Ensure an editable 0.2 version exists
         run: |
           cat > /tmp/ensure.rb <<'RUBY'
           require 'spaceship'
@@ -65,9 +65,9 @@ jobs:
           if editable
             puts "EDITABLE version already present: #{editable.version_string}"
           else
-            puts 'Creating editable iOS version 0.1...'
-            app.ensure_version!('0.1', platform: Spaceship::ConnectAPI::Platform::IOS)
-            puts 'Created 0.1.'
+            puts 'Creating editable iOS version 0.2...'
+            app.ensure_version!('0.2', platform: Spaceship::ConnectAPI::Platform::IOS)
+            puts 'Created 0.2.'
           end
           RUBY
           KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/ensure.rb
@@ -76,7 +76,7 @@ jobs:
         run: |
           fastlane deliver \
             --api_key_path "$RUNNER_TEMP/asc_key.json" \
-            --app_version "0.1" \
+            --app_version "0.2" \
             --skip_binary_upload true \
             --skip_metadata true \
             --skip_screenshots false \
@@ -138,7 +138,7 @@ jobs:
         run: |
           fastlane deliver \
             --api_key_path "$RUNNER_TEMP/asc_key.json" \
-            --app_version "0.1" \
+            --app_version "0.2" \
             --skip_binary_upload true \
             --skip_metadata false \
             --skip_screenshots true \

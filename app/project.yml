@@ -27,7 +27,7 @@ targets:
         # Standard TLS only (no proprietary crypto) → exempt; skips the
         # export-compliance prompt on every TestFlight build.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
-        MARKETING_VERSION: "0.1"
+        MARKETING_VERSION: "0.2"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         # Catalyst gives same-app e2e on the Mac (PLAN §8). Client is connect-only;

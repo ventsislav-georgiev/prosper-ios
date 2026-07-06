@@ -1,1 +1,4 @@
-First public release.
+Bug fixes and improvements:
+• Fixed sessions disconnecting and reconnecting every few seconds.
+• Typing `exit` in the terminal now ends the session properly.
+• New Stop button in the terminal toolbar to end a session without leaving it.
