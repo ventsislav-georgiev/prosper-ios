@@ -133,7 +133,7 @@ struct WakeFailedView: View {
         case .enabled(let batt, let floor):
             let n = batt + wakeSlackSeconds
             Button { Task { await triggerWake() } } label: {
-                Label("Wake \(machine.name)", systemImage: "sunrise.fill")
+                Text("Wake \(machine.name)")
             }
             .buttonStyle(.borderedProminent)
             Text("Expected ~\(n) s").font(.caption).foregroundStyle(.secondary)
