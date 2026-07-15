@@ -62,6 +62,11 @@ final class SessionConnection: ObservableObject {
                 attempt = 0
                 state = .connected
                 s.resize(cols: cols, rows: rows)   // correct size after a size change mid-drop
+                // Force a repaint: a TUI parked on a modal prompt (Claude Code's
+                // question dialogs) ignores the attach-time WINCH and renders black
+                // until a keypress. The server jiggles the pty size, which no TUI
+                // can ignore.
+                s.requestRedraw()
                 for await chunk in s.output {
                     onBytes?(chunk)
                 }

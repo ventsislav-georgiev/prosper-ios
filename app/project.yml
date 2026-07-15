@@ -7,6 +7,14 @@ packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     branch: main
+schemes:
+  Prosper:
+    build:
+      targets:
+        Prosper: all
+        ProsperTests: [test]
+    test:
+      targets: [ProsperTests]
 targets:
   Prosper:
     type: application
@@ -39,4 +47,15 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         # ponytail: local dev builds run unsigned (no team needed). CI signs for
         # TestFlight via the App Store Connect API key (see .github/workflows).
+        CODE_SIGNING_ALLOWED: NO
+  ProsperTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: Prosper
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.9"
         CODE_SIGNING_ALLOWED: NO

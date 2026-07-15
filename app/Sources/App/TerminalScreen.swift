@@ -112,6 +112,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var tv: DchTerminalView!
     private var started = false
     private var scrollRemainder: CGFloat = 0
+    private var selAnchor: Position?
+    private var scrollThumb: ScrollThumb!
     private var kbConstraint: NSLayoutConstraint!
     private var barHeight: NSLayoutConstraint!
     private var kbOverlap: CGFloat = 0   // keyboard cover height while shown (for live re-lift)
@@ -200,8 +202,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
                        name: UIApplication.didBecomeActiveNotification, object: nil)
 
         disableSelectionGestures()
-        addScrollGesture()
+        addSelectionGesture()
         addTapGesture()
+        addScrollThumb()
 
         conn.onBytes = { [weak self, weak tv] slice in
             tv?.feed(byteArray: slice)
@@ -275,11 +278,42 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
     }
 
-    private func addScrollGesture() {
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(onPan(_:)))
+    /// Pan on the terminal text = text selection (like dragging over text in a
+    /// browser). Scrolling moved to the edge thumb — one finger motion, one job.
+    private func addSelectionGesture() {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(onSelectPan(_:)))
         pan.maximumNumberOfTouches = 1
         pan.delegate = self
         tv.addGestureRecognizer(pan)
+    }
+
+    /// Big auto-hiding scroll thumb on the right edge. Tap the screen to reveal it;
+    /// drag it to scroll ONLY the terminal view — no bytes reach the remote app
+    /// except the scroll itself.
+    private func addScrollThumb() {
+        let thumb = ScrollThumb()
+        thumb.translatesAutoresizingMaskIntoConstraints = false
+        thumb.onDragStart = { [weak self] in self?.scrollRemainder = 0 }
+        thumb.onDrag = { [weak self] dy in self?.thumbScroll(dy: dy) }
+        view.addSubview(thumb)
+        NSLayoutConstraint.activate([
+            thumb.rightAnchor.constraint(equalTo: view.rightAnchor),
+            thumb.topAnchor.constraint(equalTo: tv.topAnchor),
+            thumb.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            thumb.widthAnchor.constraint(equalToConstant: ScrollThumb.trackWidth),
+        ])
+        scrollThumb = thumb
+    }
+
+    /// Thumb drag delta (points) → whole terminal lines, same cell math and
+    /// remainder-carry as the old text-pan scroll.
+    private func thumbScroll(dy: CGFloat) {
+        let term = tv.getTerminal()
+        let cell = tv.bounds.height / CGFloat(max(term.rows, 1))
+        let steps = TerminalMath.lineSteps(dy: dy, cell: cell, remainder: &scrollRemainder)
+        guard steps != 0 else { return }
+        // Thumb moving DOWN reveals newer content = scroll down (natural scrollbar).
+        emitScroll(up: steps < 0, count: abs(steps), term: term)
     }
 
     private func addTapGesture() {
@@ -288,16 +322,25 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         tv.addGestureRecognizer(tap)
     }
 
+    /// Grid cell under a point in `tv` coordinates.
+    private func gridPos(_ p: CGPoint, _ term: Terminal) -> (row: Int, col: Int) {
+        TerminalMath.gridCell(point: p, size: tv.bounds.size, rows: term.rows, cols: term.cols)
+    }
+
     /// Tap on the cursor row → raise the keyboard. Tap elsewhere while a mouse-mode
     /// app is running → forward a left click (lets TUIs like Claude Code react to
     /// taps). Normal screen (no mouse mode) → always raise the keyboard.
+    /// Every tap also flashes the scroll thumb, and a tap with an active selection
+    /// just clears it (standard text-selection behavior).
     @objc private func onTap(_ g: UITapGestureRecognizer) {
+        scrollThumb.show()
+        if tv.hasActiveSelection {
+            tv.clearSelection()
+            return
+        }
         let term = tv.getTerminal()
         let p = g.location(in: tv)
-        let cellH = max(1, tv.bounds.height / CGFloat(max(term.rows, 1)))
-        let cellW = max(1, tv.bounds.width / CGFloat(max(term.cols, 1)))
-        let row = min(max(0, Int(p.y / cellH)), term.rows - 1)
-        let col = min(max(0, Int(p.x / cellW)), term.cols - 1)
+        let (row, col) = gridPos(p, term)
         let caret = term.getCursorLocation()
         if term.mouseMode != .off && row != caret.y {
             let press = term.encodeButton(button: 0, release: false, shift: false, meta: false, control: false)
@@ -367,20 +410,25 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     @objc private func onForeground() { conn.redraw() }
 
-    @objc private func onPan(_ g: UIPanGestureRecognizer) {
+    /// Drag over the text = select it. Coordinates are buffer-relative (view row +
+    /// top visible row) so a selection survives local scrollback moves.
+    @objc private func onSelectPan(_ g: UIPanGestureRecognizer) {
+        let term = tv.getTerminal()
+        let p = g.location(in: tv)
+        let (row, col) = gridPos(p, term)
+        let pos = Position(col: col, row: row + term.getTopVisibleRow())
         switch g.state {
-        case .began: scrollRemainder = 0
+        case .began:
+            selAnchor = pos
         case .changed:
-            let term = tv.getTerminal()
-            let cell = max(1, tv.bounds.height / CGFloat(max(term.rows, 1)))
-            let dy = g.translation(in: tv).y + scrollRemainder
-            let steps = Int(dy / cell)
-            guard steps != 0 else { return }
-            scrollRemainder = dy - CGFloat(steps) * cell
-            g.setTranslation(.zero, in: tv)
-            // Finger moving DOWN (steps > 0) reveals older content = scroll up.
-            emitScroll(up: steps > 0, count: abs(steps), term: term)
-        default: break
+            guard let anchor = selAnchor else { return }
+            tv.setSelectionRange(start: anchor, end: pos)
+        case .ended:
+            selAnchor = nil
+            // Release over a real selection → the standard Copy menu at the finger.
+            if tv.hasActiveSelection { tv.showStandardContextMenu(at: p) }
+        default:
+            selAnchor = nil
         }
     }
 
@@ -450,6 +498,81 @@ enum TerminalFont {
         _ = registered
         return UIFont(name: "FiraCodeNFM-Reg", size: size)
             ?? .monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+}
+
+/// Fat auto-hiding scrollbar for the terminal. A 44 pt touch strip on the right
+/// edge with a visible pill; `show()` reveals it and it fades after idle. While
+/// hidden its alpha is 0, which UIKit excludes from hit-testing — so it never
+/// steals touches from the terminal. Dragging keeps the pill under the finger and
+/// streams incremental dy to `onDrag`; nothing else reaches the screen below.
+/// ponytail: joystick-style relative scroll — proportional thumb needs a scrollback
+/// length feed from SwiftTerm; add if relative feels wrong in practice.
+private final class ScrollThumb: UIView {
+    static let trackWidth: CGFloat = 44
+    private static let pillSize = CGSize(width: 10, height: 72)
+    private static let idleDelay: TimeInterval = 1.6
+
+    var onDragStart: (() -> Void)?
+    var onDrag: ((CGFloat) -> Void)?
+
+    private let pill = UIView()
+    private var pillY: NSLayoutConstraint!
+    private var hideTimer: Timer?
+    private var dragging = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        alpha = 0
+        pill.backgroundColor = UIColor.white.withAlphaComponent(0.45)
+        pill.layer.cornerRadius = Self.pillSize.width / 2
+        pill.isUserInteractionEnabled = false
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(pill)
+        pillY = pill.centerYAnchor.constraint(equalTo: centerYAnchor)
+        NSLayoutConstraint.activate([
+            pill.rightAnchor.constraint(equalTo: rightAnchor, constant: -4),
+            pill.widthAnchor.constraint(equalToConstant: Self.pillSize.width),
+            pill.heightAnchor.constraint(equalToConstant: Self.pillSize.height),
+            pillY,
+        ])
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(onPan(_:)))
+        pan.maximumNumberOfTouches = 1
+        addGestureRecognizer(pan)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func show() {
+        hideTimer?.invalidate()
+        if alpha < 1 { UIView.animate(withDuration: 0.15) { self.alpha = 1 } }
+        scheduleHide()
+    }
+
+    private func scheduleHide() {
+        hideTimer?.invalidate()
+        hideTimer = Timer.scheduledTimer(withTimeInterval: Self.idleDelay, repeats: false) { [weak self] _ in
+            guard let self, !self.dragging else { return }
+            UIView.animate(withDuration: 0.3) { self.alpha = 0 }
+        }
+    }
+
+    @objc private func onPan(_ g: UIPanGestureRecognizer) {
+        switch g.state {
+        case .began:
+            dragging = true
+            hideTimer?.invalidate()
+            onDragStart?()
+        case .changed:
+            let dy = g.translation(in: self).y
+            g.setTranslation(.zero, in: self)
+            // Keep the pill under the finger, clamped to the track.
+            let half = (bounds.height - Self.pillSize.height) / 2
+            pillY.constant = min(max(pillY.constant + dy, -half), half)
+            onDrag?(dy)
+        default:
+            dragging = false
+            scheduleHide()
+        }
     }
 }
 
