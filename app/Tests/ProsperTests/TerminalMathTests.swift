@@ -40,6 +40,38 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(TerminalMath.lineSteps(dy: 5, cell: 0, remainder: &rem), 5)
     }
 
+    // MARK: pillOffset / pillFraction — the absolute scrollbar mapping
+
+    func testPillMappingEndpointsAndMiddle() {
+        // 400-pt track, 88-pt pill → 312 pt of travel, centered on the track middle.
+        XCTAssertEqual(TerminalMath.pillOffset(fraction: 0, track: 400, pill: 88), -156)
+        XCTAssertEqual(TerminalMath.pillOffset(fraction: 0.5, track: 400, pill: 88), 0)
+        XCTAssertEqual(TerminalMath.pillOffset(fraction: 1, track: 400, pill: 88), 156)
+        XCTAssertEqual(TerminalMath.pillFraction(offset: -156, track: 400, pill: 88), 0)
+        XCTAssertEqual(TerminalMath.pillFraction(offset: 0, track: 400, pill: 88), 0.5)
+        XCTAssertEqual(TerminalMath.pillFraction(offset: 156, track: 400, pill: 88), 1)
+    }
+
+    func testPillMappingRoundTrips() {
+        for f: CGFloat in [0, 0.1, 0.25, 0.5, 0.8, 1] {
+            let off = TerminalMath.pillOffset(fraction: f, track: 600, pill: 88)
+            XCTAssertEqual(TerminalMath.pillFraction(offset: off, track: 600, pill: 88), f, accuracy: 0.0001)
+        }
+    }
+
+    func testPillMappingClampsOutOfRange() {
+        XCTAssertEqual(TerminalMath.pillOffset(fraction: -3, track: 400, pill: 88), -156)
+        XCTAssertEqual(TerminalMath.pillOffset(fraction: 7, track: 400, pill: 88), 156)
+        XCTAssertEqual(TerminalMath.pillFraction(offset: -9999, track: 400, pill: 88), 0)
+        XCTAssertEqual(TerminalMath.pillFraction(offset: 9999, track: 400, pill: 88), 1)
+    }
+
+    func testPillMappingDegenerateTrack() {
+        // Pill as tall as (or taller than) the track: no travel, never divide by zero.
+        XCTAssertEqual(TerminalMath.pillOffset(fraction: 1, track: 88, pill: 88), 0)
+        XCTAssertEqual(TerminalMath.pillFraction(offset: 10, track: 50, pill: 88), 0)
+    }
+
     // MARK: gridCell — the selection mapping
 
     func testPointMapsToCell() {

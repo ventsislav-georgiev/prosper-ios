@@ -113,7 +113,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var started = false
     private var scrollRemainder: CGFloat = 0
     private var selAnchor: Position?
-    private var scrollThumb: ScrollThumb!
+    private var scrollThumb: ScrollThumb?
     private var kbConstraint: NSLayoutConstraint!
     private var barHeight: NSLayoutConstraint!
     private var kbOverlap: CGFloat = 0   // keyboard cover height while shown (for live re-lift)
@@ -294,7 +294,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let thumb = ScrollThumb()
         thumb.translatesAutoresizingMaskIntoConstraints = false
         thumb.onDragStart = { [weak self] in self?.scrollRemainder = 0 }
-        thumb.onDrag = { [weak self] dy in self?.thumbScroll(dy: dy) }
+        thumb.onDrag = { [weak self] dy, fraction in self?.thumbScroll(dy: dy, fraction: fraction) }
+        thumb.positionProvider = { [weak self] in CGFloat(self?.tv.scrollPosition ?? 0) }
         view.addSubview(thumb)
         NSLayoutConstraint.activate([
             thumb.rightAnchor.constraint(equalTo: view.rightAnchor),
@@ -305,9 +306,16 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         scrollThumb = thumb
     }
 
-    /// Thumb drag delta (points) → whole terminal lines, same cell math and
-    /// remainder-carry as the old text-pan scroll.
-    private func thumbScroll(dy: CGFloat) {
+    /// Thumb drag → scroll. With local scrollback the pill is an ABSOLUTE
+    /// scrollbar: its track fraction maps straight onto the whole buffer, so a
+    /// full sweep covers everything however long the history is. Without
+    /// scrollback (mouse-mode / alternate screen) fall back to relative
+    /// line-steps with remainder carry.
+    private func thumbScroll(dy: CGFloat, fraction: CGFloat) {
+        if tv.canScroll {
+            tv.scroll(toPosition: Double(fraction))
+            return
+        }
         let term = tv.getTerminal()
         let cell = tv.bounds.height / CGFloat(max(term.rows, 1))
         let steps = TerminalMath.lineSteps(dy: dy, cell: cell, remainder: &scrollRemainder)
@@ -333,7 +341,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Every tap also flashes the scroll thumb, and a tap with an active selection
     /// just clears it (standard text-selection behavior).
     @objc private func onTap(_ g: UITapGestureRecognizer) {
-        scrollThumb.show()
+        scrollThumb?.show()
         if tv.hasActiveSelection {
             tv.clearSelection()
             return
@@ -470,7 +478,11 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
     func setTerminalTitle(source: TerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-    func scrolled(source: TerminalView, position: Double) {}
+    func scrolled(source: TerminalView, position: Double) {
+        // Keep the pill in sync when the content scrolls by any other means
+        // (tap-scroll, streamed output snapping to the bottom, …).
+        MainActor.assumeIsolated { scrollThumb?.setPosition(CGFloat(position)) }
+    }
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
     func bell(source: TerminalView) {}
     func clipboardCopy(source: TerminalView, content: Data) {}
@@ -502,19 +514,21 @@ enum TerminalFont {
 }
 
 /// Fat auto-hiding scrollbar for the terminal. A 44 pt touch strip on the right
-/// edge with a visible pill; `show()` reveals it and it fades after idle. While
-/// hidden its alpha is 0, which UIKit excludes from hit-testing — so it never
-/// steals touches from the terminal. Dragging keeps the pill under the finger and
-/// streams incremental dy to `onDrag`; nothing else reaches the screen below.
-/// ponytail: joystick-style relative scroll — proportional thumb needs a scrollback
-/// length feed from SwiftTerm; add if relative feels wrong in practice.
+/// edge that ALWAYS owns its touches — a pan there can never start a text
+/// selection on the terminal below; any touch reveals the pill, which fades
+/// after idle. Dragging reports both the incremental dy and the pill's absolute
+/// track fraction, so the host can scroll absolutely (scrollback) or relatively
+/// (alt-screen/mouse-mode).
 private final class ScrollThumb: UIView {
     static let trackWidth: CGFloat = 44
-    private static let pillSize = CGSize(width: 10, height: 72)
+    private static let pillSize = CGSize(width: 18, height: 88)
     private static let idleDelay: TimeInterval = 1.6
 
     var onDragStart: (() -> Void)?
-    var onDrag: ((CGFloat) -> Void)?
+    /// (incremental dy in points, pill position as track fraction 0…1)
+    var onDrag: ((CGFloat, CGFloat) -> Void)?
+    /// Current scroll fraction of the content — pulled to sync the pill on reveal.
+    var positionProvider: (() -> CGFloat)?
 
     private let pill = UIView()
     private var pillY: NSLayoutConstraint!
@@ -523,8 +537,8 @@ private final class ScrollThumb: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        alpha = 0
-        pill.backgroundColor = UIColor.white.withAlphaComponent(0.45)
+        pill.alpha = 0   // the strip stays hit-testable; only the pill fades
+        pill.backgroundColor = UIColor.white.withAlphaComponent(0.55)
         pill.layer.cornerRadius = Self.pillSize.width / 2
         pill.isUserInteractionEnabled = false
         pill.translatesAutoresizingMaskIntoConstraints = false
@@ -542,17 +556,37 @@ private final class ScrollThumb: UIView {
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// Any touch on the strip reveals the pill — including the very first one,
+    /// so "tap near the right edge, then drag" always scrolls, never selects.
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesBegan(touches, with: event)
+        show()
+    }
+
     func show() {
         hideTimer?.invalidate()
-        if alpha < 1 { UIView.animate(withDuration: 0.15) { self.alpha = 1 } }
+        if !dragging, let f = positionProvider?() { move(to: f) }
+        if pill.alpha < 1 { UIView.animate(withDuration: 0.15) { self.pill.alpha = 1 } }
         scheduleHide()
+    }
+
+    /// External sync (content scrolled by other means). Ignored mid-drag so the
+    /// pill stays under the finger.
+    func setPosition(_ fraction: CGFloat) {
+        guard !dragging else { return }
+        move(to: fraction)
+    }
+
+    private func move(to fraction: CGFloat) {
+        pillY.constant = TerminalMath.pillOffset(fraction: fraction,
+                                                 track: bounds.height, pill: Self.pillSize.height)
     }
 
     private func scheduleHide() {
         hideTimer?.invalidate()
         hideTimer = Timer.scheduledTimer(withTimeInterval: Self.idleDelay, repeats: false) { [weak self] _ in
             guard let self, !self.dragging else { return }
-            UIView.animate(withDuration: 0.3) { self.alpha = 0 }
+            UIView.animate(withDuration: 0.3) { self.pill.alpha = 0 }
         }
     }
 
@@ -560,15 +594,17 @@ private final class ScrollThumb: UIView {
         switch g.state {
         case .began:
             dragging = true
+            show()
             hideTimer?.invalidate()
             onDragStart?()
         case .changed:
             let dy = g.translation(in: self).y
             g.setTranslation(.zero, in: self)
             // Keep the pill under the finger, clamped to the track.
-            let half = (bounds.height - Self.pillSize.height) / 2
+            let half = max(0, (bounds.height - Self.pillSize.height) / 2)
             pillY.constant = min(max(pillY.constant + dy, -half), half)
-            onDrag?(dy)
+            onDrag?(dy, TerminalMath.pillFraction(offset: pillY.constant,
+                                                  track: bounds.height, pill: Self.pillSize.height))
         default:
             dragging = false
             scheduleHide()
