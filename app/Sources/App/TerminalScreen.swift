@@ -284,29 +284,11 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         conn.resync()
     }
 
-    /// Paint dch's rendered screen over ours: home the cursor, clear, then feed the
-    /// mirror's lines. `--read` emits bare LFs, so each one needs a CR to land in
-    /// column 0.
-    ///
-    /// ponytail: the mirror carries no cursor position, so ours parks at the end of
-    /// the last line until the remote program's next paint moves it. Cheap trade for
-    /// a screen that is always correct.
+    /// Paint dch's rendered screen over ours — see `TerminalMath.snapshotPaint` for
+    /// the byte sequence and how the caret is placed.
     private func applyScreen(_ screen: ArraySlice<UInt8>) {
         guard !screen.isEmpty else { return }
-        // DECSC first, DECRC last: the mirror is cell contents only — it carries no
-        // cursor position and ends mid-SGR. Painting it raw parked the caret at the
-        // bottom of the screen (so the input row and IME text drew in the wrong
-        // place) and leaked the last cell's colors into everything after. The live
-        // byte stream already put the cursor where the remote program wants it, so
-        // save it, paint, put it back. `[0m` before the erase keeps ED2 from
-        // clearing to whatever background color happened to be current.
-        var out = Array("\u{1b}7\u{1b}[0m\u{1b}[H\u{1b}[2J".utf8)
-        out.reserveCapacity(out.count + screen.count + 64)
-        for b in screen {
-            if b == 0x0a { out.append(0x0d) }
-            out.append(b)
-        }
-        out.append(contentsOf: Array("\u{1b}8".utf8))
+        let out = TerminalMath.snapshotPaint(screen)
         tv.feed(byteArray: out[...])
         // The mirror IS the live screen, so show the live screen: painting it while
         // the user is scrolled back leaves the caret and the input row above the

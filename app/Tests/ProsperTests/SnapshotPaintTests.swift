@@ -2,21 +2,17 @@ import XCTest
 import SwiftTerm
 @testable import Prosper
 
-/// Painting dch's mirror must not move the cursor or leak colors. The mirror is
-/// cell contents only — it carries no cursor position and ends mid-SGR — so the
-/// paint is wrapped in DECSC/DECRC. Without that the caret parked at the bottom of
-/// the screen and the input row drew in the wrong place.
+/// Painting dch's mirror must not move the cursor or leak colors. A bare mirror is
+/// cell contents only — no cursor position, ends mid-SGR — so the paint is wrapped
+/// in DECSC/DECRC. Without that the caret parked at the bottom of the screen and the
+/// input row drew in the wrong place. When the server does know the caret
+/// (`dch --read --cursor`) it appends a CUP and that wins.
 final class SnapshotPaintTests: XCTestCase {
 
-    /// Byte-for-byte what TerminalScreen.applyScreen sends.
+    /// The real paint bytes, so this can't drift from what the app sends.
     private func paint(_ tv: TerminalView, mirror: String) {
-        var out = Array("\u{1b}7\u{1b}[0m\u{1b}[H\u{1b}[2J".utf8)
-        for b in Array(mirror.utf8) {
-            if b == 0x0a { out.append(0x0d) }
-            out.append(b)
-        }
-        out.append(contentsOf: Array("\u{1b}8".utf8))
-        tv.feed(byteArray: out[...])
+        let bytes = ArraySlice(Array(mirror.utf8))
+        tv.feed(byteArray: TerminalMath.snapshotPaint(bytes)[...])
     }
 
     private func makeView() -> TerminalView {
@@ -39,6 +35,30 @@ final class SnapshotPaintTests: XCTestCase {
     }
 
     /// The mirror's own colors must not bleed into what the program writes next.
+    /// dch's reported caret (a CUP the server appends) beats the guess — placing the
+    /// caret a row off is what drew the input row outside its box.
+    func testReportedCursorWinsOverTheLiveOne() {
+        let tv = makeView()
+        tv.feed(text: "\u{1b}[20;1H")
+
+        paint(tv, mirror: "alpha\nbravo\ncharlie\n\u{1b}[3;5H")
+
+        let at = tv.getTerminal().getCursorLocation()
+        XCTAssertEqual(at.y, 2, "caret row ignored dch's cursor")
+        XCTAssertEqual(at.x, 4, "caret column ignored dch's cursor")
+    }
+
+    func testCUPDetection() {
+        func ends(_ s: String) -> Bool { TerminalMath.endsWithCUP(ArraySlice(Array(s.utf8))) }
+        XCTAssertTrue(ends("screen\u{1b}[7;12H"))
+        XCTAssertTrue(ends("\u{1b}[1;1H"))
+        XCTAssertFalse(ends("screen\u{1b}[0m\n"), "a plain mirror must keep save/restore")
+        XCTAssertFalse(ends("screen\u{1b}[H"), "no row/col — nothing to trust")
+        XCTAssertFalse(ends("screen\u{1b}[12H"), "CUP needs both coordinates")
+        XCTAssertFalse(ends("H"))
+        XCTAssertFalse(ends(""))
+    }
+
     func testAttributesDoNotLeakOutOfTheSnapshot() {
         let tv = makeView()
         let plain = tv.getTerminal().currentAttribute
