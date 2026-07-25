@@ -34,29 +34,45 @@ enum TerminalMath {
     /// mirror's lines (its bare LFs each need a CR to land in column 0). `[0m` before
     /// the erase keeps ED2 from clearing in whatever color happened to be current.
     ///
-    /// The caret is the subtle part. The mirror is cell contents only, so painting it
-    /// raw parked the caret at the bottom and drew the input row in the wrong place.
-    /// When the server knows where the caret is (dch ≥ 1.5 `--read --cursor`) it ends
-    /// the payload with a CUP — that IS the caret, so let it stand. Otherwise fall
-    /// back to save (DECSC) / restore (DECRC) around the paint: the live byte stream
-    /// already put the cursor where the remote program wanted it.
+    /// The caret is the subtle part, in two ways.
+    ///
+    /// The mirror is a full screen of lines and ends with a newline. Written out as-is,
+    /// that last newline on the last row SCROLLS the screen: the content shifts up a
+    /// row while the caret's absolute position doesn't, which is why the caret drew one
+    /// row below the input box. So the trailing newlines go.
+    ///
+    /// The mirror also carries no caret of its own. When the server knows where it is
+    /// (dch ≥ 1.5 `--read --cursor`) it appends a CUP — that IS the caret, so let it
+    /// stand. Otherwise save (DECSC) / restore (DECRC) around the paint: the live byte
+    /// stream already put the cursor where the remote program wanted it.
     static func snapshotPaint(_ screen: ArraySlice<UInt8>) -> [UInt8] {
-        let carriesCursor = endsWithCUP(screen)
-        var out = Array(((carriesCursor ? "" : "\u{1b}7") + "\u{1b}[0m\u{1b}[H\u{1b}[2J").utf8)
+        let cup = cupTail(screen)
+        var content = screen[screen.startIndex..<(cup ?? screen.endIndex)]
+        while let last = content.last, last == 0x0a || last == 0x0d {
+            content = content.dropLast()
+        }
+        var out = Array(((cup == nil ? "\u{1b}7" : "") + "\u{1b}[0m\u{1b}[H\u{1b}[2J").utf8)
         out.reserveCapacity(out.count + screen.count + 8)
-        for b in screen {
-            if b == 0x0a { out.append(0x0d) }
+        for b in content {
+            if b == 0x0a { out.append(0x0d) }   // the mirror's bare LFs need a CR
             out.append(b)
         }
-        if !carriesCursor { out.append(contentsOf: Array("\u{1b}8".utf8)) }
+        if let cup {
+            out.append(contentsOf: screen[cup...])
+        } else {
+            out.append(contentsOf: Array("\u{1b}8".utf8))
+        }
         return out
     }
 
     /// True when `bytes` ends with `CSI row;col H` — the caret position dch's mirror
-    /// reports, appended by the server. Scans backwards, so it costs a handful of
-    /// bytes on a screen-sized payload.
-    static func endsWithCUP(_ bytes: ArraySlice<UInt8>) -> Bool {
-        guard bytes.last == 0x48 else { return false }          // 'H'
+    /// reports, appended by the server.
+    static func endsWithCUP(_ bytes: ArraySlice<UInt8>) -> Bool { cupTail(bytes) != nil }
+
+    /// Index of the ESC starting a trailing `CSI row;col H`, if there is one. Scans
+    /// backwards, so it costs a handful of bytes on a screen-sized payload.
+    static func cupTail(_ bytes: ArraySlice<UInt8>) -> ArraySlice<UInt8>.Index? {
+        guard bytes.last == 0x48 else { return nil }            // 'H'
         var i = bytes.index(before: bytes.endIndex)
         var digits = 0, semis = 0
         while i > bytes.startIndex {
@@ -65,13 +81,14 @@ enum TerminalMath {
             case 0x30...0x39: digits += 1
             case 0x3b: semis += 1                               // ';'
             case 0x5b:                                          // '['
-                guard i > bytes.startIndex,
-                      bytes[bytes.index(before: i)] == 0x1b else { return false }
-                return digits > 0 && semis == 1
-            default: return false
+                guard i > bytes.startIndex else { return nil }
+                let esc = bytes.index(before: i)
+                guard bytes[esc] == 0x1b, digits > 0, semis == 1 else { return nil }
+                return esc
+            default: return nil
             }
         }
-        return false
+        return nil
     }
 
     /// Grid cell under a point, clamped to the grid — off-view touches select

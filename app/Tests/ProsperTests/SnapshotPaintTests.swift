@@ -35,6 +35,24 @@ final class SnapshotPaintTests: XCTestCase {
     }
 
     /// The mirror's own colors must not bleed into what the program writes next.
+    /// A FULL screen of mirror lines ends with a newline on the last row, which scrolls
+    /// the screen: content shifts up a row while the restored caret's absolute position
+    /// doesn't. That one-row slip is what drew the caret below the input box.
+    func testFullScreenMirrorDoesNotScrollTheContentUp() {
+        let tv = makeView()
+        let rows = tv.getTerminal().rows
+        tv.feed(text: "\u{1b}[3;1H")
+        let mirror = (0..<rows).map { "row\($0)" }.joined(separator: "\n") + "\n"
+
+        paint(tv, mirror: mirror)
+
+        let t = tv.getTerminal()
+        XCTAssertEqual(t.getLine(row: 0)?.translateToString(trimRight: true), "row0",
+            "the last row's newline scrolled the screen — every row is off by one")
+        XCTAssertEqual(t.getLine(row: rows - 1)?.translateToString(trimRight: true), "row\(rows - 1)")
+        XCTAssertEqual(t.getCursorLocation().y, 2, "caret slipped a row")
+    }
+
     /// dch's reported caret (a CUP the server appends) beats the guess — placing the
     /// caret a row off is what drew the input row outside its box.
     func testReportedCursorWinsOverTheLiveOne() {
