@@ -63,9 +63,12 @@ final class SessionLiveActivities {
     /// Cap what one machine can occupy — someone watching twelve sessions doesn't want
     /// twelve activities fighting over one cutout.
     static let maxActive = 3
-    /// Mark the content stale a little past the next poll, so a suspended app leaves a
-    /// visibly stale island instead of a confidently wrong one.
-    static let staleAfter = SessionAlertEngine.pollInterval * 4
+    /// When the island stops being trustworthy. Updates only flow while Prosper is in
+    /// front, so this can't be "one poll" — the island's whole job is being right while
+    /// you're in another app, and a 20-second grey-out would make the feature look broken.
+    /// Two minutes is the honest compromise: an agent's state rarely changes faster than
+    /// that, and past it the display really may be wrong.
+    static let staleAfter: TimeInterval = 120
     /// How long a finished session lingers on the lock screen before it's dismissed.
     static let dismissAfter: TimeInterval = 60 * 15
 
@@ -75,16 +78,6 @@ final class SessionLiveActivities {
         #if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
         guard #available(iOS 16.2, *) else { return }
         await apply(machine: machine, sessions: sessions, watched: watched)
-        #endif
-    }
-
-    /// Tear everything down (leaving the machine, or all bells off).
-    func endAll() async {
-        #if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
-        guard #available(iOS 16.2, *) else { return }
-        for activity in Activity<SessionActivityAttributes>.activities {
-            await activity.end(nil, dismissalPolicy: .immediate)
-        }
         #endif
     }
 

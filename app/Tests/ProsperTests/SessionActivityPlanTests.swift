@@ -97,7 +97,11 @@ final class SessionActivityPlanTests: XCTestCase {
     func testCapIsSane() {
         XCTAssertLessThanOrEqual(SessionLiveActivities.maxActive, 4)
         XCTAssertGreaterThanOrEqual(SessionLiveActivities.maxActive, 1)
-        XCTAssertGreaterThan(SessionLiveActivities.staleAfter, SessionAlertEngine.pollInterval,
-                             "content must not be marked stale before the next poll lands")
+        // Response requirement the other way round: updates only flow while the app is in
+        // front, so the island must stay trusted long enough to be useful in another app.
+        XCTAssertGreaterThanOrEqual(SessionLiveActivities.staleAfter, 60,
+                                    "greying out seconds after the app leaves makes the island pointless")
+        XCTAssertLessThanOrEqual(SessionLiveActivities.staleAfter, SessionLiveActivities.dismissAfter,
+                                 "and it must go stale well before a finished session is dismissed")
     }
 }

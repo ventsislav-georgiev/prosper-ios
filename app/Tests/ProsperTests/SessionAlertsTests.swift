@@ -15,7 +15,7 @@ final class SessionAlertsTests: XCTestCase {
 
     /// working → blocked pings "needs you"; working → done pings "finished".
     func testPingsOnTheTwoTransitionsThatMatter() {
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         XCTAssertEqual(e.step(list([("a", "working"), ("b", "working")]), now: 0, isWatched: watchAll), [])
         let first = e.step(list([("a", "blocked"), ("b", "working")]), now: 1, isWatched: watchAll)
         XCTAssertEqual(first, [SessionAlert(session: "a", style: .blocked)])
@@ -25,7 +25,7 @@ final class SessionAlertsTests: XCTestCase {
 
     /// Reaching `working` or `idle` is not worth a banner.
     func testQuietTransitionsDontPing() {
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         _ = e.step(list([("a", "blocked")]), now: 0, isWatched: watchAll)
         XCTAssertEqual(e.step(list([("a", "working")]), now: 1, isWatched: watchAll), [])
         XCTAssertEqual(e.step(list([("a", "idle")]), now: 2, isWatched: watchAll), [])
@@ -34,7 +34,7 @@ final class SessionAlertsTests: XCTestCase {
     /// The FIRST sight of a session only seeds the baseline. Turning the bell on while an
     /// agent already waits must not fire a ping for something that didn't just happen.
     func testFirstSightNeverPings() {
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         XCTAssertEqual(e.step(list([("a", "blocked")]), now: 0, isWatched: watchAll), [],
                        "a session that was already blocked when we started looking is not news")
         XCTAssertEqual(e.step(list([("a", "blocked")]), now: 1, isWatched: watchAll), [],
@@ -44,7 +44,7 @@ final class SessionAlertsTests: XCTestCase {
     /// An unwatched session is tracked but silent — and turning its bell on afterwards
     /// doesn't retroactively ping, because the baseline already knows its state.
     func testUnwatchedIsSilentAndTogglingOnLaterIsQuiet() {
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         var watched = false
         _ = e.step(list([("a", "working")]), now: 0, isWatched: { _ in watched })
         XCTAssertEqual(e.step(list([("a", "blocked")]), now: 1, isWatched: { _ in watched }), [])
@@ -57,7 +57,7 @@ final class SessionAlertsTests: XCTestCase {
 
     /// The session on screen doesn't ping — the user is already looking at it.
     func testAttachedSessionIsSuppressed() {
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         _ = e.step(list([("a", "working")]), now: 0, isWatched: watchAll, attached: "a")
         XCTAssertEqual(e.step(list([("a", "blocked")]), now: 1, isWatched: watchAll, attached: "a"), [])
         // Detach: the next transition pings normally.
@@ -71,7 +71,7 @@ final class SessionAlertsTests: XCTestCase {
     /// dch derives state from the rendered screen, so a redrawing prompt can bounce
     /// blocked→working→blocked. The cooldown keeps that to one banner.
     func testFlappingStateOnlyPingsOncePerCooldown() {
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         _ = e.step(list([("a", "working")]), now: 0, isWatched: watchAll)
         XCTAssertEqual(e.step(list([("a", "blocked")]), now: 1, isWatched: watchAll).count, 1)
         _ = e.step(list([("a", "working")]), now: 2, isWatched: watchAll)
@@ -86,7 +86,7 @@ final class SessionAlertsTests: XCTestCase {
     /// A different state inside the cooldown still gets through — "done" must never be
     /// swallowed because "needs you" fired a second earlier.
     func testDoneIsNotSwallowedByAnEarlierBlockedPing() {
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         _ = e.step(list([("a", "working")]), now: 0, isWatched: watchAll)
         XCTAssertEqual(e.step(list([("a", "blocked")]), now: 1, isWatched: watchAll).count, 1)
         XCTAssertEqual(e.step(list([("a", "done")]), now: 2, isWatched: watchAll),
@@ -96,7 +96,7 @@ final class SessionAlertsTests: XCTestCase {
     /// A killed session drops out of the baseline, so the same name created later starts
     /// clean instead of inheriting the dead one's state.
     func testVanishedSessionResetsItsBaseline() {
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         _ = e.step(list([("a", "working")]), now: 0, isWatched: watchAll)
         XCTAssertEqual(e.step([], now: 1, isWatched: watchAll), [])
         XCTAssertEqual(e.step(list([("a", "blocked")]), now: 2, isWatched: watchAll), [],
@@ -105,14 +105,14 @@ final class SessionAlertsTests: XCTestCase {
 
     /// A state string a newer Mac invents is tracked but never pinged about.
     func testUnknownStateIsIgnored() {
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         _ = e.step(list([("a", "working")]), now: 0, isWatched: watchAll)
         XCTAssertEqual(e.step(list([("a", "compacting")]), now: 1, isWatched: watchAll), [])
     }
 
     /// An old Mac sends no state at all — nothing to ping about, and no crash.
     func testMissingStateIsIgnored() {
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         _ = e.step([DchSession(name: "a", alias: nil, state: nil)], now: 0, isWatched: watchAll)
         XCTAssertEqual(e.step([DchSession(name: "a", alias: nil, state: nil)], now: 1, isWatched: watchAll), [])
     }
@@ -124,7 +124,7 @@ final class SessionAlertsTests: XCTestCase {
     func testStepHotPathBudget() {
         let sessions = (0..<200).map { DchSession(name: "s\($0)", alias: nil, state: "working") }
         let flipped = sessions.map { DchSession(name: $0.name, alias: nil, state: "blocked") }
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         let started = CFAbsoluteTimeGetCurrent()
         for i in 0..<100 {
             _ = e.step(i.isMultiple(of: 2) ? sessions : flipped,
@@ -137,7 +137,7 @@ final class SessionAlertsTests: XCTestCase {
     /// The bookkeeping must not grow with time — a screen left open for hours polls
     /// hundreds of times and must not accumulate a dictionary entry per poll.
     func testBookkeepingStaysBounded() {
-        var e = SessionAlertEngine()
+        let e = SessionAlertEngine()
         for i in 0..<500 {
             // Every poll shows a differently-named session: the old ones must be dropped.
             _ = e.step(list([("s\(i)", "blocked")]), now: TimeInterval(i), isWatched: watchAll)
@@ -190,6 +190,47 @@ final class SessionAlertsTests: XCTestCase {
         XCTAssertEqual(alerts.names(machine: m, in: list([("here", "working"), ("other", "idle")])),
                        ["here"])
         defaults.removePersistentDomain(forName: "SessionAlertsTests2")
+    }
+
+    /// A killed session's switch is forgotten, so recreating that name later doesn't come
+    /// back pre-watched — and the store doesn't collect a dead key per session ever made.
+    /// Other machines' switches are none of this machine's business.
+    @MainActor
+    func testPruneDropsSwitchesForSessionsTheMacNoLongerHas() throws {
+        let suite = "SessionAlertsTests3"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        let m = UUID(), other = UUID()
+        let alerts = SessionAlerts(defaults: defaults)
+        alerts.toggle(machine: m, session: "here")
+        alerts.toggle(machine: m, session: "killed")
+        alerts.toggle(machine: other, session: "elsewhere")
+
+        alerts.prune(machine: m, alive: list([("here", "working")]))
+        XCTAssertTrue(alerts.isOn(machine: m, session: "here"))
+        XCTAssertFalse(alerts.isOn(machine: m, session: "killed"))
+        XCTAssertTrue(alerts.isOn(machine: other, session: "elsewhere"),
+                      "pruning one machine must not touch another's switches")
+        XCTAssertFalse(SessionAlerts(defaults: defaults).isOn(machine: m, session: "killed"),
+                       "and the prune is persisted")
+        defaults.removePersistentDomain(forName: suite)
+    }
+
+    // MARK: coming back from the background
+
+    /// The watcher restarts when the app comes back to the front. Whatever changed while
+    /// it couldn't poll is already on the screen the user is looking at, so it re-seeds
+    /// silently instead of firing a burst of banners for old news.
+    func testForgetReseedsWithoutPinging() {
+        let e = SessionAlertEngine()
+        _ = e.step(list([("a", "working")]), now: 0, isWatched: watchAll)
+        e.forget()
+        XCTAssertEqual(e.step(list([("a", "blocked")]), now: 100, isWatched: watchAll), [],
+                       "it changed while we were away — not a fresh transition")
+        XCTAssertEqual(e.step(list([("a", "done")]), now: 101, isWatched: watchAll),
+                       [SessionAlert(session: "a", style: .done)],
+                       "but the next real change still pings")
+        XCTAssertEqual(e.trackedCount, 2, "forget also drops the cooldown bookkeeping")
     }
 
     // MARK: wording

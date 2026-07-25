@@ -343,7 +343,8 @@ struct SessionListView: View {
                 .disabled(sleeping || loading)
         }
         .task { await refresh() }
-        .task { await watchLoop() }
+        // Keyed on the scene phase: the watcher exists only while the app is in front.
+        .task(id: scenePhase == .active) { await watchLoop() }
         // Programmatic push for tap-to-attach and newly created sessions.
         .navigationDestination(isPresented: Binding(get: { open != nil },
                                                     set: { if !$0 { open = nil } })) {
@@ -424,21 +425,26 @@ struct SessionListView: View {
     /// Nothing watched → no traffic at all. The poll answer also refreshes the visible
     /// rows, so a watched machine's list stays live for free.
     private func watchLoop() async {
+        // Only ever started while the app is in front (`.task(id:)` on the scene phase), so
+        // going away cancels the loop outright instead of leaving a timer ticking.
+        guard scenePhase == .active else { return }
+        engine.forget()
         let poll = UInt64(SessionAlertEngine.pollInterval * 1_000_000_000)
         let backoff = UInt64(SessionAlertEngine.failureBackoff * 1_000_000_000)
         while !Task.isCancelled {
-            guard alerts.anyWatched(machine: machine?.id), scenePhase == .active,
-                  unreachable == nil, error == nil else {
-                try? await Task.sleep(nanoseconds: poll)
+            try? await Task.sleep(nanoseconds: poll)
+            guard !Task.isCancelled else { return }
+            guard alerts.anyWatched(machine: machine?.id), unreachable == nil, error == nil else {
                 continue
             }
-            try? await Task.sleep(nanoseconds: poll)
-            guard !Task.isCancelled, scenePhase == .active else { continue }
             guard let list = try? await transport.listSessions() else {
                 try? await Task.sleep(nanoseconds: backoff)      // asleep Mac: stop hammering
                 continue
             }
-            if !loading { sessions = list }
+            // Don't touch `sessions` unless something actually moved: an equal array still
+            // marks the state dirty and redraws every row.
+            if !loading, list != sessions { sessions = list }
+            alerts.prune(machine: machine?.id, alive: list)
             for alert in engine.step(list, now: CFAbsoluteTimeGetCurrent(),
                                      isWatched: { alerts.isOn(machine: machine?.id, session: $0) },
                                      attached: open?.name) {

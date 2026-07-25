@@ -49,6 +49,19 @@ final class SessionAlerts: ObservableObject {
     func names(machine: UUID?, in sessions: [DchSession]) -> Set<String> {
         Set(sessions.map(\.name).filter { isOn(machine: machine, session: $0) })
     }
+
+    /// Drop switches for sessions this machine no longer has. Two reasons: a name reused
+    /// weeks later shouldn't come back mysteriously pre-watched, and the store shouldn't
+    /// collect one dead key per session ever created. Only ever called with a list that
+    /// actually came back from the Mac — a failed poll must not clear anything.
+    func prune(machine: UUID?, alive: [DchSession]) {
+        let prefix = "\(machine?.uuidString ?? "demo")/"
+        let keep = Set(alive.map { Self.key(machine: machine, session: $0.name) })
+        let kept = watched.filter { !$0.hasPrefix(prefix) || keep.contains($0) }
+        guard kept.count != watched.count else { return }
+        watched = kept
+        defaults.set(Array(watched), forKey: Self.storeKey)
+    }
 }
 
 /// One thing worth interrupting the user over.
@@ -64,7 +77,10 @@ struct SessionAlert: Equatable {
 ///
 /// Hot path: `step` runs on every poll for every session, so it stays O(sessions) with
 /// no allocation per session beyond the two dictionaries it already owns.
-struct SessionAlertEngine {
+/// A reference type on purpose: the view holds it in `@State` and feeds it on every poll,
+/// and a struct's mutation there would invalidate the whole session list five times a
+/// second for bookkeeping nobody renders.
+final class SessionAlertEngine {
     /// How often the watcher asks the Mac for states while the app is in front. One
     /// small list round-trip; the answer also refreshes the visible rows.
     static let pollInterval: TimeInterval = 5
@@ -86,8 +102,17 @@ struct SessionAlertEngine {
     /// - `isWatched`: the user's switch for that session.
     /// - `attached`: the session currently open on screen — its state changes are
     ///   visible already, so pinging about them is noise.
-    mutating func step(_ sessions: [DchSession], now: TimeInterval,
-                       isWatched: (String) -> Bool, attached: String? = nil) -> [SessionAlert] {
+    /// Drop the baseline, so the next `step` only re-seeds and pings for nothing. Called
+    /// when the watcher restarts after the app was away: whatever changed while we
+    /// couldn't poll is already on screen by the time the user sees it, and a burst of
+    /// banners for it is noise, not news.
+    func forget() {
+        lastState.removeAll()
+        lastPing.removeAll()
+    }
+
+    func step(_ sessions: [DchSession], now: TimeInterval,
+              isWatched: (String) -> Bool, attached: String? = nil) -> [SessionAlert] {
         var alerts: [SessionAlert] = []
         var seen: [String: String] = Dictionary(minimumCapacity: sessions.count)
         for s in sessions {
