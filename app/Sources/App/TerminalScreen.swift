@@ -116,6 +116,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var scrollThumb: ScrollThumb?
     private var kbConstraint: NSLayoutConstraint!
     private var barHeight: NSLayoutConstraint!
+    private var thumbBottom: NSLayoutConstraint!   // wheel strip ends where the keyboard starts
     private var kbOverlap: CGFloat = 0   // keyboard cover height while shown (for live re-lift)
     private var kbFrame: CGRect?         // last keyboard frame (screen coords), re-applied after rotation
     private var ctrlArmed = false   // sticky Ctrl from the shortcut bar
@@ -420,14 +421,17 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         thumb.translatesAutoresizingMaskIntoConstraints = false
         thumb.onJog = { [weak self] lines in self?.jogScroll(lines) }
         view.addSubview(thumb)
-        // Bottom-anchored to the shortcut bar, NOT to the view: the bar sits on top of
-        // the keyboard and overlays the terminal's lower rows, so with the keyboard up
-        // the visible terminal ends there. Anchored to the view, the wheel rested
-        // half a keyboard below the middle of what you can actually see.
+        // The strip spans what you can SEE, edge to edge: the pill rests in the middle
+        // of it, so any inset here reads as "the wheel starts off center". The nav bar
+        // sits inside the top safe area and the bottom safe area is empty screen, so
+        // anchoring to the safe area / terminal top parked the pill ~40pt low. Only the
+        // keyboard (plus the shortcut bar riding it) really takes screen away —
+        // `thumbBottom` gives that much back on show.
+        thumbBottom = thumb.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         NSLayoutConstraint.activate([
             thumb.rightAnchor.constraint(equalTo: view.rightAnchor),
-            thumb.topAnchor.constraint(equalTo: tv.topAnchor),
-            thumb.bottomAnchor.constraint(equalTo: shortcutBar?.topAnchor ?? view.safeAreaLayoutGuide.bottomAnchor),
+            thumb.topAnchor.constraint(equalTo: view.topAnchor),
+            thumbBottom,
             thumb.widthAnchor.constraint(equalToConstant: ScrollThumb.trackWidth),
         ])
         scrollThumb = thumb
@@ -500,6 +504,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let shown = overlap > 0
         kbConstraint.constant = -overlap   // glue the shortcut bar to the keyboard top
         barHeight.constant = shown ? ShortcutBar.barHeight : 0
+        // Keep the wheel resting in the middle of the SHRUNKEN screen.
+        thumbBottom.constant = shown ? -(overlap + ShortcutBar.barHeight) : 0
         handle.keyboardShown = shown
         kbOverlap = shown ? overlap : 0
         animateKeyboard(n, offset: shown ? caretLiftOffset(overlap: overlap) : 0)
@@ -508,6 +514,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     @objc private func kbHide(_ n: Notification) {
         kbConstraint.constant = 0
         barHeight.constant = 0
+        thumbBottom.constant = 0
         handle.keyboardShown = false
         kbOverlap = 0
         animateKeyboard(n, offset: 0)
