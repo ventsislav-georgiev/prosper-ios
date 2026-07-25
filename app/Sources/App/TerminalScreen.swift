@@ -120,6 +120,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     // keyboard is up. Exactly one is active — the pill rests in the middle of it.
     private var thumbBottom: NSLayoutConstraint!
     private var thumbBottomKeyboard: NSLayoutConstraint!
+    private var pendingRemoteScroll = 0            // jog lines held for the next batch
+    private var lastRemoteScrollSend: CFTimeInterval = 0
     private var kbOverlap: CGFloat = 0   // keyboard cover height while shown (for live re-lift)
     private var kbFrame: CGRect?         // last keyboard frame (screen coords), re-applied after rotation
     private var ctrlArmed = false   // sticky Ctrl from the shortcut bar
@@ -405,6 +407,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let thumb = ScrollThumb()
         thumb.translatesAutoresizingMaskIntoConstraints = false
         thumb.onJog = { [weak self] lines in self?.jogScroll(lines) }
+        thumb.onJogEnd = { [weak self] in self?.jogScroll(0, endOfDrag: true) }
         view.addSubview(thumb)
         // The strip spans what you can SEE, and the pill rests in the middle of it, so
         // every inset here reads as "the wheel starts off center". Visible starts under
@@ -429,9 +432,30 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// One tick of the jog wheel: signed whole lines, negative = up. Every scroll in
     /// the app funnels through `emitScroll`, so mouse-mode apps, alternate-screen TUIs
     /// and plain scrollback each get the form they understand.
-    func jogScroll(_ lines: Int) {
-        guard lines != 0 else { return }
-        emitScroll(up: lines < 0, count: abs(lines), term: tv.getTerminal())
+    ///
+    /// Scrollback is local and goes out per frame. Anything the REMOTE has to answer is
+    /// batched (see `TerminalMath.remoteScrollBatch`) — one arrow key per frame makes the
+    /// remote repaint the whole screen 60 times a second, which is what tore and stuttered.
+    func jogScroll(_ lines: Int, endOfDrag: Bool = false) {
+        let term = tv.getTerminal()
+        guard isRemoteScroll(term) else {
+            guard lines != 0 else { return }
+            emitScroll(up: lines < 0, count: abs(lines), term: term)
+            return
+        }
+        let now = CACurrentMediaTime()
+        let send = TerminalMath.batchRemoteScroll(
+            pending: &pendingRemoteScroll, add: lines,
+            sinceLastSend: now - lastRemoteScrollSend, force: endOfDrag)
+        guard send != 0 else { return }
+        lastRemoteScrollSend = now
+        emitScroll(up: send < 0, count: abs(send), term: term)
+    }
+
+    /// True when scrolling is a round-trip: a mouse-reporting app, or the alternate
+    /// screen where there is no scrollback of our own to move.
+    private func isRemoteScroll(_ term: Terminal) -> Bool {
+        (tv.allowMouseReporting && term.mouseMode != .off) || term.isCurrentBufferAlternate
     }
 
     private func addTapGesture() {
@@ -664,6 +688,8 @@ private final class ScrollThumb: UIView {
 
     /// Signed whole lines to scroll for this tick; negative = up.
     var onJog: ((Int) -> Void)?
+    /// The drag ended — whoever batches scroll must flush what it still holds.
+    var onJogEnd: (() -> Void)?
 
     private let pill = UIView()
     private var pillY: NSLayoutConstraint!
@@ -747,6 +773,11 @@ private final class ScrollThumb: UIView {
         guard jog == nil else { return }
         lastTick = CACurrentMediaTime()
         let link = CADisplayLink(target: self, selector: #selector(tick))
+        // 60 Hz, not the 120 Hz a ProMotion screen offers: the terminal repaints at most
+        // once per 16.7 ms, so faster ticks don't draw more — they just split the same
+        // motion into steps of 0, 1, 0, 1 lines that land two-at-a-time in one repaint.
+        // Ticking at the redraw rate makes every drawn frame advance evenly.
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
         link.add(to: .main, forMode: .common)
         jog = link
     }
@@ -754,6 +785,7 @@ private final class ScrollThumb: UIView {
     private func stopJog() {
         jog?.invalidate()
         jog = nil
+        onJogEnd?()
     }
 
     @objc private func tick() {

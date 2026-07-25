@@ -250,8 +250,8 @@ struct WakeFailedView: View {
         let dl = deadline
         waitTask = Task {
             while !Task.isCancelled, let dl {
-                if let (t, addr) = try? await connectFirst(addresses) {
-                    onConnected(t, addr)
+                if let hit = try? await connectFirstTransport(addresses) {
+                    onConnected(hit.transport, hit.address)
                     return
                 }
                 let remaining = dl.timeIntervalSinceNow

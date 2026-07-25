@@ -30,6 +30,30 @@ enum TerminalMath {
         return whole
     }
 
+    /// How long scroll meant for the REMOTE (a full-screen TUI, or a mouse-reporting
+    /// app) is allowed to accumulate before it goes out.
+    ///
+    /// Local scrollback scrolls itself, but on the alternate screen every line is an
+    /// arrow key the remote answers with a WHOLE repainted screen. One key per display
+    /// frame is ~60 repaints a second: more than the link and the parser can absorb, so
+    /// they queue, arrive late and get drawn half-applied — the hiccups and tearing.
+    /// Three lines in one key burst costs ONE repaint, and 20 coherent repaints a second
+    /// look smoother than 60 torn ones.
+    static let remoteScrollBatch: CFTimeInterval = 0.05
+
+    /// Accumulate scroll for the remote and report how much to send NOW (0 = keep
+    /// holding). `force` flushes whatever is pending — the drag ended, and the last few
+    /// lines must not sit in the buffer.
+    static func batchRemoteScroll(pending: inout Int, add: Int,
+                                  sinceLastSend: CFTimeInterval, force: Bool) -> Int {
+        pending += add
+        guard pending != 0 else { return 0 }
+        guard force || sinceLastSend >= remoteScrollBatch else { return 0 }
+        let out = pending
+        pending = 0
+        return out
+    }
+
     /// Bytes that paint dch's mirror over the current screen: home, erase, then the
     /// mirror's lines (its bare LFs each need a CR to land in column 0). `[0m` before
     /// the erase keeps ED2 from clearing in whatever color happened to be current.

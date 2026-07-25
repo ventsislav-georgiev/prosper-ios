@@ -260,6 +260,7 @@ struct SessionListView: View {
     @State private var sessions: [DchSession] = []
     @State private var error: String?
     @State private var loading = false             // connect/list round-trip in flight
+    @State private var trying: String?             // address being dialed right now
     @State private var unreachable: String?        // host-unreachable → offer Wake
     @State private var open: DchSession?          // programmatic push target
     @State private var renaming: DchSession?       // rename alert
@@ -274,6 +275,13 @@ struct SessionListView: View {
     private var liveMachine: Machine? {
         guard let id = machine?.id else { return nil }
         return store.machines.first { $0.id == id }
+    }
+
+    /// Name the address being dialed, so a machine with several addresses shows the
+    /// fallback walking down the list instead of one silent spinner.
+    private var connectLabel: String {
+        guard let a = trying, a != title else { return "Connecting to \(title)…" }
+        return "Connecting to \(title) — \(a)…"
     }
 
     var body: some View {
@@ -294,7 +302,7 @@ struct SessionListView: View {
             if loading && sessions.isEmpty && error == nil && unreachable == nil {
                 HStack(spacing: 10) {
                     ProgressView()
-                    Text("Connecting to \(title)…").foregroundStyle(.secondary)
+                    Text(connectLabel).foregroundStyle(.secondary)
                 }
             }
             // Host unreachable + a real machine → the Wake gating/waking card.
@@ -399,7 +407,7 @@ struct SessionListView: View {
         sleeping = true
         defer { sleeping = false }
         do {
-            let stream = try await withTimeout(seconds: 8) {
+            let stream = try await withDeadline(seconds: 8) {
                 try await transport.create(
                     name: nil, command: ["sh", "-c", "open prosper://sleep; exit 0;"], cols: 80, rows: 24)
             }
@@ -410,24 +418,11 @@ struct SessionListView: View {
         }
     }
 
-    /// Race `op` against a deadline so a hung connect can't leave the button
-    /// spinning forever. Mirrors the connect timeout the transport applies per-frame.
-    private func withTimeout<T>(seconds: TimeInterval, _ op: @escaping () async throws -> T) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await op() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                throw TransportError.hostUnreachable("timed out")
-            }
-            defer { group.cancelAll() }
-            return try await group.next()!
-        }
-    }
-
     private func refresh() async {
         loading = true
+        defer { trying = nil }
         do {
-            sessions = try await transport.listSessions()
+            sessions = try await listWalkingAddresses()
             error = nil
             unreachable = nil
             loading = false          // connected: stop spinning + re-enable +/refresh BEFORE the slow handshake
@@ -448,6 +443,19 @@ struct SessionListView: View {
             self.error = error.localizedDescription
             unreachable = nil
         }
+    }
+
+    /// List the sessions, walking the machine's addresses in priority order (PLAN §3).
+    /// A wrong or asleep address answers with silence, not a refusal, so each gets its
+    /// own 5s deadline and the transport is swapped to whichever address answered —
+    /// attaching afterwards uses the live one, not the dead first entry.
+    private func listWalkingAddresses() async throws -> [DchSession] {
+        guard let addresses = (liveMachine ?? machine)?.addresses, addresses.count > 1 else {
+            return try await transport.listSessions()
+        }
+        let hit = try await connectFirstTransport(addresses) { trying = $0 }
+        transport = hit.transport
+        return hit.sessions
     }
 
     /// Opportunistic identity handshake (PLAN §3): send 0x08, and if a 0x18 reply lands

@@ -57,6 +57,70 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(TerminalMath.jogLines(offset: 5, travel: 0, elapsed: 1, remainder: &rem), 0)
     }
 
+    // MARK: batchRemoteScroll — one key burst per batch, not one per frame
+
+    /// Ticks inside the window accumulate silently, then leave together: 60 jog ticks a
+    /// second must not become 60 full-screen repaints.
+    func testTicksCoalesceIntoOneSend() {
+        var pending = 0
+        for _ in 0..<3 {
+            XCTAssertEqual(TerminalMath.batchRemoteScroll(pending: &pending, add: 1,
+                                                          sinceLastSend: 0.016, force: false), 0)
+        }
+        XCTAssertEqual(TerminalMath.batchRemoteScroll(pending: &pending, add: 1,
+                                                      sinceLastSend: TerminalMath.remoteScrollBatch,
+                                                      force: false), 4,
+                       "the whole burst must go out in one send, nothing dropped")
+        XCTAssertEqual(pending, 0)
+    }
+
+    /// Lifting the finger flushes whatever is held — the last lines of a drag must not
+    /// sit in the buffer waiting for a tick that will never come.
+    func testEndOfDragFlushes() {
+        var pending = 0
+        _ = TerminalMath.batchRemoteScroll(pending: &pending, add: -2, sinceLastSend: 0, force: false)
+        XCTAssertEqual(pending, -2)
+        XCTAssertEqual(TerminalMath.batchRemoteScroll(pending: &pending, add: 0,
+                                                      sinceLastSend: 0, force: true), -2)
+        XCTAssertEqual(pending, 0)
+    }
+
+    /// Nothing pending sends nothing, even on a flush — an idle wheel must stay silent.
+    func testEmptyFlushSendsNothing() {
+        var pending = 0
+        XCTAssertEqual(TerminalMath.batchRemoteScroll(pending: &pending, add: 0,
+                                                      sinceLastSend: 10, force: true), 0)
+    }
+
+    /// Direction survives batching, and a reversal inside one window cancels instead of
+    /// sending both ways.
+    func testDirectionAndReversal() {
+        var pending = 0
+        _ = TerminalMath.batchRemoteScroll(pending: &pending, add: -3, sinceLastSend: 0, force: false)
+        XCTAssertEqual(TerminalMath.batchRemoteScroll(pending: &pending, add: 3,
+                                                      sinceLastSend: 1, force: true), 0,
+                       "net zero scroll is no scroll")
+        _ = TerminalMath.batchRemoteScroll(pending: &pending, add: -3, sinceLastSend: 0, force: false)
+        XCTAssertEqual(TerminalMath.batchRemoteScroll(pending: &pending, add: -1,
+                                                      sinceLastSend: 1, force: true), -4)
+    }
+
+    /// At 60 ticks/s a full second of dragging costs ~20 sends, not 60 — that ratio is
+    /// the whole point of the batch.
+    func testOneSecondOfDraggingSendsAboutTwentyBursts() {
+        var pending = 0, sends = 0, lines = 0, since: CFTimeInterval = 0
+        for _ in 0..<60 {
+            since += 1.0 / 60
+            let out = TerminalMath.batchRemoteScroll(pending: &pending, add: 1,
+                                                     sinceLastSend: since, force: false)
+            if out != 0 { sends += 1; lines += out; since = 0 }
+        }
+        lines += TerminalMath.batchRemoteScroll(pending: &pending, add: 0, sinceLastSend: since, force: true)
+        XCTAssertEqual(lines, 60, "every line must still reach the remote")
+        XCTAssertLessThanOrEqual(sends, 22)
+        XCTAssertGreaterThanOrEqual(sends, 18)
+    }
+
     // MARK: gridCell — the selection mapping
 
     func testPointMapsToCell() {

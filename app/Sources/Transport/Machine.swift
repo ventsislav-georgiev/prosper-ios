@@ -82,22 +82,58 @@ final class MachineStore: ObservableObject {
     }
 }
 
-/// Try a machine's addresses in priority order; the first to connect wins (PLAN §3).
-/// Returns a connected `ProsperTransport` and the address that worked, or throws the
-/// last error if every address fails.
-func connectFirst(_ addresses: [String]) async throws -> (ProsperTransport, String) {
+/// Per-address deadline when walking a machine's addresses. A Mac that is asleep, off
+/// the tailnet, or behind a stale LAN address does not refuse the connection — it says
+/// nothing at all, so without a deadline the FIRST address swallows the whole attempt
+/// and the rest are never tried.
+let addressAttemptTimeout: TimeInterval = 5
+
+/// Race `op` against a deadline. Used per address, so one dead address costs 5s, not the
+/// whole connect.
+func withDeadline<T>(seconds: TimeInterval, _ op: @escaping () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await op() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw TransportError.hostUnreachable("timed out")
+        }
+        defer { group.cancelAll() }
+        return try await group.next()!
+    }
+}
+
+/// Try `addresses` in priority order, each with its own `timeout`; the first to answer
+/// wins (PLAN §3). `onTry` fires with each address as it is dialed, so the caller can
+/// show which one is being attempted. Throws the last error when every address fails.
+///
+/// `probe` decides what "connected" means and is what the tests substitute; the shipping
+/// callers use `connectFirstTransport`, which probes with a real round-trip.
+func connectFirst<T>(_ addresses: [String], timeout: TimeInterval = addressAttemptTimeout,
+                     onTry: @escaping @MainActor (String) -> Void = { _ in },
+                     probe: @escaping (String) async throws -> T) async throws -> (T, String) {
     var lastError: Error = TransportError.hostUnreachable("no addresses")
-    for addr in addresses {
-        let t = ProsperTransport(host: addr)
+    for addr in addresses where !addr.trimmingCharacters(in: .whitespaces).isEmpty {
+        await onTry(addr)
         do {
-            // listSessions does a full TCP round-trip, so a success proves reachability.
-            _ = try await t.listSessions()
-            return (t, addr)
+            return (try await withDeadline(seconds: timeout) { try await probe(addr) }, addr)
         } catch {
             lastError = error
         }
     }
     throw lastError
+}
+
+/// Walk a machine's addresses and return the transport that answered, the address it
+/// answered on, and the session list that proved it — a full round-trip, so nothing
+/// downstream has to re-prove reachability.
+func connectFirstTransport(_ addresses: [String], timeout: TimeInterval = addressAttemptTimeout,
+                           onTry: @escaping @MainActor (String) -> Void = { _ in })
+    async throws -> (transport: ProsperTransport, address: String, sessions: [DchSession]) {
+    let ((t, sessions), addr) = try await connectFirst(addresses, timeout: timeout, onTry: onTry) { addr in
+        let t = ProsperTransport(host: addr)
+        return (t, try await t.listSessions())
+    }
+    return (t, addr, sessions)
 }
 
 #if DEBUG
