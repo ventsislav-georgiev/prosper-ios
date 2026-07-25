@@ -177,6 +177,8 @@ final class DemoStream: TerminalStream {
 
     func resize(cols: Int, rows: Int) {}
     func requestRedraw() {}
+    var onScreen: ((ArraySlice<UInt8>) -> Void)?
+    func requestSnapshot() {}   // the demo screen is already whatever we scripted
     func close() { cont.finish() }
 }
 

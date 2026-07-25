@@ -206,6 +206,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         addTapGesture()
         addScrollThumb()
 
+        conn.onScreen = { [weak self] screen in
+            MainActor.assumeIsolated { self?.applyScreen(screen) }
+        }
         conn.onBytes = { [weak self, weak tv] slice in
             tv?.feed(byteArray: slice)
             // Dynamic re-lift: as output streams and the caret moves down, keep the
@@ -252,25 +255,44 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// Force a full repaint — the button form of "resize the window to fix it".
     ///
-    /// The local half is the one that matters: SwiftTerm's `draw` renders from a
-    /// per-row cache (`attrStrBuffer`) that is only rebuilt in `updateDisplay()`,
-    /// which runs off `feed`. A bounds change (rotation, keyboard, font size) marks
-    /// rows dirty and calls `setNeedsDisplay`, but nothing rebuilds the cache — so
-    /// the old frame is re-blitted and glyphs go missing until new output arrives.
-    /// `refresh` + an empty `feed` dirties every row AND runs a display pass.
+    /// Local half: mark every row dirty and run a display pass, so nothing that was
+    /// already received stays unpainted.
     ///
-    /// The remote half covers the other case: the TUI itself is parked on a stale
-    /// frame. `conn.redraw()` makes the server jiggle the pty size, which Node/Ink
-    /// apps (Claude Code) treat as a real resize and re-render on.
+    /// Remote half (`conn.resync()`): what actually fixes missing glyphs. The remote
+    /// program's idea of the screen and ours have diverged — it thinks it already
+    /// drew those cells, so it will never send them again. The server jiggles the pty
+    /// size (which Node/Ink apps treat as a real resize and re-render on) and then
+    /// hands us dch's own VT mirror, which is authoritative even when the program
+    /// repaints nothing at all. `applyScreen` paints it.
     func forceRedraw() {
         let t = tv.getTerminal()
         t.refresh(startRow: 0, endRow: max(0, t.rows - 1))
         tv.feed(byteArray: [])   // queuePendingDisplay() is internal; feed is the public door
-        conn.redraw()
+        conn.resync()
     }
 
-    /// Rotation changes the grid, and SwiftTerm's post-layout repaint reads the
-    /// stale row cache — the same missing-glyph bug. Repaint once the new size settles.
+    /// Paint dch's rendered screen over ours: home the cursor, clear, then feed the
+    /// mirror's lines. `--read` emits bare LFs, so each one needs a CR to land in
+    /// column 0.
+    ///
+    /// ponytail: the mirror carries no cursor position, so ours parks at the end of
+    /// the last line until the remote program's next paint moves it. Cheap trade for
+    /// a screen that is always correct.
+    private func applyScreen(_ screen: ArraySlice<UInt8>) {
+        guard !screen.isEmpty else { return }
+        var out = Array("\u{1b}[H\u{1b}[2J".utf8)
+        out.reserveCapacity(out.count + screen.count + 64)
+        for b in screen {
+            if b == 0x0a { out.append(0x0d) }
+            out.append(b)
+        }
+        tv.feed(byteArray: out[...])
+        relift()
+    }
+
+    /// Rotation changes the grid: the remote program reflows to the new size but
+    /// repaints only what it thinks changed, so the screen can come back partly
+    /// blank. Resync from dch's mirror once the new size settles.
     override func viewWillTransition(to size: CGSize,
                                      with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)

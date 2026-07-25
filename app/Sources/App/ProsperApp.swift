@@ -358,10 +358,13 @@ struct SessionListView: View {
 
     @ViewBuilder private func row(_ s: DchSession) -> some View {
         HStack(spacing: 16) {
-            Text(s.title)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture { open = s }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(s.title)
+                if let state = s.state, !state.isEmpty { SessionStateLabel(state: state) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { open = s }
             Button { renaming = s; renameText = s.alias ?? "" } label: {
                 Image(systemName: "pencil")
             }.buttonStyle(.borderless)
@@ -488,6 +491,32 @@ struct WakeBadge: View {
             .background(.orange.opacity(0.18), in: Capsule())
             .foregroundStyle(.orange)
             .accessibilityLabel(secs.map { "Remote wake ready, checks every \($0 / 60) minutes" } ?? "Remote wake ready")
+        }
+    }
+}
+
+/// What the agent in a session is doing, as dch reports it (`--ls-json`): it reads
+/// the session's rendered screen, so "blocked" really means a prompt is waiting for
+/// a human — the reason to open that session before the others.
+struct SessionStateLabel: View {
+    let state: String
+
+    private var style: (String, String, Color)? {
+        switch state {
+        case "working": return ("working", "circle.dotted", .blue)
+        case "blocked": return ("needs you", "hand.raised.fill", .orange)
+        case "idle":    return ("idle", "moon.zzz", .secondary)
+        case "done":    return ("done", "checkmark.circle", .green)
+        default:        return nil   // unknown state from a newer server — say nothing
+        }
+    }
+
+    var body: some View {
+        if let (text, icon, color) = style {
+            Label(text, systemImage: icon)
+                .font(.caption2)
+                .foregroundStyle(color)
+                .accessibilityLabel("Session is \(text)")
         }
     }
 }

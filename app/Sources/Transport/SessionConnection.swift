@@ -21,6 +21,8 @@ final class SessionConnection: ObservableObject {
 
     /// Output sink — set by the terminal view to `terminal.feed(byteArray:)`.
     var onBytes: ((ArraySlice<UInt8>) -> Void)?
+    /// Full-screen sink — a `resync()` reply carrying dch's rendered screen.
+    var onScreen: ((ArraySlice<UInt8>) -> Void)?
 
     init(transport: SessionTransport, session: DchSession) {
         self.transport = transport
@@ -44,6 +46,20 @@ final class SessionConnection: ObservableObject {
 
     func redraw() { stream?.requestRedraw() }
 
+    /// Repair the screen after anything that can leave it stale (rotation, font
+    /// change, foreground, reattach). Two independent paths, weakest first:
+    /// `requestRedraw` nudges the remote program to repaint itself, and the
+    /// snapshot pulls dch's VT mirror — which is correct even when the program
+    /// never repaints. The snapshot is delayed so it captures the post-nudge screen
+    /// (the server's jiggle restores the real size after ~120 ms).
+    func resync() {
+        stream?.requestRedraw()
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            self?.stream?.requestSnapshot()
+        }
+    }
+
     func close() {
         userClosed = true
         loop?.cancel()
@@ -58,6 +74,9 @@ final class SessionConnection: ObservableObject {
         while !userClosed {
             do {
                 let s = try await transport.attach(name: session.name, cols: cols, rows: rows)
+                s.onScreen = { [weak self] screen in
+                    Task { @MainActor in self?.onScreen?(screen) }
+                }
                 stream = s
                 attempt = 0
                 state = .connected
@@ -65,8 +84,8 @@ final class SessionConnection: ObservableObject {
                 // Force a repaint: a TUI parked on a modal prompt (Claude Code's
                 // question dialogs) ignores the attach-time WINCH and renders black
                 // until a keypress. The server jiggles the pty size, which no TUI
-                // can ignore.
-                s.requestRedraw()
+                // can ignore — and the snapshot paints dch's mirror regardless.
+                resync()
                 for await chunk in s.output {
                     onBytes?(chunk)
                 }

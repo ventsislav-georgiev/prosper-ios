@@ -19,7 +19,11 @@ targets:
   Prosper:
     type: application
     platform: iOS
-    sources: [Sources]
+    # Agent tooling drops .omc/ state dirs wherever a shell happens to sit; globbed
+    # into the target they collide as duplicate bundle resources and fail the build.
+    sources:
+      - path: Sources
+        excludes: ["**/.omc/**"]
     dependencies:
       - package: SwiftTerm
     settings:
@@ -51,7 +55,9 @@ targets:
   ProsperTests:
     type: bundle.unit-test
     platform: iOS
-    sources: [Tests]
+    sources:
+      - path: Tests
+        excludes: ["**/.omc/**"]
     dependencies:
       - target: Prosper
     settings:

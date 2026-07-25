@@ -6,6 +6,10 @@ import Foundation
 struct DchSession: Identifiable, Hashable {
     var name: String
     var alias: String?
+    /// dch's agent state for the session — `working`, `idle`, `blocked` or `done`,
+    /// resolved server-side from the session's rendered screen. Empty/nil when the
+    /// Mac runs an older Prosper (no state in the list response).
+    var state: String? = nil
     var id: String { name }
     var title: String { alias ?? name }
 }
@@ -26,6 +30,14 @@ protocol TerminalStream: AnyObject {
     /// Force the remote program to repaint (after a soft-keyboard relayout),
     /// without reattaching the socket.
     func requestRedraw()
+    /// Ask the server for dch's own rendered screen (its VT mirror) and deliver it
+    /// to `onScreen`. Unlike `requestRedraw` this needs nothing from the remote
+    /// program: whatever dch has is authoritative, so the client can repaint from
+    /// it even when the TUI refuses to redraw. Never fires when the session's
+    /// master has no mirror (older dch).
+    func requestSnapshot()
+    /// Sink for `requestSnapshot` replies — a full screen in ANSI, ready to feed.
+    var onScreen: ((ArraySlice<UInt8>) -> Void)? { get set }
     /// Detach this client (session keeps running).
     func close()
 }

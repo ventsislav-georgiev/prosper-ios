@@ -20,9 +20,9 @@ final class ProsperTransport: SessionTransport {
     private enum F {
         static let attach: UInt8 = 0x01, create: UInt8 = 0x02, list: UInt8 = 0x03
         static let kill: UInt8 = 0x04, resize: UInt8 = 0x05, rename: UInt8 = 0x06
-        static let machineInfo: UInt8 = 0x08, data: UInt8 = 0x10
+        static let machineInfo: UInt8 = 0x08, snapshot: UInt8 = 0x09, data: UInt8 = 0x10
         static let listResp: UInt8 = 0x11, exit: UInt8 = 0x12, error: UInt8 = 0x13, ok: UInt8 = 0x14
-        static let machineInfoResp: UInt8 = 0x18
+        static let machineInfoResp: UInt8 = 0x18, snapshotResp: UInt8 = 0x19
     }
 
     /// One-shot identity handshake (PLAN §2a). Sends `0x08`, reads the `0x18` reply
@@ -56,7 +56,11 @@ final class ProsperTransport: SessionTransport {
         let (type, payload) = try await oneShot(send: F.list, payload: Data())
         guard type == F.listResp else { throw TransportError.protocolError("expected list") }
         let arr = (try? JSONSerialization.jsonObject(with: payload)) as? [[String: Any]] ?? []
-        return arr.compactMap { o in (o["name"] as? String).map { DchSession(name: $0, alias: o["alias"] as? String) } }
+        return arr.compactMap { o in
+            (o["name"] as? String).map {
+                DchSession(name: $0, alias: o["alias"] as? String, state: o["state"] as? String)
+            }
+        }
     }
 
     func kill(name: String) async throws {
@@ -200,7 +204,13 @@ final class ProsperStream: TerminalStream {
     private var closed = false
     private(set) var exited = false
 
-    private enum F { static let resize: UInt8 = 0x05, redraw: UInt8 = 0x07, data: UInt8 = 0x10, exit: UInt8 = 0x12 }
+    /// Set by the terminal view; called on the network queue's callback thread.
+    var onScreen: ((ArraySlice<UInt8>) -> Void)?
+
+    private enum F {
+        static let resize: UInt8 = 0x05, redraw: UInt8 = 0x07, snapshot: UInt8 = 0x09
+        static let data: UInt8 = 0x10, exit: UInt8 = 0x12, snapshotResp: UInt8 = 0x19
+    }
 
     init(conn: NWConnection) {
         self.conn = conn
@@ -223,6 +233,9 @@ final class ProsperStream: TerminalStream {
                     guard let (type, payload) = frame else { break frameLoop }
                     switch type {
                     case F.data: self.cont.yield(ArraySlice([UInt8](payload)))
+                    // Empty = the session's master has no VT mirror; nothing to paint.
+                    case F.snapshotResp where !payload.isEmpty:
+                        self.onScreen?(ArraySlice([UInt8](payload)))
                     case F.exit: self.exited = true; self.close(); return
                     default: break
                     }
@@ -244,6 +257,10 @@ final class ProsperStream: TerminalStream {
 
     func requestRedraw() {
         conn.send(content: FrameCodec.encode(F.redraw, Data()), completion: .contentProcessed { _ in })
+    }
+
+    func requestSnapshot() {
+        conn.send(content: FrameCodec.encode(F.snapshot, Data()), completion: .contentProcessed { _ in })
     }
 
     func close() {
