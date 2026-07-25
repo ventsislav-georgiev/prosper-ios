@@ -18,6 +18,9 @@ final class SessionConnection: ObservableObject {
     private var userClosed = false
     private var cols = 80
     private var rows = 24
+    /// When the session last wrote anything — the quiet gate for `resync`.
+    private var lastBytes = ContinuousClock.now
+    private var snapshotWait: Task<Void, Never>?
 
     /// Output sink — set by the terminal view to `terminal.feed(byteArray:)`.
     var onBytes: ((ArraySlice<UInt8>) -> Void)?
@@ -50,18 +53,35 @@ final class SessionConnection: ObservableObject {
     /// change, foreground, reattach). Two independent paths, weakest first:
     /// `requestRedraw` nudges the remote program to repaint itself, and the
     /// snapshot pulls dch's VT mirror — which is correct even when the program
-    /// never repaints. The snapshot is delayed so it captures the post-nudge screen
-    /// (the server's jiggle restores the real size after ~120 ms).
+    /// never repaints.
+    ///
+    /// The snapshot waits for the session to go quiet, and is dropped if it never
+    /// does. That gate is what makes it safe: the mirror is only equal to the true
+    /// screen once the remote program has finished writing. Claude Code answers a
+    /// resize on its own render tick (~1s), so a fixed short delay painted the
+    /// pre-reflow screen over the correct one — after rotating the phone the
+    /// terminal kept the old, narrower layout. While bytes are still arriving the
+    /// screen is repainting itself and needs no help from us.
     func resync() {
         stream?.requestRedraw()
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            self?.stream?.requestSnapshot()
+        snapshotWait?.cancel()
+        snapshotWait = Task { [weak self] in
+            let start = ContinuousClock.now
+            while let self, !Task.isCancelled {
+                let sinceBytes = self.lastBytes.duration(to: .now)
+                let waited = start.duration(to: .now)
+                if waited > .seconds(4) { return }            // never settled — leave it alone
+                if waited > .milliseconds(500), sinceBytes > .milliseconds(600) { break }
+                try? await Task.sleep(nanoseconds: 150_000_000)
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.stream?.requestSnapshot()
         }
     }
 
     func close() {
         userClosed = true
+        snapshotWait?.cancel()
         loop?.cancel()
         stream?.close()
         stream = nil
@@ -87,6 +107,7 @@ final class SessionConnection: ObservableObject {
                 // can ignore — and the snapshot paints dch's mirror regardless.
                 resync()
                 for await chunk in s.output {
+                    lastBytes = .now
                     onBytes?(chunk)
                 }
                 // Stream ended. Clean exit / user close → done; otherwise the link dropped.

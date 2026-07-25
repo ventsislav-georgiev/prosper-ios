@@ -117,6 +117,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var kbConstraint: NSLayoutConstraint!
     private var barHeight: NSLayoutConstraint!
     private var kbOverlap: CGFloat = 0   // keyboard cover height while shown (for live re-lift)
+    private var kbFrame: CGRect?         // last keyboard frame (screen coords), re-applied after rotation
     private var ctrlArmed = false   // sticky Ctrl from the shortcut bar
     private var shortcutBar: ShortcutBar?
 
@@ -223,10 +224,21 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        startIfNeeded()
+    }
+
+    /// Attach once, at the grid size the view settled on.
+    func startIfNeeded() {
         guard !started else { return }
         started = true
+        let size = terminalSize
+        conn.start(cols: size.cols, rows: size.rows)
+    }
+
+    /// The grid the view currently presents — what the pty must be told to match.
+    var terminalSize: (cols: Int, rows: Int) {
         let t = tv.getTerminal()
-        conn.start(cols: t.cols, rows: t.rows)
+        return (t.cols, t.rows)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -280,23 +292,40 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// a screen that is always correct.
     private func applyScreen(_ screen: ArraySlice<UInt8>) {
         guard !screen.isEmpty else { return }
-        var out = Array("\u{1b}[H\u{1b}[2J".utf8)
+        // DECSC first, DECRC last: the mirror is cell contents only — it carries no
+        // cursor position and ends mid-SGR. Painting it raw parked the caret at the
+        // bottom of the screen (so the input row and IME text drew in the wrong
+        // place) and leaked the last cell's colors into everything after. The live
+        // byte stream already put the cursor where the remote program wants it, so
+        // save it, paint, put it back. `[0m` before the erase keeps ED2 from
+        // clearing to whatever background color happened to be current.
+        var out = Array("\u{1b}7\u{1b}[0m\u{1b}[H\u{1b}[2J".utf8)
         out.reserveCapacity(out.count + screen.count + 64)
         for b in screen {
             if b == 0x0a { out.append(0x0d) }
             out.append(b)
         }
+        out.append(contentsOf: Array("\u{1b}8".utf8))
         tv.feed(byteArray: out[...])
         relift()
     }
 
     /// Rotation changes the grid: the remote program reflows to the new size but
     /// repaints only what it thinks changed, so the screen can come back partly
-    /// blank. Resync from dch's mirror once the new size settles.
+    /// blank. Resync from dch's mirror once the new size settles, and refit the
+    /// keyboard geometry to the new bounds (the frame UIKit posted mid-rotation was
+    /// measured against the old ones).
     override func viewWillTransition(to size: CGSize,
                                      with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
-        coordinator.animate(alongsideTransition: nil) { [weak self] _ in self?.forceRedraw() }
+        coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+            guard let self else { return }
+            if let f = self.kbFrame, self.handle.keyboardShown {
+                self.applyKeyboard(f, notification: nil)
+            }
+            self.relift()
+            self.forceRedraw()
+        }
     }
 
     /// A shortcut-bar key was tapped.
@@ -423,6 +452,18 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     @objc private func kbChange(_ n: Notification) {
         guard let end = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
         else { return }
+        kbFrame = end
+        applyKeyboard(end, notification: n)
+    }
+
+    /// Fit the bar and the lift to a keyboard frame (screen coordinates).
+    ///
+    /// Split out of `kbChange` because rotation posts the new keyboard frame while
+    /// `view` is still the old orientation: the overlap then comes out measured
+    /// against the wrong height, which left the shortcut bar floating mid-screen and
+    /// the input row lifted out of view. `viewWillTransition` re-applies the same
+    /// frame once the bounds have caught up.
+    private func applyKeyboard(_ end: CGRect, notification n: Notification?) {
         let endInView = view.convert(end, from: nil)
         let safeBottomY = view.bounds.maxY - view.safeAreaInsets.bottom
         let overlap = max(0, safeBottomY - endInView.minY)
@@ -466,8 +507,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Slide the terminal up by `offset` and lay out the bar, riding the keyboard's
     /// own animation curve/duration. The grid never resizes (tv bounds are fixed), so
     /// there is no SIGWINCH and no remote repaint — the freed-rows blank gap is gone.
-    private func animateKeyboard(_ n: Notification, offset: CGFloat) {
-        let dur = (n.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+    private func animateKeyboard(_ n: Notification?, offset: CGFloat) {
+        let dur = (n?.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
         UIView.animate(withDuration: dur) {
             self.tv.transform = offset > 0 ? CGAffineTransform(translationX: 0, y: -offset) : .identity
             self.view.layoutIfNeeded()
