@@ -140,7 +140,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         super.viewDidLoad()
         view.backgroundColor = .black
 
-        let tv = DchTerminalView(frame: .zero, font: TerminalFont.mono(size: 13))
+        let tv = DchTerminalView(frame: .zero, font: TerminalFont.mono(size: TerminalPrefs.fontSize))
         self.tv = tv
         tv.terminalDelegate = self
         tv.backgroundColor = .black
@@ -238,9 +238,43 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         else { _ = tv.becomeFirstResponder() }
     }
 
-    /// Rebuild the shortcut bar after the editor changed the key set.
+    /// Rebuild the shortcut bar after the editor changed the key set, and pick up a
+    /// new text size. A font change reflows the grid (SwiftTerm recomputes cols/rows
+    /// in layoutSubviews → onResize → pty resize), then we repaint from scratch.
     func reloadShortcuts() {
         shortcutBar?.reload()
+        let size = TerminalPrefs.fontSize
+        if tv.font.pointSize != size {
+            tv.font = TerminalFont.mono(size: size)
+            forceRedraw()
+        }
+    }
+
+    /// Force a full repaint — the button form of "resize the window to fix it".
+    ///
+    /// The local half is the one that matters: SwiftTerm's `draw` renders from a
+    /// per-row cache (`attrStrBuffer`) that is only rebuilt in `updateDisplay()`,
+    /// which runs off `feed`. A bounds change (rotation, keyboard, font size) marks
+    /// rows dirty and calls `setNeedsDisplay`, but nothing rebuilds the cache — so
+    /// the old frame is re-blitted and glyphs go missing until new output arrives.
+    /// `refresh` + an empty `feed` dirties every row AND runs a display pass.
+    ///
+    /// The remote half covers the other case: the TUI itself is parked on a stale
+    /// frame. `conn.redraw()` makes the server jiggle the pty size, which Node/Ink
+    /// apps (Claude Code) treat as a real resize and re-render on.
+    func forceRedraw() {
+        let t = tv.getTerminal()
+        t.refresh(startRow: 0, endRow: max(0, t.rows - 1))
+        tv.feed(byteArray: [])   // queuePendingDisplay() is internal; feed is the public door
+        conn.redraw()
+    }
+
+    /// Rotation changes the grid, and SwiftTerm's post-layout repaint reads the
+    /// stale row cache — the same missing-glyph bug. Repaint once the new size settles.
+    override func viewWillTransition(to size: CGSize,
+                                     with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: nil) { [weak self] _ in self?.forceRedraw() }
     }
 
     /// A shortcut-bar key was tapped.
@@ -255,6 +289,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             }
         case .bytes:
             conn.send(ArraySlice(key.bytes))
+        case .redraw:
+            forceRedraw()
         }
         if tv.isFirstResponder == false { _ = tv.becomeFirstResponder() }
     }
@@ -416,7 +452,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
     }
 
-    @objc private func onForeground() { conn.redraw() }
+    @objc private func onForeground() { forceRedraw() }
 
     /// Drag over the text = select it. Coordinates are buffer-relative (view row +
     /// top visible row) so a selection survives local scrollback moves.

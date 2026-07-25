@@ -3,9 +3,10 @@ import UIKit
 
 /// One key on the shortcut bar above the keyboard. `bytes` are sent verbatim to the
 /// remote pty; `.ctrl` is a sticky modifier (next typed letter → control char);
-/// `.pasteText` injects the iOS clipboard string.
+/// `.pasteText` injects the iOS clipboard string; `.redraw` jiggles the pty size
+/// so the remote TUI repaints.
 struct ShortcutKey: Codable, Hashable, Identifiable {
-    enum Kind: String, Codable { case bytes, ctrl, pasteText }
+    enum Kind: String, Codable { case bytes, ctrl, pasteText, redraw }
     var id: String
     var label: String
     var kind: Kind
@@ -13,6 +14,26 @@ struct ShortcutKey: Codable, Hashable, Identifiable {
     /// SF Symbol name. When set, the keycap shows the icon instead of `label`
     /// (label still used in the editor list + accessibility).
     var systemImage: String? = nil
+}
+
+/// Terminal text size, nudged from the shortcut editor sheet. Stored as a point
+/// size; changing it reflows the grid (fewer/more cols+rows) and resizes the pty.
+enum TerminalPrefs {
+    static let sizeKey = "terminalFontSize"
+    /// 10% below the original hard-coded 13 pt — more of the remote screen fits.
+    static let defaultSize: CGFloat = 11.7
+    static let range: ClosedRange<CGFloat> = 8...20
+    static let step: CGFloat = 0.5
+
+    static var fontSize: CGFloat {
+        get {
+            let v = CGFloat(UserDefaults.standard.double(forKey: sizeKey))
+            return v > 0 ? clamp(v) : defaultSize
+        }
+        set { UserDefaults.standard.set(Double(clamp(newValue)), forKey: sizeKey) }
+    }
+
+    static func clamp(_ v: CGFloat) -> CGFloat { min(max(v, range.lowerBound), range.upperBound) }
 }
 
 /// Shortcut-bar config: catalog of available keys, the user's chosen set (persisted
@@ -46,10 +67,14 @@ enum Shortcuts {
         // newline, don't submit". ponytail: relies on Claude's meta-enter binding; if a
         // shell needs a literal LF instead, bytes [0x0a] is the fallback.
         ShortcutKey(id: "snl",     label: "⇧⏎",    kind: .bytes, bytes: [0x1b, 0x0d], systemImage: "arrow.turn.down.left"),
+        // Manual repaint: same size-jiggle the server does on reattach/foreground.
+        // Claude Code (and other TUIs) sometimes leave stale/missing glyphs until a
+        // SIGWINCH — this is the button form of "resize the window to fix it".
+        ShortcutKey(id: "redraw",  label: "redraw", kind: .redraw, systemImage: "arrow.clockwise"),
     ]
 
     static var defaults: [ShortcutKey] {
-        ["esc", "tab", "ctrl", "home", "end", "paste", "pasteImg", "ctlc", "ctld", "snl"]
+        ["esc", "tab", "ctrl", "home", "end", "paste", "pasteImg", "ctlc", "ctld", "snl", "redraw"]
             .compactMap { id in catalog.first { $0.id == id } }
     }
 
@@ -222,9 +247,19 @@ struct ShortcutEditor: View {
     @State private var keys: [ShortcutKey] = []
     @Environment(\.dismiss) private var dismiss
 
+    @AppStorage(TerminalPrefs.sizeKey) private var fontSize = Double(TerminalPrefs.defaultSize)
+
     var body: some View {
         NavigationStack {
             List {
+                Section("Text size") {
+                    Stepper(value: $fontSize,
+                            in: Double(TerminalPrefs.range.lowerBound)...Double(TerminalPrefs.range.upperBound),
+                            step: Double(TerminalPrefs.step)) {
+                        Text("\(fontSize, specifier: "%.1f") pt").font(.body.monospaced())
+                    }
+                    Button("Reset text size") { fontSize = Double(TerminalPrefs.defaultSize) }
+                }
                 Section("Active (drag to reorder, swipe to remove)") {
                     ForEach(keys) { k in Text(k.label).font(.body.monospaced()) }
                         .onMove { keys.move(fromOffsets: $0, toOffset: $1); persist() }
