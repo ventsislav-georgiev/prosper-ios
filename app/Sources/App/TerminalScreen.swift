@@ -406,19 +406,20 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         thumb.translatesAutoresizingMaskIntoConstraints = false
         thumb.onJog = { [weak self] lines in self?.jogScroll(lines) }
         view.addSubview(thumb)
-        // The strip spans what you can SEE, edge to edge: the pill rests in the middle
-        // of it, so any inset here reads as "the wheel starts off center". The nav bar
-        // sits inside the top safe area and the bottom safe area is empty screen, so
-        // anchoring to the safe area / terminal top parked the pill ~40pt low. With the
-        // keyboard up the visible screen ends at the shortcut bar, so anchor there —
-        // measured against the bar itself, not the keyboard height, which is relative to
-        // the safe area and would leave the pill half a safe-area inset low.
+        // The strip spans what you can SEE, and the pill rests in the middle of it, so
+        // every inset here reads as "the wheel starts off center". Visible starts under
+        // the nav bar — which sits INSIDE the top safe area, so `tv.top` is that edge;
+        // anchoring to `view.top` hid a nav bar's worth of strip behind the bar and
+        // parked the pill half of it high. Visible ends at the screen bottom (the bottom
+        // safe area is empty black screen), or at the shortcut bar once the keyboard is
+        // up — measured against the bar itself, not the keyboard height, which is
+        // relative to the safe area and would leave the pill half an inset low.
         thumbBottom = thumb.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         thumbBottomKeyboard = thumb.bottomAnchor.constraint(
             equalTo: shortcutBar?.topAnchor ?? view.bottomAnchor)
         NSLayoutConstraint.activate([
             thumb.rightAnchor.constraint(equalTo: view.rightAnchor),
-            thumb.topAnchor.constraint(equalTo: view.topAnchor),
+            thumb.topAnchor.constraint(equalTo: tv.topAnchor),
             thumbBottom,
             thumb.widthAnchor.constraint(equalToConstant: ScrollThumb.trackWidth),
         ])

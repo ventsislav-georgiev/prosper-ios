@@ -1,4 +1,5 @@
 import XCTest
+import SwiftTerm
 @testable import Prosper
 
 /// The wheel has one resting place: the middle of what you can see. A pill that
@@ -21,6 +22,17 @@ final class ScrollThumbGeometryTests: XCTestCase {
                                  "no 44pt scroll strip in the hierarchy")
         let pill = try XCTUnwrap(strip.subviews.first, "the strip has no pill")
         return (strip, pill)
+    }
+
+    /// The strip must start where the black screen starts — the nav bar lives inside the
+    /// top safe area, so a strip anchored to the view's top hides behind it and rests the
+    /// pill half a nav bar high. Same edge as the terminal view, on device and here.
+    func testStripStartsWhereTheTerminalDoes() throws {
+        let vc = makeVC(CGSize(width: 393, height: 852))
+        let (strip, _) = try thumbAndPill(vc)
+        let tv = try XCTUnwrap(vc.view.subviews.first { $0 is TerminalView }, "no terminal view")
+        XCTAssertEqual(strip.frame.minY, tv.frame.minY, accuracy: 0.5,
+                       "strip starts at \(strip.frame.minY), the visible terminal at \(tv.frame.minY)")
     }
 
     func testPillRestsInTheMiddleOfTheVisibleTerminal() throws {
@@ -48,10 +60,12 @@ final class ScrollThumbGeometryTests: XCTestCase {
 
         let (strip, pill) = try thumbAndPill(vc)
         let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar }, "no shortcut bar")
+        let tv = try XCTUnwrap(vc.view.subviews.first { $0 is TerminalView }, "no terminal view")
         let pillCenter = pill.convert(CGPoint(x: 0, y: pill.bounds.midY), to: vc.view).y
         XCTAssertEqual(strip.frame.maxY, bar.frame.minY, accuracy: 1,
                        "the strip must end where the shortcut bar begins")
-        XCTAssertEqual(pillCenter, bar.frame.minY / 2, accuracy: 1,
-                       "pill rests at \(pillCenter); the middle of the visible screen is \(bar.frame.minY / 2)")
+        let visibleMiddle = (tv.frame.minY + bar.frame.minY) / 2
+        XCTAssertEqual(pillCenter, visibleMiddle, accuracy: 1,
+                       "pill rests at \(pillCenter); the middle of the visible screen is \(visibleMiddle)")
     }
 }
