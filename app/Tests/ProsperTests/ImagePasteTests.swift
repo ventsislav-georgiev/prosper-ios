@@ -14,8 +14,18 @@ final class ImagePasteTests: XCTestCase {
     private let png = Data(base64Encoded:
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")!
 
+    /// On Mac Catalyst `UIPasteboard.general` IS the system pasteboard, so these tests
+    /// would otherwise wipe whatever the developer had copied. Borrow it and give it
+    /// back.
+    private var borrowedClipboard: [[String: Any]] = []
+
+    override func setUp() {
+        super.setUp()
+        borrowedClipboard = UIPasteboard.general.items
+    }
+
     override func tearDown() {
-        UIPasteboard.general.items = []
+        UIPasteboard.general.items = borrowedClipboard
         UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey)
         super.tearDown()
     }
