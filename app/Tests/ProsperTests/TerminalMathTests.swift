@@ -121,6 +121,15 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(sends, 18)
     }
 
+    /// Response requirement for the batch window: long enough to spare the remote a
+    /// repaint per frame, short enough that the finger doesn't feel the delay.
+    func testScrollBatchWindowMeetsTheLatencyBudget() {
+        XCTAssertLessThanOrEqual(TerminalMath.remoteScrollBatch, 0.05,
+                                 "a held scroll must reach the remote within ~3 frames")
+        XCTAssertGreaterThanOrEqual(TerminalMath.remoteScrollBatch, 0.025,
+                                    "shorter than this and we're back to a repaint per frame")
+    }
+
     // MARK: gridCell — the selection mapping
 
     func testPointMapsToCell() {

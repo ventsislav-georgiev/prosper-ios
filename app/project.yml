@@ -26,9 +26,18 @@ targets:
         excludes: ["**/.omc/**"]
     dependencies:
       - package: SwiftTerm
+      # Live Activities need a widget extension to draw them (Dynamic Island +
+      # lock screen). Catalyst has no Live Activities, so the extension compiles
+      # to a stub there (see Widgets/ProsperWidgets.swift).
+      # platformFilter: Catalyst refuses to embed an iOS .appex ("built for iOS, which
+      # is not allowed"), so the extension is an iPhone-only dependency.
+      - target: ProsperWidgets
+        embed: true
+        platformFilter: iOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios
+        INFOPLIST_KEY_NSSupportsLiveActivities: YES
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Prosper
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -51,6 +60,30 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         # ponytail: local dev builds run unsigned (no team needed). CI signs for
         # TestFlight via the App Store Connect API key (see .github/workflows).
+        CODE_SIGNING_ALLOWED: NO
+  # Draws the watched-session Live Activity. Shares only Sources/Shared with the app —
+  # the extension must stay tiny (it's launched by the system, not by us).
+  ProsperWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "16.2"
+    sources:
+      - path: Widgets
+      - path: Sources/Shared
+    # NSExtension has to be a real plist dict — INFOPLIST_KEY_NSExtensionPointIdentifier
+    # is silently dropped by the generated plist, and an appex without it never loads.
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Prosper
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.widgets
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
         CODE_SIGNING_ALLOWED: NO
   ProsperTests:
     type: bundle.unit-test

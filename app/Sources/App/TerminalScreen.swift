@@ -608,7 +608,12 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             let seq: [UInt8] = up
                 ? (term.applicationCursor ? EscapeSequences.moveUpApp : EscapeSequences.moveUpNormal)
                 : (term.applicationCursor ? EscapeSequences.moveDownApp : EscapeSequences.moveDownNormal)
-            for _ in 0..<count { tv.send(seq) }
+            // ONE write for the whole burst: the remote reads all the keys in a single
+            // chunk and answers with a single repaint, which is the point of batching.
+            var burst = [UInt8]()
+            burst.reserveCapacity(seq.count * count)
+            for _ in 0..<count { burst.append(contentsOf: seq) }
+            tv.send(burst)
         } else {
             if up { tv.scrollUp(lines: count) } else { tv.scrollDown(lines: count) }
         }

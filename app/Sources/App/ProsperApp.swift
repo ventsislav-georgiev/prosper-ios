@@ -1,8 +1,10 @@
 import SwiftUI
+import UIKit
 
 @main
 struct ProsperApp: App {
     init() {
+        SessionPings.presentInForeground()
         #if DEBUG
         // ponytail: run the cheap assert-based self-checks once at launch so a broken
         // backoff schedule / Machine migration / wakeId derivation trips in dev.
@@ -269,6 +271,10 @@ struct SessionListView: View {
     @State private var creating = false            // new-session alert
     @State private var newName = ""
     @State private var sleeping = false            // sleep round-trip in flight
+    @StateObject private var alerts = SessionAlerts()
+    @State private var engine = SessionAlertEngine()
+    @State private var pingsDenied = false         // bell on, notifications off in Settings
+    @Environment(\.scenePhase) private var scenePhase
 
     // Live store snapshot so the badge tracks cachedWake after handshake (the `machine`
     // prop is a stale value-type copy captured at navigation time).
@@ -337,6 +343,7 @@ struct SessionListView: View {
                 .disabled(sleeping || loading)
         }
         .task { await refresh() }
+        .task { await watchLoop() }
         // Programmatic push for tap-to-attach and newly created sessions.
         .navigationDestination(isPresented: Binding(get: { open != nil },
                                                     set: { if !$0 { open = nil } })) {
@@ -362,6 +369,14 @@ struct SessionListView: View {
             Button("Create") { startNew() }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Opens a fresh dch session on \(title).") }
+        .alert("Notifications are off", isPresented: $pingsDenied) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text("The Dynamic Island still tracks the session, but Prosper can't ping you until notifications are allowed.")
+        }
     }
 
     @ViewBuilder private func row(_ s: DchSession) -> some View {
@@ -373,6 +388,7 @@ struct SessionListView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .onTapGesture { open = s }
+            alertToggle(s)
             Button { renaming = s; renameText = s.alias ?? "" } label: {
                 Image(systemName: "pencil")
             }.buttonStyle(.borderless)
@@ -380,6 +396,61 @@ struct SessionListView: View {
                 Image(systemName: "xmark.circle")
             }.buttonStyle(.borderless).foregroundStyle(.red)
         }
+    }
+
+    /// Per-session bell: ping me when this agent needs input or finishes, and put its
+    /// state in the Dynamic Island while it runs.
+    @ViewBuilder private func alertToggle(_ s: DchSession) -> some View {
+        let on = alerts.isOn(machine: machine?.id, session: s.name)
+        Button {
+            let turnedOn = alerts.toggle(machine: machine?.id, session: s.name)
+            Task {
+                // Ask for the banner permission only when someone actually wants one, and
+                // say so if it's denied — a bell that can never ring is worse than no bell.
+                if turnedOn, await !SessionPings.authorize() { pingsDenied = true }
+                await syncActivities(sessions)
+            }
+        } label: {
+            Image(systemName: on ? "bell.fill" : "bell")
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(on ? Color.orange : Color.secondary)
+        .accessibilityLabel(on ? "Stop watching \(s.title)" : "Watch \(s.title)")
+    }
+
+    /// Poll the watched sessions' states while the app is in front, ping on the two
+    /// transitions worth interrupting for, and keep the Live Activities in step.
+    ///
+    /// Nothing watched → no traffic at all. The poll answer also refreshes the visible
+    /// rows, so a watched machine's list stays live for free.
+    private func watchLoop() async {
+        let poll = UInt64(SessionAlertEngine.pollInterval * 1_000_000_000)
+        let backoff = UInt64(SessionAlertEngine.failureBackoff * 1_000_000_000)
+        while !Task.isCancelled {
+            guard alerts.anyWatched(machine: machine?.id), scenePhase == .active,
+                  unreachable == nil, error == nil else {
+                try? await Task.sleep(nanoseconds: poll)
+                continue
+            }
+            try? await Task.sleep(nanoseconds: poll)
+            guard !Task.isCancelled, scenePhase == .active else { continue }
+            guard let list = try? await transport.listSessions() else {
+                try? await Task.sleep(nanoseconds: backoff)      // asleep Mac: stop hammering
+                continue
+            }
+            if !loading { sessions = list }
+            for alert in engine.step(list, now: CFAbsoluteTimeGetCurrent(),
+                                     isWatched: { alerts.isOn(machine: machine?.id, session: $0) },
+                                     attached: open?.name) {
+                SessionPings.fire(alert, machine: title)
+            }
+            await syncActivities(list)
+        }
+    }
+
+    private func syncActivities(_ list: [DchSession]) async {
+        await SessionLiveActivities.shared.sync(machine: title, sessions: list,
+                                                watched: alerts.names(machine: machine?.id, in: list))
     }
 
     private func commitRename(_ alias: String) {
@@ -509,22 +580,13 @@ struct WakeBadge: View {
 struct SessionStateLabel: View {
     let state: String
 
-    private var style: (String, String, Color)? {
-        switch state {
-        case "working": return ("working", "circle.dotted", .blue)
-        case "blocked": return ("needs you", "hand.raised.fill", .orange)
-        case "idle":    return ("idle", "moon.zzz", .secondary)
-        case "done":    return ("done", "checkmark.circle", .green)
-        default:        return nil   // unknown state from a newer server — say nothing
-        }
-    }
-
     var body: some View {
-        if let (text, icon, color) = style {
-            Label(text, systemImage: icon)
+        // Unknown state from a newer server → say nothing rather than guess.
+        if let style = SessionStateStyle(state) {
+            Label(style.label, systemImage: style.symbol)
                 .font(.caption2)
-                .foregroundStyle(color)
-                .accessibilityLabel("Session is \(text)")
+                .foregroundStyle(style.tint)
+                .accessibilityLabel("Session is \(style.label)")
         }
     }
 }
