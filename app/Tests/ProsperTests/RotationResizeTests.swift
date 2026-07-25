@@ -79,7 +79,7 @@ final class RotationResizeTests: XCTestCase {
 
 // MARK: - Spies
 
-private final class SpyTransport: SessionTransport {
+final class SpyTransport: SessionTransport {
     let stream = SpyStream()
     func listSessions() async throws -> [DchSession] { [] }
     func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream {

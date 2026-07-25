@@ -382,7 +382,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         thumb.translatesAutoresizingMaskIntoConstraints = false
         thumb.onDragStart = { [weak self] in self?.scrollRemainder = 0 }
         thumb.onDrag = { [weak self] dy, fraction in self?.thumbScroll(dy: dy, fraction: fraction) }
-        thumb.positionProvider = { [weak self] in CGFloat(self?.tv.scrollPosition ?? 0) }
+        thumb.positionProvider = { [weak self] in self?.absoluteScrollFraction() ?? nil }
         view.addSubview(thumb)
         NSLayoutConstraint.activate([
             thumb.rightAnchor.constraint(equalTo: view.rightAnchor),
@@ -398,6 +398,15 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// full sweep covers everything however long the history is. Without
     /// scrollback (mouse-mode / alternate screen) fall back to relative
     /// line-steps with remainder carry.
+    /// Where the viewport sits in the whole buffer, or nil when that question has no
+    /// answer. SwiftTerm reports 0 for the alternate screen — which is where every
+    /// full-screen TUI lives — so trusting it parks the pill at the top no matter
+    /// where the remote app has scrolled to. There the pill is a relative jog
+    /// handle, not a position indicator.
+    func absoluteScrollFraction() -> CGFloat? {
+        tv.canScroll ? CGFloat(tv.scrollPosition) : nil
+    }
+
     private func thumbScroll(dy: CGFloat, fraction: CGFloat) {
         if tv.canScroll {
             tv.scroll(toPosition: Double(fraction))
@@ -580,7 +589,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     func scrolled(source: TerminalView, position: Double) {
         // Keep the pill in sync when the content scrolls by any other means
         // (tap-scroll, streamed output snapping to the bottom, …).
-        MainActor.assumeIsolated { scrollThumb?.setPosition(CGFloat(position)) }
+        // `position` is 0 for the alternate screen whatever the remote app scrolled
+        // to, so it can't be trusted here — ask for the real one.
+        MainActor.assumeIsolated { scrollThumb?.setPosition(absoluteScrollFraction()) }
     }
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
     func bell(source: TerminalView) {}
@@ -626,8 +637,10 @@ private final class ScrollThumb: UIView {
     var onDragStart: (() -> Void)?
     /// (incremental dy in points, pill position as track fraction 0…1)
     var onDrag: ((CGFloat, CGFloat) -> Void)?
-    /// Current scroll fraction of the content — pulled to sync the pill on reveal.
-    var positionProvider: (() -> CGFloat)?
+    /// Current scroll fraction of the content, or nil when the content has no
+    /// absolute position (alternate screen). Pulled to sync the pill on reveal and
+    /// after a drag; nil recenters the pill as a neutral jog handle.
+    var positionProvider: (() -> CGFloat?)?
 
     private let pill = UIView()
     private var pillY: NSLayoutConstraint!
@@ -664,20 +677,22 @@ private final class ScrollThumb: UIView {
 
     func show() {
         hideTimer?.invalidate()
-        if !dragging, let f = positionProvider?() { move(to: f) }
+        if !dragging { move(to: positionProvider?() ?? nil) }
         if pill.alpha < 1 { UIView.animate(withDuration: 0.15) { self.pill.alpha = 1 } }
         scheduleHide()
     }
 
     /// External sync (content scrolled by other means). Ignored mid-drag so the
     /// pill stays under the finger.
-    func setPosition(_ fraction: CGFloat) {
+    func setPosition(_ fraction: CGFloat?) {
         guard !dragging else { return }
         move(to: fraction)
     }
 
-    private func move(to fraction: CGFloat) {
-        pillY.constant = TerminalMath.pillOffset(fraction: fraction,
+    /// nil = no absolute position; park the pill mid-track so a jog drag has room
+    /// both ways.
+    private func move(to fraction: CGFloat?) {
+        pillY.constant = TerminalMath.pillOffset(fraction: fraction ?? 0.5,
                                                  track: bounds.height, pill: Self.pillSize.height)
     }
 
@@ -706,6 +721,9 @@ private final class ScrollThumb: UIView {
                                                   track: bounds.height, pill: Self.pillSize.height))
         default:
             dragging = false
+            // Absolute mode: snap to where we actually ended up. Jog mode: recenter,
+            // or the pill sticks to the track end and the next drag has no travel.
+            move(to: positionProvider?() ?? nil)
             scheduleHide()
         }
     }
