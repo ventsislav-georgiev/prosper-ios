@@ -3,29 +3,31 @@ import CoreGraphics
 /// Pure geometry for the terminal gestures — kept side-effect free so the unit
 /// tests can pin the scroll/selection feel without UIKit.
 enum TerminalMath {
-    /// Whole-line steps for a drag delta, carrying the sub-cell remainder so
-    /// slow drags still accumulate into steps instead of being truncated away.
-    static func lineSteps(dy: CGFloat, cell: CGFloat, remainder: inout CGFloat) -> Int {
-        let cell = max(1, cell)
-        let total = dy + remainder
-        let steps = Int(total / cell)
-        remainder = total - CGFloat(steps) * cell
-        return steps
-    }
+    /// Ignore deflections this small a share of the travel — a resting thumb and a
+    /// fingertip wobble must not scroll.
+    static let jogDeadZone: CGFloat = 0.12
+    /// Scroll rate at full deflection.
+    static let jogMaxLinesPerSecond: CGFloat = 45
 
-    /// Absolute-scrollbar pill mapping: scroll fraction [0,1] → pill-center offset
-    /// from the track center (constraint constant), for a `pill`-tall pill in a
-    /// `track`-tall strip.
-    static func pillOffset(fraction: CGFloat, track: CGFloat, pill: CGFloat) -> CGFloat {
-        (min(max(fraction, 0), 1) - 0.5) * max(0, track - pill)
-    }
-
-    /// Inverse of `pillOffset`: pill-center offset → scroll fraction, clamped so a
-    /// drag past the track ends pins to 0/1. Degenerate track (pill fills it) → 0.
-    static func pillFraction(offset: CGFloat, track: CGFloat, pill: CGFloat) -> CGFloat {
-        let travel = max(0, track - pill)
-        guard travel > 0 else { return 0 }
-        return min(max(offset / travel + 0.5, 0), 1)
+    /// Jog-wheel scrolling: how many whole lines to scroll during `elapsed` seconds
+    /// with the pill held `offset` points off center (`travel` = points available in
+    /// each direction). Negative = up. The fractional part carries in `remainder`, so
+    /// a gentle hold still creeps line by line instead of truncating to nothing.
+    ///
+    /// Rate grows with the SQUARE of the deflection: precise near the middle, fast at
+    /// the ends, which is what makes one small handle able to cover both.
+    static func jogLines(offset: CGFloat, travel: CGFloat, elapsed: CGFloat,
+                         remainder: inout CGFloat) -> Int {
+        guard travel > 0, elapsed > 0 else { return 0 }
+        let deflection = min(max(offset / travel, -1), 1)
+        let magnitude = abs(deflection)
+        guard magnitude > jogDeadZone else { remainder = 0; return 0 }
+        let past = (magnitude - jogDeadZone) / (1 - jogDeadZone)
+        let lines = past * past * jogMaxLinesPerSecond * elapsed * (deflection < 0 ? -1 : 1)
+        let total = lines + remainder
+        let whole = Int(total)          // truncates toward zero — right in both directions
+        remainder = total - CGFloat(whole)
+        return whole
     }
 
     /// Grid cell under a point, clamped to the grid — off-view touches select

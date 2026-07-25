@@ -111,7 +111,6 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private let handle: TermHandle
     private var tv: DchTerminalView!
     private var started = false
-    private var scrollRemainder: CGFloat = 0
     private var selAnchor: Position?
     private var scrollThumb: ScrollThumb?
     private var kbConstraint: NSLayoutConstraint!
@@ -307,6 +306,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
         out.append(contentsOf: Array("\u{1b}8".utf8))
         tv.feed(byteArray: out[...])
+        // The mirror IS the live screen, so show the live screen: painting it while
+        // the user is scrolled back leaves the caret and the input row above the
+        // viewport, looking like input landing outside the terminal.
+        if tv.canScroll { tv.scroll(toPosition: 1) }
         relift()
     }
 
@@ -397,15 +400,13 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         tv.addGestureRecognizer(pan)
     }
 
-    /// Big auto-hiding scroll thumb on the right edge. Tap the screen to reveal it;
-    /// drag it to scroll ONLY the terminal view — no bytes reach the remote app
-    /// except the scroll itself.
+    /// Big auto-hiding jog wheel on the right edge. Tap the screen to reveal it;
+    /// hold it off center to scroll that way, faster the further you pull. Only the
+    /// terminal view scrolls — no bytes reach the remote app except the scroll itself.
     private func addScrollThumb() {
         let thumb = ScrollThumb()
         thumb.translatesAutoresizingMaskIntoConstraints = false
-        thumb.onDragStart = { [weak self] in self?.scrollRemainder = 0 }
-        thumb.onDrag = { [weak self] dy, fraction in self?.thumbScroll(dy: dy, fraction: fraction) }
-        thumb.positionProvider = { [weak self] in self?.absoluteScrollFraction() ?? nil }
+        thumb.onJog = { [weak self] lines in self?.jogScroll(lines) }
         view.addSubview(thumb)
         NSLayoutConstraint.activate([
             thumb.rightAnchor.constraint(equalTo: view.rightAnchor),
@@ -416,31 +417,12 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         scrollThumb = thumb
     }
 
-    /// Thumb drag → scroll. With local scrollback the pill is an ABSOLUTE
-    /// scrollbar: its track fraction maps straight onto the whole buffer, so a
-    /// full sweep covers everything however long the history is. Without
-    /// scrollback (mouse-mode / alternate screen) fall back to relative
-    /// line-steps with remainder carry.
-    /// Where the viewport sits in the whole buffer, or nil when that question has no
-    /// answer. SwiftTerm reports 0 for the alternate screen — which is where every
-    /// full-screen TUI lives — so trusting it parks the pill at the top no matter
-    /// where the remote app has scrolled to. There the pill is a relative jog
-    /// handle, not a position indicator.
-    func absoluteScrollFraction() -> CGFloat? {
-        tv.canScroll ? CGFloat(tv.scrollPosition) : nil
-    }
-
-    private func thumbScroll(dy: CGFloat, fraction: CGFloat) {
-        if tv.canScroll {
-            tv.scroll(toPosition: Double(fraction))
-            return
-        }
-        let term = tv.getTerminal()
-        let cell = tv.bounds.height / CGFloat(max(term.rows, 1))
-        let steps = TerminalMath.lineSteps(dy: dy, cell: cell, remainder: &scrollRemainder)
-        guard steps != 0 else { return }
-        // Thumb moving DOWN reveals newer content = scroll down (natural scrollbar).
-        emitScroll(up: steps < 0, count: abs(steps), term: term)
+    /// One tick of the jog wheel: signed whole lines, negative = up. Every scroll in
+    /// the app funnels through `emitScroll`, so mouse-mode apps, alternate-screen TUIs
+    /// and plain scrollback each get the form they understand.
+    func jogScroll(_ lines: Int) {
+        guard lines != 0 else { return }
+        emitScroll(up: lines < 0, count: abs(lines), term: tv.getTerminal())
     }
 
     private func addTapGesture() {
@@ -533,7 +515,12 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private func caretLiftOffset(overlap: CGFloat) -> CGFloat {
         let visibleH = tv.bounds.height - ShortcutBar.barHeight - overlap
         let contentBottom = tv.contentBottomY() + 8   // small breathing room below content
-        return max(0, contentBottom - visibleH)
+        // Never lift past the strip the bar and keyboard actually cover: clearing them
+        // is the whole job, and anything beyond pushes the input row off the TOP of
+        // the screen. The cell height behind `contentBottom` comes from SwiftTerm's
+        // caret frame, which is briefly stale mid-rotation — this is the ceiling that
+        // keeps that from throwing the layout.
+        return min(max(0, contentBottom - visibleH), overlap + ShortcutBar.barHeight)
     }
 
     /// Slide the terminal up by `offset` and lay out the bar, riding the keyboard's
@@ -609,13 +596,11 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
     func setTerminalTitle(source: TerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-    func scrolled(source: TerminalView, position: Double) {
-        // Keep the pill in sync when the content scrolls by any other means
-        // (tap-scroll, streamed output snapping to the bottom, …).
-        // `position` is 0 for the alternate screen whatever the remote app scrolled
-        // to, so it can't be trusted here — ask for the real one.
-        MainActor.assumeIsolated { scrollThumb?.setPosition(absoluteScrollFraction()) }
-    }
+    /// Nothing to sync: the jog wheel shows no position, it rests centered. (Reporting
+    /// one was the bug — SwiftTerm defines `position` as 0 for the alternate screen,
+    /// where every full-screen TUI lives, so the pill jumped to the top on every chunk
+    /// of output.)
+    func scrolled(source: TerminalView, position: Double) {}
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
     func bell(source: TerminalView) {}
     func clipboardCopy(source: TerminalView, content: Data) {}
@@ -646,28 +631,32 @@ enum TerminalFont {
     }
 }
 
-/// Fat auto-hiding scrollbar for the terminal. A 44 pt touch strip on the right
-/// edge that ALWAYS owns its touches — a pan there can never start a text
-/// selection on the terminal below; any touch reveals the pill, which fades
-/// after idle. Dragging reports both the incremental dy and the pill's absolute
-/// track fraction, so the host can scroll absolutely (scrollback) or relatively
-/// (alt-screen/mouse-mode).
+/// Auto-hiding jog wheel for scrolling the terminal. A 44 pt touch strip on the
+/// right edge that ALWAYS owns its touches — a pan there can never start a text
+/// selection on the terminal below.
+///
+/// It is a spring-centered wheel, not a scrollbar: the pill rests in the middle,
+/// scrolls while held off center (faster the further off), and springs back on
+/// release. A scrollbar can't work here — the alternate screen every full-screen TUI
+/// runs in has no scrollback to be positioned in, so there is no position to show
+/// and no absolute target to drag to.
 private final class ScrollThumb: UIView {
     static let trackWidth: CGFloat = 44
     private static let pillSize = CGSize(width: 18, height: 88)
     private static let idleDelay: TimeInterval = 1.6
+    /// Deflection is capped here rather than at the track ends: the wheel reaches full
+    /// speed within a thumb's reach, so scrolling never needs a full-screen drag.
+    private static let maxTravel: CGFloat = 90
 
-    var onDragStart: (() -> Void)?
-    /// (incremental dy in points, pill position as track fraction 0…1)
-    var onDrag: ((CGFloat, CGFloat) -> Void)?
-    /// Current scroll fraction of the content, or nil when the content has no
-    /// absolute position (alternate screen). Pulled to sync the pill on reveal and
-    /// after a drag; nil recenters the pill as a neutral jog handle.
-    var positionProvider: (() -> CGFloat?)?
+    /// Signed whole lines to scroll for this tick; negative = up.
+    var onJog: ((Int) -> Void)?
 
     private let pill = UIView()
     private var pillY: NSLayoutConstraint!
     private var hideTimer: Timer?
+    private var jog: CADisplayLink?
+    private var lastTick: CFTimeInterval = 0
+    private var remainder: CGFloat = 0
     private var dragging = false
 
     override init(frame: CGRect) {
@@ -700,23 +689,8 @@ private final class ScrollThumb: UIView {
 
     func show() {
         hideTimer?.invalidate()
-        if !dragging { move(to: positionProvider?() ?? nil) }
         if pill.alpha < 1 { UIView.animate(withDuration: 0.15) { self.pill.alpha = 1 } }
         scheduleHide()
-    }
-
-    /// External sync (content scrolled by other means). Ignored mid-drag so the
-    /// pill stays under the finger.
-    func setPosition(_ fraction: CGFloat?) {
-        guard !dragging else { return }
-        move(to: fraction)
-    }
-
-    /// nil = no absolute position; park the pill mid-track so a jog drag has room
-    /// both ways.
-    private func move(to fraction: CGFloat?) {
-        pillY.constant = TerminalMath.pillOffset(fraction: fraction ?? 0.5,
-                                                 track: bounds.height, pill: Self.pillSize.height)
     }
 
     private func scheduleHide() {
@@ -731,24 +705,51 @@ private final class ScrollThumb: UIView {
         switch g.state {
         case .began:
             dragging = true
+            remainder = 0
             show()
             hideTimer?.invalidate()
-            onDragStart?()
+            startJog()
         case .changed:
             let dy = g.translation(in: self).y
             g.setTranslation(.zero, in: self)
-            // Keep the pill under the finger, clamped to the track.
-            let half = max(0, (bounds.height - Self.pillSize.height) / 2)
-            pillY.constant = min(max(pillY.constant + dy, -half), half)
-            onDrag?(dy, TerminalMath.pillFraction(offset: pillY.constant,
-                                                  track: bounds.height, pill: Self.pillSize.height))
+            let limit = min(Self.maxTravel, max(0, (bounds.height - Self.pillSize.height) / 2))
+            pillY.constant = min(max(pillY.constant + dy, -limit), limit)
         default:
             dragging = false
-            // Absolute mode: snap to where we actually ended up. Jog mode: recenter,
-            // or the pill sticks to the track end and the next drag has no travel.
-            move(to: positionProvider?() ?? nil)
+            stopJog()
+            recenter()
             scheduleHide()
         }
+    }
+
+    /// Spring back to the middle so the next pull has full travel both ways.
+    private func recenter() {
+        pillY.constant = 0
+        UIView.animate(withDuration: 0.2, delay: 0, usingSpringWithDamping: 0.7,
+                       initialSpringVelocity: 0) { self.layoutIfNeeded() }
+    }
+
+    private func startJog() {
+        guard jog == nil else { return }
+        lastTick = CACurrentMediaTime()
+        let link = CADisplayLink(target: self, selector: #selector(tick))
+        link.add(to: .main, forMode: .common)
+        jog = link
+    }
+
+    private func stopJog() {
+        jog?.invalidate()
+        jog = nil
+    }
+
+    @objc private func tick() {
+        let now = CACurrentMediaTime()
+        let elapsed = CGFloat(now - lastTick)
+        lastTick = now
+        let travel = min(Self.maxTravel, max(0, (bounds.height - Self.pillSize.height) / 2))
+        let lines = TerminalMath.jogLines(offset: pillY.constant, travel: travel,
+                                         elapsed: elapsed, remainder: &remainder)
+        if lines != 0 { onJog?(lines) }
     }
 }
 

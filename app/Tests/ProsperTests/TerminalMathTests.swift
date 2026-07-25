@@ -3,73 +3,58 @@ import XCTest
 
 final class TerminalMathTests: XCTestCase {
 
-    // MARK: lineSteps — the scroll feel
+    // MARK: jogLines — the scroll wheel feel
 
-    func testWholeCellsProduceSteps() {
+    /// The wheel rests centered, so a resting (or barely nudged) thumb must not
+    /// scroll at all — otherwise the screen creeps whenever a finger sits on it.
+    func testDeadZoneNeverScrolls() {
         var rem: CGFloat = 0
-        XCTAssertEqual(TerminalMath.lineSteps(dy: 30, cell: 10, remainder: &rem), 3)
-        XCTAssertEqual(rem, 0)
+        XCTAssertEqual(TerminalMath.jogLines(offset: 0, travel: 90, elapsed: 1, remainder: &rem), 0)
+        XCTAssertEqual(TerminalMath.jogLines(offset: 8, travel: 90, elapsed: 1, remainder: &rem), 0)
+        XCTAssertEqual(TerminalMath.jogLines(offset: -8, travel: 90, elapsed: 1, remainder: &rem), 0)
     }
 
-    func testSubCellDragsAccumulate() {
+    /// Direction: pulled up scrolls up (negative), pulled down scrolls down.
+    func testDirectionFollowsTheDeflection() {
         var rem: CGFloat = 0
-        // Four 3-pt drags over a 10-pt cell: steps land on the 4th drag.
-        XCTAssertEqual(TerminalMath.lineSteps(dy: 3, cell: 10, remainder: &rem), 0)
-        XCTAssertEqual(TerminalMath.lineSteps(dy: 3, cell: 10, remainder: &rem), 0)
-        XCTAssertEqual(TerminalMath.lineSteps(dy: 3, cell: 10, remainder: &rem), 0)
-        XCTAssertEqual(TerminalMath.lineSteps(dy: 3, cell: 10, remainder: &rem), 1)
-        XCTAssertEqual(rem, 2, accuracy: 0.001)
+        XCTAssertLessThan(TerminalMath.jogLines(offset: -90, travel: 90, elapsed: 1, remainder: &rem), 0)
+        rem = 0
+        XCTAssertGreaterThan(TerminalMath.jogLines(offset: 90, travel: 90, elapsed: 1, remainder: &rem), 0)
     }
 
-    func testNegativeDragScrollsOtherWay() {
+    /// Full deflection runs at the stated top speed, and half a pull is much slower
+    /// than half of it (the square law is what makes one short handle usable).
+    func testSpeedGrowsFasterThanTheDeflection() {
         var rem: CGFloat = 0
-        XCTAssertEqual(TerminalMath.lineSteps(dy: -25, cell: 10, remainder: &rem), -2)
-        XCTAssertEqual(rem, -5, accuracy: 0.001)
+        let full = TerminalMath.jogLines(offset: 90, travel: 90, elapsed: 1, remainder: &rem)
+        XCTAssertEqual(CGFloat(full), TerminalMath.jogMaxLinesPerSecond, accuracy: 1)
+        rem = 0
+        let half = TerminalMath.jogLines(offset: 45, travel: 90, elapsed: 1, remainder: &rem)
+        XCTAssertLessThan(CGFloat(half), CGFloat(full) / 3)
+        XCTAssertGreaterThan(half, 0, "half a pull still has to scroll")
     }
 
-    func testDirectionFlipMidDrag() {
+    /// A display-link tick is ~16 ms, far less than one line at gentle deflections —
+    /// without the carry a slow hold would truncate to zero forever.
+    func testSlowHoldStillCreepsLineByLine() {
         var rem: CGFloat = 0
-        _ = TerminalMath.lineSteps(dy: 7, cell: 10, remainder: &rem)    // rem 7
-        // 7 - 9 = -2 → no step yet, remainder keeps the overshoot.
-        XCTAssertEqual(TerminalMath.lineSteps(dy: -9, cell: 10, remainder: &rem), 0)
-        XCTAssertEqual(rem, -2, accuracy: 0.001)
+        var lines = 0
+        for _ in 0..<60 { lines += TerminalMath.jogLines(offset: 30, travel: 90,
+                                                        elapsed: 1.0 / 60, remainder: &rem) }
+        XCTAssertGreaterThan(lines, 0, "a one-second gentle hold scrolled nothing")
+        XCTAssertLessThan(lines, 15, "gentle hold should creep, not race")
     }
 
-    func testDegenerateCellNeverDividesByZero() {
+    /// Dragging past the cap doesn't scroll faster than the cap, and a zero-height
+    /// track never divides by zero.
+    func testDeflectionClampsAndDegenerateTrackIsSafe() {
         var rem: CGFloat = 0
-        XCTAssertEqual(TerminalMath.lineSteps(dy: 5, cell: 0, remainder: &rem), 5)
-    }
-
-    // MARK: pillOffset / pillFraction — the absolute scrollbar mapping
-
-    func testPillMappingEndpointsAndMiddle() {
-        // 400-pt track, 88-pt pill → 312 pt of travel, centered on the track middle.
-        XCTAssertEqual(TerminalMath.pillOffset(fraction: 0, track: 400, pill: 88), -156)
-        XCTAssertEqual(TerminalMath.pillOffset(fraction: 0.5, track: 400, pill: 88), 0)
-        XCTAssertEqual(TerminalMath.pillOffset(fraction: 1, track: 400, pill: 88), 156)
-        XCTAssertEqual(TerminalMath.pillFraction(offset: -156, track: 400, pill: 88), 0)
-        XCTAssertEqual(TerminalMath.pillFraction(offset: 0, track: 400, pill: 88), 0.5)
-        XCTAssertEqual(TerminalMath.pillFraction(offset: 156, track: 400, pill: 88), 1)
-    }
-
-    func testPillMappingRoundTrips() {
-        for f: CGFloat in [0, 0.1, 0.25, 0.5, 0.8, 1] {
-            let off = TerminalMath.pillOffset(fraction: f, track: 600, pill: 88)
-            XCTAssertEqual(TerminalMath.pillFraction(offset: off, track: 600, pill: 88), f, accuracy: 0.0001)
-        }
-    }
-
-    func testPillMappingClampsOutOfRange() {
-        XCTAssertEqual(TerminalMath.pillOffset(fraction: -3, track: 400, pill: 88), -156)
-        XCTAssertEqual(TerminalMath.pillOffset(fraction: 7, track: 400, pill: 88), 156)
-        XCTAssertEqual(TerminalMath.pillFraction(offset: -9999, track: 400, pill: 88), 0)
-        XCTAssertEqual(TerminalMath.pillFraction(offset: 9999, track: 400, pill: 88), 1)
-    }
-
-    func testPillMappingDegenerateTrack() {
-        // Pill as tall as (or taller than) the track: no travel, never divide by zero.
-        XCTAssertEqual(TerminalMath.pillOffset(fraction: 1, track: 88, pill: 88), 0)
-        XCTAssertEqual(TerminalMath.pillFraction(offset: 10, track: 50, pill: 88), 0)
+        let capped = TerminalMath.jogLines(offset: 900, travel: 90, elapsed: 1, remainder: &rem)
+        rem = 0
+        let full = TerminalMath.jogLines(offset: 90, travel: 90, elapsed: 1, remainder: &rem)
+        XCTAssertEqual(capped, full)
+        rem = 0
+        XCTAssertEqual(TerminalMath.jogLines(offset: 5, travel: 0, elapsed: 1, remainder: &rem), 0)
     }
 
     // MARK: gridCell — the selection mapping
@@ -97,11 +82,12 @@ final class TerminalMathTests: XCTestCase {
 
     // MARK: hot-path budget — scroll math must be effectively free
 
-    func testLineStepsHotPathBudget() {
+    func testJogHotPathBudget() {
         var rem: CGFloat = 0
         let start = Date()
         for i in 0..<100_000 {
-            _ = TerminalMath.lineSteps(dy: CGFloat(i % 13) - 6, cell: 14, remainder: &rem)
+            _ = TerminalMath.jogLines(offset: CGFloat(i % 181) - 90, travel: 90,
+                                      elapsed: 1.0 / 60, remainder: &rem)
         }
         // 100k calls ≪ one frame; generous CI headroom, still catches an
         // accidental allocation or formatter sneaking into the pan tick.
