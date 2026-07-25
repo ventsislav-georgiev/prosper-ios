@@ -99,6 +99,8 @@ final class SpyStream: TerminalStream {
     var resizes: [(cols: Int, rows: Int)] = []
     var redraws = 0
     var snapshots = 0
+    var clipboards: [Data] = []
+    var sent: [[UInt8]] = []
     var onScreen: ((ArraySlice<UInt8>) -> Void)?
     let exited = false
     private var cont: AsyncStream<ArraySlice<UInt8>>.Continuation!
@@ -106,10 +108,11 @@ final class SpyStream: TerminalStream {
         AsyncStream { self.cont = $0 }
     }()
 
-    func send(_ bytes: ArraySlice<UInt8>) {}
+    func send(_ bytes: ArraySlice<UInt8>) { sent.append(Array(bytes)) }
     func resize(cols: Int, rows: Int) { resizes.append((cols, rows)) }
     func requestRedraw() { redraws += 1 }
     func requestSnapshot() { snapshots += 1 }
+    func putClipboard(_ image: Data) { clipboards.append(image) }
     func close() { cont?.finish() }
 
     /// Feed bytes as if the remote wrote them.

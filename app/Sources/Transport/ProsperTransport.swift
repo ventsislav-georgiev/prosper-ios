@@ -20,7 +20,8 @@ final class ProsperTransport: SessionTransport {
     private enum F {
         static let attach: UInt8 = 0x01, create: UInt8 = 0x02, list: UInt8 = 0x03
         static let kill: UInt8 = 0x04, resize: UInt8 = 0x05, rename: UInt8 = 0x06
-        static let machineInfo: UInt8 = 0x08, snapshot: UInt8 = 0x09, data: UInt8 = 0x10
+        static let machineInfo: UInt8 = 0x08, snapshot: UInt8 = 0x09, putClipboard: UInt8 = 0x0a
+        static let data: UInt8 = 0x10
         static let listResp: UInt8 = 0x11, exit: UInt8 = 0x12, error: UInt8 = 0x13, ok: UInt8 = 0x14
         static let machineInfoResp: UInt8 = 0x18, snapshotResp: UInt8 = 0x19
     }
@@ -209,6 +210,7 @@ final class ProsperStream: TerminalStream {
 
     private enum F {
         static let resize: UInt8 = 0x05, redraw: UInt8 = 0x07, snapshot: UInt8 = 0x09
+        static let putClipboard: UInt8 = 0x0a
         static let data: UInt8 = 0x10, exit: UInt8 = 0x12, snapshotResp: UInt8 = 0x19
     }
 
@@ -261,6 +263,10 @@ final class ProsperStream: TerminalStream {
 
     func requestSnapshot() {
         conn.send(content: FrameCodec.encode(F.snapshot, Data()), completion: .contentProcessed { _ in })
+    }
+
+    func putClipboard(_ image: Data) {
+        conn.send(content: FrameCodec.encode(F.putClipboard, image), completion: .contentProcessed { _ in })
     }
 
     func close() {

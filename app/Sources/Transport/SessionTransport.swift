@@ -36,6 +36,11 @@ protocol TerminalStream: AnyObject {
     /// it even when the TUI refuses to redraw. Never fires when the session's
     /// master has no mirror (older dch).
     func requestSnapshot()
+    /// Put an image on the CLIPBOARD OF THE MACHINE running the session, so the
+    /// ctrl-V we send next pastes it. Claude Code reads its own machine's
+    /// clipboard, and Universal Clipboard doesn't reliably carry phone images
+    /// there, so the bytes travel with the request.
+    func putClipboard(_ image: Data)
     /// Sink for `requestSnapshot` replies — a full screen in ANSI, ready to feed.
     var onScreen: ((ArraySlice<UInt8>) -> Void)? { get set }
     /// Detach this client (session keeps running).

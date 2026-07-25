@@ -179,6 +179,7 @@ final class DemoStream: TerminalStream {
     func requestRedraw() {}
     var onScreen: ((ArraySlice<UInt8>) -> Void)?
     func requestSnapshot() {}   // the demo screen is already whatever we scripted
+    func putClipboard(_ image: Data) {}
     func close() { cont.finish() }
 }
 

@@ -338,12 +338,35 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             if let s = UIPasteboard.general.string, let d = s.data(using: .utf8), !d.isEmpty {
                 conn.send(ArraySlice(d))
             }
+        case .pasteImage:
+            pasteImage(then: key.bytes)
         case .bytes:
             conn.send(ArraySlice(key.bytes))
         case .redraw:
             forceRedraw()
         }
         if tv.isFirstResponder == false { _ = tv.becomeFirstResponder() }
+    }
+
+    /// Push the copied image to the remote machine's clipboard, then send the paste
+    /// keystroke (ctrl-V) that makes the TUI read it. Claude Code's image paste looks
+    /// at the clipboard of the machine it runs on, so the keystroke alone only ever
+    /// worked when Universal Clipboard had carried the phone's image to the Mac.
+    ///
+    /// With nothing image-shaped on the pasteboard, still send the keystroke: the
+    /// remote clipboard may well hold the image already.
+    ///
+    /// ponytail: sends the image at full size. Downscale if big screenshots ever feel
+    /// slow over the tailnet.
+    func pasteImage(then keystroke: [UInt8]) {
+        let pb = UIPasteboard.general
+        // PNG/JPEG straight from the pasteboard when it's there — re-encoding a
+        // UIImage would drop it to a screen-scaled bitmap.
+        let raw = pb.data(forPasteboardType: "public.png")
+            ?? pb.data(forPasteboardType: "public.jpeg")
+            ?? pb.image?.pngData()
+        if let raw, !raw.isEmpty { conn.putClipboard(raw) }
+        conn.send(ArraySlice(keystroke))
     }
 
     /// Map a byte to its control-char form (a–z/A–Z → ^A–^Z, others via `& 0x1f`).

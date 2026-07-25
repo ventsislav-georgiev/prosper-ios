@@ -49,6 +49,11 @@ final class SessionConnection: ObservableObject {
 
     func redraw() { stream?.requestRedraw() }
 
+    /// Image paste: load the remote machine's clipboard, then let the caller send
+    /// the paste keystroke. Frames are ordered on one connection and the server sets
+    /// the clipboard before acking, so a ctrl-V sent right after lands second.
+    func putClipboard(_ image: Data) { stream?.putClipboard(image) }
+
     /// Repair the screen after anything that can leave it stale (rotation, font
     /// change, foreground, reattach). Two independent paths, weakest first:
     /// `requestRedraw` nudges the remote program to repaint itself, and the

@@ -6,7 +6,7 @@ import UIKit
 /// `.pasteText` injects the iOS clipboard string; `.redraw` jiggles the pty size
 /// so the remote TUI repaints.
 struct ShortcutKey: Codable, Hashable, Identifiable {
-    enum Kind: String, Codable { case bytes, ctrl, pasteText, redraw }
+    enum Kind: String, Codable { case bytes, ctrl, pasteText, pasteImage, redraw }
     var id: String
     var label: String
     var kind: Kind
@@ -61,8 +61,10 @@ enum Shortcuts {
         ShortcutKey(id: "slash",   label: "/",     kind: .bytes, bytes: [0x2f]),
         ShortcutKey(id: "pipe",    label: "|",     kind: .bytes, bytes: [0x7c]),
         ShortcutKey(id: "paste",   label: "paste", kind: .pasteText, systemImage: "doc.on.clipboard"),
-        // Ctrl-V: Claude Code grabs the image from the *Mac's* clipboard.
-        ShortcutKey(id: "pasteImg", label: "paste img", kind: .bytes, bytes: [0x16], systemImage: "photo"),
+        // Ships the copied image to the remote machine's clipboard, then sends
+        // ctrl-V — which is what Claude Code reads. Sending ctrl-V alone only worked
+        // when Universal Clipboard happened to have carried the image over.
+        ShortcutKey(id: "pasteImg", label: "paste img", kind: .pasteImage, bytes: [0x16], systemImage: "photo"),
         // ESC+CR = meta/option-enter; Claude Code (and most TUIs) maps it to "insert
         // newline, don't submit". ponytail: relies on Claude's meta-enter binding; if a
         // shell needs a literal LF instead, bytes [0x0a] is the fallback.
@@ -84,7 +86,10 @@ enum Shortcuts {
               let keys = try? JSONDecoder().decode([ShortcutKey].self, from: data),
               !keys.isEmpty
         else { return defaults }
-        return keys
+        // Keep the user's SET and ORDER, but take each key's definition from the
+        // catalog: a saved bar from an older build otherwise pins the old bytes/kind
+        // forever (an image-paste key stuck on plain ctrl-V, say).
+        return keys.map { saved in catalog.first { $0.id == saved.id } ?? saved }
     }
 
     static func save(_ keys: [ShortcutKey]) {
