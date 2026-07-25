@@ -47,7 +47,20 @@ final class SessionConnection: ObservableObject {
         stream?.resize(cols: cols, rows: rows)
     }
 
-    func redraw() { stream?.requestRedraw() }
+    func redraw() {
+        assertSize()
+        stream?.requestRedraw()
+    }
+
+    /// Re-tell the session how wide we are before every repair.
+    ///
+    /// A dch session has ONE size, and the last client to report wins — other phones,
+    /// the Mac's own terminal, and (until keepalive reaps them) clients left behind by
+    /// dropped connections all move it. Once someone else has narrowed the session, our
+    /// grid hasn't changed, so the resize-on-grid-change path stays silent and the
+    /// remote program keeps wrapping to a width we don't have: the screen looks garbled
+    /// and the redraw button "does nothing" because it repaints at the wrong width.
+    private func assertSize() { stream?.resize(cols: cols, rows: rows) }
 
     /// Image paste: load the remote machine's clipboard, then let the caller send
     /// the paste keystroke. Frames are ordered on one connection and the server sets
@@ -68,6 +81,7 @@ final class SessionConnection: ObservableObject {
     /// terminal kept the old, narrower layout. While bytes are still arriving the
     /// screen is repainting itself and needs no help from us.
     func resync() {
+        assertSize()
         stream?.requestRedraw()
         snapshotWait?.cancel()
         snapshotWait = Task { [weak self] in

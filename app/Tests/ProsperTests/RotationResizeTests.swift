@@ -52,6 +52,29 @@ final class RotationResizeTests: XCTestCase {
     /// screen on top of the correct one — that is what kept the terminal narrow after
     /// rotating. So the request must wait for quiet, and be dropped if output never
     /// stops.
+    /// A dch session has one size and the last client to report wins, so another
+    /// client (or one left behind by a dropped connection) can narrow it under us
+    /// without our grid changing. Every repair therefore re-states our size, or the
+    /// remote keeps wrapping to a width we don't have and the redraw button repaints
+    /// the same garbled screen.
+    func testRepairRestatesOurSize() async throws {
+        let transport = SpyTransport()
+        let conn = SessionConnection(transport: transport,
+                                     session: DchSession(name: "t", alias: nil))
+        conn.onBytes = { _ in }
+        conn.start(cols: 120, rows: 30)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let spy = transport.stream
+        spy.resizes.removeAll()
+
+        conn.redraw()
+        XCTAssertEqual(spy.resizes.map(\.cols), [120], "redraw went out without our width")
+
+        conn.resync()
+        XCTAssertEqual(spy.resizes.count, 2, "resync went out without our width")
+        XCTAssertEqual(spy.resizes.last?.rows, 30)
+    }
+
     func testSnapshotWaitsForOutputToGoQuiet() async throws {
         let transport = SpyTransport()
         let conn = SessionConnection(transport: transport,

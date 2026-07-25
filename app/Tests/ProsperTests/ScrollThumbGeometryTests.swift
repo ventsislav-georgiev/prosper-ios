@@ -34,4 +34,24 @@ final class ScrollThumbGeometryTests: XCTestCase {
         XCTAssertEqual(pillCenter, visibleMiddle, accuracy: 1,
                        "pill rests at \(pillCenter) but the middle of the screen is \(visibleMiddle)")
     }
+
+    /// With the keyboard up the visible screen ends at the shortcut bar, and the wheel
+    /// has to rest in the middle of THAT — measuring against the keyboard height left
+    /// the pill a safe-area inset low.
+    func testPillRestsInTheMiddleAboveTheKeyboard() throws {
+        let vc = makeVC(CGSize(width: 393, height: 852))
+        let keyboard = CGRect(x: 0, y: 500, width: 393, height: 352)
+        NotificationCenter.default.post(
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect: keyboard)])
+        vc.view.layoutIfNeeded()
+
+        let (strip, pill) = try thumbAndPill(vc)
+        let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar }, "no shortcut bar")
+        let pillCenter = pill.convert(CGPoint(x: 0, y: pill.bounds.midY), to: vc.view).y
+        XCTAssertEqual(strip.frame.maxY, bar.frame.minY, accuracy: 1,
+                       "the strip must end where the shortcut bar begins")
+        XCTAssertEqual(pillCenter, bar.frame.minY / 2, accuracy: 1,
+                       "pill rests at \(pillCenter); the middle of the visible screen is \(bar.frame.minY / 2)")
+    }
 }
