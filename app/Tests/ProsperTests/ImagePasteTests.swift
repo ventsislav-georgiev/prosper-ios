@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import UniformTypeIdentifiers
 @testable import Prosper
 
 /// The image button only ever sent ctrl-V, which makes Claude Code read the clipboard
@@ -39,6 +40,32 @@ final class ImagePasteTests: XCTestCase {
 
         XCTAssertEqual(spy.clipboards, [png], "the copied image never reached the remote clipboard")
         XCTAssertEqual(spy.sent, [[0x16]], "ctrl-V must follow, or nothing pastes")
+    }
+
+    /// Photos hands over HEIC/JPEG as readily as PNG, and the far end reads the
+    /// clipboard as PNG — so anything else has to be converted before it ships.
+    func testNonPNGImageIsConvertedBeforeSending() async throws {
+        let (vc, spy) = try await makeVC()
+        let jpeg = UIImage(data: png)!.jpegData(compressionQuality: 0.9)!
+        UIPasteboard.general.setData(jpeg, forPasteboardType: UTType.jpeg.identifier)
+
+        vc.pasteImage(then: [0x16])
+
+        XCTAssertEqual(spy.clipboards.count, 1, "a JPEG on the pasteboard shipped nothing")
+        XCTAssertEqual(spy.clipboards.first?.prefix(4).map { $0 }, [0x89, 0x50, 0x4e, 0x47],
+            "shipped bytes must be PNG — Claude Code asks the clipboard for «class PNGf»")
+    }
+
+    /// Text on the clipboard must not be read or shipped (and must not trigger iOS's
+    /// paste prompt).
+    func testTextOnTheClipboardShipsNoImage() async throws {
+        let (vc, spy) = try await makeVC()
+        UIPasteboard.general.string = "not an image"
+
+        vc.pasteImage(then: [0x16])
+
+        XCTAssertEqual(spy.clipboards, [])
+        XCTAssertEqual(spy.sent, [[0x16]])
     }
 
     /// Nothing image-shaped on the pasteboard: still send the keystroke — the remote

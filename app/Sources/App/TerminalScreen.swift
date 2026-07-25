@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftTerm
 import UIKit
+import UniformTypeIdentifiers
 
 /// Live terminal for one session. SwiftTerm renders; `SessionConnection` keeps the
 /// byte pipe alive across drops. A status chip surfaces only when reconnecting.
@@ -362,14 +363,25 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// ponytail: sends the image at full size. Downscale if big screenshots ever feel
     /// slow over the tailnet.
     func pasteImage(then keystroke: [UInt8]) {
-        let pb = UIPasteboard.general
-        // PNG/JPEG straight from the pasteboard when it's there — re-encoding a
-        // UIImage would drop it to a screen-scaled bitmap.
-        let raw = pb.data(forPasteboardType: "public.png")
-            ?? pb.data(forPasteboardType: "public.jpeg")
-            ?? pb.image?.pngData()
-        if let raw, !raw.isEmpty { conn.putClipboard(raw) }
+        if let png = copiedImagePNG() { conn.putClipboard(png) }
         conn.send(ArraySlice(keystroke))
+    }
+
+    /// The copied image as PNG, whatever the pasteboard is holding it as. Photos hands
+    /// over HEIC as often as PNG, and Claude Code reads the clipboard as PNG
+    /// (`the clipboard as «class PNGf»`), so anything else is converted here rather
+    /// than shipped in a form the far end can't use.
+    func copiedImagePNG() -> Data? {
+        let pb = UIPasteboard.general
+        // `hasImages` answers from the type list alone — no paste prompt, and nothing
+        // read — so a bar press with text on the clipboard stays silent.
+        guard pb.hasImages else { return nil }
+        if let png = pb.data(forPasteboardType: UTType.png.identifier), !png.isEmpty { return png }
+        for id in pb.types where UTType(id)?.conforms(to: .image) == true {
+            guard let data = pb.data(forPasteboardType: id), !data.isEmpty else { continue }
+            if let png = UIImage(data: data)?.pngData() { return png }
+        }
+        return pb.image?.pngData()
     }
 
     /// Map a byte to its control-char form (a–z/A–Z → ^A–^Z, others via `& 0x1f`).
@@ -408,10 +420,14 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         thumb.translatesAutoresizingMaskIntoConstraints = false
         thumb.onJog = { [weak self] lines in self?.jogScroll(lines) }
         view.addSubview(thumb)
+        // Bottom-anchored to the shortcut bar, NOT to the view: the bar sits on top of
+        // the keyboard and overlays the terminal's lower rows, so with the keyboard up
+        // the visible terminal ends there. Anchored to the view, the wheel rested
+        // half a keyboard below the middle of what you can actually see.
         NSLayoutConstraint.activate([
             thumb.rightAnchor.constraint(equalTo: view.rightAnchor),
             thumb.topAnchor.constraint(equalTo: tv.topAnchor),
-            thumb.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            thumb.bottomAnchor.constraint(equalTo: shortcutBar?.topAnchor ?? view.safeAreaLayoutGuide.bottomAnchor),
             thumb.widthAnchor.constraint(equalToConstant: ScrollThumb.trackWidth),
         ])
         scrollThumb = thumb
