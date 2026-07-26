@@ -31,6 +31,15 @@ final class TerminalPrefsTests: XCTestCase {
         XCTAssertEqual(TerminalPrefs.fontSize, TerminalPrefs.range.lowerBound, accuracy: 0.001)
     }
 
+    /// The size is stored as a plain Double under the documented key: the editor's
+    /// stepper and the terminal's font both go through here, and a type/key drift would
+    /// silently reset the size on every launch.
+    func testStoresAPlainDoubleUnderTheSharedKey() {
+        TerminalPrefs.fontSize = 13
+        XCTAssertEqual(UserDefaults.standard.double(forKey: TerminalPrefs.sizeKey), 13, accuracy: 0.001)
+        XCTAssertEqual(TerminalPrefs.sizeKey, "terminalFontSize", "the key is the persisted contract")
+    }
+
     /// A zero/garbage value (never written, or cleared) must fall back, not through.
     func testZeroFallsBackToDefault() {
         UserDefaults.standard.set(0.0, forKey: TerminalPrefs.sizeKey)

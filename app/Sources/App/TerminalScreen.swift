@@ -125,6 +125,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var kbOverlap: CGFloat = 0   // keyboard cover height while shown (for live re-lift)
     private var kbFrame: CGRect?         // last keyboard frame (screen coords), re-applied after rotation
     private var ctrlArmed = false   // sticky Ctrl from the shortcut bar
+    /// Non-nil while a scroll burst is being assembled: SwiftTerm's output lands here
+    /// instead of the socket, so N wheel events cost one write. See `emitScroll`.
+    private var coalescing: [UInt8]?
     private var shortcutBar: ShortcutBar?
 
     /// macOS Terminal.app's vibrant 16-color ANSI palette (SwiftTerm's default is
@@ -603,7 +606,16 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         if tv.allowMouseReporting && term.mouseMode != .off {
             let flags = term.encodeButton(button: up ? 4 : 5, release: false,
                                           shift: false, meta: false, control: false)
+            // Each sendEvent hands its bytes straight back through the delegate, so a
+            // burst of ten wheel events used to be ten writes — and a mouse-mode app
+            // (Claude Code) answers EVERY one with a full repaint. That's what the
+            // batching was supposed to prevent, and this was the path it missed.
+            // Catching them turns the burst into the single write the far end wants.
+            coalescing = []
             for _ in 0..<count { term.sendEvent(buttonFlags: flags, x: 1, y: 1) }
+            let burst = coalescing ?? []
+            coalescing = nil
+            if !burst.isEmpty { conn.send(ArraySlice(burst)) }
         } else if term.isCurrentBufferAlternate {
             let seq: [UInt8] = up
                 ? (term.applicationCursor ? EscapeSequences.moveUpApp : EscapeSequences.moveUpNormal)
@@ -627,7 +639,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         MainActor.assumeIsolated {
-            if ctrlArmed, let b = data.first {
+            if coalescing != nil {
+                coalescing?.append(contentsOf: data)   // scroll burst — one write, see emitScroll
+            } else if ctrlArmed, let b = data.first {
                 ctrlArmed = false
                 shortcutBar?.ctrlArmed = false
                 conn.send(ArraySlice([controlByte(b)]))

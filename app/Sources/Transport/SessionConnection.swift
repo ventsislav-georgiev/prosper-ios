@@ -73,13 +73,17 @@ final class SessionConnection: ObservableObject {
     /// snapshot pulls dch's VT mirror — which is correct even when the program
     /// never repaints.
     ///
-    /// The snapshot waits for the session to go quiet, and is dropped if it never
-    /// does. That gate is what makes it safe: the mirror is only equal to the true
-    /// screen once the remote program has finished writing. Claude Code answers a
-    /// resize on its own render tick (~1s), so a fixed short delay painted the
-    /// pre-reflow screen over the correct one — after rotating the phone the
-    /// terminal kept the old, narrower layout. While bytes are still arriving the
-    /// screen is repainting itself and needs no help from us.
+    /// The snapshot prefers a quiet session: the mirror only equals the true screen once
+    /// the remote program has finished writing. Claude Code answers a resize on its own
+    /// render tick (~1s), so a fixed short delay painted the pre-reflow screen over the
+    /// correct one — after rotating the phone the terminal kept the old, narrower layout.
+    ///
+    /// But quiet is a preference, not a requirement, and waiting for it forever is what
+    /// made the redraw button useless on the one program that needs it most: a working
+    /// Claude Code repaints its spinner several times a second, so the gap between bytes
+    /// never opens, and the snapshot that would have fixed the screen was dropped. Past
+    /// the deadline we take the mirror as-is — well after any reflow, and a torn spinner
+    /// frame is corrected by its own next tick a moment later.
     func resync() {
         assertSize()
         stream?.requestRedraw()
@@ -89,7 +93,7 @@ final class SessionConnection: ObservableObject {
             while let self, !Task.isCancelled {
                 let sinceBytes = self.lastBytes.duration(to: .now)
                 let waited = start.duration(to: .now)
-                if waited > .seconds(4) { return }            // never settled — leave it alone
+                if waited > Self.snapshotDeadline { break }   // busy screen: take it anyway
                 if waited > .milliseconds(500), sinceBytes > .milliseconds(600) { break }
                 try? await Task.sleep(nanoseconds: 150_000_000)
             }
@@ -97,6 +101,11 @@ final class SessionConnection: ObservableObject {
             self.stream?.requestSnapshot()
         }
     }
+
+    /// How long to hold out for a quiet session before taking the mirror anyway. Past
+    /// Claude Code's ~1s render tick with margin, under the patience of a finger that
+    /// just pressed redraw.
+    static let snapshotDeadline: Duration = .milliseconds(2500)
 
     func close() {
         userClosed = true

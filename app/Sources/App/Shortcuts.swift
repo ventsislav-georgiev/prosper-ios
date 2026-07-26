@@ -30,7 +30,14 @@ enum TerminalPrefs {
             let v = CGFloat(UserDefaults.standard.double(forKey: sizeKey))
             return v > 0 ? clamp(v) : defaultSize
         }
-        set { UserDefaults.standard.set(Double(clamp(newValue)), forKey: sizeKey) }
+        set {
+            UserDefaults.standard.set(Double(clamp(newValue)), forKey: sizeKey)
+            // Flush now. UserDefaults writes back on its own schedule, and the size is
+            // typically changed and then the app is put away or force-quit within
+            // seconds — exactly the window where an unflushed write is lost and the
+            // terminal comes back at the default size next launch.
+            UserDefaults.standard.synchronize()
+        }
     }
 
     static func clamp(_ v: CGFloat) -> CGFloat { min(max(v, range.lowerBound), range.upperBound) }
@@ -43,9 +50,11 @@ enum Shortcuts {
 
     /// Everything the user can add. Default set is a curated subset (see `defaults`).
     static let catalog: [ShortcutKey] = [
-        ShortcutKey(id: "esc",     label: "esc",   kind: .bytes, bytes: [0x1b], systemImage: "escape"),
-        ShortcutKey(id: "tab",     label: "tab",   kind: .bytes, bytes: [0x09], systemImage: "increase.indent"),
-        ShortcutKey(id: "stab",    label: "⇧tab",  kind: .bytes, bytes: [0x1b, 0x5b, 0x5a], systemImage: "decrease.indent"),
+        // esc/tab/⇧tab read as words, not pictograms: `escape` and the indent arrows are
+        // both guessable-at-best, and the word is no wider than the glyph.
+        ShortcutKey(id: "esc",     label: "esc",   kind: .bytes, bytes: [0x1b]),
+        ShortcutKey(id: "tab",     label: "tab",   kind: .bytes, bytes: [0x09]),
+        ShortcutKey(id: "stab",    label: "⇧tab",  kind: .bytes, bytes: [0x1b, 0x5b, 0x5a]),
         ShortcutKey(id: "ctrl",    label: "ctrl",  kind: .ctrl),
         ShortcutKey(id: "ctlc",    label: "^C",    kind: .bytes, bytes: [0x03]),
         ShortcutKey(id: "ctld",    label: "^D",    kind: .bytes, bytes: [0x04]),
@@ -68,7 +77,9 @@ enum Shortcuts {
         // ESC+CR = meta/option-enter; Claude Code (and most TUIs) maps it to "insert
         // newline, don't submit". ponytail: relies on Claude's meta-enter binding; if a
         // shell needs a literal LF instead, bytes [0x0a] is the fallback.
-        ShortcutKey(id: "snl",     label: "⇧⏎",    kind: .bytes, bytes: [0x1b, 0x0d], systemImage: "arrow.turn.down.left"),
+        // No glyph on purpose: `arrow.turn.down.left` IS the keyboard's return key, and
+        // this cap does the opposite (newline, no submit) right next to it.
+        ShortcutKey(id: "snl",     label: "⇧⏎",    kind: .bytes, bytes: [0x1b, 0x0d]),
         // Manual repaint: same size-jiggle the server does on reattach/foreground.
         // Claude Code (and other TUIs) sometimes leave stale/missing glyphs until a
         // SIGWINCH — this is the button form of "resize the window to fix it".
@@ -107,7 +118,7 @@ final class ShortcutBar: UIView {
     static let barHeight: CGFloat = 44
     var onKey: ((ShortcutKey) -> Void)?
     var ctrlArmed = false { didSet { refreshCtrl() } }
-    private weak var ctrlButton: UIButton?
+    private weak var ctrlButton: KeyCapButton?
     private weak var container: UIView?
 
     init() {
@@ -145,7 +156,7 @@ final class ShortcutBar: UIView {
         let stack = UIStackView()
         stack.axis = .horizontal
         stack.spacing = 6
-        stack.alignment = .fill     // uniform cap height (ctrl's 2-line cap is the tallest)
+        stack.alignment = .fill     // uniform cap height whatever each cap's content is
         stack.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(stack)
 
@@ -175,6 +186,7 @@ final class ShortcutBar: UIView {
         static let blue       = UIColor(hex: 0x21CCFF)   // electric cyan border/glow
         static let blueBright = UIColor(hex: 0x75EBFF)   // glyph highlight
         static let card       = UIColor(hex: 0x131923)   // keycap fill
+        static let pressed    = UIColor(hex: 0x24405A)   // keycap fill under the finger
         static let text       = UIColor(hex: 0xE8F2FC)   // primary text
     }
     private static let capFont: UIFont = {
@@ -182,25 +194,11 @@ final class ShortcutBar: UIView {
         guard let d = base.fontDescriptor.withDesign(.rounded) else { return base }
         return UIFont(descriptor: d, size: 15)
     }()
-    private static let capBigFont: UIFont = {
-        let base = UIFont.systemFont(ofSize: 18, weight: .bold)
-        guard let d = base.fontDescriptor.withDesign(.rounded) else { return base }
-        return UIFont(descriptor: d, size: 18)
-    }()
-    private static let capTinyFont = UIFont.systemFont(ofSize: 8, weight: .semibold)
-
-    private func makeButton(_ key: ShortcutKey) -> UIButton {
+    private func makeButton(_ key: ShortcutKey) -> KeyCapButton {
         var cfg = UIButton.Configuration.plain()
         cfg.baseForegroundColor = Neon.blueBright
         cfg.contentInsets = .init(top: 5, leading: 12, bottom: 5, trailing: 12)
-        if key.kind == .ctrl {
-            // Modifier cap: big "^" with a tiny "ctrl" caption underneath (trademark-style).
-            cfg.title = "^"
-            cfg.subtitle = "ctrl"
-            cfg.titleAlignment = .center
-            cfg.titleTextAttributesTransformer    = .init { var c = $0; c.font = Self.capBigFont; return c }
-            cfg.subtitleTextAttributesTransformer = .init { var c = $0; c.font = Self.capTinyFont; return c }
-        } else if let sym = key.systemImage {
+        if let sym = key.systemImage {
             cfg.image = UIImage(systemName: sym,
                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
         } else {
@@ -211,13 +209,18 @@ final class ShortcutBar: UIView {
         cfg.background.cornerRadius = 7
         cfg.background.strokeColor = Neon.blue.withAlphaComponent(0.55)
         cfg.background.strokeWidth = 1
-        let b = UIButton(configuration: cfg)
+        let b = KeyCapButton(configuration: cfg)
+        b.idleFill = Neon.card
+        b.pressedFill = Neon.pressed
         // Neon halo.
         b.layer.shadowColor = Neon.blue.cgColor
         b.layer.shadowOpacity = 0.5
         b.layer.shadowRadius = 5
         b.layer.shadowOffset = .zero
         b.layer.masksToBounds = false
+        // Tap on touch-DOWN, like the keyboard: feedback has to land under the finger,
+        // not on release. The key itself still fires on touchUpInside.
+        b.addAction(UIAction { [weak self] _ in self?.tap() }, for: .touchDown)
         // Hug content so each key keeps its natural width — otherwise the stack
         // stretches them to fill the bar and the row can't scroll.
         b.setContentHuggingPriority(.required, for: .horizontal)
@@ -229,10 +232,55 @@ final class ShortcutBar: UIView {
     private func refreshCtrl() {
         guard let b = ctrlButton, var cfg = b.configuration else { return }
         // Armed = solid cyan fill + dark glyph; idle = neon outline like the rest.
-        cfg.background.backgroundColor = ctrlArmed ? Neon.blue : Neon.card
         cfg.baseForegroundColor = ctrlArmed ? UIColor(hex: 0x05080D) : Neon.blueBright
         b.configuration = cfg
-        b.layer.shadowOpacity = ctrlArmed ? 0.9 : 0.5
+        b.pressedFill = ctrlArmed ? Neon.blueBright : Neon.pressed
+        b.idleFill = ctrlArmed ? Neon.blue : Neon.card      // applies the fill
+        b.idleGlow = ctrlArmed ? 0.9 : 0.5
+    }
+
+    /// One generator, kept warm: creating one per press costs the first tap its latency.
+    private let haptics = UIImpactFeedbackGenerator(style: .light)
+
+    private func tap() {
+        haptics.impactOccurred(intensity: 0.7)   // lighter than a full impact — key-sized
+        haptics.prepare()                        // stay warm for the next key
+    }
+}
+
+/// A keycap that answers the finger: the fill lifts, the cap sinks a hair and the halo
+/// flares on touch-down, then springs back — the keyboard's own press language. Purely
+/// visual; the haptic is fired by the bar, which owns the one warm generator.
+final class KeyCapButton: UIButton {
+    /// Resting fill. Setting it re-applies immediately, so the ctrl cap can flip between
+    /// armed and idle without knowing whether it's mid-press.
+    var idleFill: UIColor = .clear { didSet { applyFill() } }
+    var pressedFill: UIColor = .clear
+    /// Resting halo strength — armed ctrl glows harder than the rest.
+    var idleGlow: Float = 0.5 { didSet { if !isHighlighted { layer.shadowOpacity = idleGlow } } }
+
+    override var isHighlighted: Bool {
+        didSet {
+            guard isHighlighted != oldValue else { return }
+            applyFill()
+            layer.shadowOpacity = isHighlighted ? 1 : idleGlow
+            // Down fast, back slower: an instant release reads as a bounce, and a slow
+            // press-in reads as lag. allowUserInteraction so a fast run of keys isn't
+            // swallowed by the animation.
+            let down = isHighlighted
+            UIView.animate(withDuration: down ? 0.05 : 0.13, delay: 0,
+                           options: [.beginFromCurrentState, .allowUserInteraction]) {
+                self.transform = down ? CGAffineTransform(scaleX: 0.92, y: 0.92) : .identity
+            }
+        }
+    }
+
+    private func applyFill() {
+        guard var cfg = configuration else { return }
+        let want = isHighlighted ? pressedFill : idleFill
+        guard cfg.background.backgroundColor != want else { return }
+        cfg.background.backgroundColor = want
+        configuration = cfg
     }
 }
 
@@ -252,7 +300,9 @@ struct ShortcutEditor: View {
     @State private var keys: [ShortcutKey] = []
     @Environment(\.dismiss) private var dismiss
 
-    @AppStorage(TerminalPrefs.sizeKey) private var fontSize = Double(TerminalPrefs.defaultSize)
+    /// Written through `TerminalPrefs` rather than @AppStorage so the clamp and the
+    /// flush apply to the stepper too — one writer for the one stored size.
+    @State private var fontSize = Double(TerminalPrefs.fontSize)
 
     var body: some View {
         NavigationStack {
@@ -265,6 +315,7 @@ struct ShortcutEditor: View {
                     }
                     Button("Reset text size") { fontSize = Double(TerminalPrefs.defaultSize) }
                 }
+                .onChange(of: fontSize) { v in TerminalPrefs.fontSize = CGFloat(v) }
                 Section("Active (drag to reorder, swipe to remove)") {
                     ForEach(keys) { k in Text(k.label).font(.body.monospaced()) }
                         .onMove { keys.move(fromOffsets: $0, toOffset: $1); persist() }
