@@ -316,6 +316,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// which is the half that matters after a resize, and a program that ignores WINCH
     /// wrote nothing new for the mirror to hold anyway.
     func repairAfterSizeChange() {
+        // Settle the layout before measuring. A rotation coordinator's completion can run
+        // before the new bounds have reached the terminal view, and measuring there would
+        // re-state the size we already had.
+        view.layoutIfNeeded()
         let grid = terminalSize
         conn.resize(cols: grid.cols, rows: grid.rows)
         forceRedraw(mirror: false)
