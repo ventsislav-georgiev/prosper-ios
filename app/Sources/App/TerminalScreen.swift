@@ -270,7 +270,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let size = TerminalPrefs.fontSize
         if tv.font.pointSize != size {
             tv.font = TerminalFont.mono(size: size)
-            forceRedraw()
+            tv.setNeedsLayout()
+            tv.layoutIfNeeded()          // settle the new grid before we state its size
+            repairAfterSizeChange()      // a new cell size is a new grid — same rules as rotation
         }
     }
 
@@ -285,11 +287,38 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// size (which Node/Ink apps treat as a real resize and re-render on) and then
     /// hands us dch's own VT mirror, which is authoritative even when the program
     /// repaints nothing at all. `applyScreen` paints it.
-    func forceRedraw() {
+    ///
+    /// `mirror: false` keeps the jiggle and drops the mirror — for repairs that follow
+    /// a GRID CHANGE, where dch's copy was captured at the old width. See
+    /// `repairAfterSizeChange`.
+    func forceRedraw(mirror: Bool = true) {
         let t = tv.getTerminal()
         t.refresh(startRow: 0, endRow: max(0, t.rows - 1))
         tv.feed(byteArray: [])   // queuePendingDisplay() is internal; feed is the public door
-        conn.resync()
+        if mirror { conn.resync() } else { conn.redraw() }
+    }
+
+    /// Repair after the grid itself changed size (rotation).
+    ///
+    /// Two departures from the plain repair, both learned from landscape coming back
+    /// with the right half black:
+    ///
+    /// State the measured grid outright instead of trusting the layout pass to have
+    /// reported it. `onResize` fires from `layoutSubviews` only when SwiftTerm's cols/rows
+    /// actually changed; anything that swallows that one callback leaves the pty at the
+    /// portrait width, and the remote program keeps wrapping to a width we don't have.
+    /// Re-stating a size we already sent costs one frame and is a no-op at the pty.
+    ///
+    /// And skip dch's mirror. It is a snapshot of the screen at the OLD geometry: the
+    /// remote reflows on the SIGWINCH the resize just caused, but it only re-emits cells
+    /// it thinks changed — so painting the old-width mirror on top of the reflowed screen
+    /// re-narrows it permanently. The pty jiggle still forces Ink/Claude to re-render,
+    /// which is the half that matters after a resize, and a program that ignores WINCH
+    /// wrote nothing new for the mirror to hold anyway.
+    func repairAfterSizeChange() {
+        let grid = terminalSize
+        conn.resize(cols: grid.cols, rows: grid.rows)
+        forceRedraw(mirror: false)
     }
 
     /// Paint dch's rendered screen over ours — see `TerminalMath.snapshotPaint` for
@@ -319,7 +348,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
                 self.applyKeyboard(f, notification: nil)
             }
             self.relift()
-            self.forceRedraw()
+            self.repairAfterSizeChange()
         }
     }
 

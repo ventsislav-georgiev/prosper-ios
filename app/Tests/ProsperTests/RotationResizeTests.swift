@@ -1,4 +1,6 @@
 import XCTest
+import SwiftUI
+import UIKit
 @testable import Prosper
 
 /// Rotation has to reach the pty: a wider view means more columns, and the remote
@@ -73,6 +75,61 @@ final class RotationResizeTests: XCTestCase {
         conn.resync()
         XCTAssertEqual(spy.resizes.count, 2, "resync went out without our width")
         XCTAssertEqual(spy.resizes.last?.rows, 30)
+    }
+
+    /// After a grid change the repair must state the new size and must NOT paint dch's
+    /// mirror: the mirror was captured at the old width, and painting it over the
+    /// reflowed screen is what left landscape with a black right half. The pty jiggle
+    /// (`requestRedraw`) is the half that still has to go out.
+    func testRepairAfterRotationStatesTheSizeAndSkipsTheMirror() async throws {
+        let (vc, spy) = makeVC(CGSize(width: 390, height: 700))
+        vc.startIfNeeded()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        vc.view.frame = CGRect(x: 0, y: 0, width: 700, height: 390)
+        vc.view.layoutIfNeeded()
+
+        spy.resizes.removeAll()
+        spy.redraws = 0
+        spy.snapshots = 0
+        vc.repairAfterSizeChange()
+
+        let grid = vc.terminalSize
+        XCTAssertEqual(spy.resizes.last?.cols, grid.cols, "the repair must state the measured width")
+        XCTAssertEqual(spy.resizes.last?.rows, grid.rows)
+        XCTAssertGreaterThan(spy.redraws, 0, "the pty jiggle is what makes the TUI reflow")
+
+        // Past the snapshot deadline with a quiet session — the greediest case for a
+        // mirror request. None may appear.
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+        XCTAssertEqual(spy.snapshots, 0, "painted a mirror captured at the old grid width")
+    }
+
+    /// The tests above drive the VC's frame directly. On the device nobody does that:
+    /// SwiftUI owns the frame, and the terminal only gets the width SwiftUI proposes to
+    /// the representable. So host the real `TerminalScreen` in a real window and rotate
+    /// the window — the path the phone actually takes.
+    func testRotatingTheHostedScreenReachesTheSession() async throws {
+        let transport = SpyTransport()
+        let host = UIHostingController(
+            rootView: NavigationStack {
+                TerminalScreen(transport: transport, session: DchSession(name: "t", alias: nil))
+            })
+        let win = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 700))
+        win.rootViewController = host
+        win.isHidden = false
+        win.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 300_000_000)   // attach + first layout
+        let spy = transport.stream
+        let portraitCols = spy.resizes.last?.cols ?? 0
+        XCTAssertGreaterThan(portraitCols, 0, "never attached")
+
+        win.frame = CGRect(x: 0, y: 0, width: 700, height: 390)
+        win.setNeedsLayout()
+        win.layoutIfNeeded()
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        XCTAssertGreaterThan(spy.resizes.last?.cols ?? 0, portraitCols,
+            "landscape never reached the pty: \(spy.resizes)")
     }
 
     func testSnapshotWaitsForOutputToGoQuiet() async throws {

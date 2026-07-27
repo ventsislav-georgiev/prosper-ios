@@ -44,6 +44,11 @@ final class SessionConnection: ObservableObject {
     func resize(cols: Int, rows: Int) {
         self.cols = cols
         self.rows = rows
+        // A mirror request still waiting to fire was queued for the OLD grid. dch's copy
+        // is a screen at that geometry, so painting it after a resize re-narrows the
+        // reflowed screen — the black right half after rotating into landscape. The
+        // resize itself makes the remote repaint; the mirror has nothing left to add.
+        snapshotWait?.cancel()
         stream?.resize(cols: cols, rows: rows)
     }
 
