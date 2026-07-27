@@ -3,6 +3,12 @@ options:
   bundleIdPrefix: eu.illegible
   deploymentTarget:
     iOS: "16.0"
+# Project-wide so the app and the widget always carry the same version: App Store
+# validation rejects an extension whose version drifts from its container.
+settings:
+  base:
+    MARKETING_VERSION: "0.3"
+    CURRENT_PROJECT_VERSION: "1"
 packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
@@ -48,8 +54,6 @@ targets:
         # Standard TLS only (no proprietary crypto) → exempt; skips the
         # export-compliance prompt on every TestFlight build.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
-        MARKETING_VERSION: "0.2"
-        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         # Catalyst gives same-app e2e on the Mac (PLAN §8). Client is connect-only;
         # com.apple.security.network.client (in Prosper.entitlements) lets the
@@ -76,6 +80,8 @@ targets:
       path: Widgets/Info.plist
       properties:
         CFBundleDisplayName: Prosper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
