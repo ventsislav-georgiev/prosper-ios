@@ -419,11 +419,13 @@ struct SessionListView: View {
         .accessibilityLabel(on ? "Stop watching \(s.title)" : "Watch \(s.title)")
     }
 
-    /// Poll the watched sessions' states while the app is in front, ping on the two
-    /// transitions worth interrupting for, and keep the Live Activities in step.
+    /// Poll the sessions' states while the app is in front, ping on the two transitions
+    /// worth interrupting for, and keep the Live Activities in step.
     ///
-    /// Nothing watched → no traffic at all. The poll answer also refreshes the visible
-    /// rows, so a watched machine's list stays live for free.
+    /// Polls whether or not anything is watched: the row's working/idle/blocked label is
+    /// the reason to open the list at all, and gating the poll on the bells left it frozen
+    /// at whatever the last manual refresh saw. One small list round-trip every few
+    /// seconds is cheaper than a user pressing refresh to find out.
     private func watchLoop() async {
         // Only ever started while the app is in front (`.task(id:)` on the scene phase), so
         // going away cancels the loop outright instead of leaving a timer ticking.
@@ -431,12 +433,15 @@ struct SessionListView: View {
         engine.forget()
         let poll = UInt64(SessionAlertEngine.pollInterval * 1_000_000_000)
         let backoff = UInt64(SessionAlertEngine.failureBackoff * 1_000_000_000)
+        // A fresh screen already has `.task { refresh() }` in flight, so wait a beat. Coming
+        // back from the background has no such refresh, and the rows on screen are as stale
+        // as the time away — poll those at once instead of showing yesterday's states for
+        // another interval.
+        var immediate = !sessions.isEmpty
         while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: poll)
+            if immediate { immediate = false } else { try? await Task.sleep(nanoseconds: poll) }
             guard !Task.isCancelled else { return }
-            guard alerts.anyWatched(machine: machine?.id), unreachable == nil, error == nil else {
-                continue
-            }
+            guard unreachable == nil, error == nil else { continue }
             guard let list = try? await transport.listSessions() else {
                 try? await Task.sleep(nanoseconds: backoff)      // asleep Mac: stop hammering
                 continue

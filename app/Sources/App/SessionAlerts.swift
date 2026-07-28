@@ -37,14 +37,6 @@ final class SessionAlerts: ObservableObject {
         return on
     }
 
-    /// Anything watched on this machine at all — the poller's gate, so a machine with no
-    /// bells on costs no traffic. Cheap: the set holds one entry per switch, not per
-    /// session.
-    func anyWatched(machine: UUID?) -> Bool {
-        let prefix = "\(machine?.uuidString ?? "demo")/"
-        return watched.contains { $0.hasPrefix(prefix) }
-    }
-
     /// Names watched on this machine, for the poller and the Live Activities.
     func names(machine: UUID?, in sessions: [DchSession]) -> Set<String> {
         Set(sessions.map(\.name).filter { isOn(machine: machine, session: $0) })
@@ -82,8 +74,10 @@ struct SessionAlert: Equatable {
 /// second for bookkeeping nobody renders.
 final class SessionAlertEngine {
     /// How often the watcher asks the Mac for states while the app is in front. One
-    /// small list round-trip; the answer also refreshes the visible rows.
-    static let pollInterval: TimeInterval = 5
+    /// small list round-trip; the answer also refreshes the visible rows, and it is the
+    /// only thing keeping the working/idle labels honest — so this doubles as how stale a
+    /// row can look.
+    static let pollInterval: TimeInterval = 3
     /// After a failed poll, back off — an asleep Mac shouldn't be dialed every 5s.
     static let failureBackoff: TimeInterval = 20
     /// Same session, same state: don't ping again inside this window. dch derives state

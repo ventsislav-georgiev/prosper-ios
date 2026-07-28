@@ -168,8 +168,6 @@ final class SessionAlertsTests: XCTestCase {
         XCTAssertTrue(alerts.toggle(machine: a, session: "build"))
         XCTAssertTrue(alerts.isOn(machine: a, session: "build"))
         XCTAssertFalse(alerts.isOn(machine: b, session: "build"), "same name on another Mac is another switch")
-        XCTAssertTrue(alerts.anyWatched(machine: a))
-        XCTAssertFalse(alerts.anyWatched(machine: b), "an unwatched machine must not pay for polling")
 
         // Survives a relaunch.
         let reopened = SessionAlerts(defaults: defaults)
