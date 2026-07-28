@@ -39,10 +39,37 @@ final class TerminalMathTests: XCTestCase {
     func testSlowHoldStillCreepsLineByLine() {
         var rem: CGFloat = 0
         var lines = 0
-        for _ in 0..<60 { lines += TerminalMath.jogLines(offset: 30, travel: 90,
+        // A fifth of the way out, over the dead zone but barely: the near half of the
+        // track is where you aim, so a second of it moves a handful of lines.
+        for _ in 0..<60 { lines += TerminalMath.jogLines(offset: 60, travel: 300,
                                                         elapsed: 1.0 / 60, remainder: &rem) }
         XCTAssertGreaterThan(lines, 0, "a one-second gentle hold scrolled nothing")
-        XCTAssertLessThan(lines, 15, "gentle hold should creep, not race")
+        XCTAssertLessThan(lines, 25, "gentle hold should creep, not race")
+    }
+
+    /// Held at the end of the track, SwiftTerm's whole 500-line scrollback goes by in
+    /// about a second. That is the reason the wheel reaches so far: pulling to the top
+    /// means "take me through all of it", not "scroll a bit faster".
+    func testFullPullCrossesAScrollbackInAboutASecond() {
+        var rem: CGFloat = 0
+        var lines = 0
+        for _ in 0..<60 { lines += TerminalMath.jogLines(offset: -300, travel: 300,
+                                                        elapsed: 1.0 / 60, remainder: &rem) }
+        XCTAssertLessThan(lines, -500, "one second at full pull covered only \(-lines) lines")
+    }
+
+    // MARK: tapRaisesKeyboard — where a tap goes under a mouse-mode TUI
+
+    /// The caret row is the input line, and everything under it is the space beneath
+    /// the prompt: both mean "let me type". Only content above the caret is a click.
+    /// Requiring an exact caret-row hit made the keyboard a one-row target, so tapping
+    /// visibly on the cursor often sent a click nowhere instead.
+    func testTapOnAndBelowTheCaretRaisesTheKeyboard() {
+        XCTAssertTrue(TerminalMath.tapRaisesKeyboard(row: 40, caretRow: 40))
+        XCTAssertTrue(TerminalMath.tapRaisesKeyboard(row: 41, caretRow: 40))
+        XCTAssertTrue(TerminalMath.tapRaisesKeyboard(row: 57, caretRow: 40))
+        XCTAssertFalse(TerminalMath.tapRaisesKeyboard(row: 39, caretRow: 40))
+        XCTAssertFalse(TerminalMath.tapRaisesKeyboard(row: 0, caretRow: 40))
     }
 
     /// Dragging past the cap doesn't scroll faster than the cap, and a zero-height

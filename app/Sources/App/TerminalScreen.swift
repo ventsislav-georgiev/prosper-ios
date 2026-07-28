@@ -500,14 +500,19 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         tv.addGestureRecognizer(tap)
     }
 
-    /// Grid cell under a point in `tv` coordinates.
+    /// Grid cell under a point in `tv` coordinates. `TerminalView` is a scroll view, so
+    /// a gesture location is in CONTENT space while the grid is laid out against the
+    /// visible bounds — subtract the offset or every row lands short by however far the
+    /// content is scrolled.
     private func gridPos(_ p: CGPoint, _ term: Terminal) -> (row: Int, col: Int) {
-        TerminalMath.gridCell(point: p, size: tv.bounds.size, rows: term.rows, cols: term.cols)
+        let visible = CGPoint(x: p.x - tv.contentOffset.x, y: p.y - tv.contentOffset.y)
+        return TerminalMath.gridCell(point: visible, size: tv.bounds.size,
+                                     rows: term.rows, cols: term.cols)
     }
 
-    /// Tap on the cursor row → raise the keyboard. Tap elsewhere while a mouse-mode
-    /// app is running → forward a left click (lets TUIs like Claude Code react to
-    /// taps). Normal screen (no mouse mode) → always raise the keyboard.
+    /// Tap on the input line → raise the keyboard. Tap on content above it while a
+    /// mouse-mode app is running → forward a left click (lets TUIs like Claude Code
+    /// react to taps). Normal screen (no mouse mode) → always raise the keyboard.
     /// Every tap also flashes the scroll thumb, and a tap with an active selection
     /// just clears it (standard text-selection behavior).
     @objc private func onTap(_ g: UITapGestureRecognizer) {
@@ -520,7 +525,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let p = g.location(in: tv)
         let (row, col) = gridPos(p, term)
         let caret = term.getCursorLocation()
-        if term.mouseMode != .off && row != caret.y {
+        if term.mouseMode != .off, !TerminalMath.tapRaisesKeyboard(row: row, caretRow: caret.y) {
             let press = term.encodeButton(button: 0, release: false, shift: false, meta: false, control: false)
             term.sendEvent(buttonFlags: press, x: col, y: row)
             let release = term.encodeButton(button: 0, release: true, shift: false, meta: false, control: false)
@@ -734,9 +739,14 @@ private final class ScrollThumb: UIView {
     static let trackWidth: CGFloat = 44
     private static let pillSize = CGSize(width: 18, height: 88)
     private static let idleDelay: TimeInterval = 1.6
-    /// Deflection is capped here rather than at the track ends: the wheel reaches full
-    /// speed within a thumb's reach, so scrolling never needs a full-screen drag.
-    private static let maxTravel: CGFloat = 90
+    /// The pill runs the WHOLE strip, and full deflection is the end of it. A short
+    /// capped travel put top speed a thumb-length from center, which left no room to
+    /// aim: everything past that point felt identical. With the full track the near
+    /// half stays precise (the rate is squared) and dragging to the very top is a
+    /// distinct, deliberate "take me through all of it".
+    private static func travel(in bounds: CGRect) -> CGFloat {
+        max(0, (bounds.height - pillSize.height) / 2)
+    }
 
     /// Signed whole lines to scroll for this tick; negative = up.
     var onJog: ((Int) -> Void)?
@@ -804,7 +814,7 @@ private final class ScrollThumb: UIView {
         case .changed:
             let dy = g.translation(in: self).y
             g.setTranslation(.zero, in: self)
-            let limit = min(Self.maxTravel, max(0, (bounds.height - Self.pillSize.height) / 2))
+            let limit = Self.travel(in: bounds)
             pillY.constant = min(max(pillY.constant + dy, -limit), limit)
         default:
             dragging = false
@@ -844,7 +854,7 @@ private final class ScrollThumb: UIView {
         let now = CACurrentMediaTime()
         let elapsed = CGFloat(now - lastTick)
         lastTick = now
-        let travel = min(Self.maxTravel, max(0, (bounds.height - Self.pillSize.height) / 2))
+        let travel = Self.travel(in: bounds)
         let lines = TerminalMath.jogLines(offset: pillY.constant, travel: travel,
                                          elapsed: elapsed, remainder: &remainder)
         if lines != 0 { onJog?(lines) }

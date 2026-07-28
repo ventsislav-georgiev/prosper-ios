@@ -6,8 +6,20 @@ enum TerminalMath {
     /// Ignore deflections this small a share of the travel — a resting thumb and a
     /// fingertip wobble must not scroll.
     static let jogDeadZone: CGFloat = 0.12
-    /// Scroll rate at full deflection.
-    static let jogMaxLinesPerSecond: CGFloat = 45
+    /// Scroll rate at full deflection. Sized so pulling the pill to the very top
+    /// crosses a full scrollback in a couple of seconds instead of grinding through
+    /// it — the whole point of holding the wheel at its end.
+    static let jogMaxLinesPerSecond: CGFloat = 600
+
+    /// Where a tap goes while a mouse-reporting TUI is running: the keyboard, or a
+    /// click forwarded to the app.
+    ///
+    /// The caret row IS the input line, and the rows under it are the empty space
+    /// beneath the prompt — a tap there means "let me type", never "click that". Only
+    /// content above the caret is worth a click. Matching the caret row exactly made
+    /// the keyboard a one-row target (~14 pt), so tapping visibly ON the cursor often
+    /// sent a click into the void instead of raising the keyboard.
+    static func tapRaisesKeyboard(row: Int, caretRow: Int) -> Bool { row >= caretRow }
 
     /// Jog-wheel scrolling: how many whole lines to scroll during `elapsed` seconds
     /// with the pill held `offset` points off center (`travel` = points available in
