@@ -102,6 +102,13 @@ func withDeadline<T>(seconds: TimeInterval, _ op: @escaping () async throws -> T
     }
 }
 
+/// True for the errors that mean "we walked away", not "it failed": leaving a screen
+/// cancels its `.task`, and a cancelled deadline race throws `CancellationError`. Never
+/// worth showing — a user who pressed Back has already been told what happened.
+func isCancellation(_ error: Error) -> Bool {
+    error is CancellationError || (error as? URLError)?.code == .cancelled
+}
+
 /// Try `addresses` in priority order, each with its own `timeout`; the first to answer
 /// wins (PLAN §3). `onTry` fires with each address as it is dialed, so the caller can
 /// show which one is being attempted. Throws the last error when every address fails.
@@ -113,10 +120,15 @@ func connectFirst<T>(_ addresses: [String], timeout: TimeInterval = addressAttem
                      probe: @escaping (String) async throws -> T) async throws -> (T, String) {
     var lastError: Error = TransportError.hostUnreachable("no addresses")
     for addr in addresses where !addr.trimmingCharacters(in: .whitespaces).isEmpty {
+        // Cancelled means the caller left the screen: stop dialing instead of walking the
+        // remaining addresses on nobody's behalf, and report the cancel rather than the
+        // timeout it caused.
+        try Task.checkCancellation()
         await onTry(addr)
         do {
             return (try await withDeadline(seconds: timeout) { try await probe(addr) }, addr)
         } catch {
+            if isCancellation(error) { throw error }
             lastError = error
         }
     }

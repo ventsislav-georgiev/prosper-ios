@@ -111,9 +111,14 @@ struct HomeView: View {
                             store: store, account: account, onChangeMachine: { path.append(Route.connect) })
         case .machine(let id):
             if let m = store.machines.first(where: { $0.id == id }) {
+                // `.id(ref)` because SwiftUI reuses a destination view of the same type at
+                // the same depth: without it, switching machines kept the previous machine's
+                // @State — its transport (so the new machine's row dialed the OLD Mac), its
+                // half-finished `trying` address, and its leftover error text.
                 SessionListView(transport: ProsperTransport(host: m.addresses.first ?? m.name),
                                 title: m.name, machine: m, store: store, account: account,
                                 onChangeMachine: { path.append(Route.connect) })
+                    .id(ref)
             } else {
                 ConnectScreen(store: store) { r in go(.sessions(r)) }
             }
@@ -496,12 +501,14 @@ struct SessionListView: View {
             stream.close()
             onChangeMachine()
         } catch {
+            guard !isCancellation(error) else { return }
             self.error = error.localizedDescription
         }
     }
 
     private func refresh() async {
         loading = true
+        trying = nil                 // never label this dial with the previous one's address
         defer { trying = nil }
         do {
             sessions = try await listWalkingAddresses()
@@ -522,6 +529,9 @@ struct SessionListView: View {
             }
         } catch {
             loading = false
+            // Leaving the screen cancels this task; that is not a failure and must never
+            // reach the UI as "Swift.CancellationError".
+            guard !isCancellation(error) else { return }
             self.error = error.localizedDescription
             unreachable = nil
         }
@@ -531,9 +541,13 @@ struct SessionListView: View {
     /// A wrong or asleep address answers with silence, not a refusal, so each gets its
     /// own 5s deadline and the transport is swapped to whichever address answered —
     /// attaching afterwards uses the live one, not the dead first entry.
+    ///
+    /// Always dialed from the machine's CURRENT addresses, never from the `transport` this
+    /// screen was built with: that one is a snapshot, so a single-address machine kept
+    /// talking to whatever host the snapshot named after the addresses were edited.
     private func listWalkingAddresses() async throws -> [DchSession] {
-        guard let addresses = (liveMachine ?? machine)?.addresses, addresses.count > 1 else {
-            return try await transport.listSessions()
+        guard let addresses = (liveMachine ?? machine)?.addresses, !addresses.isEmpty else {
+            return try await transport.listSessions()      // the demo has no addresses
         }
         let hit = try await connectFirstTransport(addresses) { trying = $0 }
         transport = hit.transport

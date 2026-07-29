@@ -5,6 +5,14 @@ import XCTest
 /// stale LAN address or a sleeping Mac never refuses the connection, so without a
 /// per-address deadline the first entry swallows the whole attempt and the rest are
 /// never tried — which is exactly the bug these pin.
+/// Probe counter shared with a concurrent probe closure.
+private final class LockedCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    func bump() { lock.lock(); n += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return n }
+}
+
 final class AddressFallbackTests: XCTestCase {
 
     /// A refused first address falls through to the second.
@@ -89,6 +97,39 @@ final class AddressFallbackTests: XCTestCase {
         }
         XCTAssertEqual(addr, "c")
         XCTAssertEqual(shown, ["a", "b", "c"])
+    }
+
+    /// Leaving the screen cancels the walk: the remaining addresses must not be dialed,
+    /// and the error must read as a cancellation so the UI can swallow it instead of
+    /// printing "Swift.CancellationError" at the user.
+    func testCancellationStopsTheWalkAndIsRecognisable() async {
+        let dialed = LockedCount()
+        let task = Task {
+            try await connectFirst(["a", "b", "c"], timeout: 5) { host -> String in
+                dialed.bump()
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+                throw TransportError.hostUnreachable(host)
+            }
+        }
+        // Let the first probe get going, then walk away mid-dial.
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("expected a throw")
+        } catch {
+            XCTAssertTrue(isCancellation(error), "surfaced \(error) instead of a cancellation")
+        }
+        XCTAssertEqual(dialed.value, 1, "cancelled walk kept dialing the rest of the list")
+    }
+
+    /// A real failure is NOT a cancellation — the Wake card and the error text depend on
+    /// telling those apart.
+    func testRealFailuresAreNotMistakenForCancellation() {
+        XCTAssertFalse(isCancellation(TransportError.hostUnreachable("mac")))
+        XCTAssertTrue(isCancellation(CancellationError()))
+        XCTAssertTrue(isCancellation(URLError(.cancelled)))
+        XCTAssertFalse(isCancellation(URLError(.timedOut)))
     }
 
     /// The shipped deadline is the 5s the connect UI is built around.

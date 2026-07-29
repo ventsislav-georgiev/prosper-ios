@@ -236,6 +236,7 @@ struct WakeFailedView: View {
             // possible clock-skew 401; user can explicitly sign out from Settings. (Fix 2)
             showLogin = true
         } catch {
+            guard !isCancellation(error) else { return }   // dismissed mid-request, not a failure
             self.error = error.localizedDescription
         }
     }
