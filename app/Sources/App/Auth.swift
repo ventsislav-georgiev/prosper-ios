@@ -3,7 +3,7 @@ import Security
 
 /// Prosper account server. Only the remote-wake feature touches it — the terminal and
 /// demo work fully signed-out (PLAN: login is optional).
-let serverBaseURL = URL(string: "https://prosper.illegible.eu")!
+let serverBaseURL = URL(string: "https://prosper.ventsislav-georgiev.com")!
 
 // MARK: - AuthClient (passwordless magic-link, PLAN §3 / server auth.ts)
 
