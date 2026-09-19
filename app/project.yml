@@ -7,7 +7,7 @@ options:
 # validation rejects an extension whose version drifts from its container.
 settings:
   base:
-    MARKETING_VERSION: "0.3"
+    MARKETING_VERSION: "0.4"
     CURRENT_PROJECT_VERSION: "1"
 packages:
   SwiftTerm:
