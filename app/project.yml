@@ -12,7 +12,9 @@ settings:
 packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
-    branch: main
+    # Pinned: a release build should not pick up whatever landed on upstream main
+    # since the last one (a build plugin did, and broke CI). Bump on purpose.
+    exactVersion: 1.20.0
 schemes:
   Prosper:
     build:

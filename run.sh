@@ -29,7 +29,7 @@ case "$MODE" in
     echo "==> build (iOS Simulator)"
     xcodebuild -project "$PROJ" -scheme "$SCHEME" \
       -destination "$DEST" -derivedDataPath "$DERIVED" \
-      -quiet build
+      -skipPackagePluginValidation -quiet build
     APP="$DERIVED/Build/Products/Debug-iphonesimulator/Prosper.app"
     BUNDLE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
     echo "==> boot simulator + install + launch"
@@ -53,7 +53,7 @@ case "$MODE" in
       -destination "platform=iOS,id=$DEVID" -derivedDataPath "$DERIVED" \
       -allowProvisioningUpdates \
       DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic CODE_SIGNING_ALLOWED=YES \
-      -quiet build
+      -skipPackagePluginValidation -quiet build
     APP="$DERIVED/Build/Products/Debug-iphoneos/Prosper.app"
     BUNDLE=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
     echo "==> install + launch on device"
@@ -64,7 +64,7 @@ case "$MODE" in
     echo "==> build (Mac Catalyst)"
     xcodebuild -project "$PROJ" -scheme "$SCHEME" \
       -destination 'platform=macOS,variant=Mac Catalyst' \
-      -derivedDataPath "$DERIVED" -quiet build
+      -derivedDataPath "$DERIVED" -skipPackagePluginValidation -quiet build
     APP="$DERIVED/Build/Products/Debug-maccatalyst/Prosper.app"
     [ "$MODE" = build ] && { echo "built: $APP"; exit 0; }
     echo "==> launch"
