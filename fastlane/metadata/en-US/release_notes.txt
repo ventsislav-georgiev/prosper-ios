@@ -1,7 +1,5 @@
 What's new:
-• Watch a session: live status in the Dynamic Island and a ping when an agent needs you or finishes.
-• Drag to select text; scroll from an auto-hiding edge strip — and scrolling is smoother.
-• Redraw now repairs a garbled screen even while a program keeps painting.
-• Shortcut keys have press feedback and haptics, with clearer labels.
-• Text size is remembered between launches.
-• More reliable connections across changing networks.
+• Copy mode: drag over the terminal to select text natively, then edit what goes to the clipboard.
+• Insert: compose text on your phone and send it to the session in one go.
+• Smoother terminal scrolling.
+• More reliable connections.
