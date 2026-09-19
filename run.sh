@@ -42,9 +42,11 @@ case "$MODE" in
     # macOS awk lacks {n} intervals and device "state" flips (connected/paused);
     # grab the first device UUID from the list and let install fail loudly if the
     # phone is locked/unplugged.
-    DEVID=$(xcrun devicectl list devices 2>/dev/null \
-      | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}' \
-      | head -1)
+    # The row that says `connected` is the plugged-in phone; the list also carries a
+    # paired Apple Watch and shut-down simulators, and a real UDID is 8-16 hex, not
+    # the 8-4-4-4-12 a simulator has.
+    DEVID=$(xcrun devicectl list devices 2>/dev/null | grep -w connected \
+      | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}' | head -1)
     [ -n "$DEVID" ] || { echo "no connected device" >&2; exit 1; }
     echo "==> build + sign (iOS device $DEVID, team $TEAM)"
     xcodebuild -project "$PROJ" -scheme "$SCHEME" \
