@@ -74,6 +74,10 @@ jobs:
         working-directory: app
         run: xcodegen generate
 
+      # -skipPackagePluginValidation: SwiftTerm ships a build-tool plugin
+      # (SwiftTermBuildInfoPlugin); a fresh runner has never trusted it, and the
+      # validation prompt has no terminal to answer on, so the archive dies with
+      # "failed with exit code 1 but produced no further output".
       - name: Archive
         working-directory: app
         run: |
@@ -89,6 +93,7 @@ jobs:
             DEVELOPMENT_TEAM=${{ secrets.APPLE_TEAM_ID }} \
             CODE_SIGN_STYLE=Automatic CODE_SIGNING_ALLOWED=YES \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            -skipPackagePluginValidation \
             -quiet
 
       - name: Export .ipa
