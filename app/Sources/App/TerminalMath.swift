@@ -21,6 +21,14 @@ enum TerminalMath {
     /// sent a click into the void instead of raising the keyboard.
     static func tapRaisesKeyboard(row: Int, caretRow: Int) -> Bool { row >= caretRow }
 
+    /// Text for the pty as ONE bracketed paste (ESC[200~ … ESC[201~) — what `dch --send`
+    /// does on the Mac: readline, Claude Code and vim insert it verbatim instead of
+    /// running each line at its newline. Always wrapped: dch does not replay DECSET
+    /// 2004 on attach, so the terminal's `bracketedPasteMode` is stale after a reconnect.
+    static func pasteBytes(_ s: String) -> [UInt8] {
+        Array("\u{1b}[200~".utf8) + Array(s.utf8) + Array("\u{1b}[201~".utf8)
+    }
+
     /// Jog-wheel scrolling: how many whole lines to scroll during `elapsed` seconds
     /// with the pill held `offset` points off center (`travel` = points available in
     /// each direction). Negative = up. The fractional part carries in `remainder`, so

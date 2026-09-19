@@ -381,10 +381,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// each line at its newline. Always wrapped — dch does not replay DECSET 2004 on
     /// attach, so SwiftTerm's `bracketedPasteMode` is stale after a reconnect.
     private func sendText(_ s: String) {
-        var bytes = Array("\u{1b}[200~".utf8)
-        bytes += s.utf8
-        bytes += "\u{1b}[201~".utf8
-        conn.send(ArraySlice(bytes))
+        conn.send(ArraySlice(TerminalMath.pasteBytes(s)))
     }
 
     /// Push the copied image to the remote machine's clipboard, then send the paste

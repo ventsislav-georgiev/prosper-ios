@@ -193,4 +193,15 @@ final class TerminalMathTests: XCTestCase {
         // accidental allocation or formatter sneaking into the pan tick.
         XCTAssertLessThan(Date().timeIntervalSince(start), 0.5)
     }
+
+    // MARK: pasteBytes — text goes over as one paste
+
+    /// Pasted text travels as ONE bracketed paste: the marks around it, the text
+    /// untouched between them — newlines included, that is the whole point.
+    func testPasteIsBracketedAndVerbatim() {
+        let b = TerminalMath.pasteBytes("ls\n  -la")
+        XCTAssertEqual(Array(b.prefix(6)), Array("\u{1b}[200~".utf8))
+        XCTAssertEqual(Array(b.suffix(6)), Array("\u{1b}[201~".utf8))
+        XCTAssertEqual(Array(b.dropFirst(6).dropLast(6)), Array("ls\n  -la".utf8))
+    }
 }
