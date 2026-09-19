@@ -112,7 +112,6 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private let handle: TermHandle
     private var tv: DchTerminalView!
     private var started = false
-    private var selAnchor: Position?
     private var scrollThumb: ScrollThumb?
     private var kbConstraint: NSLayoutConstraint!
     private var barHeight: NSLayoutConstraint!
@@ -363,9 +362,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             ctrlArmed.toggle()
             shortcutBar?.ctrlArmed = ctrlArmed
         case .pasteText:
-            if let s = UIPasteboard.general.string, let d = s.data(using: .utf8), !d.isEmpty {
-                conn.send(ArraySlice(d))
-            }
+            if let s = UIPasteboard.general.string, !s.isEmpty { sendText(s) }
+        case .insertText:
+            let vc = InsertTextVC { [weak self] text in self?.sendText(text) }
+            present(UINavigationController(rootViewController: vc), animated: true)
         case .pasteImage:
             pasteImage(then: key.bytes)
         case .bytes:
@@ -374,6 +374,17 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             forceRedraw()
         }
         if tv.isFirstResponder == false { _ = tv.becomeFirstResponder() }
+    }
+
+    /// Text reaches the pty as ONE bracketed paste, exactly what `dch --send` does on
+    /// the Mac: readline, Claude Code and vim insert it verbatim instead of running
+    /// each line at its newline. Always wrapped — dch does not replay DECSET 2004 on
+    /// attach, so SwiftTerm's `bracketedPasteMode` is stale after a reconnect.
+    private func sendText(_ s: String) {
+        var bytes = Array("\u{1b}[200~".utf8)
+        bytes += s.utf8
+        bytes += "\u{1b}[201~".utf8
+        conn.send(ArraySlice(bytes))
     }
 
     /// Push the copied image to the remote machine's clipboard, then send the paste
@@ -427,8 +438,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
     }
 
-    /// Pan on the terminal text = text selection (like dragging over text in a
-    /// browser). Scrolling moved to the edge thumb — one finger motion, one job.
+    /// Pan on the terminal text = copy mode (see `onSelectPan`). Scrolling moved to
+    /// the edge thumb — one finger motion, one job.
     private func addSelectionGesture() {
         let pan = UIPanGestureRecognizer(target: self, action: #selector(onSelectPan(_:)))
         pan.maximumNumberOfTouches = 1
@@ -513,14 +524,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Tap on the input line → raise the keyboard. Tap on content above it while a
     /// mouse-mode app is running → forward a left click (lets TUIs like Claude Code
     /// react to taps). Normal screen (no mouse mode) → always raise the keyboard.
-    /// Every tap also flashes the scroll thumb, and a tap with an active selection
-    /// just clears it (standard text-selection behavior).
+    /// Every tap also flashes the scroll thumb.
     @objc private func onTap(_ g: UITapGestureRecognizer) {
         scrollThumb?.show()
-        if tv.hasActiveSelection {
-            tv.clearSelection()
-            return
-        }
         let term = tv.getTerminal()
         let p = g.location(in: tv)
         let (row, col) = gridPos(p, term)
@@ -615,26 +621,24 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     @objc private func onForeground() { forceRedraw() }
 
-    /// Drag over the text = select it. Coordinates are buffer-relative (view row +
-    /// top visible row) so a selection survives local scrollback moves.
+    /// Drag over the text = copy mode. The whole buffer (scrollback and screen) opens
+    /// in a native text view, scrolled to the rows that were on screen, so selecting
+    /// is the system's — handles, double-tap word, triple-tap line, Select All — not
+    /// SwiftTerm's. See `CopyTextVC`.
     @objc private func onSelectPan(_ g: UIPanGestureRecognizer) {
+        guard g.state == .began, presentedViewController == nil else { return }
         let term = tv.getTerminal()
-        let p = g.location(in: tv)
-        let (row, col) = gridPos(p, term)
-        let pos = Position(col: col, row: row + term.getTopVisibleRow())
-        switch g.state {
-        case .began:
-            selAnchor = pos
-        case .changed:
-            guard let anchor = selAnchor else { return }
-            tv.setSelectionRange(start: anchor, end: pos)
-        case .ended:
-            selAnchor = nil
-            // Release over a real selection → the standard Copy menu at the finger.
-            if tv.hasActiveSelection { tv.showStandardContextMenu(at: p) }
-        default:
-            selAnchor = nil
-        }
+        let top = term.getTopVisibleRow()
+        let all = term.getText(start: Position(col: 0, row: 0),
+                               end: Position(col: term.cols, row: Int.max))
+        // Text above the viewport → where the sheet opens (+1 steps past the newline
+        // joining the two). getText drops trailing blank rows, so this can land a few
+        // lines early — close enough to find your place.
+        let above = top > 0
+            ? term.getText(start: Position(col: 0, row: 0), end: Position(col: term.cols, row: top - 1))
+            : ""
+        let vc = CopyTextVC(text: all, focusOffset: above.isEmpty ? 0 : above.utf16.count + 1)
+        present(UINavigationController(rootViewController: vc), animated: true)
     }
 
     /// Mirror SwiftTerm's macOS `scrollWheel`: mouse-mode apps get wheel events,

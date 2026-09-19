@@ -153,9 +153,15 @@ final class DemoStream: TerminalStream {
         prompt()
     }
 
+    private var esc = false, csi = false   // ESC / ESC[ in flight: swallow the sequence
+
     func send(_ bytes: ArraySlice<UInt8>) {
         for b in bytes {
+            // Arrow keys and the bracketed-paste marks would otherwise echo as "[A"/"[200~".
+            if csi { if (0x40...0x7e).contains(b) { csi = false }; continue }
+            if esc { esc = false; csi = b == 0x5b; continue }
             switch b {
+            case 0x1b: esc = true
             case 0x0d, 0x0a:                       // Enter
                 emit("\r\n")
                 let s = String(decoding: line, as: UTF8.self)

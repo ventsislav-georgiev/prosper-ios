@@ -3,10 +3,11 @@ import UIKit
 
 /// One key on the shortcut bar above the keyboard. `bytes` are sent verbatim to the
 /// remote pty; `.ctrl` is a sticky modifier (next typed letter → control char);
-/// `.pasteText` injects the iOS clipboard string; `.redraw` jiggles the pty size
-/// so the remote TUI repaints.
+/// `.pasteText` injects the iOS clipboard string; `.insertText` opens a compose
+/// sheet whose text is sent as one paste; `.redraw` jiggles the pty size so the
+/// remote TUI repaints.
 struct ShortcutKey: Codable, Hashable, Identifiable {
-    enum Kind: String, Codable { case bytes, ctrl, pasteText, pasteImage, redraw }
+    enum Kind: String, Codable { case bytes, ctrl, pasteText, pasteImage, insertText, redraw }
     var id: String
     var label: String
     var kind: Kind
@@ -74,6 +75,9 @@ enum Shortcuts {
         // ctrl-V — which is what Claude Code reads. Sending ctrl-V alone only worked
         // when Universal Clipboard happened to have carried the image over.
         ShortcutKey(id: "pasteImg", label: "paste img", kind: .pasteImage, bytes: [0x16], systemImage: "photo"),
+        // Compose locally, send once: the sheet (`InsertTextVC`) hands the whole text
+        // to the pty as one bracketed paste — no per-keystroke round-trip.
+        ShortcutKey(id: "insert",  label: "insert", kind: .insertText, systemImage: "text.cursor"),
         // ESC+CR = meta/option-enter; Claude Code (and most TUIs) maps it to "insert
         // newline, don't submit". ponytail: relies on Claude's meta-enter binding; if a
         // shell needs a literal LF instead, bytes [0x0a] is the fallback.
@@ -87,7 +91,7 @@ enum Shortcuts {
     ]
 
     static var defaults: [ShortcutKey] {
-        ["esc", "tab", "ctrl", "home", "end", "paste", "pasteImg", "ctlc", "ctld", "snl", "redraw"]
+        ["esc", "tab", "ctrl", "home", "end", "paste", "pasteImg", "insert", "ctlc", "ctld", "snl", "redraw"]
             .compactMap { id in catalog.first { $0.id == id } }
     }
 
