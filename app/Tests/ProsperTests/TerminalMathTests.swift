@@ -204,4 +204,10 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(Array(b.suffix(6)), Array("\u{1b}[201~".utf8))
         XCTAssertEqual(Array(b.dropFirst(6).dropLast(6)), Array("ls\n  -la".utf8))
     }
+
+    /// Insert & Send: Enter comes after the end marker, never inside the paste.
+    func testPasteThenEnterPutsCRAfterTheEndMarker() {
+        let b = TerminalMath.pasteBytes("echo hi", thenEnter: true)
+        XCTAssertEqual(Array(b.suffix(7)), Array("\u{1b}[201~\r".utf8))
+    }
 }

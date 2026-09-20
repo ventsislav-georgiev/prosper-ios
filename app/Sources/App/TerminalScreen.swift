@@ -364,7 +364,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         case .pasteText:
             if let s = UIPasteboard.general.string, !s.isEmpty { sendText(s) }
         case .insertText:
-            let vc = InsertTextVC { [weak self] text in self?.sendText(text) }
+            let vc = InsertTextVC { [weak self] text, send in self?.sendText(text, thenEnter: send) }
             present(UINavigationController(rootViewController: vc), animated: true)
         case .pasteImage:
             pasteImage(then: key.bytes)
@@ -380,8 +380,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// the Mac: readline, Claude Code and vim insert it verbatim instead of running
     /// each line at its newline. Always wrapped — dch does not replay DECSET 2004 on
     /// attach, so SwiftTerm's `bracketedPasteMode` is stale after a reconnect.
-    private func sendText(_ s: String) {
-        conn.send(ArraySlice(TerminalMath.pasteBytes(s)))
+    private func sendText(_ s: String, thenEnter: Bool = false) {
+        conn.send(ArraySlice(TerminalMath.pasteBytes(s, thenEnter: thenEnter)))
     }
 
     /// Push the copied image to the remote machine's clipboard, then send the paste

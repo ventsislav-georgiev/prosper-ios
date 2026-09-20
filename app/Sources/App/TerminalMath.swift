@@ -25,8 +25,10 @@ enum TerminalMath {
     /// does on the Mac: readline, Claude Code and vim insert it verbatim instead of
     /// running each line at its newline. Always wrapped: dch does not replay DECSET
     /// 2004 on attach, so the terminal's `bracketedPasteMode` is stale after a reconnect.
-    static func pasteBytes(_ s: String) -> [UInt8] {
-        Array("\u{1b}[200~".utf8) + Array(s.utf8) + Array("\u{1b}[201~".utf8)
+    /// `thenEnter` puts CR after the end marker, so the TUI submits the whole text
+    /// instead of seeing a newline inside the paste.
+    static func pasteBytes(_ s: String, thenEnter: Bool = false) -> [UInt8] {
+        Array("\u{1b}[200~".utf8) + Array(s.utf8) + Array("\u{1b}[201~".utf8) + (thenEnter ? [0x0d] : [])
     }
 
     /// Jog-wheel scrolling: how many whole lines to scroll during `elapsed` seconds

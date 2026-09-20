@@ -78,9 +78,13 @@ jobs:
       # (SwiftTermBuildInfoPlugin); a fresh runner has never trusted it, and the
       # validation prompt has no terminal to answer on, so the archive dies with
       # "failed with exit code 1 but produced no further output".
+      #
+      # The full xcodebuild log goes to a file and is printed only when the archive
+      # fails (error lines first, then the tail). `-quiet` used to swallow the cause.
       - name: Archive
         working-directory: app
         run: |
+          LOG="$RUNNER_TEMP/archive.log"
           xcodebuild archive \
             -project Prosper.xcodeproj -scheme Prosper \
             -destination 'generic/platform=iOS' \
@@ -94,7 +98,12 @@ jobs:
             CODE_SIGN_STYLE=Automatic CODE_SIGNING_ALLOWED=YES \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
             -skipPackagePluginValidation \
-            -quiet
+            > "$LOG" 2>&1 || {
+              grep -nE 'error:|error [0-9]+|failed' "$LOG" | grep -v swift-frontend | head -40
+              echo "--- last 120 lines of xcodebuild archive ---"
+              tail -n 120 "$LOG"
+              exit 1
+            }
 
       - name: Export .ipa
         run: |

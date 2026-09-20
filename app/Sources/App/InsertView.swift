@@ -3,13 +3,13 @@ import UIKit
 /// Compose locally, send once. Typing into the terminal is a round-trip per key;
 /// here the text is written with the native editor — cursor moves, selection,
 /// undo — and only the finished text crosses the wire, as one paste (see
-/// `TerminalHostVC.sendText`). Enter is still the user's: the text is inserted at
-/// the remote input, not submitted.
+/// `TerminalHostVC.sendText`). Insert leaves Enter to the user; Insert & Send
+/// presses it once the paste has landed.
 final class InsertTextVC: UIViewController, UITextViewDelegate {
     private let editor = UITextView()
-    private let onInsert: (String) -> Void
+    private let onInsert: (String, _ send: Bool) -> Void
 
-    init(onInsert: @escaping (String) -> Void) {
+    init(onInsert: @escaping (String, _ send: Bool) -> Void) {
         self.onInsert = onInsert
         super.init(nibName: nil, bundle: nil)
     }
@@ -21,8 +21,10 @@ final class InsertTextVC: UIViewController, UITextViewDelegate {
         view.backgroundColor = .systemBackground
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             barButtonSystemItem: .cancel, target: self, action: #selector(cancel))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "Insert", style: .done, target: self, action: #selector(insert))
+        navigationItem.rightBarButtonItems = [   // first item sits rightmost
+            UIBarButtonItem(title: "Insert & Send", style: .done, target: self, action: #selector(insertAndSend)),
+            UIBarButtonItem(title: "Insert", style: .plain, target: self, action: #selector(insert)),
+        ]
 
         editor.font = .preferredFont(forTextStyle: .body)
         // Terminal input: no smart punctuation or capitalization rewriting a command.
@@ -55,9 +57,12 @@ final class InsertTextVC: UIViewController, UITextViewDelegate {
 
     @objc private func cancel() { dismiss(animated: true) }
 
-    @objc private func insert() {
+    @objc private func insert() { finish(send: false) }
+    @objc private func insertAndSend() { finish(send: true) }
+
+    private func finish(send: Bool) {
         let text = editor.text ?? ""
-        if !text.isEmpty { onInsert(text) }
+        if !text.isEmpty { onInsert(text, send) }
         dismiss(animated: true)
     }
 }
