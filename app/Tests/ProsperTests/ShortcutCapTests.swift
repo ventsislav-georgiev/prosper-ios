@@ -103,4 +103,10 @@ final class ShortcutCapTests: XCTestCase {
         cap.idleGlow = 0.9
         XCTAssertEqual(cap.layer.shadowOpacity, 0.9)
     }
+
+    func testEnterIsACatalogOptionNotADefault() {
+        let enter = Shortcuts.catalog.first { $0.id == "enter" }
+        XCTAssertEqual(enter?.bytes, [0x0d])
+        XCTAssertFalse(Shortcuts.defaults.contains { $0.id == "enter" })
+    }
 }

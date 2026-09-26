@@ -1,3 +1,4 @@
+import GameController
 import SwiftUI
 import SwiftTerm
 import UIKit
@@ -162,6 +163,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // SwiftTerm installs its own TerminalAccessory as inputAccessoryView; drop it —
         // we render our own shortcut bar in the VC hierarchy instead.
         tv.inputAccessoryView = nil
+        // iPhone: our compact keyboard instead of the system one (see TerminalKeyboard).
+        tv.refreshInputView()
         tv.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tv)
 
@@ -207,6 +210,11 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // forced path guarantees no stale pixels survive a background round-trip).
         nc.addObserver(self, selector: #selector(onForeground),
                        name: UIApplication.didBecomeActiveNotification, object: nil)
+        // A hardware keyboard takes the compact keyboard away; unplugging brings it back.
+        nc.addObserver(self, selector: #selector(hardwareKeyboardChanged),
+                       name: .GCKeyboardDidConnect, object: nil)
+        nc.addObserver(self, selector: #selector(hardwareKeyboardChanged),
+                       name: .GCKeyboardDidDisconnect, object: nil)
 
         disableSelectionGestures()
         addSelectionGesture()
@@ -251,6 +259,12 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         super.viewWillDisappear(animated)
         _ = tv.resignFirstResponder()
     }
+
+    /// The terminal's current input view: the compact keyboard on iPhone, nil where the
+    /// system keyboard is used (iPad, Mac, hardware keyboard, after the ⌨︎ hand-off).
+    var keyboardInputView: UIView? { tv.inputView }
+
+    @objc private func hardwareKeyboardChanged() { tv.refreshInputView() }
 
     /// Full dismiss (drops keyboard AND SwiftTerm's floating accessory) or raise.
     /// `resignFirstResponder` is the only thing that removes the accessory bar.
@@ -356,6 +370,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             // row at the new width, and the lift must be measured on that final grid.
             self.repairAfterSizeChange()
             self.relift()
+            self.tv.refreshInputView()   // landscape has a different bottom inset
         }
     }
 
@@ -870,6 +885,49 @@ private final class DchTerminalView: TerminalView {
     /// subclass wins. `.asciiCapable` drops non-Latin keyboards and Emoji from the
     /// switcher; with one Latin keyboard left, iOS hides the globe and emoji keys.
     @objc(keyboardType) var asciiKeyboardType: UIKeyboardType { .asciiCapable }
+
+    /// Built on first need, and only on devices that use it.
+    private lazy var compactKeyboard: TerminalKeyboard = {
+        let kb = TerminalKeyboard()
+        kb.target = self
+        // ⌨︎: the system keyboard, for dictation and swipe, until the next dismiss.
+        kb.onSystemKeyboard = { [weak self] in
+            self?.handedOff = true
+            self?.refreshInputView()
+        }
+        return kb
+    }()
+    private var handedOff = false
+
+    /// Install the compact keyboard where it applies, the system one elsewhere, and size
+    /// it to this window's bottom inset. Runs at setup, before the keyboard rises, after
+    /// rotation, when a hardware keyboard comes or goes, and on every dismiss — which is
+    /// what ends a hand-off to the system keyboard.
+    func refreshInputView() {
+        let want: UIView? = TerminalKeyboard.appliesHere && !handedOff ? compactKeyboard : nil
+        var changed = inputView !== want
+        if want != nil, let inset = window?.safeAreaInsets.bottom, compactKeyboard.bottomInset != inset {
+            compactKeyboard.bottomInset = inset
+            changed = true
+        }
+        guard changed else { return }
+        inputView = want
+        if isFirstResponder { reloadInputViews() }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        refreshInputView()
+        return super.becomeFirstResponder()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned {
+            handedOff = false
+            refreshInputView()
+        }
+        return resigned
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
