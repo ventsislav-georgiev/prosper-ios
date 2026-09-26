@@ -89,8 +89,20 @@ final class ProsperTransport: SessionTransport {
     }
 
     private func connect(timeout: TimeInterval = 6) async throws -> NWConnection {
+        // A half-open link (roam, Mac asleep) otherwise stays `.ready` for minutes while
+        // every keystroke sent into it is accepted by the stack and lost. Keepalive
+        // notices an idle dead link in ~30s, the drop time a dead one with unacked
+        // keystrokes in ~15s; either ends the stream, and SessionConnection queues
+        // what's typed next and reattaches.
+        let tcp = NWProtocolTCP.Options()
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = 15
+        tcp.keepaliveInterval = 5
+        tcp.keepaliveCount = 3
+        tcp.connectionDropTime = 15
         let conn = NWConnection(host: NWEndpoint.Host(host),
-                                port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+                                port: NWEndpoint.Port(rawValue: port)!,
+                                using: NWParameters(tls: nil, tcp: tcp))
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             let lock = NSLock()
             var resumed = false
@@ -114,7 +126,8 @@ final class ProsperTransport: SessionTransport {
                 default: break       // .waiting (no route to an unreachable host) sits here — the timeout below resolves it
                 }
             }
-            conn.start(queue: .global())
+            // Serial: ProsperStream's receive and send completions must not race.
+            conn.start(queue: DispatchQueue(label: "prosper.conn"))
             // NWConnection waits indefinitely for a path to an unreachable host; bound it
             // so listSessions surfaces hostUnreachable instead of spinning forever.
             // Only cancel if the connect is still pending — cancelling after .ready
@@ -195,18 +208,23 @@ enum FrameCodec {
 }
 
 /// A live attached session. Output is an `AsyncStream` of raw byte slices; input
-/// and resize are sent as frames. ponytail: single connection — the auto-reconnect
-/// wrapper (PLAN §15.1) lands with the terminal view, post-spike.
+/// and resize are sent as frames. Reconnecting is `SessionConnection`'s job.
 final class ProsperStream: TerminalStream {
     let output: AsyncStream<ArraySlice<UInt8>>
     private let conn: NWConnection
     private var cont: AsyncStream<ArraySlice<UInt8>>.Continuation!
     private var buf = Data()
-    private var closed = false
     private(set) var exited = false
+
+    // `send` runs on main, completions and the pump on the connection's queue.
+    private let lock = NSLock()
+    private var closed = false
+    private var inFlight = 0
+    private var finished = false
 
     /// Set by the terminal view; called on the network queue's callback thread.
     var onScreen: ((ArraySlice<UInt8>) -> Void)?
+    var onUnsent: ((Outbound) -> Void)?
 
     private enum F {
         static let resize: UInt8 = 0x05, redraw: UInt8 = 0x07, snapshot: UInt8 = 0x09
@@ -244,12 +262,59 @@ final class ProsperStream: TerminalStream {
                 }
             }
             if isComplete || error != nil { self.close(); return }
-            if !self.closed { self.pump() }
+            if !self.isClosed { self.pump() }
         }
     }
 
-    func send(_ bytes: ArraySlice<UInt8>) {
-        conn.send(content: FrameCodec.encode(F.data, Data(bytes)), completion: .contentProcessed { _ in })
+    private var isClosed: Bool { lock.lock(); defer { lock.unlock() }; return closed }
+
+    func send(_ bytes: ArraySlice<UInt8>) -> Bool {
+        deliver(.bytes(Array(bytes)), FrameCodec.encode(F.data, Data(bytes)))
+    }
+
+    func putClipboard(_ image: Data) -> Bool {
+        deliver(.clipboard(image), FrameCodec.encode(F.putClipboard, image))
+    }
+
+    /// A user write: refused outright once closed, and handed back through `onUnsent`
+    /// when NWConnection reports the frame was not processed. `.contentProcessed`
+    /// fires once the whole frame is in the TCP stack, so an error means it never got
+    /// there in full — and the server drops a truncated trailing frame with the dead
+    /// connection, so re-sending the WHOLE frame can't duplicate input. Frames that
+    /// reported success but died in the kernel buffer are not retried: without an
+    /// app-level ack they may have arrived, and a doubled keystroke in a shell is
+    /// worse than a lost one.
+    private func deliver(_ out: Outbound, _ frame: Data) -> Bool {
+        lock.lock()
+        if closed { lock.unlock(); return false }
+        inFlight += 1
+        lock.unlock()
+        conn.send(content: frame, completion: .contentProcessed { [self] error in
+            if error != nil {
+                close()              // a failed send means the link is gone; refuse the rest
+                onUnsent?(out)
+            }
+            settle()
+        })
+        return true
+    }
+
+    /// Output finishes only after every accepted write has reported, so all
+    /// `onUnsent` hand-backs land before SessionConnection sees the stream end.
+    private func settle() {
+        lock.lock()
+        inFlight -= 1
+        let done = closed && inFlight == 0
+        lock.unlock()
+        if done { finish() }
+    }
+
+    private func finish() {
+        lock.lock()
+        let first = !finished
+        finished = true
+        lock.unlock()
+        if first { cont.finish() }
     }
 
     func resize(cols: Int, rows: Int) {
@@ -265,14 +330,15 @@ final class ProsperStream: TerminalStream {
         conn.send(content: FrameCodec.encode(F.snapshot, Data()), completion: .contentProcessed { _ in })
     }
 
-    func putClipboard(_ image: Data) {
-        conn.send(content: FrameCodec.encode(F.putClipboard, image), completion: .contentProcessed { _ in })
-    }
-
     func close() {
-        guard !closed else { return }
+        lock.lock()
+        if closed { lock.unlock(); return }
         closed = true
-        cont.finish()
-        conn.cancel()
+        let idle = inFlight == 0
+        lock.unlock()
+        conn.cancel()   // pending sends complete with ECANCELED → onUnsent → settle
+        if idle { finish() }
+        // Failsafe: never let a completion that doesn't fire park the reconnect loop.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1) { [self] in finish() }
     }
 }

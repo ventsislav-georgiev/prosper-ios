@@ -155,7 +155,7 @@ final class DemoStream: TerminalStream {
 
     private var esc = false, csi = false   // ESC / ESC[ in flight: swallow the sequence
 
-    func send(_ bytes: ArraySlice<UInt8>) {
+    func send(_ bytes: ArraySlice<UInt8>) -> Bool {
         for b in bytes {
             // Arrow keys and the bracketed-paste marks would otherwise echo as "[A"/"[200~".
             if csi { if (0x40...0x7e).contains(b) { csi = false }; continue }
@@ -179,13 +179,15 @@ final class DemoStream: TerminalStream {
                 break
             }
         }
+        return true
     }
 
     func resize(cols: Int, rows: Int) {}
     func requestRedraw() {}
     var onScreen: ((ArraySlice<UInt8>) -> Void)?
     func requestSnapshot() {}   // the demo screen is already whatever we scripted
-    func putClipboard(_ image: Data) {}
+    func putClipboard(_ image: Data) -> Bool { true }
+    var onUnsent: ((Outbound) -> Void)?   // nothing leaves the phone, nothing comes back
     func close() { cont.finish() }
 }
 

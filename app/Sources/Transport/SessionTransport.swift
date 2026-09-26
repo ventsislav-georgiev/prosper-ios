@@ -23,8 +23,11 @@ protocol TerminalStream: AnyObject {
     /// True once the remote process exited (server sent the exit frame). Lets the
     /// reconnect loop tell a clean `exit` apart from a dropped link.
     var exited: Bool { get }
-    /// Send keystrokes / pasted bytes to the pty.
-    func send(_ bytes: ArraySlice<UInt8>)
+    /// Send keystrokes / pasted bytes to the pty. Returns false when the stream is
+    /// already closed and did NOT take the bytes — the caller still owns them. True
+    /// means handed to the transport; if the transport later finds they never reached
+    /// the socket it hands them back through `onUnsent`.
+    @discardableResult func send(_ bytes: ArraySlice<UInt8>) -> Bool
     /// Notify the pty of a new terminal size.
     func resize(cols: Int, rows: Int)
     /// Force the remote program to repaint (after a soft-keyboard relayout),
@@ -40,11 +43,22 @@ protocol TerminalStream: AnyObject {
     /// ctrl-V we send next pastes it. Claude Code reads its own machine's
     /// clipboard, and Universal Clipboard doesn't reliably carry phone images
     /// there, so the bytes travel with the request.
-    func putClipboard(_ image: Data)
+    /// Same contract as `send`.
+    @discardableResult func putClipboard(_ image: Data) -> Bool
+    /// Frames the transport accepted but could not hand to the socket (the send
+    /// failed before reaching the kernel), in send order. Called before `output`
+    /// finishes, on any thread.
+    var onUnsent: ((Outbound) -> Void)? { get set }
     /// Sink for `requestSnapshot` replies — a full screen in ANSI, ready to feed.
     var onScreen: ((ArraySlice<UInt8>) -> Void)? { get set }
     /// Detach this client (session keeps running).
     func close()
+}
+
+/// One user-originated write, queued by `SessionConnection` while no stream can take it.
+enum Outbound: Equatable {
+    case bytes([UInt8])
+    case clipboard(Data)
 }
 
 /// Pluggable transport so SSH and the Prosper-hosted dch-server both fit behind

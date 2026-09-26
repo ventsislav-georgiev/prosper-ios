@@ -84,7 +84,7 @@ enum Shortcuts {
         // No glyph on purpose: `arrow.turn.down.left` IS the keyboard's return key, and
         // this cap does the opposite (newline, no submit) right next to it.
         ShortcutKey(id: "snl",     label: "⇧⏎",    kind: .bytes, bytes: [0x1b, 0x0d]),
-        // Plain CR, what the keyboard's return sends; text cap to pair with ⇧⏎. Opt-in only.
+        // Plain CR, what the keyboard's return sends; text cap to pair with ⇧⏎. In the default set.
         ShortcutKey(id: "enter",   label: "⏎",     kind: .bytes, bytes: [0x0d]),
         // Manual repaint: same size-jiggle the server does on reattach/foreground.
         // Claude Code (and other TUIs) sometimes leave stale/missing glyphs until a
@@ -93,7 +93,7 @@ enum Shortcuts {
     ]
 
     static var defaults: [ShortcutKey] {
-        ["paste", "pasteImg", "insert", "ctlc", "stab", "snl", "esc", "left", "right", "up", "down", "pgup", "pgdn"]
+        ["paste", "pasteImg", "up", "down", "stab", "snl", "enter", "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"]
             .compactMap { id in catalog.first { $0.id == id } }
     }
 

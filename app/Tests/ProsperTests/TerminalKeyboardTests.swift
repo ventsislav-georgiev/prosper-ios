@@ -23,11 +23,15 @@ final class TerminalKeyboardTests: XCTestCase {
     // MARK: Layout coverage
 
     func testEveryPrintableAsciiIsReachableExactlyOnce() {
-        let letters = chars(.letters)
+        let all = chars(.letters)
+        let letters = all.filter { $0.first!.isLetter }
         let symbols = chars(.numbers) + chars(.symbols)
         XCTAssertEqual(Set(symbols).count, symbols.count, "a symbol appears on both pages or twice on one")
-        XCTAssertEqual(Set(letters).count, letters.count)
+        XCTAssertEqual(Set(all).count, all.count)
         XCTAssertEqual(Set(letters), Set("abcdefghijklmnopqrstuvwxyz".map(String.init)))
+        // The letters page's punctuation is a shortcut to keys the symbol pages also have.
+        XCTAssertEqual(Set(all).subtracting(letters), [",", "?"])
+        XCTAssertTrue(Set([",", "?"]).isSubset(of: Set(symbols)))
         // Letters reach uppercase through shift.
         let reachable = Set(letters + letters.map { $0.uppercased() } + symbols)
         let printable = Set((0x21...0x7E).map { String(UnicodeScalar(UInt8($0))) })
@@ -54,26 +58,143 @@ final class TerminalKeyboardTests: XCTestCase {
         }
     }
 
-    func testNoSystemKeyboardKeySpaceFillsTheBottomRow() {
-        for page in [TerminalKeyboard.Page.letters, .numbers, .symbols] {
-            let bottom = TerminalKeyboard.rows(for: page).last!
-            XCTAssertEqual(bottom.count, 3, "bottom row is page · space · return, got \(bottom)")
-            XCTAssertEqual(Array(bottom.dropFirst()), [.space, .ret])
+    func testARowFillsTheWidth() {
+        let row = TerminalKeyboard.rows(for: .letters)[1]
+        XCTAssertEqual(row.count, 9)
+        let slots = TerminalKeyboard.place(row, width: 393)
+        XCTAssertEqual(slots.first!.x, 0, accuracy: 0.001)
+        XCTAssertEqual(slots.last!.x + slots.last!.w, 393, accuracy: 0.001)
+        let top = TerminalKeyboard.place(TerminalKeyboard.rows(for: .letters)[0], width: 393)
+        XCTAssertGreaterThan(slots[0].w, top[0].w, "nine keys in the width of ten are wider")
+        // Short character rows stay one unit wide, centered.
+        let short = TerminalKeyboard.place(TerminalKeyboard.rows(for: .symbols)[1], width: 393)
+        XCTAssertEqual(short[0].w, top[0].w, accuracy: 0.001)
+    }
+
+    func testBottomRows() {
+        XCTAssertEqual(TerminalKeyboard.rows(for: .letters).last!,
+                       [.page(.numbers), .char(","), .space, .char("?"), .ret])
+        for page in [TerminalKeyboard.Page.numbers, .symbols] {
+            XCTAssertEqual(Array(TerminalKeyboard.rows(for: page).last!.dropFirst()), [.space, .ret])
         }
     }
 
-    /// The home-indicator inset is no longer reserved under the keys: only a small pad.
-    func testHeightDropsTheBottomSafeAreaInset() {
+    /// The home-indicator inset is not reserved under the keys, only a pad that keeps
+    /// the space bar off the bottom edge.
+    func testHeight() {
         XCTAssertEqual(TerminalKeyboard.height, TerminalKeyboard.keysHeight + TerminalKeyboard.bottomPadding)
-        XCTAssertLessThan(TerminalKeyboard.bottomPadding, 12)
+        XCTAssertEqual(TerminalKeyboard.height, 206)
+        XCTAssertTrue((14...16).contains(TerminalKeyboard.bottomPadding))
         XCTAssertEqual(TerminalKeyboard().frame.height, TerminalKeyboard.height)
+    }
+
+    func testBottomRowClearsTheCornersAndSpaceStaysWide() throws {
+        let (_, caps) = laidOut(width: 393)
+        let space = try XCTUnwrap(caps["space"]), abc = try XCTUnwrap(caps["123"])
+        let ret = try XCTUnwrap(caps["return"])
+        XCTAssertGreaterThanOrEqual(space.frame.width, 120)
+        XCTAssertEqual(abc.frame.minX, TerminalKeyboard.bottomRowInset, accuracy: 0.001)
+        XCTAssertEqual(ret.frame.maxX, 393 - TerminalKeyboard.bottomRowInset, accuracy: 0.001)
+        XCTAssertEqual(space.frame.maxY, TerminalKeyboard.height - TerminalKeyboard.bottomPadding, accuracy: 0.001)
+    }
+
+    // MARK: Touch tracking
+
+    private func presses(_ effects: [KeyTouchTracker.Effect]) -> [TerminalKeyboard.Key] {
+        effects.compactMap { if case .press(let k) = $0 { return k } else { return nil } }
+    }
+
+    func testTrackerSameKeyTwiceWhileHeldTypesTwice() {
+        var t = KeyTouchTracker()
+        var out: [TerminalKeyboard.Key] = []
+        out += presses(t.began(1, .char("l")))
+        out += presses(t.began(2, .char("l")))   // second finger while the first is down
+        out += presses(t.ended(1))
+        out += presses(t.ended(2))
+        XCTAssertEqual(out, [.char("l"), .char("l")])
+        out = presses(t.began(3, .space)) + presses(t.ended(3)) + presses(t.began(4, .space)) + presses(t.ended(4))
+        XCTAssertEqual(out, [.space, .space])
+    }
+
+    func testTrackerRolloverKeepsPressOrder() {
+        var t = KeyTouchTracker()
+        XCTAssertEqual(presses(t.began(1, .char("a"))), [])
+        XCTAssertEqual(presses(t.began(2, .char("b"))), [.char("a")], "a types as soon as b goes down")
+        XCTAssertEqual(presses(t.ended(2)), [.char("b")], "b released first still comes after a")
+        XCTAssertEqual(presses(t.ended(1)), [], "a isn't typed twice")
+        XCTAssertEqual(t.held, [])
+    }
+
+    func testTrackerCancelStillTypesOnce() {
+        var t = KeyTouchTracker()
+        _ = t.began(1, .space)
+        XCTAssertEqual(presses(t.cancelled(1)), [.space])
+        XCTAssertEqual(presses(t.cancelled(1)), [])
+        XCTAssertEqual(presses(t.ended(1)), [])
+        _ = t.began(2, .char("x")); _ = t.began(3, .char("y"))   // x typed by the rollover
+        XCTAssertEqual(presses(t.cancelled(2)), [])
+        XCTAssertEqual(presses(t.cancelled(3)), [.char("y")])
+        _ = t.began(4, .page(.numbers))
+        XCTAssertEqual(presses(t.cancelled(4)), [], "a cancel doesn't flip the page")
+    }
+
+    /// The home gesture starting in the strip under space: a cancelled swipe types nothing.
+    func testTrackerCancelledSwipeTypesNothing() {
+        var t = KeyTouchTracker()
+        _ = t.began(1, .space, at: CGPoint(x: 200, y: 200))
+        t.moved(1, .space, at: CGPoint(x: 200, y: 170))
+        XCTAssertEqual(t.cancelled(1, at: CGPoint(x: 200, y: 170)), [], "moved 30 pt up")
+        // Travel seen only at the cancel counts too.
+        _ = t.began(2, .space, at: CGPoint(x: 200, y: 200))
+        XCTAssertEqual(t.cancelled(2, at: CGPoint(x: 200, y: 170)), [])
+        // Travel that came back still counts: it was a swipe.
+        _ = t.began(3, .char("a"), at: CGPoint(x: 20, y: 70))
+        t.moved(3, .char("a"), at: CGPoint(x: 20, y: 40))
+        XCTAssertEqual(t.cancelled(3, at: CGPoint(x: 20, y: 70)), [])
+        // Still a tap under the slop: types once.
+        _ = t.began(4, .space, at: CGPoint(x: 200, y: 200))
+        t.moved(4, .space, at: CGPoint(x: 203, y: 194))
+        XCTAssertEqual(t.cancelled(4, at: CGPoint(x: 203, y: 194)), [.press(.space)])
+        XCTAssertEqual(t.cancelled(4, at: CGPoint(x: 203, y: 194)), [])
+        // Backspace still stops its repeat; a normal lift after a slide still types.
+        _ = t.began(5, .backspace, at: CGPoint(x: 380, y: 120))
+        XCTAssertEqual(t.cancelled(5, at: CGPoint(x: 380, y: 60)), [.stopRepeat])
+        _ = t.began(6, .char("q"), at: CGPoint(x: 20, y: 25))
+        t.moved(6, .char("w"), at: CGPoint(x: 60, y: 25))
+        XCTAssertEqual(t.ended(6), [.press(.char("w"))])
+    }
+
+    func testTrackerSlideTypesTheKeyUnderTheFingerAtLift() {
+        var t = KeyTouchTracker()
+        _ = t.began(1, .char("q"))
+        XCTAssertEqual(t.previewKey, .char("q"))
+        t.moved(1, .char("w"))
+        XCTAssertEqual(t.previewKey, .char("w"))
+        XCTAssertEqual(t.held, [.char("w")])
+        t.moved(1, .shift)   // sliding over a key that acts on down doesn't become it
+        XCTAssertEqual(presses(t.ended(1)), [.char("w")])
+        XCTAssertNil(t.previewKey)
+    }
+
+    func testTrackerShiftAndBackspaceActOnDown() {
+        var t = KeyTouchTracker()
+        XCTAssertEqual(t.began(1, .shift), [.press(.shift)])
+        XCTAssertEqual(t.ended(1), [])
+        XCTAssertEqual(t.began(2, .backspace), [.press(.backspace), .startRepeat])
+        t.moved(2, .char("a"))
+        XCTAssertEqual(t.cancelled(2), [.stopRepeat], "no delete beyond the first on cancel")
+        XCTAssertEqual(t.began(3, .char("a")), [])
+        XCTAssertEqual(t.began(4, .backspace), [.press(.char("a")), .press(.backspace), .startRepeat],
+                       "a held letter types before the delete")
+        XCTAssertEqual(t.ended(4), [.stopRepeat])
+        XCTAssertEqual(t.ended(3), [])
     }
 
     // MARK: Press preview
 
-    private func laidOut() -> (TerminalKeyboard, [String: UIButton]) {
+    private func laidOut(width: CGFloat = 402) -> (TerminalKeyboard, [String: UIButton]) {
         let kb = TerminalKeyboard()
-        kb.frame = CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.height)
+        kb.frame = CGRect(x: 0, y: 0, width: width, height: TerminalKeyboard.height)
         kb.layoutIfNeeded()
         var caps: [String: UIButton] = [:]
         for case let b as UIButton in kb.subviews {
@@ -82,45 +203,86 @@ final class TerminalKeyboardTests: XCTestCase {
         return (kb, caps)
     }
 
-    func testPreviewFollowsTheTouchOfCharacterKeysOnly() throws {
+    func testTouchesPreviewAndPressedLookFollowTheFinger() throws {
         let (kb, caps) = laidOut()
         let spy = SpyInput()
         kb.target = spy
-        let q = try XCTUnwrap(caps["q"]), w = try XCTUnwrap(caps["w"]), p = try XCTUnwrap(caps["p"])
+        func at(_ label: String) throws -> CGPoint {
+            let f = try XCTUnwrap(caps[label], label).frame
+            return CGPoint(x: f.midX, y: f.midY)
+        }
+        let q = try XCTUnwrap(caps["q"]), w = try XCTUnwrap(caps["w"])
 
-        q.sendActions(for: .touchDown)
+        kb.track(.began, id: 1, at: try at("q"))
         XCTAssertEqual(kb.previewText, "q")
+        XCTAssertTrue(q.isHighlighted)
         let qf = try XCTUnwrap(kb.previewFrame)
         XCTAssertLessThan(qf.minY, 0, "a top-row bubble rises above the keyboard")
         XCTAssertGreaterThanOrEqual(qf.minX, 0, "edge key keeps its bubble on screen")
-        q.sendActions(for: .touchUpInside)
+        kb.track(.moved, id: 1, at: try at("w"))
+        XCTAssertEqual(kb.previewText, "w", "the preview follows the finger")
+        XCTAssertFalse(q.isHighlighted)
+        XCTAssertTrue(w.isHighlighted)
+        kb.track(.ended, id: 1, at: try at("w"))
         XCTAssertNil(kb.previewText)
-        XCTAssertEqual(spy.calls, ["q"])
+        XCTAssertFalse(w.isHighlighted)
+        XCTAssertEqual(spy.calls, ["w"])
 
-        p.sendActions(for: .touchDown)
+        kb.track(.began, id: 2, at: try at("p"))
         XCTAssertLessThanOrEqual(try XCTUnwrap(kb.previewFrame).maxX, 402)
-        p.sendActions(for: .touchCancel)
+        kb.track(.cancelled, id: 2, at: try at("p"))
         XCTAssertNil(kb.previewText, "cancel must not leave the bubble stuck")
+        XCTAssertEqual(spy.calls, ["w", "p"], "a cancelled tap still types")
 
-        q.sendActions(for: .touchDown)
-        q.sendActions(for: .touchDragExit)
-        XCTAssertNil(kb.previewText, "sliding off hides it")
-        q.sendActions(for: .touchUpOutside)
+        // A home swipe starting in the strip under space: cancelled after 30 pt, types nothing.
+        let strip = CGPoint(x: try at("space").x, y: kb.bounds.maxY - 4)
+        kb.track(.began, id: 20, at: strip)
+        kb.track(.moved, id: 20, at: CGPoint(x: strip.x, y: strip.y - 30))
+        kb.track(.cancelled, id: 20, at: CGPoint(x: strip.x, y: strip.y - 30))
+        XCTAssertEqual(spy.calls, ["w", "p"], "a home swipe must not type a space")
+        XCTAssertFalse(try XCTUnwrap(caps["space"]).isHighlighted)
 
-        // Rolled typing: the first key's release keeps the second key's bubble.
-        q.sendActions(for: .touchDown)
-        w.sendActions(for: .touchDown)
-        q.sendActions(for: .touchUpInside)
+        // Rolled typing: q types when w goes down, and w's bubble takes over.
+        kb.track(.began, id: 3, at: try at("q"))
+        kb.track(.began, id: 4, at: try at("w"))
+        XCTAssertEqual(spy.calls.last, "q")
         XCTAssertEqual(kb.previewText, "w")
-        w.sendActions(for: .touchUpInside)
-        XCTAssertNil(kb.previewText)
+        kb.track(.ended, id: 3, at: try at("q"))
+        XCTAssertEqual(kb.previewText, "w")
+        kb.track(.ended, id: 4, at: try at("w"))
+        XCTAssertEqual(spy.calls, ["w", "p", "q", "w"])
+
+        // No dead zones: the strip under the bottom row and the corner margins map to keys.
+        let bottom = kb.bounds.maxY - 1
+        kb.track(.began, id: 5, at: CGPoint(x: try at("space").x, y: bottom))
+        kb.track(.ended, id: 5, at: CGPoint(x: try at("space").x, y: bottom))
+        kb.track(.began, id: 6, at: CGPoint(x: kb.bounds.maxX - 1, y: bottom))
+        kb.track(.ended, id: 6, at: CGPoint(x: kb.bounds.maxX - 1, y: bottom))
+        XCTAssertEqual(spy.calls.suffix(2), [" ", "\n"])
+        kb.track(.began, id: 7, at: try at(","))
+        XCTAssertEqual(kb.previewText, ",")
+        kb.track(.ended, id: 7, at: try at(","))
+        kb.track(.began, id: 8, at: try at("?"))
+        kb.track(.ended, id: 8, at: try at("?"))
+        XCTAssertEqual(spy.calls.suffix(2), [",", "?"])
 
         for label in ["shift", "delete", "space", "return", "123"] {
-            let cap = try XCTUnwrap(caps[label], label)
-            cap.sendActions(for: .touchDown)
+            kb.track(.began, id: 9, at: try at(label))
             XCTAssertNil(kb.previewText, "\(label) shows no preview")
-            cap.sendActions(for: .touchUpInside)
+            XCTAssertTrue(try XCTUnwrap(caps[label]).isHighlighted, "\(label) looks pressed")
+            kb.track(.ended, id: 9, at: try at(label))
         }
+        XCTAssertEqual(kb.page, .numbers, "page keys switch on lift")
+    }
+
+    func testShiftDoesNotCapitalizeThePunctuationKeys() {
+        let kb = TerminalKeyboard()
+        let spy = SpyInput()
+        kb.target = spy
+        kb.press(.shift)
+        kb.press(.char(","))
+        kb.press(.char("a"))
+        XCTAssertEqual(spy.calls, [",", "A"], "punctuation doesn't spend the one-shot shift")
     }
 
     // MARK: Shift

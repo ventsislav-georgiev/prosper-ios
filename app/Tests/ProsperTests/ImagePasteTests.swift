@@ -39,6 +39,9 @@ final class ImagePasteTests: XCTestCase {
         vc.view.layoutIfNeeded()
         vc.startIfNeeded()
         try await Task.sleep(nanoseconds: 200_000_000)
+        // The session's first output is what opens it to input (SessionConnection.goLive).
+        transport.stream.emit("$ ")
+        try await Task.sleep(nanoseconds: 50_000_000)
         return (vc, transport.stream)
     }
 

@@ -42,7 +42,7 @@ final class ShortcutCapTests: XCTestCase {
     /// Every default resolves to a real catalog entry, and ids are unique — a typo here
     /// silently drops a key off the bar.
     func testDefaultsResolveAndIdsAreUnique() {
-        XCTAssertEqual(Shortcuts.defaults.map(\.id), ["paste", "pasteImg", "insert", "ctlc", "stab", "snl", "esc", "left", "right", "up", "down", "pgup", "pgdn"])
+        XCTAssertEqual(Shortcuts.defaults.map(\.id), ["paste", "pasteImg", "up", "down", "stab", "snl", "enter", "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"])
         XCTAssertEqual(Set(Shortcuts.catalog.map(\.id)).count, Shortcuts.catalog.count)
     }
 
@@ -194,10 +194,10 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(cap.layer.shadowOpacity, 0.9)
     }
 
-    func testEnterIsACatalogOptionNotADefault() {
+    func testEnterSendsCRAndIsADefault() {
         let enter = Shortcuts.catalog.first { $0.id == "enter" }
         XCTAssertEqual(enter?.bytes, [0x0d])
-        XCTAssertFalse(Shortcuts.defaults.contains { $0.id == "enter" })
+        XCTAssertTrue(Shortcuts.defaults.contains { $0.id == "enter" })
     }
 
     func testPasteImageGlyphIsPortrait() throws {

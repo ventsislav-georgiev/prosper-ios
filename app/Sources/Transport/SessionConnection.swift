@@ -22,6 +22,26 @@ final class SessionConnection: ObservableObject {
     private var lastBytes = ContinuousClock.now
     private var snapshotWait: Task<Void, Never>?
 
+    /// Whether `stream` may take input directly — see `goLive`.
+    private var live = false
+    private var liveFallback: Task<Void, Never>?
+    /// User writes no stream could take yet, oldest first. Delivered in order, never
+    /// dropped short of the cap, cleared only when the session is over.
+    private var outbox: [Outbound] = []
+    private var outboxBytes = 0
+    /// Where the next `onUnsent` hand-back goes: ahead of everything queued after the
+    /// stream that accepted it stopped taking input.
+    private var requeueAt = 0
+
+    /// ponytail: 64 KB of keystrokes/paste held across a drop; past it the OLDEST bytes
+    /// go (a long paste typed into a dead link keeps its tail). Clipboard images don't
+    /// count — one per explicit paste-image tap. Raise if pastes routinely exceed it.
+    static let outboxCap = 64 * 1024
+    /// Longest wait for the reattached session's first output before flushing anyway.
+    static let liveFallback: Duration = .seconds(1)
+    /// Bytes waiting for a stream (tests).
+    var queuedByteCount: Int { outboxBytes }
+
     /// Output sink — set by the terminal view to `terminal.feed(byteArray:)`.
     var onBytes: ((ArraySlice<UInt8>) -> Void)?
     /// Full-screen sink — a `resync()` reply carrying dch's rendered screen.
@@ -39,7 +59,96 @@ final class SessionConnection: ObservableObject {
         loop = Task { await self.runLoop() }
     }
 
-    func send(_ bytes: ArraySlice<UInt8>) { stream?.send(bytes) }
+    /// Keystrokes and pastes. Goes straight out on a live stream with nothing queued;
+    /// otherwise queues behind what's already waiting, so order survives any drop.
+    func send(_ bytes: ArraySlice<UInt8>) {
+        guard !bytes.isEmpty else { return }
+        write(.bytes(Array(bytes)))
+    }
+
+    private func write(_ out: Outbound) {
+        guard !isOver else { return }
+        if outbox.isEmpty, live, let s = stream {
+            if push(out, to: s) { return }
+            live = false   // closed under us: queue for the next stream
+        }
+        outbox.append(out)
+        if case .bytes(let b) = out { outboxBytes += b.count }
+        trimOutbox()
+    }
+
+    private func push(_ out: Outbound, to s: TerminalStream) -> Bool {
+        switch out {
+        case .bytes(let b):     return s.send(b[...])
+        case .clipboard(let d): return s.putClipboard(d)
+        }
+    }
+
+    /// Session over for good — nothing will ever take queued input.
+    private var isOver: Bool {
+        if userClosed { return true }
+        switch state {
+        case .ended, .failed: return true
+        default: return false
+        }
+    }
+
+    /// The attached session can take input. Not at attach: the server spawns a fresh
+    /// `dch` client per connection, and until it has put its pty in raw mode the line
+    /// discipline echoes our bytes, eats DEL/^U/^W and turns ^C into a SIGINT that
+    /// kills the client (→ "session ended"). dch prints nothing before raw mode, so
+    /// the first output byte is the signal; the fallback covers a silent session.
+    private func goLive(_ s: TerminalStream) {
+        guard stream === s, !live else { return }
+        live = true
+        liveFallback?.cancel()
+        flushOutbox()
+    }
+
+    private func flushOutbox() {
+        guard live, let s = stream else { return }
+        var sent = 0
+        while let next = outbox.first {
+            guard push(next, to: s) else { live = false; break }
+            outbox.removeFirst()
+            sent += 1
+            if case .bytes(let b) = next { outboxBytes -= b.count }
+        }
+        requeueAt = max(0, requeueAt - sent)
+    }
+
+    /// A frame the transport took but couldn't put on the wire: back in line, ahead of
+    /// everything typed after it.
+    private func requeue(_ out: Outbound) {
+        guard !isOver else { return }
+        outbox.insert(out, at: min(requeueAt, outbox.count))
+        requeueAt += 1
+        if case .bytes(let b) = out { outboxBytes += b.count }
+        trimOutbox()
+        flushOutbox()
+    }
+
+    private func trimOutbox() {
+        var i = 0
+        while outboxBytes > Self.outboxCap, i < outbox.count {
+            guard case .bytes(let b) = outbox[i] else { i += 1; continue }
+            let excess = outboxBytes - Self.outboxCap
+            if b.count <= excess {
+                outbox.remove(at: i)
+                outboxBytes -= b.count
+                if i < requeueAt { requeueAt -= 1 }
+            } else {
+                outbox[i] = .bytes(Array(b.dropFirst(excess)))
+                outboxBytes -= excess
+            }
+        }
+    }
+
+    private func clearOutbox() {
+        outbox.removeAll()
+        outboxBytes = 0
+        requeueAt = 0
+    }
 
     func resize(cols: Int, rows: Int) {
         self.cols = cols
@@ -70,7 +179,8 @@ final class SessionConnection: ObservableObject {
     /// Image paste: load the remote machine's clipboard, then let the caller send
     /// the paste keystroke. Frames are ordered on one connection and the server sets
     /// the clipboard before acking, so a ctrl-V sent right after lands second.
-    func putClipboard(_ image: Data) { stream?.putClipboard(image) }
+    /// Queued like keystrokes, so it stays ahead of the ctrl-V that follows it.
+    func putClipboard(_ image: Data) { write(.clipboard(image)) }
 
     /// Repair the screen after anything that can leave it stale (rotation, font
     /// change, foreground, reattach). Two independent paths, weakest first:
@@ -116,8 +226,11 @@ final class SessionConnection: ObservableObject {
         userClosed = true
         snapshotWait?.cancel()
         loop?.cancel()
+        liveFallback?.cancel()
         stream?.close()
         stream = nil
+        live = false
+        clearOutbox()
     }
 
     /// Attach → pump output until the stream ends → reattach with backoff until the
@@ -127,10 +240,24 @@ final class SessionConnection: ObservableObject {
         while !userClosed {
             do {
                 let s = try await transport.attach(name: session.name, cols: cols, rows: rows)
+                // Closed while the attach was in flight: don't install a stream nobody owns.
+                if userClosed { s.close(); return }
                 s.onScreen = { [weak self] screen in
                     Task { @MainActor in self?.onScreen?(screen) }
                 }
+                // Main queue, not a Task: hand-backs must land in the order they were
+                // made, and before the stream-end the loop sees next.
+                s.onUnsent = { [weak self] out in
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.requeue(out) } }
+                }
                 stream = s
+                live = false
+                liveFallback?.cancel()
+                liveFallback = Task { [weak self, weak s] in
+                    try? await Task.sleep(for: Self.liveFallback)
+                    guard !Task.isCancelled, let self, let s else { return }
+                    self.goLive(s)
+                }
                 attempt = 0
                 state = .connected
                 s.resize(cols: cols, rows: rows)   // correct size after a size change mid-drop
@@ -142,19 +269,24 @@ final class SessionConnection: ObservableObject {
                 for await chunk in s.output {
                     lastBytes = .now
                     onBytes?(chunk)
+                    if !live { goLive(s) }
                 }
                 // Stream ended. Clean exit / user close → done; otherwise the link dropped.
                 stream = nil
-                if s.exited { state = .ended; return }
+                live = false
+                liveFallback?.cancel()
+                if s.exited { state = .ended; clearOutbox(); return }
                 if userClosed { return }
             } catch {
                 stream = nil
+                live = false
                 if userClosed { return }
             }
             // Reconnect path.
             attempt += 1
             if attempt > backoff.maxAttempts {
                 state = .failed("Couldn't reconnect to \(session.title).")
+                clearOutbox()
                 return
             }
             state = attempt == 1 ? .stalled : .reconnecting(attempt: attempt)

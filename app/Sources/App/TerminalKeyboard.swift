@@ -24,14 +24,103 @@ struct ShiftState: Equatable {
     mutating func typedLetter() { if mode == .once { mode = .off } }
 }
 
+/// Every finger on the compact keyboard, in press order, and what each one types. Pure,
+/// so the multi-touch rules are testable; the view maps each UITouch to an id and the
+/// key nearest it and feeds it here.
+///
+/// - Shift acts on touch-down; backspace deletes on touch-down, then repeats while held.
+/// - Every other key types on lift, as whatever key is under the finger then, so sliding
+///   to correct works.
+/// - A new touch types any earlier one still waiting first, so rolled typing keeps its
+///   order and a second tap on a key that's still held counts twice.
+/// - A cancelled touch that was still a tap (it traveled at most `tapSlop`) still types:
+///   the user pressed the key before a system gesture took it. One that traveled further
+///   was a swipe (the home gesture starting in the strip under the space bar) and types
+///   nothing. Page keys never type on cancel, as a cancel shouldn't flip the page.
+///
+/// Points are in the view's coordinates; the defaults suit callers that don't care
+/// about travel.
+struct KeyTouchTracker {
+    typealias Key = TerminalKeyboard.Key
+    enum Effect: Equatable { case press(Key), startRepeat, stopRepeat }
+
+    /// How far a finger may travel and still count as a tap if it's cancelled.
+    static let tapSlop: CGFloat = 10
+
+    private struct Touch {
+        let id: Int; var key: Key; var done: Bool
+        let start: CGPoint; var travel: CGFloat = 0
+        mutating func reach(_ p: CGPoint) { travel = max(travel, hypot(p.x - start.x, p.y - start.y)) }
+    }
+    private var touches: [Touch] = []
+
+    /// Keys under a finger right now, for the pressed look.
+    var held: [Key] { touches.map(\.key) }
+    /// The key of the touch still waiting to type a character: it gets the preview.
+    var previewKey: Key? {
+        guard let t = touches.last, !t.done, case .char = t.key else { return nil }
+        return t.key
+    }
+
+    private static func actsOnDown(_ key: Key) -> Bool { key == .shift || key == .backspace }
+
+    mutating func began(_ id: Int, _ key: Key, at point: CGPoint = .zero) -> [Effect] {
+        var out: [Effect] = []
+        for i in touches.indices where !touches[i].done {
+            out.append(.press(touches[i].key))
+            touches[i].done = true
+        }
+        switch key {
+        case .shift: out.append(.press(.shift))
+        case .backspace: out += [.press(.backspace), .startRepeat]
+        default: break
+        }
+        touches.append(Touch(id: id, key: key, done: Self.actsOnDown(key), start: point))
+        return out
+    }
+
+    /// Shift and backspace stay what they were; a lift key follows the finger to any
+    /// other lift key.
+    mutating func moved(_ id: Int, _ key: Key, at point: CGPoint? = nil) {
+        guard let i = touches.firstIndex(where: { $0.id == id }) else { return }
+        if let point { touches[i].reach(point) }
+        guard !touches[i].done, !Self.actsOnDown(key) else { return }
+        touches[i].key = key
+    }
+
+    mutating func ended(_ id: Int) -> [Effect] { finish(id, cancelled: false) }
+    mutating func cancelled(_ id: Int, at point: CGPoint? = nil) -> [Effect] {
+        if let point, let i = touches.firstIndex(where: { $0.id == id }) { touches[i].reach(point) }
+        return finish(id, cancelled: true)
+    }
+
+    private mutating func finish(_ id: Int, cancelled: Bool) -> [Effect] {
+        guard let i = touches.firstIndex(where: { $0.id == id }) else { return [] }
+        let t = touches.remove(at: i)
+        if t.key == .backspace { return held.contains(.backspace) ? [] : [.stopRepeat] }
+        if t.done { return [] }
+        if cancelled, case .page = t.key { return [] }
+        if cancelled, t.travel > Self.tapSlop { return [] }
+        return [.press(t.key)]
+    }
+
+    mutating func reset() { touches.removeAll() }
+}
+
 /// Compact terminal keyboard for iPhone, installed as the terminal's `inputView`.
 ///
 /// Why it exists: on Face ID iPhones the system keyboard reserves an empty ~73 pt strip
 /// under its keys (globe/dictation) plus padding above them, and an app can't shrink
 /// it. This one is four 40 pt rows with only `bottomPadding` under them, reaching into
-/// the home-indicator strip instead of stopping above it: 198 pt against the system's
+/// the home-indicator strip instead of stopping above it: 206 pt against the system's
 /// 308. The bottom row pulls in from the sides so its outer keys clear the display's
-/// rounded corners. Character keys show a press preview above the key.
+/// rounded corners, and carries `,` and `?` beside space. Character keys show a press
+/// preview above the key.
+///
+/// Touches are handled by this view, not per key: each finger goes to the nearest key
+/// (no dead zones in the gaps or margins) and `KeyTouchTracker` decides what it types,
+/// so fast repeats, rolled typing and system-cancelled taps aren't dropped (while a
+/// cancelled swipe, like the home gesture, types nothing).
 ///
 /// Output goes through the terminal's own `UIKeyInput` (`insertText` / `deleteBackward`),
 /// so SwiftTerm's return mapping and the host's sticky ctrl behave exactly as they do
@@ -48,14 +137,14 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static let keyGap: CGFloat = 6
     static let sideMargin: CGFloat = 3
     static let keysHeight = topPadding + 4 * rowHeight + 3 * rowGap
-    /// Under the bottom row, in place of the 34 pt home-indicator inset. The home
-    /// indicator is drawn over the space bar's lower edge; the host defers the bottom
-    /// edge gesture while this keyboard is up, so taps there aren't delayed.
-    static let bottomPadding: CGFloat = 8
+    /// Under the bottom row, in place of the 34 pt home-indicator inset: enough to keep
+    /// the space bar off the very bottom edge, where the home gesture starts. The host
+    /// also defers the bottom edge gesture while this keyboard is up.
+    static let bottomPadding: CGFloat = 16
     /// How far from the screen edge the bottom row starts, so its outer keys sit inside
-    /// the display's rounded corners (~62 pt radius on current Pro phones). Landscape's
-    /// side safe area already exceeds it.
-    static let bottomRowInset: CGFloat = 34
+    /// the display's rounded corners: on the iPhone 17 Pro the edge is 20 pt in at 16 pt
+    /// up. Landscape's side safe area already exceeds it.
+    static let bottomRowInset: CGFloat = 24
     static let height = keysHeight + bottomPadding
 
     /// Whether this device gets the compact keyboard: iPhone with no hardware keyboard.
@@ -73,14 +162,15 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private static func chars(_ s: String) -> [Key] { s.map { .char(String($0)) } }
 
     /// The two symbol pages together hold every printable ASCII character that isn't a
-    /// letter, once each; the shell-heavy ones are on the first page.
+    /// letter, once each; the shell-heavy ones are on the first page. `,` and `?` are also
+    /// on the letters page, for prose.
     static func rows(for page: Page) -> [[Key]] {
         switch page {
         case .letters: return [
             chars("qwertyuiop"),
             chars("asdfghjkl"),
             [.shift] + chars("zxcvbnm") + [.backspace],
-            [.page(.numbers), .space, .ret],
+            [.page(.numbers), .char(","), .space, .char("?"), .ret],
         ]
         case .numbers: return [
             chars("1234567890"),
@@ -108,10 +198,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var repeatTimer: Timer?
     private let preview = KeyPreview()
     private weak var previewCap: Cap?
+    private var tracker = KeyTouchTracker()
 
     init() {
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.height), inputViewStyle: .keyboard)
         allowsSelfSizing = true
+        isMultipleTouchEnabled = true
         overrideUserInterfaceStyle = .dark
         addLayoutGuide(keysArea)
         let height = heightAnchor.constraint(equalToConstant: Self.height)
@@ -129,7 +221,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     var enableInputClicksWhenVisible: Bool { true }
 
-    /// What a key does. The caps call this; so do the tests.
+    /// What a key does. The touch tracker's presses land here; so do the tests'.
     func press(_ key: Key) {
         switch key {
         case .char(let c):
@@ -175,27 +267,72 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         cap.fill = plain ? Style.key : Style.special
         cap.pressedFill = plain ? Style.keyPressed : Style.specialPressed
         cap.accessibilityTraits = .keyboardKey
-        cap.addAction(UIAction { [weak self] _ in self?.feedback() }, for: .touchDown)
-        if case .char = key {
-            cap.addAction(UIAction { [weak self] a in self?.showPreview(a.sender as? Cap) },
-                          for: [.touchDown, .touchDragEnter])
-            cap.addAction(UIAction { [weak self] a in self?.hidePreview(a.sender as? Cap) },
-                          for: [.touchDragExit, .touchUpInside, .touchUpOutside, .touchCancel])
-        }
-        switch key {
-        case .backspace:
-            cap.addAction(UIAction { [weak self] _ in self?.startRepeat() }, for: .touchDown)
-            cap.addAction(UIAction { [weak self] _ in self?.stopRepeat() },
-                          for: [.touchUpInside, .touchUpOutside, .touchCancel])
-        case .shift:
-            // On touch-down, like the system shift: the double-tap window is measured
-            // between presses, not releases.
-            cap.addAction(UIAction { [weak self] _ in self?.press(.shift) }, for: .touchDown)
-        default:
-            cap.addAction(UIAction { [weak self] _ in self?.press(key) }, for: .touchUpInside)
-        }
+        cap.activate = { [weak self] in self?.press(key) }
         addSubview(cap)
         return cap
+    }
+
+    // MARK: - Touches
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) { feed(touches, .began) }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) { feed(touches, .moved) }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { feed(touches, .ended) }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { feed(touches, .cancelled) }
+
+    private func feed(_ touches: Set<UITouch>, _ phase: UITouch.Phase) {
+        for t in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
+            track(phase, id: Int(bitPattern: ObjectIdentifier(t)), at: t.location(in: self))
+        }
+    }
+
+    /// One touch event, `at` in this view's coordinates. The UIKit overrides call it;
+    /// so do the tests, which can't make UITouches.
+    func track(_ phase: UITouch.Phase, id: Int, at point: CGPoint) {
+        switch phase {
+        case .began:
+            feedback()
+            let before = page
+            perform(tracker.began(id, key(at: point), at: point))
+            // A rolled-over page key just switched the page under this finger.
+            if page != before { tracker.moved(id, key(at: point)) }
+        case .moved:
+            tracker.moved(id, key(at: point), at: point)
+        case .ended:
+            tracker.moved(id, key(at: point), at: point)
+            perform(tracker.ended(id))
+        case .cancelled:
+            perform(tracker.cancelled(id, at: point))   // only how far it traveled matters
+        default:
+            return
+        }
+        refreshPressed()
+    }
+
+    /// The key nearest `point`, so the gaps, margins and the strip under the bottom row
+    /// all belong to a key.
+    private func key(at point: CGPoint) -> Key {
+        func distance(_ r: CGRect) -> CGFloat {
+            hypot(max(r.minX - point.x, 0, point.x - r.maxX), max(r.minY - point.y, 0, point.y - r.maxY))
+        }
+        return caps.joined().min { distance($0.frame) < distance($1.frame) }?.key ?? .space
+    }
+
+    private func perform(_ effects: [KeyTouchTracker.Effect]) {
+        for e in effects {
+            switch e {
+            case .press(let k): press(k)
+            case .startRepeat: startRepeat()
+            case .stopRepeat: stopRepeat()
+            }
+        }
+    }
+
+    /// The pressed look and the preview follow the tracker, not the caps' own tracking.
+    private func refreshPressed() {
+        let held = tracker.held
+        for cap in caps.joined() { cap.isHighlighted = held.contains(cap.key) }
+        let cap = tracker.previewKey.flatMap { k in caps.joined().first { $0.key == k } }
+        if let cap { showPreview(cap) } else { hidePreview() }
     }
 
     private func refreshLabels() {
@@ -235,8 +372,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// The preview goes in the keyboard's window, not this view, so a top-row bubble can
     /// rise over the shortcut bar whatever the input host's ancestors clip.
-    private func showPreview(_ cap: Cap?) {
-        guard let cap, let text = cap.title(for: .normal) else { return }
+    private func showPreview(_ cap: Cap) {
+        guard let text = cap.title(for: .normal) else { return }
+        guard cap !== previewCap || preview.label.text != text || preview.superview == nil else { return }
         layoutIfNeeded()   // a key pressed right after a page switch has no frame yet
         let host: UIView = window ?? self
         host.addSubview(preview)   // also brings it to the front
@@ -244,10 +382,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         previewCap = cap
     }
 
-    /// `cap` nil hides unconditionally; otherwise only that key's own preview, so the
-    /// first key's release in a rolled pair doesn't take the second key's bubble.
-    private func hidePreview(_ cap: Cap? = nil) {
-        guard cap == nil || cap === previewCap else { return }
+    private func hidePreview() {
         preview.removeFromSuperview()
         previewCap = nil
     }
@@ -262,9 +397,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         haptics.prepare()
     }
 
-    // Backspace: once on touch-down, then repeat after a pause while held.
+    // Backspace: the tracker deletes once on touch-down; this repeats after a pause while held.
     private func startRepeat() {
-        press(.backspace)
         stopRepeat()
         let delay = Timer(timeInterval: 0.4, repeats: false) { [weak self] _ in
             guard let self else { return }
@@ -286,7 +420,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { stopRepeat(); hidePreview() }   // dismissed mid-hold
+        if window == nil { stopRepeat(); tracker.reset(); refreshPressed() }   // dismissed mid-hold
     }
 
     // MARK: - Layout
@@ -306,11 +440,16 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     /// Horizontal slots for one row, in a row `width` wide. A letter is one unit (ten
-    /// units and nine gaps fill the width). A row with space gives space the rest; a row
-    /// led by a special key (shift / page) pins it and the last key to the edges and
-    /// centers the letters between; anything else is centered.
+    /// units and nine gaps fill the width). A row of nine or more characters stretches
+    /// them to fill it. A row with space gives space the rest; a row led by a special key
+    /// (shift / page) pins it and the last key to the edges and centers the letters
+    /// between; anything else is centered.
     static func place(_ keys: [Key], width: CGFloat) -> [(x: CGFloat, w: CGFloat)] {
         let g = keyGap, u = (width - 9 * g) / 10
+        if keys.count >= 9, keys.allSatisfy({ if case .char = $0 { return true } else { return false } }) {
+            let kw = (width - g * CGFloat(keys.count - 1)) / CGFloat(keys.count)
+            return keys.indices.map { (CGFloat($0) * (kw + g), kw) }
+        }
         func w(_ k: Key) -> CGFloat {
             switch k {
             case .char: return u
@@ -385,9 +524,9 @@ extension TerminalKeyboard {
     }
 }
 
-/// One key: flat fill that lightens under the finger, a hairline bottom shadow like the
-/// system keys, and a touch area that reaches halfway into the gaps so there are no
-/// dead spots between keys.
+/// One key, drawn only: flat fill that lightens while `isHighlighted` (set by the
+/// keyboard's touch tracking) and a hairline bottom shadow like the system keys.
+/// Touches go through to the keyboard view.
 private final class Cap: UIButton {
     let key: TerminalKeyboard.Key
     var fill: UIColor = .gray { didSet { refill() } }
@@ -403,13 +542,14 @@ private final class Cap: UIButton {
         layer.shadowRadius = 0
         setTitleColor(.white, for: .normal)
         tintColor = .white
+        isUserInteractionEnabled = false
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
     override var isHighlighted: Bool { didSet { refill() } }
     private func refill() { backgroundColor = isHighlighted ? pressedFill : fill }
 
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        bounds.insetBy(dx: -TerminalKeyboard.keyGap / 2, dy: -TerminalKeyboard.rowGap / 2).contains(point)
-    }
+    /// VoiceOver's double-tap: the cap has no actions of its own to fire.
+    var activate: (() -> Void)?
+    override func accessibilityActivate() -> Bool { activate?(); return activate != nil }
 }
