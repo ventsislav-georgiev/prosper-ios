@@ -114,8 +114,8 @@ struct KeyTouchTracker {
 /// it. This one is four 40 pt rows with only `bottomPadding` under them, reaching into
 /// the home-indicator strip instead of stopping above it: 206 pt against the system's
 /// 308. The bottom row pulls in from the sides so its outer keys clear the display's
-/// rounded corners, and carries `,` and `?` beside space. Character keys show a press
-/// preview above the key.
+/// rounded corners, and carries `,` `/` `?` beside space on every page. Character keys
+/// show a press preview above the key.
 ///
 /// Touches are handled by this view, not per key: each finger goes to the nearest key
 /// (no dead zones in the gaps or margins) and `KeyTouchTracker` decides what it types,
@@ -161,28 +161,31 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private static func chars(_ s: String) -> [Key] { s.map { .char(String($0)) } }
 
-    /// The two symbol pages together hold every printable ASCII character that isn't a
-    /// letter, once each; the shell-heavy ones are on the first page. `,` and `?` are also
-    /// on the letters page, for prose.
+    /// The bottom row is the same on every page but for its page key: `, / ?` beside
+    /// space, for prose and paths. The two symbol pages hold every other printable ASCII
+    /// character that isn't a letter, once each; the common ones are on the first page.
     static func rows(for page: Page) -> [[Key]] {
+        func bottom(_ other: Page) -> [Key] {
+            [.page(other), .char(","), .char("/"), .space, .char("?"), .ret]
+        }
         switch page {
         case .letters: return [
             chars("qwertyuiop"),
             chars("asdfghjkl"),
             [.shift] + chars("zxcvbnm") + [.backspace],
-            [.page(.numbers), .char(","), .space, .char("?"), .ret],
+            bottom(.numbers),
         ]
         case .numbers: return [
             chars("1234567890"),
-            chars("-/|~_$\\'\"&"),
-            [.page(.symbols)] + chars(".,*><;:") + [.backspace],
-            [.page(.letters), .space, .ret],
+            chars("-#()_$='\"&"),
+            [.page(.symbols)] + chars(".@*`+;:") + [.backspace],
+            bottom(.letters),
         ]
         case .symbols: return [
-            chars("[]{}()#%^="),
-            chars("+?!@`"),
+            chars("[]{}|<>%^~"),
+            chars("!\\"),
             [.page(.numbers), .backspace],
-            [.page(.letters), .space, .ret],
+            bottom(.letters),
         ]
         }
     }

@@ -22,26 +22,46 @@ final class TerminalKeyboardTests: XCTestCase {
 
     // MARK: Layout coverage
 
-    func testEveryPrintableAsciiIsReachableExactlyOnce() {
-        let all = chars(.letters)
-        let letters = all.filter { $0.first!.isLetter }
-        let symbols = chars(.numbers) + chars(.symbols)
-        XCTAssertEqual(Set(symbols).count, symbols.count, "a symbol appears on both pages or twice on one")
-        XCTAssertEqual(Set(all).count, all.count)
-        XCTAssertEqual(Set(letters), Set("abcdefghijklmnopqrstuvwxyz".map(String.init)))
-        // The letters page's punctuation is a shortcut to keys the symbol pages also have.
-        XCTAssertEqual(Set(all).subtracting(letters), [",", "?"])
-        XCTAssertTrue(Set([",", "?"]).isSubset(of: Set(symbols)))
-        // Letters reach uppercase through shift.
-        let reachable = Set(letters + letters.map { $0.uppercased() } + symbols)
-        let printable = Set((0x21...0x7E).map { String(UnicodeScalar(UInt8($0))) })
-        XCTAssertEqual(reachable, printable, "missing \(printable.subtracting(reachable).sorted())")
-        XCTAssertTrue(Set("0123456789".map(String.init)).isSubset(of: Set(symbols)))
+    private func chars(_ keys: [TerminalKeyboard.Key]) -> [String] {
+        keys.compactMap { if case .char(let c) = $0 { return c } else { return nil } }
     }
 
-    func testShellSymbolsAreOnTheFirstSymbolsPage() {
+    /// The shared bottom row counts once; every other key on every page counts as is, so a
+    /// character on two pages, or twice on one, fails as surely as a missing one.
+    func testEveryPrintableAsciiIsReachableExactlyOnce() {
+        let pages: [TerminalKeyboard.Page] = [.letters, .numbers, .symbols]
+        let shared = chars(TerminalKeyboard.rows(for: .letters).last!)
+        XCTAssertEqual(shared, [",", "/", "?"])
+        let upper = pages.flatMap { chars(Array(TerminalKeyboard.rows(for: $0).dropLast().joined())) }
+        let all = upper + shared
+        let dupes = Dictionary(grouping: all, by: { $0 }).filter { $0.value.count > 1 }.keys.sorted()
+        XCTAssertEqual(dupes, [], "reachable more than once")
+        let letters = chars(.letters).filter { $0.first!.isLetter }
+        XCTAssertEqual(Set(letters), Set("abcdefghijklmnopqrstuvwxyz".map(String.init)))
+        // Letters reach uppercase through shift.
+        let reachable = all + letters.map { $0.uppercased() }
+        let printable = (0x21...0x7E).map { String(UnicodeScalar(UInt8($0))) }
+        XCTAssertEqual(reachable.sorted(), printable.sorted(),
+                       "missing \(Set(printable).subtracting(reachable).sorted())")
+        XCTAssertEqual(chars(Array(TerminalKeyboard.rows(for: .numbers).dropLast().joined())).count, 27)
+        XCTAssertEqual(chars(Array(TerminalKeyboard.rows(for: .symbols).dropLast().joined())).count, 12)
+    }
+
+    func testSymbolPageRows() {
+        typealias K = TerminalKeyboard
+        func row(_ page: K.Page, _ i: Int) -> [String] { chars(K.rows(for: page)[i]) }
+        XCTAssertEqual(row(.numbers, 0), "1234567890".map(String.init))
+        XCTAssertEqual(row(.numbers, 1), ["-", "#", "(", ")", "_", "$", "=", "'", "\"", "&"])
+        XCTAssertEqual(K.rows(for: .numbers)[2],
+                       [.page(.symbols)] + ".@*`+;:".map { .char(String($0)) } + [.backspace])
+        XCTAssertEqual(row(.symbols, 0), ["[", "]", "{", "}", "|", "<", ">", "%", "^", "~"])
+        XCTAssertEqual(row(.symbols, 1), ["!", "\\"])
+        XCTAssertEqual(K.rows(for: .symbols)[2], [.page(.numbers), .backspace])
+    }
+
+    func testCommonSymbolsAreOnTheFirstSymbolsPage() {
         let first = Set(chars(.numbers))
-        for c in "-/|~_$\\'\".,&*><;" { XCTAssertTrue(first.contains(String(c)), "\(c) not on the 123 page") }
+        for c in "-#()_$='\"&.@*`+;:" { XCTAssertTrue(first.contains(String(c)), "\(c) not on the 123 page") }
     }
 
     func testRowsFitTheWidth() {
@@ -68,14 +88,18 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertGreaterThan(slots[0].w, top[0].w, "nine keys in the width of ten are wider")
         // Short character rows stay one unit wide, centered.
         let short = TerminalKeyboard.place(TerminalKeyboard.rows(for: .symbols)[1], width: 393)
+        XCTAssertEqual(short.count, 2)
         XCTAssertEqual(short[0].w, top[0].w, accuracy: 0.001)
+        XCTAssertEqual(short[1].w, top[0].w, accuracy: 0.001)
+        XCTAssertEqual(short[0].x, 393 - (short[1].x + short[1].w), accuracy: 0.001)
     }
 
-    func testBottomRows() {
-        XCTAssertEqual(TerminalKeyboard.rows(for: .letters).last!,
-                       [.page(.numbers), .char(","), .space, .char("?"), .ret])
-        for page in [TerminalKeyboard.Page.numbers, .symbols] {
-            XCTAssertEqual(Array(TerminalKeyboard.rows(for: page).last!.dropFirst()), [.space, .ret])
+    func testBottomRowIsSharedByEveryPage() {
+        let pages: [(TerminalKeyboard.Page, TerminalKeyboard.Page)] =
+            [(.letters, .numbers), (.numbers, .letters), (.symbols, .letters)]
+        for (page, other) in pages {
+            XCTAssertEqual(TerminalKeyboard.rows(for: page).last!,
+                           [.page(other), .char(","), .char("/"), .space, .char("?"), .ret], "\(page)")
         }
     }
 
@@ -89,13 +113,22 @@ final class TerminalKeyboardTests: XCTestCase {
     }
 
     func testBottomRowClearsTheCornersAndSpaceStaysWide() throws {
-        let (_, caps) = laidOut(width: 393)
-        let space = try XCTUnwrap(caps["space"]), abc = try XCTUnwrap(caps["123"])
-        let ret = try XCTUnwrap(caps["return"])
-        XCTAssertGreaterThanOrEqual(space.frame.width, 120)
-        XCTAssertEqual(abc.frame.minX, TerminalKeyboard.bottomRowInset, accuracy: 0.001)
-        XCTAssertEqual(ret.frame.maxX, 393 - TerminalKeyboard.bottomRowInset, accuracy: 0.001)
-        XCTAssertEqual(space.frame.maxY, TerminalKeyboard.height - TerminalKeyboard.bottomPadding, accuracy: 0.001)
+        for width in [393, 402] as [CGFloat] {
+            let (kb, _) = laidOut(width: width)
+            for page in [TerminalKeyboard.Page.letters, .numbers, .symbols] {
+                kb.press(.page(page))
+                kb.layoutIfNeeded()
+                let caps = Dictionary(kb.subviews.compactMap { $0 as? UIButton }
+                    .map { ($0.title(for: .normal) ?? $0.accessibilityLabel ?? "", $0) }) { a, _ in a }
+                let space = try XCTUnwrap(caps["space"]), ret = try XCTUnwrap(caps["return"])
+                let pageKey = try XCTUnwrap(caps[page == .letters ? "123" : "ABC"])
+                XCTAssertGreaterThanOrEqual(space.frame.width, 110, "\(page) at \(width)")
+                XCTAssertEqual(pageKey.frame.minX, TerminalKeyboard.bottomRowInset, accuracy: 0.001)
+                XCTAssertEqual(ret.frame.maxX, width - TerminalKeyboard.bottomRowInset, accuracy: 0.001)
+                XCTAssertEqual(space.frame.maxY, TerminalKeyboard.height - TerminalKeyboard.bottomPadding,
+                               accuracy: 0.001)
+            }
+        }
     }
 
     // MARK: Touch tracking
@@ -264,7 +297,9 @@ final class TerminalKeyboardTests: XCTestCase {
         kb.track(.ended, id: 7, at: try at(","))
         kb.track(.began, id: 8, at: try at("?"))
         kb.track(.ended, id: 8, at: try at("?"))
-        XCTAssertEqual(spy.calls.suffix(2), [",", "?"])
+        kb.track(.began, id: 10, at: try at("/"))
+        kb.track(.ended, id: 10, at: try at("/"))
+        XCTAssertEqual(spy.calls.suffix(3), [",", "?", "/"])
 
         for label in ["shift", "delete", "space", "return", "123"] {
             kb.track(.began, id: 9, at: try at(label))
