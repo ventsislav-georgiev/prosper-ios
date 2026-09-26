@@ -74,7 +74,7 @@ enum Shortcuts {
         // Ships the copied image to the remote machine's clipboard, then sends
         // ctrl-V — which is what Claude Code reads. Sending ctrl-V alone only worked
         // when Universal Clipboard happened to have carried the image over.
-        ShortcutKey(id: "pasteImg", label: "paste img", kind: .pasteImage, bytes: [0x16], systemImage: "photo"),
+        ShortcutKey(id: "pasteImg", label: "paste img", kind: .pasteImage, bytes: [0x16], systemImage: "person.crop.artframe"),
         // Compose locally, send once: the sheet (`InsertTextVC`) hands the whole text
         // to the pty as one bracketed paste — no per-keystroke round-trip.
         ShortcutKey(id: "insert",  label: "insert", kind: .insertText, systemImage: "text.cursor"),

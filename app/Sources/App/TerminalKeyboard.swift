@@ -28,9 +28,10 @@ struct ShiftState: Equatable {
 ///
 /// Why it exists: on Face ID iPhones the system keyboard reserves an empty ~73 pt strip
 /// under its keys (globe/dictation) plus padding above them, and an app can't shrink
-/// it. This one is four 40 pt rows ending at the safe-area bottom, which hands roughly
-/// 85 pt back to the terminal. The ⌨︎ key hands off to the system keyboard for
-/// dictation and swipe until the keyboard is next dismissed.
+/// it. This one is four 40 pt rows with only `bottomPadding` under them, reaching into
+/// the home-indicator strip instead of stopping above it: 198 pt against the system's
+/// 308. The bottom row pulls in from the sides so its outer keys clear the display's
+/// rounded corners. Character keys show a press preview above the key.
 ///
 /// Output goes through the terminal's own `UIKeyInput` (`insertText` / `deleteBackward`),
 /// so SwiftTerm's return mapping and the host's sticky ctrl behave exactly as they do
@@ -38,7 +39,7 @@ struct ShiftState: Equatable {
 final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     enum Page { case letters, numbers, symbols }
     enum Key: Hashable {
-        case char(String), shift, backspace, space, ret, page(Page), system
+        case char(String), shift, backspace, space, ret, page(Page)
     }
 
     static let rowHeight: CGFloat = 40
@@ -46,8 +47,16 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static let topPadding: CGFloat = 6
     static let keyGap: CGFloat = 6
     static let sideMargin: CGFloat = 3
-    /// Keys only; the view adds the bottom safe-area inset below this.
     static let keysHeight = topPadding + 4 * rowHeight + 3 * rowGap
+    /// Under the bottom row, in place of the 34 pt home-indicator inset. The home
+    /// indicator is drawn over the space bar's lower edge; the host defers the bottom
+    /// edge gesture while this keyboard is up, so taps there aren't delayed.
+    static let bottomPadding: CGFloat = 8
+    /// How far from the screen edge the bottom row starts, so its outer keys sit inside
+    /// the display's rounded corners (~62 pt radius on current Pro phones). Landscape's
+    /// side safe area already exceeds it.
+    static let bottomRowInset: CGFloat = 34
+    static let height = keysHeight + bottomPadding
 
     /// Whether this device gets the compact keyboard: iPhone with no hardware keyboard.
     /// iPad, the Mac and a connected keyboard keep system behavior.
@@ -71,26 +80,24 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             chars("qwertyuiop"),
             chars("asdfghjkl"),
             [.shift] + chars("zxcvbnm") + [.backspace],
-            [.page(.numbers), .system, .space, .ret],
+            [.page(.numbers), .space, .ret],
         ]
         case .numbers: return [
             chars("1234567890"),
             chars("-/|~_$\\'\"&"),
             [.page(.symbols)] + chars(".,*><;:") + [.backspace],
-            [.page(.letters), .system, .space, .ret],
+            [.page(.letters), .space, .ret],
         ]
         case .symbols: return [
             chars("[]{}()#%^="),
             chars("+?!@`"),
             [.page(.numbers), .backspace],
-            [.page(.letters), .system, .space, .ret],
+            [.page(.letters), .space, .ret],
         ]
         }
     }
 
     weak var target: UIKeyInput?
-    /// The ⌨︎ key: the owner swaps this view out for the system keyboard.
-    var onSystemKeyboard: (() -> Void)?
     private(set) var page: Page = .letters
     private(set) var shift = ShiftState()
 
@@ -99,12 +106,15 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// One generator, kept warm — same pattern as `ShortcutBar`.
     private let haptics = UIImpactFeedbackGenerator(style: .light)
     private var repeatTimer: Timer?
+    private let preview = KeyPreview()
+    private weak var previewCap: Cap?
 
     init() {
-        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.keysHeight), inputViewStyle: .keyboard)
+        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.height), inputViewStyle: .keyboard)
         allowsSelfSizing = true
         overrideUserInterfaceStyle = .dark
         addLayoutGuide(keysArea)
+        let height = heightAnchor.constraint(equalToConstant: Self.height)
         height.priority = .required - 1
         NSLayoutConstraint.activate([
             keysArea.topAnchor.constraint(equalTo: topAnchor),
@@ -116,19 +126,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         build()
     }
     required init?(coder: NSCoder) { fatalError("not used") }
-
-    /// The screen's bottom safe-area inset, set by the owner before the keyboard shows.
-    /// Height = keys + this, so the last row ends where the home indicator's gesture
-    /// zone begins. Not a constraint to our own safe-area guide: the keyboard host takes
-    /// the view's height when it attaches it — before it is in a window, inset 0 — and
-    /// pins it (`_UIKBAutolayoutHeightConstraint`), so the frame must already be right.
-    var bottomInset: CGFloat = 0 {
-        didSet {
-            height.constant = Self.keysHeight + bottomInset
-            frame.size.height = height.constant
-        }
-    }
-    private lazy var height = heightAnchor.constraint(equalToConstant: Self.keysHeight)
 
     var enableInputClicksWhenVisible: Bool { true }
 
@@ -148,7 +145,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .page(let p):
             page = p
             build()
-        case .system: onSystemKeyboard?()
         }
     }
 
@@ -165,6 +161,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     private func build() {
+        hidePreview()
         caps.joined().forEach { $0.removeFromSuperview() }
         caps = Self.rows(for: page).map { $0.map(makeCap) }
         refreshLabels()
@@ -179,6 +176,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         cap.pressedFill = plain ? Style.keyPressed : Style.specialPressed
         cap.accessibilityTraits = .keyboardKey
         cap.addAction(UIAction { [weak self] _ in self?.feedback() }, for: .touchDown)
+        if case .char = key {
+            cap.addAction(UIAction { [weak self] a in self?.showPreview(a.sender as? Cap) },
+                          for: [.touchDown, .touchDragEnter])
+            cap.addAction(UIAction { [weak self] a in self?.hidePreview(a.sender as? Cap) },
+                          for: [.touchDragExit, .touchUpInside, .touchUpOutside, .touchCancel])
+        }
         switch key {
         case .backspace:
             cap.addAction(UIAction { [weak self] _ in self?.startRepeat() }, for: .touchDown)
@@ -212,7 +215,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             case .backspace: image = "delete.left"; label = "delete"
             case .space: title = "space"; label = "space"
             case .ret: title = "return"; label = "return"
-            case .system: image = "keyboard"; label = "system keyboard"
             case .page(let p):
                 switch p {
                 case .letters: title = "ABC"; label = "letters"
@@ -228,6 +230,31 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             cap.accessibilityLabel = label
         }
     }
+
+    // MARK: - Press preview
+
+    /// The preview goes in the keyboard's window, not this view, so a top-row bubble can
+    /// rise over the shortcut bar whatever the input host's ancestors clip.
+    private func showPreview(_ cap: Cap?) {
+        guard let cap, let text = cap.title(for: .normal) else { return }
+        layoutIfNeeded()   // a key pressed right after a page switch has no frame yet
+        let host: UIView = window ?? self
+        host.addSubview(preview)   // also brings it to the front
+        preview.show(text, over: convert(cap.frame, to: host), within: host.bounds)
+        previewCap = cap
+    }
+
+    /// `cap` nil hides unconditionally; otherwise only that key's own preview, so the
+    /// first key's release in a rolled pair doesn't take the second key's bubble.
+    private func hidePreview(_ cap: Cap? = nil) {
+        guard cap == nil || cap === previewCap else { return }
+        preview.removeFromSuperview()
+        previewCap = nil
+    }
+
+    /// Test seams: the character in the visible preview, and its frame in its host.
+    var previewText: String? { preview.superview == nil ? nil : preview.label.text }
+    var previewFrame: CGRect? { preview.superview == nil ? nil : preview.frame }
 
     private func feedback() {
         UIDevice.current.playInputClick()
@@ -259,7 +286,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { stopRepeat() }   // dismissed mid-hold
+        if window == nil { stopRepeat(); hidePreview() }   // dismissed mid-hold
     }
 
     // MARK: - Layout
@@ -269,8 +296,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         let area = keysArea.layoutFrame.insetBy(dx: Self.sideMargin, dy: 0)
         for (r, row) in caps.enumerated() {
             let y = area.minY + Self.topPadding + CGFloat(r) * (Self.rowHeight + Self.rowGap)
-            for (cap, f) in zip(row, Self.place(row.map(\.key), width: area.width)) {
-                cap.frame = CGRect(x: area.minX + f.x, y: y, width: f.w, height: Self.rowHeight)
+            // The bottom row clears the screen's rounded corners (a no-op in landscape).
+            let pull = r == caps.count - 1 ? max(0, Self.bottomRowInset - area.minX) : 0
+            let rowArea = area.insetBy(dx: pull, dy: 0)
+            for (cap, f) in zip(row, Self.place(row.map(\.key), width: rowArea.width)) {
+                cap.frame = CGRect(x: rowArea.minX + f.x, y: y, width: f.w, height: Self.rowHeight)
             }
         }
     }
@@ -285,7 +315,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             switch k {
             case .char: return u
             case .ret: return 2.25 * u
-            case .system: return 1.25 * u
             default: return 1.5 * u
             }
         }
@@ -310,6 +339,49 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
         guard edged, let first = keys.first, let last = keys.last else { return mids }
         return [(0, w(first))] + mids + [(width - w(last), w(last))]
+    }
+}
+
+extension TerminalKeyboard {
+    /// The enlarged character above a pressed key, joined to the key like the system
+    /// keyboard's: one shape, the bubble on top and the key below as its stem. The bubble
+    /// slides sideways to stay inside `limit`, so edge keys keep it on screen.
+    fileprivate final class KeyPreview: UIView {
+        static let extra: CGFloat = 10    // bubble overhang past each side of the key
+        static let rise: CGFloat = 48     // bubble height above the key's top
+        let label = UILabel()
+        private let shape = CAShapeLayer()
+
+        init() {
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+            shape.fillColor = Style.key.cgColor
+            shape.shadowColor = UIColor.black.cgColor
+            shape.shadowOpacity = 0.45
+            shape.shadowRadius = 3
+            shape.shadowOffset = CGSize(width: 0, height: 1)
+            layer.addSublayer(shape)
+            label.font = .systemFont(ofSize: 32)
+            label.textColor = .white
+            label.textAlignment = .center
+            addSubview(label)
+        }
+        required init?(coder: NSCoder) { fatalError("not used") }
+
+        /// `key` and `limit` in the superview's coordinates.
+        func show(_ text: String, over key: CGRect, within limit: CGRect) {
+            let w = key.width + 2 * Self.extra
+            let x = min(max(key.midX - w / 2, limit.minX + 2), limit.maxX - 2 - w)
+            let bubble = CGRect(x: x, y: key.minY - Self.rise, width: w, height: Self.rise + 8)
+            frame = bubble.union(key)
+            let local = { (r: CGRect) in r.offsetBy(dx: -self.frame.minX, dy: -self.frame.minY) }
+            let path = UIBezierPath(roundedRect: local(bubble), cornerRadius: 9)
+            path.append(UIBezierPath(roundedRect: local(key), cornerRadius: 6))
+            shape.path = path.cgPath
+            shape.shadowPath = path.cgPath
+            label.text = text
+            label.frame = local(bubble).insetBy(dx: 0, dy: 4).offsetBy(dx: 0, dy: -4)
+        }
     }
 }
 

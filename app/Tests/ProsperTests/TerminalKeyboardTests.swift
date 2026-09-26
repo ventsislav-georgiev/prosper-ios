@@ -54,6 +54,75 @@ final class TerminalKeyboardTests: XCTestCase {
         }
     }
 
+    func testNoSystemKeyboardKeySpaceFillsTheBottomRow() {
+        for page in [TerminalKeyboard.Page.letters, .numbers, .symbols] {
+            let bottom = TerminalKeyboard.rows(for: page).last!
+            XCTAssertEqual(bottom.count, 3, "bottom row is page · space · return, got \(bottom)")
+            XCTAssertEqual(Array(bottom.dropFirst()), [.space, .ret])
+        }
+    }
+
+    /// The home-indicator inset is no longer reserved under the keys: only a small pad.
+    func testHeightDropsTheBottomSafeAreaInset() {
+        XCTAssertEqual(TerminalKeyboard.height, TerminalKeyboard.keysHeight + TerminalKeyboard.bottomPadding)
+        XCTAssertLessThan(TerminalKeyboard.bottomPadding, 12)
+        XCTAssertEqual(TerminalKeyboard().frame.height, TerminalKeyboard.height)
+    }
+
+    // MARK: Press preview
+
+    private func laidOut() -> (TerminalKeyboard, [String: UIButton]) {
+        let kb = TerminalKeyboard()
+        kb.frame = CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.height)
+        kb.layoutIfNeeded()
+        var caps: [String: UIButton] = [:]
+        for case let b as UIButton in kb.subviews {
+            caps[b.title(for: .normal) ?? b.accessibilityLabel ?? ""] = b
+        }
+        return (kb, caps)
+    }
+
+    func testPreviewFollowsTheTouchOfCharacterKeysOnly() throws {
+        let (kb, caps) = laidOut()
+        let spy = SpyInput()
+        kb.target = spy
+        let q = try XCTUnwrap(caps["q"]), w = try XCTUnwrap(caps["w"]), p = try XCTUnwrap(caps["p"])
+
+        q.sendActions(for: .touchDown)
+        XCTAssertEqual(kb.previewText, "q")
+        let qf = try XCTUnwrap(kb.previewFrame)
+        XCTAssertLessThan(qf.minY, 0, "a top-row bubble rises above the keyboard")
+        XCTAssertGreaterThanOrEqual(qf.minX, 0, "edge key keeps its bubble on screen")
+        q.sendActions(for: .touchUpInside)
+        XCTAssertNil(kb.previewText)
+        XCTAssertEqual(spy.calls, ["q"])
+
+        p.sendActions(for: .touchDown)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(kb.previewFrame).maxX, 402)
+        p.sendActions(for: .touchCancel)
+        XCTAssertNil(kb.previewText, "cancel must not leave the bubble stuck")
+
+        q.sendActions(for: .touchDown)
+        q.sendActions(for: .touchDragExit)
+        XCTAssertNil(kb.previewText, "sliding off hides it")
+        q.sendActions(for: .touchUpOutside)
+
+        // Rolled typing: the first key's release keeps the second key's bubble.
+        q.sendActions(for: .touchDown)
+        w.sendActions(for: .touchDown)
+        q.sendActions(for: .touchUpInside)
+        XCTAssertEqual(kb.previewText, "w")
+        w.sendActions(for: .touchUpInside)
+        XCTAssertNil(kb.previewText)
+
+        for label in ["shift", "delete", "space", "return", "123"] {
+            let cap = try XCTUnwrap(caps[label], label)
+            cap.sendActions(for: .touchDown)
+            XCTAssertNil(kb.previewText, "\(label) shows no preview")
+            cap.sendActions(for: .touchUpInside)
+        }
+    }
+
     // MARK: Shift
 
     func testShiftStateMachine() {
@@ -120,10 +189,11 @@ final class TerminalKeyboardTests: XCTestCase {
         super.tearDown()
     }
 
-    /// iPhone simulator: the terminal types through the compact keyboard; ⌨︎ swaps in
-    /// the system one; a dismiss brings the compact one back. On screen, so the
-    /// keyboard-frame notification the avoidance path relies on is the real one.
-    func testHostInstallsCompactKeyboardAndHandsOff() throws {
+    /// iPhone simulator: the terminal types through the compact keyboard, sized without
+    /// the home-indicator inset, and defers the bottom edge gesture while it is up. On
+    /// screen, so the keyboard-frame notification the avoidance path relies on is the
+    /// real one.
+    func testHostInstallsCompactKeyboard() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone only")
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         let window = UIWindow(windowScene: scene)
@@ -136,6 +206,7 @@ final class TerminalKeyboardTests: XCTestCase {
         defer { window.isHidden = true }
 
         XCTAssertTrue(vc.keyboardInputView is TerminalKeyboard)
+        XCTAssertEqual(vc.preferredScreenEdgesDeferringSystemGestures, [], "no deferral with the keyboard down")
 
         let frame = expectation(forNotification: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         var end = CGRect.null
@@ -147,15 +218,15 @@ final class TerminalKeyboardTests: XCTestCase {
         vc.toggleKeyboard()
         wait(for: [frame], timeout: 3)
         XCTAssertTrue(handle.keyboardShown, "the custom inputView must drive the same avoidance path")
-        let expected = TerminalKeyboard.keysHeight + window.safeAreaInsets.bottom
-        XCTAssertEqual(end.height, expected, accuracy: 1, "keyboard should be keys + bottom safe area")
+        XCTAssertEqual(end.height, TerminalKeyboard.height, accuracy: 1)
+        XCTAssertLessThan(end.height, TerminalKeyboard.keysHeight + window.safeAreaInsets.bottom,
+                          "the home-indicator inset is not reserved under the keys")
+        XCTAssertEqual(end.maxY, window.bounds.maxY, accuracy: 1)
         print("compact keyboard frame: \(end) window: \(window.bounds.size) safe bottom: \(window.safeAreaInsets.bottom)")
-
-        let kb = try XCTUnwrap(vc.keyboardInputView as? TerminalKeyboard)
-        kb.press(.system)
-        XCTAssertNil(vc.keyboardInputView, "⌨︎ hands off to the system keyboard")
+        XCTAssertEqual(vc.preferredScreenEdgesDeferringSystemGestures, .bottom)
 
         vc.toggleKeyboard()   // dismiss
-        XCTAssertTrue(vc.keyboardInputView is TerminalKeyboard, "a dismiss restores the compact keyboard")
+        XCTAssertEqual(vc.preferredScreenEdgesDeferringSystemGestures, [])
+        XCTAssertTrue(vc.keyboardInputView is TerminalKeyboard)
     }
 }

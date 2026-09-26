@@ -261,7 +261,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     }
 
     /// The terminal's current input view: the compact keyboard on iPhone, nil where the
-    /// system keyboard is used (iPad, Mac, hardware keyboard, after the ⌨︎ hand-off).
+    /// system keyboard is used (iPad, Mac, hardware keyboard).
     var keyboardInputView: UIView? { tv.inputView }
 
     @objc private func hardwareKeyboardChanged() { tv.refreshInputView() }
@@ -370,7 +370,6 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             // row at the new width, and the lift must be measured on that final grid.
             self.repairAfterSizeChange()
             self.relift()
-            self.tv.refreshInputView()   // landscape has a different bottom inset
         }
     }
 
@@ -581,13 +580,22 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let shown = overlap > 0
         kbConstraint.constant = -overlap   // glue the shortcut bar to the keyboard top
         handle.keyboardShown = shown
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         kbOverlap = shown ? overlap : 0
         animateKeyboard(n, offset: shown ? caretLiftOffset(overlap: overlap) : 0)
+    }
+
+    /// The compact keyboard's bottom row sits in the home-indicator strip: defer the
+    /// system's bottom-edge gesture while it is up, so taps there aren't held back
+    /// waiting for a swipe (a swipe still goes home, it just takes a second one).
+    override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge {
+        handle.keyboardShown && tv?.inputView is TerminalKeyboard ? .bottom : []
     }
 
     @objc private func kbHide(_ n: Notification) {
         kbConstraint.constant = 0
         handle.keyboardShown = false
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         kbOverlap = 0
         animateKeyboard(n, offset: 0)
     }
@@ -890,27 +898,14 @@ private final class DchTerminalView: TerminalView {
     private lazy var compactKeyboard: TerminalKeyboard = {
         let kb = TerminalKeyboard()
         kb.target = self
-        // ⌨︎: the system keyboard, for dictation and swipe, until the next dismiss.
-        kb.onSystemKeyboard = { [weak self] in
-            self?.handedOff = true
-            self?.refreshInputView()
-        }
         return kb
     }()
-    private var handedOff = false
 
-    /// Install the compact keyboard where it applies, the system one elsewhere, and size
-    /// it to this window's bottom inset. Runs at setup, before the keyboard rises, after
-    /// rotation, when a hardware keyboard comes or goes, and on every dismiss — which is
-    /// what ends a hand-off to the system keyboard.
+    /// Install the compact keyboard where it applies, the system one elsewhere. Runs at
+    /// setup, before the keyboard rises, and when a hardware keyboard comes or goes.
     func refreshInputView() {
-        let want: UIView? = TerminalKeyboard.appliesHere && !handedOff ? compactKeyboard : nil
-        var changed = inputView !== want
-        if want != nil, let inset = window?.safeAreaInsets.bottom, compactKeyboard.bottomInset != inset {
-            compactKeyboard.bottomInset = inset
-            changed = true
-        }
-        guard changed else { return }
+        let want: UIView? = TerminalKeyboard.appliesHere ? compactKeyboard : nil
+        guard inputView !== want else { return }
         inputView = want
         if isFirstResponder { reloadInputViews() }
     }
@@ -918,15 +913,6 @@ private final class DchTerminalView: TerminalView {
     override func becomeFirstResponder() -> Bool {
         refreshInputView()
         return super.becomeFirstResponder()
-    }
-
-    override func resignFirstResponder() -> Bool {
-        let resigned = super.resignFirstResponder()
-        if resigned {
-            handedOff = false
-            refreshInputView()
-        }
-        return resigned
     }
 
     override func layoutSubviews() {

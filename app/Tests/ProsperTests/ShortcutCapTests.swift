@@ -109,4 +109,11 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(enter?.bytes, [0x0d])
         XCTAssertFalse(Shortcuts.defaults.contains { $0.id == "enter" })
     }
+
+    func testPasteImageGlyphIsPortrait() throws {
+        let name = try XCTUnwrap(try key("pasteImg").systemImage)
+        let cfg = UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+        let img = try XCTUnwrap(UIImage(systemName: name, withConfiguration: cfg))
+        XCTAssertGreaterThan(img.size.height, img.size.width, "\(name) is not portrait")
+    }
 }
