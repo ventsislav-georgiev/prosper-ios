@@ -53,14 +53,86 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(ShortcutBar.rowSplit(widths: [50, 50, 50], spacing: 6, available: 162), 3)
     }
 
-    /// Overflow → the in-order split whose longer row is shortest.
-    /// [100, 40, 40, 40, 100] at 6 spacing, 200 available (total 344):
-    /// k=1 → max(100, 238) · k=2 → max(146, 192) · k=3 → max(192, 146) · k=4 → max(238, 100).
-    /// k=2 and k=3 tie at 192; ties go to the fuller top row.
-    func testOverflowSplitsBalancedAndInOrder() {
-        XCTAssertEqual(ShortcutBar.rowSplit(widths: [100, 40, 40, 40, 100], spacing: 6, available: 200), 3)
-        // No tie: [120, 30, 30, 30] (total 228 > 200): k=1 → max(120, 102) wins.
-        XCTAssertEqual(ShortcutBar.rowSplit(widths: [120, 30, 30, 30], spacing: 6, available: 200), 1)
+    /// Overflow → the in-order split whose ALIGNED grid is narrowest.
+    /// [100, 40, 40, 40, 100] at 6 spacing, 200 available (total 344), grid columns:
+    /// k=1 → 100,40,40,100 = 298 · k=2 → 100,40,100 = 252 · k=3 → 100,100,40 = 252 ·
+    /// k=4 → 100,40,40,40 = 238 — pairing the two wide caps in one column wins.
+    func testOverflowSplitsForTheNarrowestAlignedGrid() {
+        XCTAssertEqual(ShortcutBar.rowSplit(widths: [100, 40, 40, 40, 100], spacing: 6, available: 200), 4)
+        // [120, 30, 30, 30] (total 228 > 200): k=1 → 120,30,30 = 192 · k=2 → 120,30 = 156 ·
+        // k=3 → 120,30,30 = 192.
+        XCTAssertEqual(ShortcutBar.rowSplit(widths: [120, 30, 30, 30], spacing: 6, available: 200), 2)
+    }
+
+    /// Ties go to the fuller top row: [50, 50, 50] → k=1 and k=2 both give a 106 grid.
+    func testAlignedSplitTieGoesToTheFullerTopRow() {
+        XCTAssertEqual(ShortcutBar.rowSplit(widths: [50, 50, 50], spacing: 6, available: 150), 2)
+    }
+
+    /// Column i = the wider of its two caps; the longer row's tail keeps its own width.
+    func testColumnWidths() {
+        XCTAssertEqual(ShortcutBar.columnWidths(top: [40, 90, 30], bottom: [60, 50, 30]), [60, 90, 30])
+        XCTAssertEqual(ShortcutBar.columnWidths(top: [40, 90, 30, 70], bottom: [60, 50]), [60, 90, 30, 70])
+        XCTAssertEqual(ShortcutBar.columnWidths(top: [40], bottom: [60, 25]), [60, 25])
+        XCTAssertEqual(ShortcutBar.columnWidths(top: [], bottom: []), [])
+    }
+
+    /// The user's build-69 set at phone width: every column's two caps share an edge
+    /// and a width, and a one-row set keeps natural widths.
+    @MainActor
+    func testTwoRowBarColumnsLineUp() throws {
+        let saved = UserDefaults.standard.string(forKey: Shortcuts.storageKey)
+        defer {
+            if let saved { UserDefaults.standard.set(saved, forKey: Shortcuts.storageKey) }
+            else { UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey) }
+        }
+        let ids = ["paste", "pasteImg", "up", "down", "stab", "snl", "enter",
+                   "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"]
+        Shortcuts.save(try ids.map(key))
+
+        let bar = ShortcutBar()
+        bar.frame = CGRect(x: 0, y: 0, width: 393, height: 86)
+        bar.layoutIfNeeded()
+        XCTAssertEqual(bar.rowCount, 2)
+        func rows(_ v: UIView) -> [UIStackView] {
+            v.subviews.flatMap { s -> [UIStackView] in
+                if let st = s as? UIStackView, st.axis == .horizontal { return [st] }
+                return rows(s)
+            }
+        }
+        let r = rows(bar)
+        XCTAssertEqual(r.count, 2)
+        let top = r[0].arrangedSubviews.map { $0.convert($0.bounds, to: bar) }
+        let bottom = r[1].arrangedSubviews.map { $0.convert($0.bounds, to: bar) }
+        XCTAssertEqual(top.count + bottom.count, ids.count)
+        print("141-grid top=\(top.map(\.width)) bottom=\(bottom.map(\.width))",
+              "natural=\(r.flatMap(\.arrangedSubviews).compactMap { ($0 as? KeyCapButton)?.naturalWidth })")
+        for i in 0..<min(top.count, bottom.count) {
+            XCTAssertEqual(top[i].minX, bottom[i].minX, accuracy: 0.5, "column \(i) left edge")
+            XCTAssertEqual(top[i].width, bottom[i].width, accuracy: 0.5, "column \(i) width")
+        }
+        for cap in r.flatMap(\.arrangedSubviews) {
+            let c = try XCTUnwrap(cap as? KeyCapButton)
+            XCTAssertGreaterThanOrEqual(c.frame.width + 0.5, c.naturalWidth)
+            XCTAssertGreaterThanOrEqual(c.frame.width, 36, "a cap is never narrower than it is tall")
+            // Glyph stays centered in a widened cap.
+            if c.frame.width > c.naturalWidth + 1 {
+                let glyph = try XCTUnwrap(c.titleLabel?.superview != nil && !(c.titleLabel?.text ?? "").isEmpty
+                                          ? c.titleLabel : c.imageView)
+                XCTAssertEqual(glyph.convert(glyph.bounds, to: c).midX, c.bounds.midX, accuracy: 1,
+                               "\(c.titleLabel?.text ?? "image") glyph off-center")
+            }
+        }
+
+        // Few keys → one row, natural widths again after a rebuild.
+        Shortcuts.save(try ["esc", "tab"].map(key))
+        bar.reload()
+        bar.layoutIfNeeded()
+        XCTAssertEqual(bar.rowCount, 1)
+        for cap in rows(bar).flatMap(\.arrangedSubviews) {
+            let c = try XCTUnwrap(cap as? KeyCapButton)
+            XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.5)
+        }
     }
 
     /// One key never splits, even when it alone is wider than the bar; no keys → nothing on top.

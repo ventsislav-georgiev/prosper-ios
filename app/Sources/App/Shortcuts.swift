@@ -168,32 +168,49 @@ final class ShortcutBar: UIView {
     /// Split the caps across the rows for the current width — only when the width
     /// actually changed (rotation) or the key set was rebuilt; every other layout pass
     /// is a no-op. Runs BEFORE `super` so the moved caps lay out in this same pass.
+    /// Two rows → both caps of column i get that column's width, so the edges line up;
+    /// one row → every cap back to its natural width. The split always reads natural
+    /// widths, never the widened ones.
     override func layoutSubviews() {
         if bounds.width != arrangedWidth, rows.count == 2 {
             arrangedWidth = bounds.width
-            let k = Self.rowSplit(widths: caps.map { $0.intrinsicContentSize.width },
-                                  spacing: Self.spacing, available: bounds.width - 16)
+            let natural = caps.map(\.naturalWidth)
+            let k = Self.rowSplit(widths: natural, spacing: Self.spacing, available: bounds.width - 16)
+            let cols = k == caps.count ? natural
+                : Self.columnWidths(top: Array(natural[..<k]), bottom: Array(natural[k...]))
             // addArrangedSubview re-parents: a cap leaves whichever row held it.
-            for (i, cap) in caps.enumerated() { rows[i < k ? 0 : 1].addArrangedSubview(cap) }
+            for (i, cap) in caps.enumerated() {
+                rows[i < k ? 0 : 1].addArrangedSubview(cap)
+                cap.minWidth = k == caps.count ? 0 : cols[i < k ? i : i - k]
+            }
             rows[1].isHidden = k == caps.count   // hidden → the stack gives row 1 the full height
             rowCount = rows[1].isHidden ? 1 : 2
         }
         super.layoutSubviews()
     }
 
+    /// Column i of a two-row grid is as wide as the wider of its two caps. The longer
+    /// row's tail has no partner, so those columns keep their cap's own width.
+    static func columnWidths(top: [CGFloat], bottom: [CGFloat]) -> [CGFloat] {
+        (0..<max(top.count, bottom.count)).map { i in
+            max(i < top.count ? top[i] : 0, i < bottom.count ? bottom[i] : 0)
+        }
+    }
+
     /// How many caps (in configured order) go in the TOP row. All fit in one row → all
-    /// of them. Otherwise the split that makes the longer of the two rows shortest, so
-    /// the rows come out balanced and the bar scrolls as little as possible. Ties go to
-    /// the LARGER k — the top row is the fuller one, the way text wraps.
+    /// of them (natural widths, no grid). Otherwise the split whose aligned grid — the
+    /// `columnWidths` plus spacing, i.e. the bar's scroll content width — is narrowest,
+    /// so the bar scrolls as little as possible. Ties go to the LARGER k — the top row
+    /// is the fuller one, the way text wraps.
     static func rowSplit(widths: [CGFloat], spacing: CGFloat, available: CGFloat) -> Int {
-        func span(_ w: ArraySlice<CGFloat>) -> CGFloat {
+        func span(_ w: [CGFloat]) -> CGFloat {
             w.reduce(0, +) + spacing * CGFloat(max(0, w.count - 1))
         }
         let n = widths.count
-        guard n > 1, span(widths[...]) > available else { return n }
+        guard n > 1, span(widths) > available else { return n }
         var best = 1, bestSpan = CGFloat.infinity
         for k in 1..<n {
-            let s = max(span(widths[..<k]), span(widths[k...]))
+            let s = span(columnWidths(top: Array(widths[..<k]), bottom: Array(widths[k...])))
             if s <= bestSpan { best = k; bestSpan = s }
         }
         return best
@@ -268,7 +285,7 @@ final class ShortcutBar: UIView {
     private func makeButton(_ key: ShortcutKey) -> KeyCapButton {
         var cfg = UIButton.Configuration.plain()
         cfg.baseForegroundColor = Neon.blueBright
-        cfg.contentInsets = .init(top: 5, leading: 12, bottom: 5, trailing: 12)
+        cfg.contentInsets = .init(top: 5, leading: 8, bottom: 5, trailing: 8)
         if let sym = key.systemImage {
             cfg.image = UIImage(systemName: sym,
                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
@@ -329,6 +346,15 @@ final class KeyCapButton: UIButton {
     var pressedFill: UIColor = .clear
     /// Resting halo strength — armed ctrl glows harder than the rest.
     var idleGlow: Float = 0.5 { didSet { if !isHighlighted { layer.shadowOpacity = idleGlow } } }
+    /// The bar's column width. The cap is at least this wide — through its intrinsic
+    /// size, so its required hugging holds instead of fighting a width constraint.
+    var minWidth: CGFloat = 0 { didSet { if minWidth != oldValue { invalidateIntrinsicContentSize() } } }
+    /// The width the cap's content wants, ignoring `minWidth` — never narrower than the
+    /// 36pt cap is tall, so a lone arrow or ^C stays at least square.
+    var naturalWidth: CGFloat { max(super.intrinsicContentSize.width, 36) }
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: max(naturalWidth, minWidth), height: super.intrinsicContentSize.height)
+    }
 
     override var isHighlighted: Bool {
         didSet {
