@@ -169,19 +169,22 @@ final class ShortcutBar: UIView {
     /// actually changed (rotation) or the key set was rebuilt; every other layout pass
     /// is a no-op. Runs BEFORE `super` so the moved caps lay out in this same pass.
     /// Two rows → both caps of column i get that column's width, so the edges line up;
-    /// one row → every cap back to its natural width. The split always reads natural
-    /// widths, never the widened ones.
+    /// one row → natural widths. When the row/grid fits, every column is then scaled by
+    /// one factor (`filled`) so it spans the bar exactly; an overflowing bar keeps its
+    /// widths and scrolls. The split always reads natural widths, never the widened ones.
     override func layoutSubviews() {
         if bounds.width != arrangedWidth, rows.count == 2 {
             arrangedWidth = bounds.width
             let natural = caps.map(\.naturalWidth)
             let k = Self.rowSplit(widths: natural, spacing: Self.spacing, available: bounds.width - 16)
-            let cols = k == caps.count ? natural
-                : Self.columnWidths(top: Array(natural[..<k]), bottom: Array(natural[k...]))
+            let cols = Self.filled(k == caps.count ? natural
+                : Self.columnWidths(top: Array(natural[..<k]), bottom: Array(natural[k...])),
+                spacing: Self.spacing, available: bounds.width - 16,
+                pixel: 1 / max(1, traitCollection.displayScale))
             // addArrangedSubview re-parents: a cap leaves whichever row held it.
             for (i, cap) in caps.enumerated() {
                 rows[i < k ? 0 : 1].addArrangedSubview(cap)
-                cap.minWidth = k == caps.count ? 0 : cols[i < k ? i : i - k]
+                cap.minWidth = cols[i < k ? i : i - k]
             }
             rows[1].isHidden = k == caps.count   // hidden → the stack gives row 1 the full height
             rowCount = rows[1].isHidden ? 1 : 2
@@ -194,6 +197,26 @@ final class ShortcutBar: UIView {
     static func columnWidths(top: [CGFloat], bottom: [CGFloat]) -> [CGFloat] {
         (0..<max(top.count, bottom.count)).map { i in
             max(i < top.count ? top[i] : 0, i < bottom.count ? bottom[i] : 0)
+        }
+    }
+
+    /// Fits (`sum + spacing` < available) → scale every width by one factor so the span
+    /// equals `available`, edges floored to the `pixel` grid so rounding never overshoots
+    /// (a sub-pixel gap at the end is accepted). Overflows → unchanged, so it scrolls.
+    static func filled(_ widths: [CGFloat], spacing: CGFloat, available: CGFloat,
+                       pixel: CGFloat = 0.5) -> [CGFloat] {
+        let sum = widths.reduce(0, +)
+        let gaps = spacing * CGFloat(max(0, widths.count - 1))
+        guard sum > 0, sum + gaps < available else { return widths }
+        let factor = (available - gaps) / sum
+        // Floor the running edge, not each width: per-width floors would lose a pixel
+        // per column; this loses under one pixel in total.
+        var edge: CGFloat = 0, placed: CGFloat = 0
+        return widths.map { w in
+            edge += w * factor
+            let next = (edge / pixel).rounded(.down) * pixel
+            defer { placed = next }
+            return next - placed
         }
     }
 

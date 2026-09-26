@@ -107,6 +107,17 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(top.count + bottom.count, ids.count)
         print("141-grid top=\(top.map(\.width)) bottom=\(bottom.map(\.width))",
               "natural=\(r.flatMap(\.arrangedSubviews).compactMap { ($0 as? KeyCapButton)?.naturalWidth })")
+        func scrollView(_ v: UIView) -> UIScrollView? {
+            v.superview.flatMap { $0 as? UIScrollView ?? scrollView($0) }
+        }
+        func fillsRow(_ row: UIStackView) throws {
+            let sv = try XCTUnwrap(scrollView(row))
+            let last = try XCTUnwrap(row.arrangedSubviews.last)
+            let maxX = last.convert(last.bounds, to: sv).maxX
+            XCTAssertEqual(maxX, sv.bounds.width, accuracy: 1, "row fills the bar")
+            XCTAssertLessThanOrEqual(sv.contentSize.width, sv.bounds.width + 0.01, "not scrollable")
+        }
+        try fillsRow(r[0])
         for i in 0..<min(top.count, bottom.count) {
             XCTAssertEqual(top[i].minX, bottom[i].minX, accuracy: 0.5, "column \(i) left edge")
             XCTAssertEqual(top[i].width, bottom[i].width, accuracy: 0.5, "column \(i) width")
@@ -124,15 +135,22 @@ final class ShortcutCapTests: XCTestCase {
             }
         }
 
-        // Few keys → one row, natural widths again after a rebuild.
+        // Few keys → one row, stretched to fill after a rebuild.
         Shortcuts.save(try ["esc", "tab"].map(key))
         bar.reload()
         bar.layoutIfNeeded()
         XCTAssertEqual(bar.rowCount, 1)
-        for cap in rows(bar).flatMap(\.arrangedSubviews) {
-            let c = try XCTUnwrap(cap as? KeyCapButton)
-            XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.5)
-        }
+        try fillsRow(rows(bar)[0])
+    }
+
+    func testFilledScalesOnlyWhenItFits() {
+        let w: [CGFloat] = [40, 60, 100]
+        let f = ShortcutBar.filled(w, spacing: 6, available: 300)
+        XCTAssertEqual(f.reduce(0, +) + 12, 300, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(f.reduce(0, +) + 12, 300)
+        XCTAssertEqual(f[2] / f[0], 2.5, accuracy: 0.05)
+        XCTAssertEqual(ShortcutBar.filled(w, spacing: 6, available: 150), w)
+        XCTAssertEqual(ShortcutBar.filled([], spacing: 6, available: 150), [])
     }
 
     /// One key never splits, even when it alone is wider than the bar; no keys → nothing on top.
