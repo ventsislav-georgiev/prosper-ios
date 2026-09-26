@@ -864,6 +864,13 @@ private final class DchTerminalView: TerminalView {
     private var lastCols = 0
     private var lastRows = 0
 
+    /// Only English is ever typed here. SwiftTerm hardcodes `keyboardType` to
+    /// `.default` and doesn't mark it `open`, so a Swift override won't compile —
+    /// but UIKit reads the trait by selector, so claiming the selector on this
+    /// subclass wins. `.asciiCapable` drops non-Latin keyboards and Emoji from the
+    /// switcher; with one Latin keyboard left, iOS hides the globe and emoji keys.
+    @objc(keyboardType) var asciiKeyboardType: UIKeyboardType { .asciiCapable }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let t = getTerminal()

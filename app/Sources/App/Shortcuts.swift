@@ -91,7 +91,7 @@ enum Shortcuts {
     ]
 
     static var defaults: [ShortcutKey] {
-        ["esc", "tab", "ctrl", "home", "end", "paste", "pasteImg", "insert", "ctlc", "ctld", "snl", "redraw"]
+        ["paste", "pasteImg", "insert", "ctlc", "stab", "snl", "esc", "left", "right", "up", "down", "pgup", "pgdn"]
             .compactMap { id in catalog.first { $0.id == id } }
     }
 

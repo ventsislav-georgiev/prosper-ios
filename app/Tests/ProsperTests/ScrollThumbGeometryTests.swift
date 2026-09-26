@@ -39,7 +39,7 @@ final class ScrollThumbGeometryTests: XCTestCase {
     /// down (the terminal ends at its top), riding the keyboard top when it's up — and
     /// the terminal's size does not move with it.
     func testBarRestsAtTheBottomAndTheGridIgnoresTheKeyboard() throws {
-        UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey)   // the default 12 keys
+        UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey)   // the default 13 keys
         let vc = makeVC(CGSize(width: 393, height: 852))
         let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar } as? ShortcutBar)
         let tv = try XCTUnwrap(vc.view.subviews.first { $0 is TerminalView }, "no terminal view")

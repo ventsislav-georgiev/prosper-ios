@@ -42,7 +42,7 @@ final class ShortcutCapTests: XCTestCase {
     /// Every default resolves to a real catalog entry, and ids are unique — a typo here
     /// silently drops a key off the bar.
     func testDefaultsResolveAndIdsAreUnique() {
-        XCTAssertEqual(Shortcuts.defaults.count, 12)
+        XCTAssertEqual(Shortcuts.defaults.map(\.id), ["paste", "pasteImg", "insert", "ctlc", "stab", "snl", "esc", "left", "right", "up", "down", "pgup", "pgdn"])
         XCTAssertEqual(Set(Shortcuts.catalog.map(\.id)).count, Shortcuts.catalog.count)
     }
 

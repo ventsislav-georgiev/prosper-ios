@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import UIKit
+import SwiftTerm
 @testable import Prosper
 
 /// Rotation has to reach the pty: a wider view means more columns, and the remote
@@ -154,6 +155,23 @@ final class RotationResizeTests: XCTestCase {
         // Go quiet — now the mirror is worth trusting.
         try await Task.sleep(nanoseconds: 1_000_000_000)
         XCTAssertEqual(spy.snapshots, 1, "no snapshot after the session went quiet")
+    }
+
+    /// UIKit reads the optional `keyboardType` trait by selector (absent → `.default`),
+    /// so read it the same way — a Swift call would dispatch statically to
+    /// SwiftTerm's `.default` and prove nothing.
+    func testTerminalAsksForAnASCIIKeyboard() throws {
+        let (vc, _) = makeVC(CGSize(width: 390, height: 700))
+        let tv = try XCTUnwrap(vc.view.subviews.first { $0 is TerminalView }, "no terminal view")
+        let plain = TerminalView(frame: .zero, font: TerminalFont.mono(size: 12))
+        func objcKeyboardType(_ v: UIView) -> Int? {
+            guard v.responds(to: NSSelectorFromString("keyboardType")) else { return UIKeyboardType.default.rawValue }
+            return (v.value(forKey: "keyboardType") as? NSNumber)?.intValue
+        }
+        XCTAssertEqual(objcKeyboardType(tv), UIKeyboardType.asciiCapable.rawValue,
+            "the terminal must ask UIKit for an ASCII keyboard (no globe/emoji)")
+        XCTAssertEqual(objcKeyboardType(plain), UIKeyboardType.default.rawValue,
+            "only our subclass changes — SwiftTerm's own view keeps .default")
     }
 }
 
