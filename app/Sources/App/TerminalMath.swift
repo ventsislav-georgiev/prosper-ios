@@ -21,6 +21,17 @@ enum TerminalMath {
     /// sent a click into the void instead of raising the keyboard.
     static func tapRaisesKeyboard(row: Int, caretRow: Int) -> Bool { row >= caretRow }
 
+    /// Copy mode's text without the blank rows under the prompt. SwiftTerm's getText
+    /// drops trailing rows that are truly empty, but a row holding erased spaces or a
+    /// background colour counts as content and still comes back as an empty line —
+    /// a wall of them at the bottom of the view. Cuts at the first newline after the
+    /// last visible character; everything before it is left as is.
+    static func trimTrailingBlankLines(_ s: String) -> String {
+        guard let last = s.lastIndex(where: { !$0.isWhitespace }) else { return "" }
+        let tail = s[s.index(after: last)...]
+        return tail.firstIndex(where: \.isNewline).map { String(s[..<$0]) } ?? s
+    }
+
     /// Text for the pty as ONE bracketed paste (ESC[200~ … ESC[201~) — what `dch --send`
     /// does on the Mac: readline, Claude Code and vim insert it verbatim instead of
     /// running each line at its newline. Always wrapped: dch does not replay DECSET

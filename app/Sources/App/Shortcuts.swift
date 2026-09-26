@@ -114,19 +114,31 @@ enum Shortcuts {
     }
 }
 
-/// The horizontal key strip shown above the software keyboard. Owned by the terminal
-/// view controller and pinned above the keyboard in its own hierarchy (NOT an
-/// `inputAccessoryView` — the keyboard's remote input window swallowed touches there).
-/// Reads its keys from `Shortcuts.load()`; call `reload()` after the editor changes them.
+/// The key strip at the bottom of the terminal: resting on the safe area with the
+/// keyboard down, riding its top when it's up. Owned by the terminal view controller
+/// and pinned in its own hierarchy (NOT an `inputAccessoryView` — the keyboard's remote
+/// input window swallowed touches there). One row when the keys fit, else two rows that
+/// scroll horizontally together. Reads its keys from `Shortcuts.load()`; call `reload()`
+/// after the editor changes them.
 final class ShortcutBar: UIView {
-    static let barHeight: CGFloat = 44
+    private static let inset: CGFloat = 4       // above and below the caps
+    private static let capHeight: CGFloat = 36
+    private static let spacing: CGFloat = 6     // between caps, and between the rows
     var onKey: ((ShortcutKey) -> Void)?
     var ctrlArmed = false { didSet { refreshCtrl() } }
     private weak var ctrlButton: KeyCapButton?
     private weak var container: UIView?
+    private var caps: [KeyCapButton] = []
+    private var rows: [UIStackView] = []        // [top, bottom]
+    private var arrangedWidth: CGFloat = -1     // width the caps were last split for
+    /// The bar's height IS its row count, so the owner never needs a number: flipping
+    /// it re-asks Auto Layout for `intrinsicContentSize`.
+    private(set) var rowCount = 1 {
+        didSet { if rowCount != oldValue { invalidateIntrinsicContentSize() } }
+    }
 
     init() {
-        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: ShortcutBar.barHeight))
+        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.inset * 2 + Self.capHeight))
         // Match the iOS keyboard chrome so the strip reads as part of it.
         let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
         blur.translatesAutoresizingMaskIntoConstraints = false
@@ -144,6 +156,47 @@ final class ShortcutBar: UIView {
 
     func reload() { build() }
 
+    /// 1 row = 44 (4 + 36 + 4), 2 rows = 86 (4 + 36 + 6 + 36 + 4).
+    override var intrinsicContentSize: CGSize {
+        let n = CGFloat(rowCount)
+        return CGSize(width: UIView.noIntrinsicMetric,
+                      height: Self.inset * 2 + Self.capHeight * n + Self.spacing * (n - 1))
+    }
+
+    /// Split the caps across the rows for the current width — only when the width
+    /// actually changed (rotation) or the key set was rebuilt; every other layout pass
+    /// is a no-op. Runs BEFORE `super` so the moved caps lay out in this same pass.
+    override func layoutSubviews() {
+        if bounds.width != arrangedWidth, rows.count == 2 {
+            arrangedWidth = bounds.width
+            let k = Self.rowSplit(widths: caps.map { $0.intrinsicContentSize.width },
+                                  spacing: Self.spacing, available: bounds.width - 16)
+            // addArrangedSubview re-parents: a cap leaves whichever row held it.
+            for (i, cap) in caps.enumerated() { rows[i < k ? 0 : 1].addArrangedSubview(cap) }
+            rows[1].isHidden = k == caps.count   // hidden → the stack gives row 1 the full height
+            rowCount = rows[1].isHidden ? 1 : 2
+        }
+        super.layoutSubviews()
+    }
+
+    /// How many caps (in configured order) go in the TOP row. All fit in one row → all
+    /// of them. Otherwise the split that makes the longer of the two rows shortest, so
+    /// the rows come out balanced and the bar scrolls as little as possible. Ties go to
+    /// the LARGER k — the top row is the fuller one, the way text wraps.
+    static func rowSplit(widths: [CGFloat], spacing: CGFloat, available: CGFloat) -> Int {
+        func span(_ w: ArraySlice<CGFloat>) -> CGFloat {
+            w.reduce(0, +) + spacing * CGFloat(max(0, w.count - 1))
+        }
+        let n = widths.count
+        guard n > 1, span(widths[...]) > available else { return n }
+        var best = 1, bestSpan = CGFloat.infinity
+        for k in 1..<n {
+            let s = max(span(widths[..<k]), span(widths[k...]))
+            if s <= bestSpan { best = k; bestSpan = s }
+        }
+        return best
+    }
+
     private func build() {
         guard let container else { return }
         container.subviews.forEach { $0.removeFromSuperview() }
@@ -157,18 +210,28 @@ final class ShortcutBar: UIView {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(scroll)
 
-        let stack = UIStackView()
-        stack.axis = .horizontal
-        stack.spacing = 6
-        stack.alignment = .fill     // uniform cap height whatever each cap's content is
+        // Both rows live in ONE scroll view, so they scroll together as a block. The
+        // column is as wide as its longer row (.leading, not .fill).
+        rows = (0..<2).map { _ in
+            let row = UIStackView()
+            row.axis = .horizontal
+            row.spacing = Self.spacing
+            row.alignment = .fill     // uniform cap height whatever each cap's content is
+            return row
+        }
+        let stack = UIStackView(arrangedSubviews: rows)
+        stack.axis = .vertical
+        stack.spacing = Self.spacing
+        stack.distribution = .fillEqually
+        stack.alignment = .leading
         stack.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(stack)
 
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
             scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
-            scroll.topAnchor.constraint(equalTo: container.topAnchor, constant: 4),
-            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4),
+            scroll.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.inset),
+            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -Self.inset),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
@@ -176,11 +239,13 @@ final class ShortcutBar: UIView {
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
         ])
 
-        for key in Shortcuts.load() {
+        caps = Shortcuts.load().map { key in
             let b = makeButton(key)
-            stack.addArrangedSubview(b)
             if key.kind == .ctrl { ctrlButton = b }
+            return b
         }
+        arrangedWidth = -1        // new caps → split again on the next layout pass
+        setNeedsLayout()
         refreshCtrl()
     }
 

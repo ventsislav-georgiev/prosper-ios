@@ -210,4 +210,15 @@ final class TerminalMathTests: XCTestCase {
         let b = TerminalMath.pasteBytes("echo hi", thenEnter: true)
         XCTAssertEqual(Array(b.suffix(7)), Array("\u{1b}[201~\r".utf8))
     }
+
+    // MARK: trimTrailingBlankLines — copy mode's text
+
+    /// The blank rows under the prompt go; interior blank lines, leading text and the
+    /// last line's own trailing spaces stay.
+    func testTrimTrailingBlankLinesCutsOnlyTheTail() {
+        XCTAssertEqual(TerminalMath.trimTrailingBlankLines("a\n\nb $ \n  \n\n"), "a\n\nb $ ")
+        XCTAssertEqual(TerminalMath.trimTrailingBlankLines("  a\nb"), "  a\nb")
+        XCTAssertEqual(TerminalMath.trimTrailingBlankLines("\n \n"), "")
+        XCTAssertEqual(TerminalMath.trimTrailingBlankLines(""), "")
+    }
 }

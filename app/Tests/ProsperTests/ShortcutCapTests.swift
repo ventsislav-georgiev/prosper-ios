@@ -46,6 +46,29 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(Set(Shortcuts.catalog.map(\.id)).count, Shortcuts.catalog.count)
     }
 
+    // MARK: how the caps split across the bar's rows
+
+    func testKeysThatFitStayInOneRow() {
+        // 3·50 + 2·6 = 162 ≤ 162
+        XCTAssertEqual(ShortcutBar.rowSplit(widths: [50, 50, 50], spacing: 6, available: 162), 3)
+    }
+
+    /// Overflow → the in-order split whose longer row is shortest.
+    /// [100, 40, 40, 40, 100] at 6 spacing, 200 available (total 344):
+    /// k=1 → max(100, 238) · k=2 → max(146, 192) · k=3 → max(192, 146) · k=4 → max(238, 100).
+    /// k=2 and k=3 tie at 192; ties go to the fuller top row.
+    func testOverflowSplitsBalancedAndInOrder() {
+        XCTAssertEqual(ShortcutBar.rowSplit(widths: [100, 40, 40, 40, 100], spacing: 6, available: 200), 3)
+        // No tie: [120, 30, 30, 30] (total 228 > 200): k=1 → max(120, 102) wins.
+        XCTAssertEqual(ShortcutBar.rowSplit(widths: [120, 30, 30, 30], spacing: 6, available: 200), 1)
+    }
+
+    /// One key never splits, even when it alone is wider than the bar; no keys → nothing on top.
+    func testOneKeyAndNoKeys() {
+        XCTAssertEqual(ShortcutBar.rowSplit(widths: [500], spacing: 6, available: 200), 1)
+        XCTAssertEqual(ShortcutBar.rowSplit(widths: [], spacing: 6, available: 200), 0)
+    }
+
     // MARK: how the caps answer a finger
 
     @MainActor

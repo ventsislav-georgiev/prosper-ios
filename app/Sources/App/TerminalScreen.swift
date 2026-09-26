@@ -114,11 +114,6 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var started = false
     private var scrollThumb: ScrollThumb?
     private var kbConstraint: NSLayoutConstraint!
-    private var barHeight: NSLayoutConstraint!
-    // Where the wheel strip ends: the screen bottom, or the shortcut bar's top once the
-    // keyboard is up. Exactly one is active — the pill rests in the middle of it.
-    private var thumbBottom: NSLayoutConstraint!
-    private var thumbBottomKeyboard: NSLayoutConstraint!
     private var pendingRemoteScroll = 0            // jog lines held for the next batch
     private var lastRemoteScrollSend: CFTimeInterval = 0
     private var kbOverlap: CGFloat = 0   // keyboard cover height while shown (for live re-lift)
@@ -170,35 +165,38 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         tv.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tv)
 
-        // DECOUPLED keyboard avoidance: the terminal keeps its FULL height at all
-        // times so the grid NEVER resizes on keyboard show/hide. Resizing the grid
+        // DECOUPLED keyboard avoidance: the terminal keeps its height at all times
+        // so the grid NEVER resizes on keyboard show/hide. Resizing the grid
         // forced the remote TUI to reflow, and Claude Code defers its repaint to its
         // own render tick (~1s) — leaving the freed rows blank after the keyboard
         // hides. With a fixed grid there is no reflow and no repaint gap.
         // Instead, on show we translate the terminal UP (see kbChange) so the cursor/
         // input row stays visible above the keyboard; the top rows clip off-screen.
         // The shortcut bar lives in our own hierarchy (not inputAccessoryView — the
-        // keyboard's remote input window swallowed its touches), glued to the top of
-        // the keyboard via kbConstraint, and OVERLAYS the terminal's lower rows.
+        // keyboard's remote input window swallowed its touches) and always visible:
+        // it rests on the safe-area bottom and rides the keyboard top via kbConstraint.
+        // The terminal ends at the bar's RESTING top — tied to the bar's height, not its
+        // position — so at rest the bar covers nothing, and with the keyboard up it
+        // overlays the rows the keyboard covers anyway. The grid changes only when the
+        // bar's row count does (rotation, key-set edit), never with the keyboard.
         view.clipsToBounds = true   // clip the translated-up terminal at the view top
         let bar = ShortcutBar()
         bar.onKey = { [weak self] key in self?.handleKey(key) }
         bar.translatesAutoresizingMaskIntoConstraints = false
-        bar.clipsToBounds = true
         view.addSubview(bar)
         shortcutBar = bar
 
         kbConstraint = bar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
-        barHeight = bar.heightAnchor.constraint(equalToConstant: 0)   // hidden until keyboard shows
         NSLayoutConstraint.activate([
             tv.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             tv.leftAnchor.constraint(equalTo: view.leftAnchor),
             tv.rightAnchor.constraint(equalTo: view.rightAnchor),
-            tv.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor), // FULL height, fixed
+            // tv.bottom sits one bar-height above the safe bottom: fixed across the keyboard.
+            tv.bottomAnchor.anchorWithOffset(to: view.safeAreaLayoutGuide.bottomAnchor)
+                .constraint(equalTo: bar.heightAnchor),
             bar.leftAnchor.constraint(equalTo: view.leftAnchor),
             bar.rightAnchor.constraint(equalTo: view.rightAnchor),
-            kbConstraint,
-            barHeight,
+            kbConstraint,   // bar height comes from its intrinsic size (row count)
         ])
         let nc = NotificationCenter.default
         nc.addObserver(self, selector: #selector(kbChange(_:)),
@@ -263,16 +261,20 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// Rebuild the shortcut bar after the editor changed the key set, and pick up a
     /// new text size. A font change reflows the grid (SwiftTerm recomputes cols/rows
-    /// in layoutSubviews → onResize → pty resize), then we repaint from scratch.
+    /// in layoutSubviews → onResize → pty resize), then we repaint from scratch. So can
+    /// the key set: gaining or losing the bar's second row moves the terminal's bottom.
     func reloadShortcuts() {
+        let before = terminalSize
         shortcutBar?.reload()
         let size = TerminalPrefs.fontSize
-        if tv.font.pointSize != size {
+        let fontChanged = tv.font.pointSize != size
+        if fontChanged {
             tv.font = TerminalFont.mono(size: size)
             tv.setNeedsLayout()
-            tv.layoutIfNeeded()          // settle the new grid before we state its size
-            repairAfterSizeChange()      // a new cell size is a new grid — same rules as rotation
         }
+        view.layoutIfNeeded()            // settle the new grid before we state its size
+        // A new cell size or a new bar height is a new grid — same rules as rotation.
+        if fontChanged || terminalSize != before { repairAfterSizeChange() }
     }
 
     /// Force a full repaint — the button form of "resize the window to fix it".
@@ -350,8 +352,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             if let f = self.kbFrame, self.handle.keyboardShown {
                 self.applyKeyboard(f, notification: nil)
             }
-            self.relift()
+            // Repair first: its layout pass also settles a bar that gained or lost a
+            // row at the new width, and the lift must be measured on that final grid.
             self.repairAfterSizeChange()
+            self.relift()
         }
     }
 
@@ -361,6 +365,11 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         case .ctrl:
             ctrlArmed.toggle()
             shortcutBar?.ctrlArmed = ctrlArmed
+            // ctrl only modifies the next TYPED letter, so arming it with the keyboard
+            // down leads nowhere — raise it. Every other key acts on its own: the bar is
+            // always visible, and only the nav-bar button or a terminal tap moves the
+            // keyboard.
+            if ctrlArmed, !tv.isFirstResponder { _ = tv.becomeFirstResponder() }
         case .pasteText:
             if let s = UIPasteboard.general.string, !s.isEmpty { sendText(s) }
         case .insertText:
@@ -373,7 +382,6 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         case .redraw:
             forceRedraw()
         }
-        if tv.isFirstResponder == false { _ = tv.becomeFirstResponder() }
     }
 
     /// Text reaches the pty as ONE bracketed paste, exactly what `dch --send` does on
@@ -457,17 +465,14 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // every inset here reads as "the wheel starts off center". Visible starts under
         // the nav bar — which sits INSIDE the top safe area, so `tv.top` is that edge;
         // anchoring to `view.top` hid a nav bar's worth of strip behind the bar and
-        // parked the pill half of it high. Visible ends at the screen bottom (the bottom
-        // safe area is empty black screen), or at the shortcut bar once the keyboard is
-        // up — measured against the bar itself, not the keyboard height, which is
-        // relative to the safe area and would leave the pill half an inset low.
-        thumbBottom = thumb.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        thumbBottomKeyboard = thumb.bottomAnchor.constraint(
-            equalTo: shortcutBar?.topAnchor ?? view.bottomAnchor)
+        // parked the pill half of it high. Visible ends at the shortcut bar, which is
+        // always on screen — resting at the bottom or riding the keyboard — measured
+        // against the bar itself, not the keyboard height, which is relative to the safe
+        // area and would leave the pill half an inset low.
         NSLayoutConstraint.activate([
             thumb.rightAnchor.constraint(equalTo: view.rightAnchor),
             thumb.topAnchor.constraint(equalTo: tv.topAnchor),
-            thumbBottom,
+            thumb.bottomAnchor.constraint(equalTo: shortcutBar?.topAnchor ?? view.bottomAnchor),
             thumb.widthAnchor.constraint(equalToConstant: ScrollThumb.trackWidth),
         ])
         scrollThumb = thumb
@@ -560,10 +565,6 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let overlap = max(0, safeBottomY - endInView.minY)
         let shown = overlap > 0
         kbConstraint.constant = -overlap   // glue the shortcut bar to the keyboard top
-        barHeight.constant = shown ? ShortcutBar.barHeight : 0
-        // Keep the wheel resting in the middle of the SHRUNKEN screen.
-        thumbBottom.isActive = !shown
-        thumbBottomKeyboard.isActive = shown
         handle.keyboardShown = shown
         kbOverlap = shown ? overlap : 0
         animateKeyboard(n, offset: shown ? caretLiftOffset(overlap: overlap) : 0)
@@ -571,9 +572,6 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     @objc private func kbHide(_ n: Notification) {
         kbConstraint.constant = 0
-        barHeight.constant = 0
-        thumbBottomKeyboard.isActive = false
-        thumbBottom.isActive = true
         handle.keyboardShown = false
         kbOverlap = 0
         animateKeyboard(n, offset: 0)
@@ -594,15 +592,21 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Content-aware, not bottom-anchored: a fresh session (content at the TOP, empty
     /// bottom) gets ~0 lift so its input stays visible, while Claude (input + 3 HUD
     /// lines at the bottom) lifts the full covered height. Lift only what's needed.
+    ///
+    /// Geometry: tv ends one bar-height above the safe bottom, exactly where the bar's
+    /// top rests. The keyboard raises the bar by `overlap`, so its top — the new visible
+    /// bottom — lands `overlap` above tv's bottom: visible = tv height − overlap, and
+    /// the strip bar+keyboard cover is `overlap` tall (the bar's own height is already
+    /// outside the grid).
     private func caretLiftOffset(overlap: CGFloat) -> CGFloat {
-        let visibleH = tv.bounds.height - ShortcutBar.barHeight - overlap
+        let visibleH = tv.bounds.height - overlap
         let contentBottom = tv.contentBottomY() + 8   // small breathing room below content
         // Never lift past the strip the bar and keyboard actually cover: clearing them
         // is the whole job, and anything beyond pushes the input row off the TOP of
         // the screen. The cell height behind `contentBottom` comes from SwiftTerm's
         // caret frame, which is briefly stale mid-rotation — this is the ceiling that
         // keeps that from throwing the layout.
-        return min(max(0, contentBottom - visibleH), overlap + ShortcutBar.barHeight)
+        return min(max(0, contentBottom - visibleH), overlap)
     }
 
     /// Slide the terminal up by `offset` and lay out the bar, riding the keyboard's
@@ -619,22 +623,15 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     @objc private func onForeground() { forceRedraw() }
 
     /// Drag over the text = copy mode. The whole buffer (scrollback and screen) opens
-    /// in a native text view, scrolled to the rows that were on screen, so selecting
-    /// is the system's — handles, double-tap word, triple-tap line, Select All — not
-    /// SwiftTerm's. See `CopyTextVC`.
+    /// in a native text view, scrolled to the bottom, so selecting is the system's —
+    /// handles, double-tap word, triple-tap line, Select All — not SwiftTerm's. See
+    /// `CopyTextVC`.
     @objc private func onSelectPan(_ g: UIPanGestureRecognizer) {
         guard g.state == .began, presentedViewController == nil else { return }
         let term = tv.getTerminal()
-        let top = term.getTopVisibleRow()
         let all = term.getText(start: Position(col: 0, row: 0),
                                end: Position(col: term.cols, row: Int.max))
-        // Text above the viewport → where the sheet opens (+1 steps past the newline
-        // joining the two). getText drops trailing blank rows, so this can land a few
-        // lines early — close enough to find your place.
-        let above = top > 0
-            ? term.getText(start: Position(col: 0, row: 0), end: Position(col: term.cols, row: top - 1))
-            : ""
-        let vc = CopyTextVC(text: all, focusOffset: above.isEmpty ? 0 : above.utf16.count + 1)
+        let vc = CopyTextVC(text: TerminalMath.trimTrailingBlankLines(all))
         present(UINavigationController(rootViewController: vc), animated: true)
     }
 

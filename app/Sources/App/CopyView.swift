@@ -7,16 +7,13 @@ import UIKit
 /// pasting elsewhere.
 final class CopyTextVC: UIViewController, UITextViewDelegate {
     private let text: String
-    private let focusOffset: Int
     private let source = UITextView()
     private let editor = UITextView()
     private let caption = UILabel()
     private var scrolled = false
 
-    /// `focusOffset`: UTF-16 offset the view opens at (the row the terminal showed).
-    init(text: String, focusOffset: Int) {
+    init(text: String) {
         self.text = text
-        self.focusOffset = focusOffset
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -75,18 +72,23 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
         ])
     }
 
-    /// Open on the rows that were on screen, not at the top of the scrollback.
+    /// Open at the end of the text — the prompt and the latest output, where copying
+    /// almost always starts — not at the top of the scrollback.
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         guard !scrolled, source.bounds.height > 0 else { return }
         scrolled = true
-        let range = NSRange(location: min(focusOffset, source.text.utf16.count), length: 0)
-        source.scrollRangeToVisible(range)   // lays that part out
-        guard let pos = source.position(from: source.beginningOfDocument, offset: range.location)
-        else { return }
-        let y = source.caretRect(for: pos).minY - source.textContainerInset.top
-        let maxY = max(0, source.contentSize.height - source.bounds.height)
-        source.setContentOffset(CGPoint(x: 0, y: min(max(0, y), maxY)), animated: false)
+        // UITextView (TextKit 2) lays long text out lazily: contentSize and even the
+        // end's caret rect are estimates until then, and scrollRangeToVisible at the
+        // end still landed screens short on a long buffer. Lay out the whole document
+        // — SwiftTerm keeps 500 lines of scrollback, so this is cheap — and let the
+        // view take the real contentSize before pinning to its bottom.
+        if let tlm = source.textLayoutManager { tlm.ensureLayout(for: tlm.documentRange) }
+        source.setNeedsLayout()
+        source.layoutIfNeeded()
+        let inset = source.adjustedContentInset
+        let bottom = source.contentSize.height - source.bounds.height + inset.bottom
+        source.setContentOffset(CGPoint(x: 0, y: max(-inset.top, bottom)), animated: false)
     }
 
     // MARK: - Selection → editor → clipboard

@@ -35,6 +35,30 @@ final class ScrollThumbGeometryTests: XCTestCase {
                        "strip starts at \(strip.frame.minY), the visible terminal at \(tv.frame.minY)")
     }
 
+    /// The shortcut bar is always on screen: resting on the bottom with the keyboard
+    /// down (the terminal ends at its top), riding the keyboard top when it's up — and
+    /// the terminal's size does not move with it.
+    func testBarRestsAtTheBottomAndTheGridIgnoresTheKeyboard() throws {
+        UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey)   // the default 12 keys
+        let vc = makeVC(CGSize(width: 393, height: 852))
+        let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar } as? ShortcutBar)
+        let tv = try XCTUnwrap(vc.view.subviews.first { $0 is TerminalView }, "no terminal view")
+        // One layout pass must settle the split AND the height it implies.
+        XCTAssertEqual(bar.rowCount, 2, "the default keys overflow one phone-width row")
+        XCTAssertEqual(bar.frame.height, 86, "two rows: 4 + 36 + 6 + 36 + 4")
+        XCTAssertEqual(bar.frame.maxY, vc.view.bounds.maxY, accuracy: 0.5, "bar rests on the bottom")
+        XCTAssertEqual(tv.frame.maxY, bar.frame.minY, accuracy: 0.5, "terminal ends above the bar")
+        let restingSize = tv.bounds.size
+
+        let keyboard = CGRect(x: 0, y: 500, width: 393, height: 352)
+        NotificationCenter.default.post(
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil,
+            userInfo: [UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect: keyboard)])
+        vc.view.layoutIfNeeded()
+        XCTAssertEqual(bar.frame.maxY, keyboard.minY, accuracy: 0.5, "bar rides the keyboard top")
+        XCTAssertEqual(tv.bounds.size, restingSize, "the grid must not resize with the keyboard")
+    }
+
     func testPillRestsInTheMiddleOfTheVisibleTerminal() throws {
         let vc = makeVC(CGSize(width: 393, height: 852))
         let (strip, pill) = try thumbAndPill(vc)
@@ -42,7 +66,9 @@ final class ScrollThumbGeometryTests: XCTestCase {
         let stripCenter = strip.convert(CGPoint(x: 0, y: strip.bounds.midY), to: vc.view).y
         XCTAssertEqual(pillCenter, stripCenter, accuracy: 1,
                        "pill rests \(pillCenter - stripCenter)pt off the strip's middle")
-        let visibleMiddle = vc.view.bounds.midY
+        // The bar is always visible, so the visible terminal ends at its top.
+        let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar }, "no shortcut bar")
+        let visibleMiddle = bar.frame.minY / 2
         XCTAssertEqual(pillCenter, visibleMiddle, accuracy: 1,
                        "pill rests at \(pillCenter) but the middle of the screen is \(visibleMiddle)")
     }
