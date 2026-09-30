@@ -14,24 +14,23 @@ struct SessionActivityPlan: Equatable {
 
     var isEmpty: Bool { start.isEmpty && update.isEmpty && end.isEmpty }
 
-    /// - `shown`: session → the state its live activity is currently displaying.
+    /// - `shown`: session → what its live activity is currently displaying.
     /// - `limit`: how many activities one machine may hold at once.
     static func make(sessions: [DchSession], watched: Set<String>,
-                     shown: [String: String], limit: Int) -> SessionActivityPlan {
+                     shown: [String: SessionActivityDisplay], limit: Int) -> SessionActivityPlan {
         var plan = SessionActivityPlan()
         let alive = Set(sessions.map(\.name))
         // Slots already spent by activities we're keeping.
         var live = shown.keys.filter { watched.contains($0) && alive.contains($0) }.count
         for s in sessions where watched.contains(s.name) {
-            let state = s.state ?? ""
-            let finished = SessionStateStyle(state) == .done
+            let finished = SessionStateStyle(s.state) == .done
             if let displayed = shown[s.name] {
                 // `done` is terminal — end it (it lingers on the lock screen) instead of
                 // holding a slot for a session that will never change again.
                 if finished {
                     plan.end.append(s.name)
                     live -= 1
-                } else if displayed != state {
+                } else if displayed != SessionActivityDisplay(s) {
                     plan.update.append(s.name)
                 }
             } else if !finished, live < limit {
@@ -91,23 +90,26 @@ final class SessionLiveActivities {
                 .map { ($0.attributes.session, $0) },
             uniquingKeysWith: { a, _ in a })
         let plan = SessionActivityPlan.make(sessions: sessions, watched: watched,
-                                            shown: live.mapValues { $0.content.state.state },
+                                            shown: live.mapValues { $0.content.state },
                                             limit: Self.maxActive)
         guard !plan.isEmpty else { return }
-        let states = Dictionary(sessions.map { ($0.name, $0.state ?? "") }, uniquingKeysWith: { a, _ in a })
+        let displays = Dictionary(sessions.map { ($0.name, SessionActivityDisplay($0)) },
+                                  uniquingKeysWith: { a, _ in a })
 
         for name in plan.start {
+            guard let d = displays[name] else { continue }
             _ = try? Activity.request(attributes: SessionActivityAttributes(machine: machine, session: name),
-                                      content: content(states[name] ?? ""), pushType: nil)
+                                      content: content(d), pushType: nil)
         }
         for name in plan.update {
-            await live[name]?.update(content(states[name] ?? ""))
+            guard let d = displays[name] else { continue }
+            await live[name]?.update(content(d))
         }
         for name in plan.end {
             guard let activity = live[name] else { continue }
             // A finished session lingers; one whose bell went off goes now.
-            if SessionStateStyle(states[name]) == .done {
-                await activity.end(content(states[name] ?? ""),
+            if let d = displays[name], SessionStateStyle(d.state) == .done {
+                await activity.end(content(d),
                                    dismissalPolicy: .after(Date().addingTimeInterval(Self.dismissAfter)))
             } else {
                 await activity.end(nil, dismissalPolicy: .immediate)
@@ -116,9 +118,15 @@ final class SessionLiveActivities {
     }
 
     @available(iOS 16.2, *)
-    private func content(_ state: String) -> ActivityContent<SessionActivityAttributes.ContentState> {
-        ActivityContent(state: SessionActivityAttributes.ContentState(state: state),
-                        staleDate: Date().addingTimeInterval(Self.staleAfter))
+    private func content(_ d: SessionActivityDisplay) -> ActivityContent<SessionActivityDisplay> {
+        ActivityContent(state: d, staleDate: Date().addingTimeInterval(Self.staleAfter))
     }
     #endif
+}
+
+extension SessionActivityDisplay {
+    /// What the island should show for `s` right now.
+    init(_ s: DchSession) {
+        self.init(state: s.state ?? "", title: s.title, agents: s.agents)
+    }
 }

@@ -9,6 +9,50 @@ final class SessionActivityPlanTests: XCTestCase {
         pairs.map { DchSession(name: $0.0, alias: nil, state: $0.1) }
     }
 
+    /// Activities as `list` sessions would render them: session → state.
+    private func shown(_ states: [String: String]) -> [String: SessionActivityDisplay] {
+        Dictionary(uniqueKeysWithValues: states.map {
+            ($0.key, SessionActivityDisplay(DchSession(name: $0.key, alias: nil, state: $0.value)))
+        })
+    }
+
+    /// The island shows the session list's label, not the socket name — so a rename
+    /// (or the Claude Code name arriving) has to reach an activity that's already up.
+    func testLabelChangeUpdates() {
+        let renamed = [DchSession(name: "solution.cdv2-base", alias: "cdv2-next", state: "working")]
+        let plan = SessionActivityPlan.make(sessions: renamed, watched: ["solution.cdv2-base"],
+                                            shown: shown(["solution.cdv2-base": "working"]), limit: 3)
+        XCTAssertEqual(plan.update, ["solution.cdv2-base"])
+        XCTAssertEqual(SessionActivityDisplay(renamed[0]).title, "cdv2-next")
+    }
+
+    /// Workers starting or finishing move the count on the island without a state change.
+    func testAgentCountChangeUpdates() {
+        let busy = [DchSession(name: "a", alias: nil, state: "working", agents: 2)]
+        let plan = SessionActivityPlan.make(sessions: busy, watched: ["a"],
+                                            shown: shown(["a": "working"]), limit: 3)
+        XCTAssertEqual(plan.update, ["a"])
+    }
+
+    /// An activity started before titles existed decodes with none, and gets one on the
+    /// next poll instead of showing the raw name forever.
+    func testActivityFromOlderBuildGetsItsTitle() {
+        let plan = SessionActivityPlan.make(sessions: list([("a", "working")]), watched: ["a"],
+                                            shown: ["a": SessionActivityDisplay(state: "working")],
+                                            limit: 3)
+        XCTAssertEqual(plan.update, ["a"])
+        let old = try? JSONDecoder().decode(SessionActivityDisplay.self,
+                                            from: Data(#"{"state":"idle"}"#.utf8))
+        XCTAssertEqual(old, SessionActivityDisplay(state: "idle"))
+    }
+
+    func testAgentsLabel() {
+        XCTAssertNil(SessionStateStyle.agents(0))
+        XCTAssertNil(SessionStateStyle.agents(nil))
+        XCTAssertEqual(SessionStateStyle.agents(1), "1 agent")
+        XCTAssertEqual(SessionStateStyle.agents(3), "3 agents")
+    }
+
     /// A watched session with no activity yet gets one; an unwatched one doesn't.
     func testStartsOnlyWatchedSessions() {
         let plan = SessionActivityPlan.make(sessions: list([("a", "working"), ("b", "working")]),
@@ -20,13 +64,13 @@ final class SessionActivityPlanTests: XCTestCase {
     /// would be five system calls a second for nothing.
     func testUnchangedStateDoesNothing() {
         let plan = SessionActivityPlan.make(sessions: list([("a", "working")]),
-                                            watched: ["a"], shown: ["a": "working"], limit: 3)
+                                            watched: ["a"], shown: shown(["a": "working"]), limit: 3)
         XCTAssertTrue(plan.isEmpty, "got \(plan)")
     }
 
     func testChangedStateUpdates() {
         let plan = SessionActivityPlan.make(sessions: list([("a", "blocked")]),
-                                            watched: ["a"], shown: ["a": "working"], limit: 3)
+                                            watched: ["a"], shown: shown(["a": "working"]), limit: 3)
         XCTAssertEqual(plan, SessionActivityPlan(start: [], update: ["a"], end: []))
     }
 
@@ -34,7 +78,7 @@ final class SessionActivityPlanTests: XCTestCase {
     /// will never change again — and never start a new one for an already-finished session.
     func testDoneEndsAndIsNeverStarted() {
         XCTAssertEqual(SessionActivityPlan.make(sessions: list([("a", "done")]),
-                                                watched: ["a"], shown: ["a": "working"], limit: 3),
+                                                watched: ["a"], shown: shown(["a": "working"]), limit: 3),
                        SessionActivityPlan(start: [], update: [], end: ["a"]))
         XCTAssertTrue(SessionActivityPlan.make(sessions: list([("a", "done")]),
                                                watched: ["a"], shown: [:], limit: 3).isEmpty)
@@ -43,10 +87,10 @@ final class SessionActivityPlanTests: XCTestCase {
     /// Bell off → off the island. Same for a session that got killed.
     func testUnwatchedAndVanishedEnd() {
         XCTAssertEqual(SessionActivityPlan.make(sessions: list([("a", "working")]),
-                                                watched: [], shown: ["a": "working"], limit: 3),
+                                                watched: [], shown: shown(["a": "working"]), limit: 3),
                        SessionActivityPlan(start: [], update: [], end: ["a"]))
         XCTAssertEqual(SessionActivityPlan.make(sessions: [], watched: ["a"],
-                                                shown: ["a": "working"], limit: 3),
+                                                shown: shown(["a": "working"]), limit: 3),
                        SessionActivityPlan(start: [], update: [], end: ["a"]))
     }
 
@@ -65,7 +109,7 @@ final class SessionActivityPlanTests: XCTestCase {
     func testExistingActivitiesSpendSlots() {
         let sessions = list([("a", "working"), ("b", "working"), ("c", "working")])
         let plan = SessionActivityPlan.make(sessions: sessions, watched: ["a", "b", "c"],
-                                            shown: ["a": "working", "b": "working"], limit: 3)
+                                            shown: shown(["a": "working", "b": "working"]), limit: 3)
         XCTAssertEqual(plan.start, ["c"])
     }
 
@@ -73,7 +117,7 @@ final class SessionActivityPlanTests: XCTestCase {
     func testFinishedSessionFreesItsSlot() {
         let sessions = list([("a", "done"), ("b", "working"), ("c", "working"), ("d", "working")])
         let plan = SessionActivityPlan.make(sessions: sessions, watched: ["a", "b", "c", "d"],
-                                            shown: ["a": "working", "b": "working", "c": "working"],
+                                            shown: shown(["a": "working", "b": "working", "c": "working"]),
                                             limit: 3)
         XCTAssertEqual(plan.end, ["a"])
         XCTAssertEqual(plan.start, ["d"], "a's slot goes to the next watched session")

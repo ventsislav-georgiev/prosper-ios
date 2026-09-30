@@ -12,7 +12,8 @@ struct ProsperWidgets: WidgetBundle {
 }
 
 /// The watched session on the lock screen and in the Dynamic Island: machine, session,
-/// and the agent state — orange hand when it wants you, green check when it's done.
+/// the agent state — orange hand when it wants you, green check when it's done — and
+/// how many subagents it has running.
 @available(iOS 16.2, *)
 struct SessionActivityWidget: Widget {
     var body: some WidgetConfiguration {
@@ -22,8 +23,8 @@ struct SessionActivityWidget: Widget {
                 badge(context.state.state)
                     .font(.title3)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(context.attributes.session).font(.headline).lineLimit(1)
-                    Text(stateText(context.state.state))
+                    Text(title(context)).font(.headline).lineLimit(1)
+                    Text(detail(context.state))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -47,8 +48,8 @@ struct SessionActivityWidget: Widget {
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(context.attributes.session).font(.subheadline).lineLimit(1)
-                        Text(stateText(context.state.state)).font(.caption).foregroundStyle(.secondary)
+                        Text(title(context)).font(.subheadline).lineLimit(1)
+                        Text(detail(context.state)).font(.caption).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -75,6 +76,17 @@ struct SessionActivityWidget: Widget {
 
     private func stateText(_ raw: String) -> String {
         SessionStateStyle(raw)?.label ?? raw
+    }
+
+    /// The session list's label; the raw dch name only for an activity an older build
+    /// started, which carries no title.
+    private func title(_ context: ActivityViewContext<SessionActivityAttributes>) -> String {
+        context.state.title ?? context.attributes.session
+    }
+
+    /// "working · 2 agents" — the count only when there is one.
+    private func detail(_ d: SessionActivityDisplay) -> String {
+        [stateText(d.state), SessionStateStyle.agents(d.agents)].compactMap { $0 }.joined(separator: " · ")
     }
 }
 

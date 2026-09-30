@@ -18,9 +18,21 @@ final class SessionAlertsTests: XCTestCase {
         let e = SessionAlertEngine()
         XCTAssertEqual(e.step(list([("a", "working"), ("b", "working")]), now: 0, isWatched: watchAll), [])
         let first = e.step(list([("a", "blocked"), ("b", "working")]), now: 1, isWatched: watchAll)
-        XCTAssertEqual(first, [SessionAlert(session: "a", style: .blocked)])
+        XCTAssertEqual(first, [SessionAlert(session: "a", title: "a", style: .blocked)])
         let second = e.step(list([("a", "blocked"), ("b", "done")]), now: 2, isWatched: watchAll)
-        XCTAssertEqual(second, [SessionAlert(session: "b", style: .done)])
+        XCTAssertEqual(second, [SessionAlert(session: "b", title: "b", style: .done)])
+    }
+
+    /// The banner names the session the way the list does (alias / Claude Code name),
+    /// while the alert stays keyed by the real dch name.
+    func testPingUsesTheListLabel() {
+        let e = SessionAlertEngine()
+        let s = { DchSession(name: "solution.cdv2-base", alias: "cdv2-next", state: $0) }
+        _ = e.step([s("working")], now: 0, isWatched: watchAll)
+        let alerts = e.step([s("blocked")], now: 1, isWatched: watchAll)
+        XCTAssertEqual(alerts, [SessionAlert(session: "solution.cdv2-base", title: "cdv2-next", style: .blocked)])
+        XCTAssertEqual(alerts.first.flatMap { $0.style.ping(session: $0.title) },
+                       "cdv2-next is waiting for your input.")
     }
 
     /// Reaching `working` or `idle` is not worth a banner.
@@ -52,7 +64,7 @@ final class SessionAlertsTests: XCTestCase {
         XCTAssertEqual(e.step(list([("a", "blocked")]), now: 2, isWatched: { _ in watched }), [],
                        "it was already blocked before the bell went on")
         XCTAssertEqual(e.step(list([("a", "done")]), now: 3, isWatched: { _ in watched }),
-                       [SessionAlert(session: "a", style: .done)])
+                       [SessionAlert(session: "a", title: "a", style: .done)])
     }
 
     /// The session on screen doesn't ping — the user is already looking at it.
@@ -63,7 +75,7 @@ final class SessionAlertsTests: XCTestCase {
         // Detach: the next transition pings normally.
         _ = e.step(list([("a", "working")]), now: 2, isWatched: watchAll)
         XCTAssertEqual(e.step(list([("a", "blocked")]), now: 3, isWatched: watchAll),
-                       [SessionAlert(session: "a", style: .blocked)])
+                       [SessionAlert(session: "a", title: "a", style: .blocked)])
     }
 
     // MARK: flapping
@@ -90,7 +102,7 @@ final class SessionAlertsTests: XCTestCase {
         _ = e.step(list([("a", "working")]), now: 0, isWatched: watchAll)
         XCTAssertEqual(e.step(list([("a", "blocked")]), now: 1, isWatched: watchAll).count, 1)
         XCTAssertEqual(e.step(list([("a", "done")]), now: 2, isWatched: watchAll),
-                       [SessionAlert(session: "a", style: .done)])
+                       [SessionAlert(session: "a", title: "a", style: .done)])
     }
 
     /// A killed session drops out of the baseline, so the same name created later starts
@@ -226,7 +238,7 @@ final class SessionAlertsTests: XCTestCase {
         XCTAssertEqual(e.step(list([("a", "blocked")]), now: 100, isWatched: watchAll), [],
                        "it changed while we were away — not a fresh transition")
         XCTAssertEqual(e.step(list([("a", "done")]), now: 101, isWatched: watchAll),
-                       [SessionAlert(session: "a", style: .done)],
+                       [SessionAlert(session: "a", title: "a", style: .done)],
                        "but the next real change still pings")
         XCTAssertEqual(e.trackedCount, 2, "forget also drops the cooldown bookkeeping")
     }

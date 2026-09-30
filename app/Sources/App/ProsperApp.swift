@@ -389,7 +389,7 @@ struct SessionListView: View {
         HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(s.title)
-                if let state = s.state, !state.isEmpty { SessionStateLabel(state: state) }
+                if let state = s.state, !state.isEmpty { SessionStateLabel(state: state, agents: s.agents) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
@@ -604,14 +604,16 @@ struct WakeBadge: View {
 /// a human — the reason to open that session before the others.
 struct SessionStateLabel: View {
     let state: String
+    var agents = 0
 
     var body: some View {
         // Unknown state from a newer server → say nothing rather than guess.
         if let style = SessionStateStyle(state) {
-            Label(style.label, systemImage: style.symbol)
+            let text = [style.label, SessionStateStyle.agents(agents)].compactMap { $0 }.joined(separator: " · ")
+            Label(text, systemImage: style.symbol)
                 .font(.caption2)
                 .foregroundStyle(style.tint)
-                .accessibilityLabel("Session is \(style.label)")
+                .accessibilityLabel("Session is \(text)")
         }
     }
 }

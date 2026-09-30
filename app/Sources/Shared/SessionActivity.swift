@@ -41,6 +41,13 @@ enum SessionStateStyle: String, CaseIterable {
         }
     }
 
+    /// "2 agents" / "1 agent" for a session's live subagents, nil for none — callers
+    /// append it to the state rather than showing a zero.
+    static func agents(_ n: Int?) -> String? {
+        guard let n, n > 0 else { return nil }
+        return n == 1 ? "1 agent" : "\(n) agents"
+    }
+
     /// Notification body for the two states that ping.
     func ping(session: String) -> String? {
         switch self {
@@ -51,17 +58,29 @@ enum SessionStateStyle: String, CaseIterable {
     }
 }
 
+/// What one watched session's Live Activity shows. Lives outside the ActivityKit guard
+/// so the planner can compare it (and CI can test that) without ActivityKit.
+///
+/// `state` stays the raw string: the widget resolves it through `SessionStateStyle`, so
+/// a state a newer Mac invents renders as plain text instead of failing to decode.
+/// `title` and `agents` are optional so an activity started by an older build still
+/// decodes after an update.
+struct SessionActivityDisplay: Codable, Hashable {
+    var state: String
+    /// The label the session list shows — alias, else the Claude Code session name.
+    var title: String? = nil
+    /// Live subagents on the session's Claude Code agent panel.
+    var agents: Int? = nil
+}
+
 #if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
 import ActivityKit
 
 /// Live Activity payload for one watched session — the Dynamic Island / lock-screen
-/// mirror of its agent state. Kept to the raw state string: the widget resolves it
-/// through `SessionStateStyle`, so a state a newer Mac invents renders as plain text
-/// instead of failing to decode.
+/// mirror of its agent state. `session` is the real dch name, the activity's identity;
+/// what's displayed (including the label) is content, so a rename updates in place.
 struct SessionActivityAttributes: ActivityAttributes {
-    struct ContentState: Codable, Hashable {
-        var state: String
-    }
+    typealias ContentState = SessionActivityDisplay
 
     var machine: String
     var session: String

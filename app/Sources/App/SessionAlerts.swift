@@ -56,9 +56,11 @@ final class SessionAlerts: ObservableObject {
     }
 }
 
-/// One thing worth interrupting the user over.
+/// One thing worth interrupting the user over. `session` is the dch name (identity);
+/// `title` is what the banner calls it — the same label the session list shows.
 struct SessionAlert: Equatable {
     let session: String
+    let title: String
     let style: SessionStateStyle
 }
 
@@ -120,7 +122,7 @@ final class SessionAlertEngine {
             guard let style = SessionStateStyle(state), style.ping(session: s.name) != nil else { continue }
             if let last = lastPing[s.name], last.state == state, now - last.at < Self.cooldown { continue }
             lastPing[s.name] = (state, now)
-            alerts.append(SessionAlert(session: s.name, style: style))
+            alerts.append(SessionAlert(session: s.name, title: s.title, style: style))
         }
         // Drop vanished sessions so a name reused later starts from a clean baseline
         // (and neither dictionary grows forever on a long-lived screen).
@@ -157,7 +159,7 @@ enum SessionPings {
     }
 
     static func fire(_ alert: SessionAlert, machine: String) {
-        guard let body = alert.style.ping(session: alert.session) else { return }
+        guard let body = alert.style.ping(session: alert.title) else { return }
         let c = UNMutableNotificationContent()
         c.title = machine
         c.body = body
