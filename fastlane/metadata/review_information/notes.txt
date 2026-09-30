@@ -24,6 +24,19 @@ with a fully offline DEMO:
 The "?" button (top-right on the home and Machines screens) opens an in-app
 "How it works" guide explaining the Prosper + Tailscale model.
 
+WHAT'S NEW IN THIS VERSION, AND WHERE TO SEE IT IN THE DEMO
+  - Compact keyboard and two-row shortcut bar: open the Demo session and tap
+    into the terminal.
+  - Copy mode: drag a finger over the terminal text in the Demo session.
+  - Insert: the "insert" key (cursor icon) on the shortcut bar opens a compose
+    sheet; its text is sent to the session.
+  - Session names / helper-task count in the Dynamic Island and Lock Screen:
+    this extends the existing "watch a session" bell (unchanged permissions:
+    notifications and Live Activities, both already requested in the current
+    version). The count only appears for sessions on a real Mac running
+    Prosper, so it is not visible in the demo.
+No new permissions, data collection, accounts or purchases are added.
+
 ABOUT THE OPTIONAL "WAKE" BUTTON
 The Wake button only appears when the app actually FAILS to reach a real, saved
 Mac (i.e. that Mac is asleep/unreachable). In a review environment there is no

@@ -12,6 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The version being prepared is the one the TestFlight builds carry.
+      - name: Read MARKETING_VERSION
+        run: |
+          v=$(sed -n 's/^ *MARKETING_VERSION: "\(.*\)"/\1/p' app/project.yml)
+          test -n "$v" || { echo "::error::MARKETING_VERSION not found in app/project.yml"; exit 1; }
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
@@ -53,7 +60,7 @@ jobs:
           RUBY
           KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/diag.rb
 
-      - name: Ensure an editable 0.3 version exists
+      - name: Ensure an editable ${{ env.VERSION }} version exists
         run: |
           cat > /tmp/ensure.rb <<'RUBY'
           require 'spaceship'
@@ -65,9 +72,9 @@ jobs:
           if editable
             puts "EDITABLE version already present: #{editable.version_string}"
           else
-            puts 'Creating editable iOS version 0.3...'
-            app.ensure_version!('0.3', platform: Spaceship::ConnectAPI::Platform::IOS)
-            puts 'Created 0.3.'
+            puts "Creating editable iOS version #{ENV['VERSION']}..."
+            app.ensure_version!(ENV['VERSION'], platform: Spaceship::ConnectAPI::Platform::IOS)
+            puts "Created #{ENV['VERSION']}."
           end
           RUBY
           KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/ensure.rb
@@ -76,7 +83,7 @@ jobs:
         run: |
           fastlane deliver \
             --api_key_path "$RUNNER_TEMP/asc_key.json" \
-            --app_version "0.3" \
+            --app_version "$VERSION" \
             --skip_binary_upload true \
             --skip_metadata true \
             --skip_screenshots false \
@@ -138,7 +145,7 @@ jobs:
         run: |
           fastlane deliver \
             --api_key_path "$RUNNER_TEMP/asc_key.json" \
-            --app_version "0.3" \
+            --app_version "$VERSION" \
             --skip_binary_upload true \
             --skip_metadata false \
             --skip_screenshots true \

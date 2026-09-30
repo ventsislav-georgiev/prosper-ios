@@ -1,5 +1,8 @@
 What's new:
 • Copy mode: drag over the terminal to select text natively, then edit what goes to the clipboard.
 • Insert: compose text on your phone and send it to the session in one go.
+• New compact terminal keyboard on iPhone, with key previews and common symbols one tap away.
+• Shortcut bar is always visible, in two aligned rows, with a new default set of keys.
+• Watched sessions show the same name in the Dynamic Island, on the Lock Screen and in alerts as in your session list, and can show how many helper tasks are running.
+• Typing is more reliable on weak connections: keystrokes are queued and delivered after a drop.
 • Smoother terminal scrolling.
-• More reliable connections.
