@@ -154,8 +154,8 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(conn.queuedByteCount, 0)
     }
 
-    /// Past the cap the OLDEST bytes go; the newest cap's worth arrives intact.
-    func testCapDropsTheOldestBytes() async throws {
+    /// Past the cap the OLDEST whole frames go; the frames that fit arrive intact, none cut.
+    func testCapDropsTheOldestWholeFrames() async throws {
         let (conn, t) = make()
         let s1 = try await startLive(conn, t)
         try await stall(s1, conn, t)
@@ -163,11 +163,62 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         stride(from: 0, to: all.count, by: 1000).forEach {
             conn.send(all[$0..<min($0 + 1000, all.count)])
         }
-        XCTAssertEqual(conn.queuedByteCount, SessionConnection.outboxCap)
+        let kept = SessionConnection.outboxCap / 1000 * 1000   // 65 whole frames
+        XCTAssertEqual(conn.queuedByteCount, kept)
 
         let s2 = try await reattachLive(conn, t, index: 1)
-        try await waitUntil("flush") { s2.bytes.count == SessionConnection.outboxCap }
-        XCTAssertEqual(s2.bytes, Array(all.suffix(SessionConnection.outboxCap)))
+        try await waitUntil("flush") { s2.bytes.count == kept }
+        XCTAssertEqual(s2.bytes, Array(all.suffix(kept)))
+        XCTAssertTrue(s2.sent.allSatisfy { if case .bytes(let b) = $0 { b.count == 1000 } else { false } },
+                      "a frame was cut")
+    }
+
+    /// QA #9: a bracketed paste over the cap, queued during a stall, must arrive whole.
+    /// Cutting its head loses ESC[200~ and every pasted line runs as a shell command.
+    func testPasteOverTheCapArrivesWholeWithItsBrackets() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        conn.send(Array("x".utf8)[...])   // older than the paste: this one goes
+        let paste = TerminalMath.pasteBytes(String(repeating: "echo hi\n", count: 9000))
+        XCTAssertGreaterThan(paste.count, SessionConnection.outboxCap)
+        conn.send(paste[...])
+        XCTAssertEqual(conn.queuedByteCount, paste.count)
+
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await waitUntil("flush") { !s2.bytes.isEmpty }
+        XCTAssertEqual(Array(s2.bytes.prefix(6)), Array("\u{1b}[200~".utf8), "paste opener was trimmed away")
+        XCTAssertEqual(s2.bytes, paste)
+    }
+
+    /// QA #9: the link flaps twice. Stream A hands back a and b; stream B takes a, dies
+    /// before b and hands a back. a must go back ahead of b: the next stream sees "ab".
+    func testHandBackAfterAPartialFlushGoesToTheFront() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        conn.send(Array("a".utf8)[...]); conn.send(Array("b".utf8)[...])
+        XCTAssertEqual(s1.text, "ab")
+
+        s1.accepting = false
+        s1.bounce(.bytes(Array("a".utf8))); s1.bounce(.bytes(Array("b".utf8)))
+        try await stall(s1, conn, t)
+        try await waitUntil("both handed back") { conn.queuedByteCount == 2 }
+
+        t.release()
+        try await waitUntil("reattach") { t.streams.count == 2 }
+        let s2 = t.streams[1]
+        s2.acceptLimit = 1
+        s2.emit("$ ")
+        try await waitUntil("partial flush") { s2.text == "a" }
+        s2.bounce(.bytes(Array("a".utf8)))   // B never got "a" onto the wire
+        try await waitUntil("a handed back") { conn.queuedByteCount == 2 }
+        s2.drop()
+
+        try await waitUntil("third attach") { t.streams.count == 3 }
+        let s3 = t.streams[2]
+        s3.emit("$ ")
+        try await waitUntil("flush") { s3.text.count == 2 }
+        XCTAssertEqual(s3.text, "ab", "handed-back frames reordered")
     }
 
     /// Image paste during a drop: the clipboard must still land before the ctrl-V.

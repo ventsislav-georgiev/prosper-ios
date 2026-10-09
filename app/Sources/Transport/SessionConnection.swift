@@ -33,9 +33,10 @@ final class SessionConnection: ObservableObject {
     /// stream that accepted it stopped taking input.
     private var requeueAt = 0
 
-    /// ponytail: 64 KB of keystrokes/paste held across a drop; past it the OLDEST bytes
-    /// go (a long paste typed into a dead link keeps its tail). Clipboard images don't
-    /// count — one per explicit paste-image tap. Raise if pastes routinely exceed it.
+    /// ponytail: 64 KB of keystrokes/paste held across a drop; past it the OLDEST whole
+    /// frames go. A frame is never cut, and the last one in line stays even when it alone is
+    /// over the cap. Clipboard images don't count — one per explicit paste-image tap.
+    /// Raise if pastes routinely exceed it.
     static let outboxCap = 64 * 1024
     /// Longest wait for the reattached session's first output before flushing anyway.
     static let liveFallback: Duration = .seconds(1)
@@ -114,7 +115,9 @@ final class SessionConnection: ObservableObject {
             sent += 1
             if case .bytes(let b) = next { outboxBytes -= b.count }
         }
-        requeueAt = max(0, requeueAt - sent)
+        // Everything still queued came after what this stream just took, so its
+        // hand-backs go to the front, not behind hand-backs it never reached.
+        if sent > 0 { requeueAt = 0 }
     }
 
     /// A frame the transport took but couldn't put on the wire: back in line, ahead of
@@ -128,19 +131,17 @@ final class SessionConnection: ObservableObject {
         flushOutbox()
     }
 
+    /// Drops the oldest WHOLE frames until the queue fits the cap. Never cuts one: a cut
+    /// paste loses its ESC[200~ opener and every pasted line runs as a command, and a
+    /// cut keystroke frame can split a CSI or UTF-8 sequence. The last frame always
+    /// stays, so a single paste over the cap is kept whole.
     private func trimOutbox() {
         var i = 0
-        while outboxBytes > Self.outboxCap, i < outbox.count {
+        while outboxBytes > Self.outboxCap, i < outbox.count - 1 {
             guard case .bytes(let b) = outbox[i] else { i += 1; continue }
-            let excess = outboxBytes - Self.outboxCap
-            if b.count <= excess {
-                outbox.remove(at: i)
-                outboxBytes -= b.count
-                if i < requeueAt { requeueAt -= 1 }
-            } else {
-                outbox[i] = .bytes(Array(b.dropFirst(excess)))
-                outboxBytes -= excess
-            }
+            outbox.remove(at: i)
+            outboxBytes -= b.count
+            if i < requeueAt { requeueAt -= 1 }
         }
     }
 
