@@ -580,22 +580,13 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let shown = overlap > 0
         kbConstraint.constant = -overlap   // glue the shortcut bar to the keyboard top
         handle.keyboardShown = shown
-        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         kbOverlap = shown ? overlap : 0
         animateKeyboard(n, offset: shown ? caretLiftOffset(overlap: overlap) : 0)
-    }
-
-    /// The compact keyboard's bottom row sits in the home-indicator strip: defer the
-    /// system's bottom-edge gesture while it is up, so taps there aren't held back
-    /// waiting for a swipe (a swipe still goes home, it just takes a second one).
-    override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge {
-        handle.keyboardShown && tv?.inputView is TerminalKeyboard ? .bottom : []
     }
 
     @objc private func kbHide(_ n: Notification) {
         kbConstraint.constant = 0
         handle.keyboardShown = false
-        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         kbOverlap = 0
         animateKeyboard(n, offset: 0)
     }

@@ -138,8 +138,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static let sideMargin: CGFloat = 3
     static let keysHeight = topPadding + 4 * rowHeight + 3 * rowGap
     /// Under the bottom row, in place of the 34 pt home-indicator inset: enough to keep
-    /// the space bar off the very bottom edge, where the home gesture starts. The host
-    /// also defers the bottom edge gesture while this keyboard is up.
+    /// the space bar off the very bottom edge, where the home gesture starts. (Deferring
+    /// that gesture does nothing on iPhone; a cancelled tap still types, see the tracker.)
     static let bottomPadding: CGFloat = 16
     /// How far from the screen edge the bottom row starts, so its outer keys sit inside
     /// the display's rounded corners: on the iPhone 17 Pro the edge is 20 pt in at 16 pt
@@ -283,9 +283,16 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { feed(touches, .cancelled) }
 
     private func feed(_ touches: Set<UITouch>, _ phase: UITouch.Phase) {
-        for t in touches.sorted(by: { $0.timestamp < $1.timestamp }) {
-            track(phase, id: Int(bitPattern: ObjectIdentifier(t)), at: t.location(in: self))
+        let byID = Dictionary(uniqueKeysWithValues: touches.map { (Int(bitPattern: ObjectIdentifier($0)), $0) })
+        for id in Self.inputOrder(byID.map { ($0.key, $0.value.timestamp) }) {
+            track(phase, id: id, at: byID[id]!.location(in: self))
         }
+    }
+
+    /// Oldest first. Touches from one event share a timestamp and a Set has no order, so
+    /// ties break on the touch id: the same touches always go in the same order.
+    static func inputOrder(_ touches: [(id: Int, timestamp: TimeInterval)]) -> [Int] {
+        touches.sorted { ($0.timestamp, $0.id) < ($1.timestamp, $1.id) }.map(\.id)
     }
 
     /// One touch event, `at` in this view's coordinates. The UIKit overrides call it;

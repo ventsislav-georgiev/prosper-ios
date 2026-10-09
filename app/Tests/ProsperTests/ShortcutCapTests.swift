@@ -46,6 +46,15 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(Set(Shortcuts.catalog.map(\.id)).count, Shortcuts.catalog.count)
     }
 
+    /// VoiceOver reads the key's label, not the SF Symbol name of an icon cap.
+    func testCapsReadTheirLabels() {
+        UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey)
+        func caps(_ v: UIView) -> [KeyCapButton] { v.subviews.flatMap { ($0 as? KeyCapButton).map { [$0] } ?? caps($0) } }
+        let bar = ShortcutBar()
+        bar.layoutIfNeeded()   // the caps join the bar's rows on layout
+        XCTAssertEqual(caps(bar).compactMap(\.accessibilityLabel).sorted(), Shortcuts.defaults.map(\.label).sorted())
+    }
+
     // MARK: how the caps split across the bar's rows
 
     func testKeysThatFitStayInOneRow() {

@@ -373,6 +373,14 @@ final class TerminalKeyboardTests: XCTestCase {
         }
     }
 
+    /// Touches from one event tie on timestamp; the order must not depend on how the Set
+    /// happens to iterate, or a two-thumb rollover can swap letters.
+    func testSameEventTouchesHaveAStableOrder() {
+        let touches: [(id: Int, timestamp: TimeInterval)] = [(7, 1), (3, 1), (9, 0.5), (5, 1)]
+        XCTAssertEqual(TerminalKeyboard.inputOrder(touches), [9, 3, 5, 7])
+        XCTAssertEqual(TerminalKeyboard.inputOrder(touches.reversed()), [9, 3, 5, 7])
+    }
+
     // MARK: Hookup
 
     private var savedProbe: (() -> Bool)!
@@ -403,7 +411,6 @@ final class TerminalKeyboardTests: XCTestCase {
         defer { window.isHidden = true }
 
         XCTAssertTrue(vc.keyboardInputView is TerminalKeyboard)
-        XCTAssertEqual(vc.preferredScreenEdgesDeferringSystemGestures, [], "no deferral with the keyboard down")
 
         let frame = expectation(forNotification: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         var end = CGRect.null
@@ -420,10 +427,8 @@ final class TerminalKeyboardTests: XCTestCase {
                           "the home-indicator inset is not reserved under the keys")
         XCTAssertEqual(end.maxY, window.bounds.maxY, accuracy: 1)
         print("compact keyboard frame: \(end) window: \(window.bounds.size) safe bottom: \(window.safeAreaInsets.bottom)")
-        XCTAssertEqual(vc.preferredScreenEdgesDeferringSystemGestures, .bottom)
 
         vc.toggleKeyboard()   // dismiss
-        XCTAssertEqual(vc.preferredScreenEdgesDeferringSystemGestures, [])
         XCTAssertTrue(vc.keyboardInputView is TerminalKeyboard)
     }
 }

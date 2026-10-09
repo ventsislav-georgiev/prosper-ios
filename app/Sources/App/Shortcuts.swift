@@ -321,6 +321,7 @@ final class ShortcutBar: UIView {
         cfg.background.strokeColor = Neon.blue.withAlphaComponent(0.55)
         cfg.background.strokeWidth = 1
         let b = KeyCapButton(configuration: cfg)
+        b.accessibilityLabel = key.label   // an icon cap would otherwise read its SF Symbol name
         b.idleFill = Neon.card
         b.pressedFill = Neon.pressed
         // Neon halo.
