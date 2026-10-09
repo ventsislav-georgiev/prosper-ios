@@ -84,6 +84,8 @@ struct TerminalScreen: View {
                     .background(.thinMaterial, in: Capsule())
             }
             .buttonStyle(.plain).padding(.top, 8)
+            .accessibilityLabel(msg)
+            .accessibilityHint("Retries the connection")
         default:
             EmptyView()
         }

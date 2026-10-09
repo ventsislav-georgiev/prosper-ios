@@ -183,6 +183,38 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(t.streams.count, 2, "retry after close must stay closed")
     }
 
+    func testRetryAfterCloseWhileFailedStaysFailed() async throws {
+        let t = DeliveryTransport()
+        let conn = SessionConnection(transport: t, session: DchSession(name: "t", alias: nil),
+                                     backoff: BackoffPolicy(maxAttempts: 0))
+        conn.onBytes = { _ in }
+        let s1 = try await startLive(conn, t)
+        s1.drop()
+        try await waitUntil("failed") { if case .failed = conn.state { true } else { false } }
+
+        conn.close()
+        conn.retry()
+        if case .failed = conn.state {} else { XCTFail("retry after close moved the state to \(conn.state)") }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(t.streams.count, 1, "closed session must not reattach")
+    }
+
+    func testRetryRestartsTheBackoffCount() async throws {
+        let t = DeliveryTransport()
+        let conn = SessionConnection(transport: t, session: DchSession(name: "t", alias: nil),
+                                     backoff: BackoffPolicy(base: [0], cap: 0, maxAttempts: 2))
+        conn.onBytes = { _ in }
+        let s1 = try await startLive(conn, t)
+        t.failAttaches = true
+        s1.drop()
+        try await waitUntil("failed") { if case .failed = conn.state { true } else { false } }
+        XCTAssertEqual(t.calls, 3, "first attach + maxAttempts failing reattaches")
+
+        conn.retry()
+        try await waitUntil("failed again") { t.calls == 6 && { if case .failed = conn.state { true } else { false } }() }
+        XCTAssertEqual(t.calls, 6, "retry gets the full 1 + maxAttempts again, no attach succeeding in between")
+    }
+
     /// Past the cap the OLDEST whole frames go; the frames that fit arrive intact, none cut.
     func testCapDropsTheOldestWholeFrames() async throws {
         let (conn, t) = make()
@@ -311,16 +343,21 @@ final class SessionConnectionDeliveryTests: XCTestCase {
 
 // MARK: - Fakes
 
-/// Hands out a fresh stream per attach; `hold` parks the next attach until `release`.
+/// Hands out a fresh stream per attach; `hold` parks the next attach until `release`;
+/// `failAttaches` makes every attach throw. `calls` counts attach attempts.
 @MainActor
 final class DeliveryTransport: SessionTransport {
     var streams: [DeliveryStream] = []
     var hold = false
+    var failAttaches = false
+    private(set) var calls = 0
     private(set) var parked = false
     private var gate: CheckedContinuation<Void, Never>?
 
     func listSessions() async throws -> [DchSession] { [] }
     func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream {
+        calls += 1
+        if failAttaches { throw TransportError.notConnected }
         if hold {
             parked = true
             await withCheckedContinuation { gate = $0 }
