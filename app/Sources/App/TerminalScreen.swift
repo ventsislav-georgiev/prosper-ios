@@ -72,6 +72,18 @@ struct TerminalScreen: View {
     }
 
     @ViewBuilder private var statusChip: some View {
+        // A refused paste happens while offline, so it outranks "Reconnecting…" for its
+        // few seconds; `.failed` never sets one (input is dropped there before the check).
+        if let notice = conn.notice {
+            Label(notice, systemImage: "exclamationmark.triangle")
+                .font(.caption).padding(.horizontal, 12).padding(.vertical, 6)
+                .background(.thinMaterial, in: Capsule()).padding(.top, 8)
+        } else {
+            stateChip
+        }
+    }
+
+    @ViewBuilder private var stateChip: some View {
         switch conn.state {
         case .stalled, .reconnecting:
             Label("Reconnecting…", systemImage: "arrow.triangle.2.circlepath")

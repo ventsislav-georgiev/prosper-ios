@@ -234,22 +234,51 @@ final class SessionConnectionDeliveryTests: XCTestCase {
                       "a frame was cut")
     }
 
-    /// QA #9: a bracketed paste over the cap, queued during a stall, must arrive whole.
-    /// Cutting its head loses ESC[200~ and every pasted line runs as a shell command.
-    func testPasteOverTheCapArrivesWholeWithItsBrackets() async throws {
+    /// #229: a paste over the cap, sent while offline, is refused up front with a notice.
+    /// Queued, it could only survive until the next frame behind it, then vanish silently.
+    func testPasteOverTheCapWhileOfflineIsRefusedWithANotice() async throws {
         let (conn, t) = make()
         let s1 = try await startLive(conn, t)
         try await stall(s1, conn, t)
-        conn.send(Array("x".utf8)[...])   // older than the paste: this one goes
+        conn.send(Array("x".utf8)[...])
         let paste = TerminalMath.pasteBytes(String(repeating: "echo hi\n", count: 9000))
         XCTAssertGreaterThan(paste.count, SessionConnection.outboxCap)
         conn.send(paste[...])
+        XCTAssertEqual(conn.queuedByteCount, 1, "over-cap paste was queued (or evicted what was)")
+        XCTAssertEqual(conn.notice, "Paste too large to send while offline (71 KB)")
+
+        conn.send(Array("y".utf8)[...])
+        XCTAssertNil(conn.notice, "the next accepted write clears the notice")
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await waitUntil("flush") { s2.text == "xy" }
+    }
+
+    /// A paste just under the cap, queued during a stall, arrives whole with its brackets.
+    func testPasteJustUnderTheCapArrivesWholeWithItsBrackets() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        let wrap = TerminalMath.pasteBytes("").count
+        let paste = TerminalMath.pasteBytes(String(repeating: "a", count: SessionConnection.outboxCap - wrap))
+        XCTAssertEqual(paste.count, SessionConnection.outboxCap)
+        conn.send(paste[...])
         XCTAssertEqual(conn.queuedByteCount, paste.count)
+        XCTAssertNil(conn.notice)
 
         let s2 = try await reattachLive(conn, t, index: 1)
-        try await waitUntil("flush") { !s2.bytes.isEmpty }
-        XCTAssertEqual(Array(s2.bytes.prefix(6)), Array("\u{1b}[200~".utf8), "paste opener was trimmed away")
+        try await waitUntil("flush") { s2.bytes.count == paste.count }
+        XCTAssertEqual(Array(s2.bytes.prefix(6)), Array("\u{1b}[200~".utf8), "paste opener lost")
         XCTAssertEqual(s2.bytes, paste)
+    }
+
+    /// Live with nothing queued, the cap does not apply: an over-cap paste streams.
+    func testPasteOverTheCapStreamsWhenLive() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        let paste = TerminalMath.pasteBytes(String(repeating: "echo hi\n", count: 9000))
+        conn.send(paste[...])
+        XCTAssertEqual(s1.bytes, paste)
+        XCTAssertNil(conn.notice)
     }
 
     /// QA #9: the link flaps twice. Stream A hands back a and b; stream B takes a, dies

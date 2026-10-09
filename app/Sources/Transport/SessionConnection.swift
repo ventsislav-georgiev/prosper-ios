@@ -9,6 +9,11 @@ import Foundation
 @MainActor
 final class SessionConnection: ObservableObject {
     @Published private(set) var state: ConnectionState = .connecting
+    /// One quiet status line (a refused paste); cleared by the next accepted write or
+    /// after `noticeLife`.
+    @Published private(set) var notice: String?
+    private var noticeClear: Task<Void, Never>?
+    static let noticeLife: Duration = .seconds(4)
 
     let session: DchSession
     private let transport: SessionTransport
@@ -34,9 +39,10 @@ final class SessionConnection: ObservableObject {
     private var requeueAt = 0
 
     /// ponytail: 64 KB of keystrokes/paste held across a drop; past it the OLDEST whole
-    /// frames go. A frame is never cut, and the last one in line stays even when it alone is
-    /// over the cap. Clipboard images don't count — one per explicit paste-image tap.
-    /// Raise if pastes routinely exceed it.
+    /// frames go. A frame is never cut. A single write over the cap is refused up front
+    /// with a `notice` (it could never survive the next frame queued behind it); only a
+    /// live stream with nothing queued takes one. Clipboard images don't count — one per
+    /// explicit paste-image tap. Raise if pastes routinely exceed it.
     static let outboxCap = 64 * 1024
     /// Longest wait for the reattached session's first output before flushing anyway.
     static let liveFallback: Duration = .seconds(1)
@@ -79,12 +85,33 @@ final class SessionConnection: ObservableObject {
     private func write(_ out: Outbound) {
         guard !isOver else { return }
         if outbox.isEmpty, live, let s = stream {
-            if push(out, to: s) { return }
+            if push(out, to: s) { clearNotice(); return }
             live = false   // closed under us: queue for the next stream
         }
+        if case .bytes(let b) = out, b.count > Self.outboxCap {
+            show("Paste too large to send while offline (\((b.count + 1023) / 1024) KB)")
+            return
+        }
+        clearNotice()
         outbox.append(out)
         if case .bytes(let b) = out { outboxBytes += b.count }
         trimOutbox()
+    }
+
+    private func show(_ text: String) {
+        notice = text
+        noticeClear?.cancel()
+        noticeClear = Task { [weak self] in
+            try? await Task.sleep(for: Self.noticeLife)
+            guard !Task.isCancelled else { return }
+            self?.notice = nil
+        }
+    }
+
+    private func clearNotice() {
+        guard notice != nil else { return }
+        noticeClear?.cancel()
+        notice = nil
     }
 
     private func push(_ out: Outbound, to s: TerminalStream) -> Bool {
@@ -96,7 +123,8 @@ final class SessionConnection: ObservableObject {
 
     /// Nothing will take queued input on this run: closed by the user, ended, or `.failed`.
     /// The outbox is cleared on reaching any of these. `.failed` is not final — the user
-    /// can `retry()` it — but input typed while failed is dropped, not held (OQ-13).
+    /// can `retry()` it — input typed while failed is dropped today; OQ-13 decides whether
+    /// to hold it.
     private var isOver: Bool {
         if userClosed { return true }
         switch state {
@@ -145,7 +173,8 @@ final class SessionConnection: ObservableObject {
     /// Drops the oldest WHOLE frames until the queue fits the cap. Never cuts one: a cut
     /// paste loses its ESC[200~ opener and every pasted line runs as a command, and a
     /// cut keystroke frame can split a CSI or UTF-8 sequence. The last frame always
-    /// stays, so a single paste over the cap is kept whole.
+    /// stays: `write` refuses a single frame over the cap, but a hand-back (`requeue`) of
+    /// one a live stream took is kept whole.
     private func trimOutbox() {
         var i = 0
         while outboxBytes > Self.outboxCap, i < outbox.count - 1 {
