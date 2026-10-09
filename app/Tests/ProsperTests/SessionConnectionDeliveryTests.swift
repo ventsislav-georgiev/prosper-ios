@@ -154,6 +154,35 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(conn.queuedByteCount, 0)
     }
 
+    /// #223: once the backoff gives up, `retry()` runs the attach loop again and the
+    /// session comes back live; in any other state it does nothing.
+    func testRetryAfterFailedReattaches() async throws {
+        let t = DeliveryTransport()
+        let conn = SessionConnection(transport: t, session: DchSession(name: "t", alias: nil),
+                                     backoff: BackoffPolicy(maxAttempts: 0))
+        conn.onBytes = { _ in }
+        let s1 = try await startLive(conn, t)
+        conn.retry()
+        XCTAssertEqual(t.streams.count, 1, "retry while connected must not attach again")
+
+        s1.drop()
+        try await waitUntil("failed") { if case .failed = conn.state { true } else { false } }
+        XCTAssertEqual(t.streams.count, 1)
+
+        conn.retry()
+        try await waitUntil("reattach") { t.streams.count == 2 }
+        let s2 = t.streams[1]
+        s2.emit("$ ")
+        try await waitUntil("connected") { conn.state == .connected }
+        conn.send(Array("a".utf8)[...])
+        try await waitUntil("live input") { s2.text == "a" }
+
+        conn.close()
+        conn.retry()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(t.streams.count, 2, "retry after close must stay closed")
+    }
+
     /// Past the cap the OLDEST whole frames go; the frames that fit arrive intact, none cut.
     func testCapDropsTheOldestWholeFrames() async throws {
         let (conn, t) = make()

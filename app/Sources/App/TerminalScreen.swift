@@ -78,9 +78,12 @@ struct TerminalScreen: View {
                 .font(.caption).padding(.horizontal, 12).padding(.vertical, 6)
                 .background(.thinMaterial, in: Capsule()).padding(.top, 8)
         case .failed(let msg):
-            Label(msg, systemImage: "exclamationmark.triangle")
-                .font(.caption).padding(.horizontal, 12).padding(.vertical, 6)
-                .background(.thinMaterial, in: Capsule()).padding(.top, 8)
+            Button { conn.retry() } label: {
+                Label("\(msg) Tap to retry.", systemImage: "exclamationmark.triangle")
+                    .font(.caption).padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(.thinMaterial, in: Capsule())
+            }
+            .buttonStyle(.plain).padding(.top, 8)
         default:
             EmptyView()
         }

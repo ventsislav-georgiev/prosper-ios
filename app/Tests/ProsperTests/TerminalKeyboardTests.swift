@@ -395,9 +395,8 @@ final class TerminalKeyboardTests: XCTestCase {
     }
 
     /// iPhone simulator: the terminal types through the compact keyboard, sized without
-    /// the home-indicator inset, and defers the bottom edge gesture while it is up. On
-    /// screen, so the keyboard-frame notification the avoidance path relies on is the
-    /// real one.
+    /// the home-indicator inset. On screen, so the keyboard-frame notification the
+    /// avoidance path relies on is the real one.
     func testHostInstallsCompactKeyboard() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone only")
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)

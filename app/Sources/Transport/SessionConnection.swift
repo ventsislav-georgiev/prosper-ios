@@ -12,7 +12,7 @@ final class SessionConnection: ObservableObject {
 
     let session: DchSession
     private let transport: SessionTransport
-    private let backoff = BackoffPolicy()
+    private let backoff: BackoffPolicy
     private var stream: TerminalStream?
     private var loop: Task<Void, Never>?
     private var userClosed = false
@@ -48,15 +48,24 @@ final class SessionConnection: ObservableObject {
     /// Full-screen sink — a `resync()` reply carrying dch's rendered screen.
     var onScreen: ((ArraySlice<UInt8>) -> Void)?
 
-    init(transport: SessionTransport, session: DchSession) {
+    init(transport: SessionTransport, session: DchSession, backoff: BackoffPolicy = BackoffPolicy()) {
         self.transport = transport
         self.session = session
+        self.backoff = backoff
     }
 
     func start(cols: Int, rows: Int) {
         self.cols = cols
         self.rows = rows
         guard loop == nil else { return }
+        loop = Task { await self.runLoop() }
+    }
+
+    /// The user's "try again" after the backoff gave up: the same attach loop a fresh
+    /// open runs, at the last known size. A no-op in any other state.
+    func retry() {
+        guard case .failed = state, !userClosed else { return }
+        state = .connecting
         loop = Task { await self.runLoop() }
     }
 
