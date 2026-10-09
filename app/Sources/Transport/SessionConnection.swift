@@ -37,6 +37,10 @@ final class SessionConnection: ObservableObject {
     /// Where the next `onUnsent` hand-back goes: ahead of everything queued after the
     /// stream that accepted it stopped taking input.
     private var requeueAt = 0
+    /// Counts attached streams; `sentGen` is the newest one that took any input. A
+    /// hand-back from an older stream than that is too late to keep its place (#230).
+    private var gen = 0
+    private var sentGen = 0
 
     /// ponytail: 64 KB of keystrokes/paste held across a drop; past it the OLDEST whole
     /// frames go. A frame is never cut. A single write over the cap is refused up front
@@ -46,6 +50,9 @@ final class SessionConnection: ObservableObject {
     static let outboxCap = 64 * 1024
     /// Longest wait for the reattached session's first output before flushing anyway.
     static let liveFallback: Duration = .seconds(1)
+    /// ponytail: frames up to this size count as a keystroke (a key, CSI or UTF-8
+    /// sequence); larger ones as a paste for the dropped-hand-back notice.
+    static let keystrokeMax = 16
     /// Bytes waiting for a stream (tests).
     var queuedByteCount: Int { outboxBytes }
 
@@ -116,9 +123,11 @@ final class SessionConnection: ObservableObject {
 
     private func push(_ out: Outbound, to s: TerminalStream) -> Bool {
         switch out {
-        case .bytes(let b):     return s.send(b[...])
-        case .clipboard(let d): return s.putClipboard(d)
+        case .bytes(let b):     guard s.send(b[...]) else { return false }
+        case .clipboard(let d): guard s.putClipboard(d) else { return false }
         }
+        sentGen = gen   // only ever pushed to the current stream
+        return true
     }
 
     /// Nothing will take queued input on this run: closed by the user, ended, or `.failed`.
@@ -160,9 +169,21 @@ final class SessionConnection: ObservableObject {
     }
 
     /// A frame the transport took but couldn't put on the wire: back in line, ahead of
-    /// everything typed after it.
-    private func requeue(_ out: Outbound) {
+    /// everything typed after it. Unless it comes from an older stream than one that has
+    /// already taken input (ProsperStream's 1 s close failsafe can let the next stream
+    /// go live first): it can no longer go ahead of that input, and sent behind it the
+    /// host sees the keys out of order — dropped instead. A lost paste gets a notice; a
+    /// lost keystroke is visibly unsent on screen and dropped silently.
+    private func requeue(_ out: Outbound, from g: Int) {
         guard !isOver else { return }
+        if g < sentGen {
+            switch out {
+            case .bytes(let b) where b.count > Self.keystrokeMax: show("Paste lost in reconnect, paste again")
+            case .clipboard: show("Image paste lost in reconnect, paste again")
+            default: break
+            }
+            return
+        }
         outbox.insert(out, at: min(requeueAt, outbox.count))
         requeueAt += 1
         if case .bytes(let b) = out { outboxBytes += b.count }
@@ -288,8 +309,10 @@ final class SessionConnection: ObservableObject {
                 }
                 // Main queue, not a Task: hand-backs must land in the order they were
                 // made, and before the stream-end the loop sees next.
+                gen += 1
+                let g = gen
                 s.onUnsent = { [weak self] out in
-                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.requeue(out) } }
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.requeue(out, from: g) } }
                 }
                 stream = s
                 live = false

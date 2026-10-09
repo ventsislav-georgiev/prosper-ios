@@ -339,7 +339,8 @@ final class ProsperStream: TerminalStream {
         lock.unlock()
         conn.cancel()   // pending sends complete with ECANCELED → onUnsent → settle
         if idle { finish() }
-        // Failsafe: never let a completion that doesn't fire park the reconnect loop.
+        // Failsafe: never let a completion that doesn't fire park the reconnect loop. A
+        // hand-back landing after it is dropped once a newer stream took input (#230).
         DispatchQueue.global().asyncAfter(deadline: .now() + 1) { [self] in finish() }
     }
 }

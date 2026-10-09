@@ -311,6 +311,35 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(s3.text, "ab", "handed-back frames reordered")
     }
 
+    /// #230: ProsperStream's 1 s close failsafe can end stream A before its hand-back
+    /// arrives. Once stream B has taken the user's next key, A's late hand-back can't go
+    /// ahead of it any more; sent behind it the host would see "ka". It is dropped — a
+    /// keystroke silently, a paste with a notice.
+    func testLateHandBackFromAnOlderStreamIsDroppedOnceTheNextStreamSent() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        conn.send(Array("a".utf8)[...])
+        XCTAssertEqual(s1.text, "a")
+        try await stall(s1, conn, t)          // A ends with "a"'s completion still pending
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        conn.send(Array("k".utf8)[...])
+        XCTAssertEqual(s2.text, "k")
+
+        s1.bounce(.bytes(Array("a".utf8)))   // A's late hand-back
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(s2.text, "k", "late hand-back sent behind newer input")
+        XCTAssertEqual(conn.queuedByteCount, 0)
+        XCTAssertNil(conn.notice, "a dropped keystroke is silent")
+
+        let paste = TerminalMath.pasteBytes("echo hi\n")
+        s1.bounce(.bytes(paste))
+        try await waitUntil("paste notice") { conn.notice != nil }
+        XCTAssertEqual(conn.notice, "Paste lost in reconnect, paste again")
+        conn.send(Array("l".utf8)[...])
+        XCTAssertEqual(s2.text, "kl")
+    }
+
     /// Image paste during a drop: the clipboard must still land before the ctrl-V.
     func testClipboardStaysAheadOfItsKeystrokeAcrossADrop() async throws {
         let (conn, t) = make()
