@@ -344,7 +344,7 @@ final class SessionConnectionDeliveryTests: XCTestCase {
 
     /// #241 L2: a dropped hand-back is a paste by its ESC[200~ opener, not by its size.
     func testLateHandBackIsClassifiedByThePasteOpenerNotSize() async throws {
-        let keys = Array("\u{1b}[A\u{1b}[A\u{1b}[A\u{1b}[Aabcdefgh".utf8)   // 20 bytes, no opener
+        let keys = Array("\u{1b}[A\u{1b}[A\u{1b}[A\u{1b}[Aabcd".utf8)   // 16 bytes, no opener
         let paste = TerminalMath.pasteBytes("abc")                           // 15 bytes framed
         for (frame, expected) in [(keys, nil), (paste, "Paste lost in reconnect, paste again")] {
             let (conn, t) = make()
@@ -360,6 +360,18 @@ final class SessionConnectionDeliveryTests: XCTestCase {
             XCTAssertEqual(conn.notice, expected, "\(frame.count)-byte frame misclassified")
             conn.close()
         }
+    }
+
+    /// #241 QA: unwrapped text (SwiftTerm paste with stale bracketed mode, dictation, IME,
+    /// scroll burst) over 16 bytes gets its own notice; a key sequence stays silent.
+    func testLostNoticeClassifiesByOpenerThenSize() {
+        let plain = { (n: Int) in Outbound.bytes(Array(repeating: UInt8(ascii: "x"), count: n)) }
+        XCTAssertEqual(SessionConnection.lostNotice(for: .bytes(TerminalMath.pasteBytes("abc"))),
+                       "Paste lost in reconnect, paste again")
+        XCTAssertEqual(SessionConnection.lostNotice(for: plain(40)), "Typed text lost in reconnect, type it again")
+        XCTAssertEqual(SessionConnection.lostNotice(for: plain(17)), "Typed text lost in reconnect, type it again")
+        XCTAssertNil(SessionConnection.lostNotice(for: plain(16)))
+        XCTAssertEqual(SessionConnection.lostNotice(for: .clipboard(Data([1]))), "Image paste lost in reconnect, paste again")
     }
 
     /// #241 (f): a late clipboard hand-back is an image paste lost: notice, sticky past typing.

@@ -56,6 +56,10 @@ final class SessionConnection: ObservableObject {
     static let liveFallback: Duration = .seconds(1)
     /// Bracketed-paste opener (`TerminalMath.pasteBytes`): what marks a frame as a paste.
     static let pasteOpen = Array("\u{1b}[200~".utf8)
+    /// ponytail: an unwrapped frame over this is typed text (SwiftTerm's own paste with
+    /// a stale bracketed mode, dictation/IME commits, a scroll burst), not one key or
+    /// escape sequence. Raise if long key sequences start showing the notice.
+    static let keystrokeMax = 16
     /// Bytes waiting for a stream (tests).
     var queuedByteCount: Int { outboxBytes }
 
@@ -180,17 +184,11 @@ final class SessionConnection: ObservableObject {
     /// everything typed after it. Unless it comes from an older stream than one that has
     /// already taken input (ProsperStream's 1 s close failsafe can let the next stream
     /// go live first): it can no longer go ahead of that input, and sent behind it the
-    /// host sees the keys out of order — dropped instead. A lost paste gets a notice; a
-    /// lost keystroke is visibly unsent on screen and dropped silently.
+    /// host sees the keys out of order — dropped instead, with `lostNotice`.
     private func requeue(_ out: Outbound, from g: Int) {
         guard !isOver else { return }
         if g < sentGen {
-            switch out {
-            case .bytes(let b) where b.starts(with: Self.pasteOpen):
-                show("Paste lost in reconnect, paste again", sticky: true)
-            case .clipboard: show("Image paste lost in reconnect, paste again", sticky: true)
-            default: break
-            }
+            if let text = Self.lostNotice(for: out) { show(text, sticky: true) }
             return
         }
         outbox.insert(out, at: min(requeueAt, outbox.count))
@@ -198,6 +196,18 @@ final class SessionConnection: ObservableObject {
         if case .bytes(let b) = out { outboxBytes += b.count }
         trimOutbox()
         flushOutbox()
+    }
+
+    /// What to tell the user about a dropped hand-back: a paste by its ESC[200~ opener,
+    /// an image, unwrapped text by size. A lost keystroke is visibly unsent on screen
+    /// and stays silent.
+    static func lostNotice(for out: Outbound) -> String? {
+        switch out {
+        case .clipboard: return "Image paste lost in reconnect, paste again"
+        case .bytes(let b) where b.starts(with: pasteOpen): return "Paste lost in reconnect, paste again"
+        case .bytes(let b) where b.count > keystrokeMax: return "Typed text lost in reconnect, type it again"
+        case .bytes: return nil
+        }
     }
 
     /// Drops the oldest WHOLE frames until the queue fits the cap. Never cuts one: a cut
