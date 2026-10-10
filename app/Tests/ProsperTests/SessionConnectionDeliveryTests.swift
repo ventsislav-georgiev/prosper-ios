@@ -342,6 +342,27 @@ final class SessionConnectionDeliveryTests: XCTestCase {
                        "typing on cleared the lost-paste notice before the user could read it")
     }
 
+    /// #241 QA #63: SwiftTerm's paste sends opener, body and closer as three frames. A
+    /// closer handed back after the next stream sent is resent, not dropped: lost, the
+    /// host stays in bracketed-paste mode; stray, it is ignored.
+    func testLateLonePasteCloserIsResentOnTheNextStream() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        let open = SessionConnection.pasteOpen, body = Array("echo hi\n".utf8)
+        let close = SessionConnection.pasteClose
+        for f in [open, body, close] { conn.send(f[...]) }
+        try await stall(s1, conn, t)
+        s1.bounce(.bytes(open))               // handed back in time
+        s1.bounce(.bytes(body))
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await waitUntil("flush") { s2.sent.count == 2 }
+
+        s1.bounce(.bytes(close))              // late: after the failsafe, s2 already sent
+        try await waitUntil("closer resent") { s2.sent.count == 3 }
+        XCTAssertEqual(s2.sent, [.bytes(open), .bytes(body), .bytes(close)])
+        XCTAssertNil(conn.notice)
+    }
+
     /// #241 L2: a dropped hand-back is a paste by its ESC[200~ opener, not by its size.
     func testLateHandBackIsClassifiedByThePasteOpenerNotSize() async throws {
         let keys = Array("\u{1b}[A\u{1b}[A\u{1b}[A\u{1b}[Aabcd".utf8)   // 16 bytes, no opener
@@ -471,7 +492,7 @@ final class SessionConnectionDeliveryTests: XCTestCase {
     /// QA #62: a sticky notice outlives typing only; it still expires after `noticeLife`.
     func testAStickyNoticeStillExpiresAfterNoticeLife() async throws {
         let old = SessionConnection.noticeLife
-        SessionConnection.noticeLife = .milliseconds(50)
+        SessionConnection.noticeLife = .milliseconds(250)
         defer { SessionConnection.noticeLife = old }
         let (conn, t) = make()
         let s1 = try await startLive(conn, t)

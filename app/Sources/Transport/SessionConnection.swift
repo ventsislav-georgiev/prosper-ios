@@ -56,6 +56,9 @@ final class SessionConnection: ObservableObject {
     static let liveFallback: Duration = .seconds(1)
     /// Bracketed-paste opener (`TerminalMath.pasteBytes`): what marks a frame as a paste.
     static let pasteOpen = Array("\u{1b}[200~".utf8)
+    /// Bracketed-paste closer. SwiftTerm's `paste` sends it as its own frame; a stray
+    /// one outside a paste is ignored by the host, a lost one leaves it in paste mode.
+    static let pasteClose = Array("\u{1b}[201~".utf8)
     /// ponytail: an unwrapped frame over this is typed text (SwiftTerm's own paste with
     /// a stale bracketed mode, dictation/IME commits, a scroll burst), not one key or
     /// escape sequence. Raise if long key sequences start showing the notice.
@@ -187,7 +190,9 @@ final class SessionConnection: ObservableObject {
     /// host sees the keys out of order — dropped instead, with `lostNotice`.
     private func requeue(_ out: Outbound, from g: Int) {
         guard !isOver else { return }
-        if g < sentGen {
+        // A late lone closer is resent anyway (#241 QA #63): dropped, the host stays in
+        // bracketed-paste mode and Enter stops running lines.
+        if g < sentGen, out != .bytes(Self.pasteClose) {
             if let text = Self.lostNotice(for: out) { show(text, sticky: true) }
             return
         }
