@@ -152,6 +152,10 @@ final class ImagePasteTests: XCTestCase {
         // #281: one control key from a third-party keyboard is a key, not an empty paste
         tv.insertText("\u{03}")
         XCTAssertEqual(spy.sent.last, [0x03], "a lone ^C was lost to an empty paste")
+        // QA #94 (M3): no text is no key and no paste — not an empty bracketed frame
+        let before = spy.sent.count
+        tv.insertText("")
+        XCTAssertEqual(spy.sent.count, before, "empty inserted text sent something")
 
         tv.insertText("a\u{1b}[31mb\r")
         XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~a[31mb\r\u{1b}[201~".utf8),
@@ -172,6 +176,47 @@ final class ImagePasteTests: XCTestCase {
 
         XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~a\nb\u{1b}[201~".utf8),
                        "replaced text reached the host raw or unbracketed")
+    }
+
+    /// QA #94: replace text is never a key, so a lone dictated "\n" is a paste, not Return.
+    func testReplacedLoneNewlineGoesOutBracketed() async throws {
+        let (vc, spy) = try await makeVC()
+        spy.emit("\u{1b}[?2004h")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        let range = try XCTUnwrap(tv.textRange(from: tv.endOfDocument, to: tv.endOfDocument))
+
+        _ = (tv as NSObject).perform(#selector(UITextInput.replace(_:withText:)), with: range, with: "\n")
+
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~\n\u{1b}[201~".utf8),
+                       "a lone newline through replace ran the line")
+    }
+
+    /// QA #94: predictive text replacing a typed word deletes it first, then sends the new
+    /// word typed when it is plain, or as a paste when it carries a control byte.
+    func testReplaceOverTypedWordDeletesItFirst() async throws {
+        let (vc, spy) = try await makeVC()
+        spy.emit("\u{1b}[?2004h")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        let replace = #selector(UITextInput.replace(_:withText:))
+        func lastWord() throws -> UITextRange {
+            let start = try XCTUnwrap(tv.position(from: tv.endOfDocument, offset: -4))
+            return try XCTUnwrap(tv.textRange(from: start, to: tv.endOfDocument))
+        }
+        let del = [UInt8](repeating: 0x7f, count: 4)
+
+        tv.insertText("helo")
+        var mark = spy.sent.count
+        _ = (tv as NSObject).perform(replace, with: try lastWord(), with: "hello ")
+        XCTAssertEqual(Array(spy.sent[mark...].joined()), del + Array("hello ".utf8),
+                       "plain replaced text must go out typed, after deleting the old word")
+
+        tv.insertText("helo")
+        mark = spy.sent.count
+        _ = (tv as NSObject).perform(replace, with: try lastWord(), with: "hello\n")
+        XCTAssertEqual(Array(spy.sent[mark...].joined()), del + Array("\u{1b}[200~hello\n\u{1b}[201~".utf8),
+                       "the replaced word was not deleted before the paste")
     }
 
     /// #271 QA #81: a host that never turned bracketed paste on (bash 3.2) printed the

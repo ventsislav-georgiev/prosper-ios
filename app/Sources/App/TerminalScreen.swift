@@ -920,16 +920,22 @@ private final class DchTerminalView: TerminalView {
     /// SwiftTerm's typed path: no control byte means nothing to inject or run, and its
     /// auto-period and ctrl/meta handling stay as they were.
     override func insertText(_ text: String) {
-        if Self.isPaste(text) { onPaste(text) } else { super.insertText(text) }
+        if text.utf8.count != 1, Self.isPaste(text) { onPaste(text) } else { super.insertText(text) }
     }
 
     /// `replace(_:withText:)` (predictive text, text replacement, dictation updates) is
     /// `public`, not `open`, and SwiftTerm sends it raw — a dictated newline ran the line
     /// (#281). Neither an override nor a claimed `@objc(replaceRange:withText:)` compiles
     /// (selector conflict with the superclass), but UIKit calls it by selector, so the
-    /// method is added to this subclass at runtime. Text under the paste rule deletes the
-    /// replaced range the typed way, then goes out as a paste. A SwiftTerm bump that
-    /// drops the method logs and leaves replace raw rather than crashing.
+    /// method is added to this subclass at runtime. Replace text is never a key press, so
+    /// unlike `insertText` there is no one-byte exemption: any control byte, even a lone
+    /// "\n", makes it a paste (QA #94). Such text deletes the replaced range the typed
+    /// way, then goes out as a paste. A SwiftTerm bump that drops the method logs and
+    /// leaves replace raw rather than crashing.
+    ///
+    /// The pasted text is not written into SwiftTerm's input buffer: the buffer is internal
+    /// to SwiftTerm, and its only public writer (`replace` itself) sends the text again. A
+    /// later replace over that text deletes only what the buffer holds (QA #87 finding 7).
     static let routeReplace: Void = {
         let sel = #selector(UITextInput.replace(_:withText:))
         typealias Fn = @convention(c) (AnyObject, Selector, UITextRange, NSString) -> Void
@@ -949,9 +955,9 @@ private final class DchTerminalView: TerminalView {
         class_addMethod(DchTerminalView.self, sel, imp_implementationWithBlock(route), types)
     }()
 
+    /// Text carrying a control byte. `insertText` exempts a single byte (one key) itself.
     private static func isPaste(_ text: String) -> Bool {
-        let b = Array(text.utf8)
-        return b.count != 1 && b.contains(where: { $0 < 0x20 })
+        text.utf8.contains(where: { $0 < 0x20 })
     }
     private var lastCols = 0
     private var lastRows = 0
