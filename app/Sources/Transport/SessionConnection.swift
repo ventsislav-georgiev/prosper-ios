@@ -279,11 +279,13 @@ final class SessionConnection: ObservableObject {
     static let typedLost = "Typed text lost in reconnect, type it again"
 
     /// A typed key: not ESC-led, a lone Esc, or alt+key (ESC + char; optionAsMetaKey makes alt+é
-    /// ESC + multibyte UTF-8, #304). Only CSI (ESC[) and SS3 (ESC O) sequences — cursor and
-    /// function keys, mouse reports — are not typed. alt+[ and alt+O are ESC[ / ESC O byte for
-    /// byte, so they stay silent too; accepted.
+    /// ESC + multibyte UTF-8, #304). Any 2-byte ESC-led frame is alt+key, since no control
+    /// sequence is that short: alt+[, alt+O, alt+] and ESC ESC are typed. From 3 bytes on, a
+    /// second byte of `[` (CSI: cursor/function keys, mouse reports), `O` (SS3), ESC (a
+    /// meta-prefixed sequence such as alt+arrow ESC ESC [ A), or `]` / `P` / `_` / `^` (the
+    /// OSC / DCS / APC / PM replies the terminal sends to nvim/vim queries, #309) is not typed.
     static func isTypedKey(_ b: [UInt8]) -> Bool {
-        b.first != 0x1b || b.count < 2 || (b[1] != 0x5b && b[1] != 0x4f)
+        b.first != 0x1b || b.count <= 2 || !Set<UInt8>([0x1b, 0x5b, 0x4f, 0x5d, 0x50, 0x5f, 0x5e]).contains(b[1])
     }
 
     static func lostNotice(for out: Outbound) -> String? {

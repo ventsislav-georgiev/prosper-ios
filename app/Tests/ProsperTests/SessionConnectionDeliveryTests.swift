@@ -700,7 +700,10 @@ final class SessionConnectionDeliveryTests: XCTestCase {
                                            (Array("\u{1b}[A".utf8), nil),                 // cursor up, CSI (#304)
                                            (Array("\u{1b}OP".utf8), nil),                 // F1, SS3
                                            ([0x1b] + Array("é".utf8), SessionConnection.typedLost),  // alt+é
-                                           ([0x1b] + Array("б".utf8), SessionConnection.typedLost)]  // alt+б
+                                           ([0x1b] + Array("б".utf8), SessionConnection.typedLost),  // alt+б
+                                           (Array("\u{1b}]11;rgb:1e1e/1e1e/1e1e\u{1b}\\".utf8), nil), // OSC 11 reply (#309)
+                                           ([0x1b, 0x1b, 0x5b, 0x41], nil),               // alt+up, ESC ESC [ A
+                                           ([0x1b, 0x5b], SessionConnection.typedLost)]   // alt+[
         for (frame, expected) in cases {
             let (conn, t) = make()
             let s1 = try await startLive(conn, t)
@@ -714,6 +717,25 @@ final class SessionConnectionDeliveryTests: XCTestCase {
             try await Task.sleep(nanoseconds: 100_000_000)
             XCTAssertEqual(conn.notice, expected, "\(frame.count)-byte frame misclassified")
             conn.close()
+        }
+    }
+
+    /// #309: terminal replies (OSC/DCS/APC/PM) and meta-prefixed sequences are not typed; any
+    /// 2-byte ESC-led frame is alt+key and is. Pure, so every row runs without a reconnect cycle.
+    func testIsTypedKeyClassifiesRepliesAndAltKeys() {
+        let cases: [([UInt8], Bool)] = [
+            (Array("\u{1b}]11;rgb:1e1e/1e1e/1e1e\u{1b}\\".utf8), false),   // OSC 11 reply
+            (Array("\u{1b}P1$r0m\u{1b}\\".utf8), false),                   // DCS DECRQSS reply
+            (Array("\u{1b}_Gi=31;OK\u{1b}\\".utf8), false),                // APC kitty reply
+            (Array("\u{1b}^x\u{1b}\\".utf8), false),                       // PM
+            ([0x1b, 0x1b, 0x5b, 0x41], false),                              // alt+up, meta-prefixed
+            (Array("\u{1b}[A".utf8), false), (Array("\u{1b}OP".utf8), false), // CSI, SS3
+            ([0x1b, 0x5b], true), ([0x1b, 0x4f], true),                     // alt+[, alt+O
+            ([0x1b, 0x5d], true), ([0x1b, 0x1b], true),                     // alt+], ESC ESC
+            ([0x1b], true), ([0x1b, 0x66], true),                           // lone Esc, alt+f
+            ([0x1b] + Array("é".utf8), true), ([0x1b] + Array("б".utf8), true), (Array("a".utf8), true)]                // plain key
+        for (frame, typed) in cases {
+            XCTAssertEqual(SessionConnection.isTypedKey(frame), typed, "\(frame) misclassified")
         }
     }
 
