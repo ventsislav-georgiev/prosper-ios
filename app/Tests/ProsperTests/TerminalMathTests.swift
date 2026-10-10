@@ -221,6 +221,13 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(Array(b.dropFirst(6).dropLast(6)), Array("a\tb\r\nż→🙂".utf8))
     }
 
+    /// #293: every C1 control (U+0080..U+009F, U+0085 included) goes; NBSP and
+    /// multibyte letters stay.
+    func testPastedTextDropsC1Controls() {
+        let b = TerminalMath.pasteBytes("\u{80}a\u{85}\u{9b}:q\u{9f}\u{a0}ż")
+        XCTAssertEqual(Array(b.dropFirst(6).dropLast(6)), Array("a:q\u{a0}ż".utf8))
+    }
+
     /// Insert & Send: Enter comes after the end marker, never inside the paste.
     func testPasteThenEnterPutsCRAfterTheEndMarker() {
         let b = TerminalMath.pasteBytes("echo hi", thenEnter: true)

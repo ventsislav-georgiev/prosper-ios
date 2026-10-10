@@ -219,6 +219,44 @@ final class ImagePasteTests: XCTestCase {
                        "the replaced word was not deleted before the paste")
     }
 
+    /// #293 QA #99: nvim takes a C1 control (U+009B CSI, U+0080) like ESC and runs what
+    /// follows — " \u{9b}ggdGZZ" wiped the buffer and wrote the file. Through insertText
+    /// and through replace it goes out as a paste with the C1 stripped, never raw.
+    func testC1ControlsGoOutBracketedAndStripped() async throws {
+        let (vc, spy) = try await makeVC()
+        spy.emit("\u{1b}[?2004h")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        let attack = " \u{9b}ggdGZZ"
+        let safe = Array("\u{1b}[200~ ggdGZZ\u{1b}[201~".utf8)
+
+        tv.insertText(attack)
+        XCTAssertEqual(spy.sent.last, safe, "C1 through insertText reached the host raw")
+
+        let range = try XCTUnwrap(tv.textRange(from: tv.endOfDocument, to: tv.endOfDocument))
+        _ = (tv as NSObject).perform(#selector(UITextInput.replace(_:withText:)), with: range, with: attack)
+        XCTAssertEqual(spy.sent.last, safe, "C1 through replace reached the host raw")
+
+        tv.insertText("\u{80}x\u{85}\u{9f}y")
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~xy\u{1b}[201~".utf8), "a C1 control survived the paste")
+        XCTAssertFalse(spy.sent.contains { $0.contains(0x9b) }, "a raw CSI byte reached the host")
+    }
+
+    /// QA #99: a pending mark (multistage input) is dropped when inserted text goes out as
+    /// a paste, as the typed path drops it, so it can't commit later on top of the paste.
+    func testPastedInsertClearsAPendingMark() async throws {
+        let (vc, spy) = try await makeVC()
+        spy.emit("\u{1b}[?2004h")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        tv.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0))
+        XCTAssertNotNil(tv.markedTextRange)
+
+        tv.insertText("a\nb")
+        XCTAssertNil(tv.markedTextRange, "the mark outlived a pasted insert")
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~a\nb\u{1b}[201~".utf8))
+    }
+
     /// #271 QA #81: a host that never turned bracketed paste on (bash 3.2) printed the
     /// marks as `00~…01~`. Cmd-V there sends the text sanitized, with no marks.
     func testPasteToAHostWithoutBracketedPasteSendsNoMarks() async throws {

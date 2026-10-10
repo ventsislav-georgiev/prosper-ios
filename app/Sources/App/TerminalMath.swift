@@ -32,6 +32,9 @@ enum TerminalMath {
         return tail.firstIndex(where: \.isNewline).map { String(s[..<$0]) } ?? s
     }
 
+    /// C1 control scalars, U+0080..U+009F: 8-bit forms of ESC sequences (U+009B is CSI).
+    static let c1Controls: ClosedRange<UInt32> = 0x80...0x9F
+
     /// Text for the pty as ONE bracketed paste (ESC[200~ … ESC[201~) — what `dch --send`
     /// does on the Mac: readline, Claude Code and vim insert it verbatim instead of
     /// running each line at its newline. Wrapped only when `bracketed` (the host turned
@@ -48,10 +51,13 @@ enum TerminalMath {
     /// non-control bytes: every ESC goes (no closer, no other escape sequence can be
     /// spelled), and so does every other C0 control (^C/^Z/^\ would signal through the
     /// pty's ISIG even inside a paste) — xterm's default for pastes (allowPasteControls
-    /// off). A byte filter is safe on UTF-8: bytes under 0x20 never occur inside a
-    /// multi-byte sequence.
+    /// off). C1 controls go too: nvim takes U+009B (CSI) and U+0080 like ESC and runs
+    /// what follows as commands (#293).
     static func pasteBytes(_ s: String, thenEnter: Bool = false, bracketed: Bool = true) -> [UInt8] {
-        let text = s.utf8.filter { $0 >= 0x20 || $0 == 0x09 || $0 == 0x0a || $0 == 0x0d }
+        let kept = s.unicodeScalars.filter {
+            ($0.value >= 0x20 && !c1Controls.contains($0.value)) || $0 == "\t" || $0 == "\n" || $0 == "\r"
+        }
+        let text = Array(String(String.UnicodeScalarView(kept)).utf8)
         guard bracketed else { return text + (thenEnter ? [0x0d] : []) }
         return Array("\u{1b}[200~".utf8) + text + Array("\u{1b}[201~".utf8) + (thenEnter ? [0x0d] : [])
     }

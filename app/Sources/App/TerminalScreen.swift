@@ -918,9 +918,13 @@ private final class DchTerminalView: TerminalView {
     /// way instead — filtered and bracketed. One key (any single byte: a letter, Return's
     /// "\n", Tab, or a third-party keyboard's ESC/^C) and plain printable words keep
     /// SwiftTerm's typed path: no control byte means nothing to inject or run, and its
-    /// auto-period and ctrl/meta handling stay as they were.
+    /// auto-period and ctrl/meta handling stay as they were. A C1 control (U+0080..U+009F)
+    /// is two UTF-8 bytes, so it never takes the one-key exemption (#293). Pasted text
+    /// replaces a pending mark the way the typed path does: the mark (never sent) is dropped.
     override func insertText(_ text: String) {
-        if text.utf8.count != 1, Self.isPaste(text) { onPaste(text) } else { super.insertText(text) }
+        guard text.utf8.count != 1, Self.isPaste(text) else { return super.insertText(text) }
+        if markedTextRange != nil { setMarkedText(nil, selectedRange: NSRange()) }
+        onPaste(text)
     }
 
     /// `replace(_:withText:)` (predictive text, text replacement, dictation updates) is
@@ -933,9 +937,10 @@ private final class DchTerminalView: TerminalView {
     /// way, then goes out as a paste. A SwiftTerm bump that drops the method logs and
     /// leaves replace raw rather than crashing.
     ///
-    /// The pasted text is not written into SwiftTerm's input buffer: the buffer is internal
-    /// to SwiftTerm, and its only public writer (`replace` itself) sends the text again. A
-    /// later replace over that text deletes only what the buffer holds (QA #87 finding 7).
+    /// The pasted text is not written into SwiftTerm's input buffer (the replaced range is
+    /// only deleted from it), so a later replace over that text deletes only what the
+    /// buffer holds (QA #87 finding 7). `setMarkedText` can write the buffer without sending
+    /// (QA #99 probe F), but that leaves a mark that later commits and sends; not used.
     static let routeReplace: Void = {
         let sel = #selector(UITextInput.replace(_:withText:))
         typealias Fn = @convention(c) (AnyObject, Selector, UITextRange, NSString) -> Void
@@ -955,9 +960,10 @@ private final class DchTerminalView: TerminalView {
         class_addMethod(DchTerminalView.self, sel, imp_implementationWithBlock(route), types)
     }()
 
-    /// Text carrying a control byte. `insertText` exempts a single byte (one key) itself.
+    /// Text carrying a C0 or C1 control (nvim takes U+009B as ESC, #293). `insertText`
+    /// exempts a single byte (one key) itself.
     private static func isPaste(_ text: String) -> Bool {
-        text.utf8.contains(where: { $0 < 0x20 })
+        text.unicodeScalars.contains { $0.value < 0x20 || TerminalMath.c1Controls.contains($0.value) }
     }
     private var lastCols = 0
     private var lastRows = 0
