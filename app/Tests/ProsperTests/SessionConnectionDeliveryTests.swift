@@ -290,6 +290,26 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         try await waitUntil("flush") { s2.text == "kl" }
     }
 
+    /// #271 QA #81: keys the cap evicts (a frame `lostNotice` keeps silent) are told
+    /// once too, sticky past the next key, instead of dropping silently.
+    func testKeysEvictedByTheCapShowTheTypedLostNotice() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        let arrows = Array(Array(repeating: Array("\u{1b}[A".utf8), count: SessionConnection.outboxCap / 3).joined())
+        XCTAssertNil(SessionConnection.lostNotice(for: .bytes(arrows)), "precondition: a silent frame")
+        conn.send(arrows[...])
+        XCTAssertNil(conn.notice)
+
+        conn.send(Array("ab".utf8)[...])
+        XCTAssertEqual(conn.queuedByteCount, 2, "the keys were not evicted")
+        XCTAssertEqual(conn.notice, "Typed text lost in reconnect, type it again", "the keys vanished silently")
+        conn.send(Array("c".utf8)[...])
+        XCTAssertEqual(conn.notice, "Typed text lost in reconnect, type it again", "the next key cleared the notice")
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await waitUntil("flush") { s2.text == "abc" }
+    }
+
     /// #262 QA #79 probe b, on the real wire: clipboard text carrying ESC[201~ reaches
     /// the host as ONE bracketed frame whose only closer is the last six bytes, so
     /// nothing after the injected closer runs.

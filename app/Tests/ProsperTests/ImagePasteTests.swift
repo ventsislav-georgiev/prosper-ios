@@ -17,16 +17,22 @@ final class ImagePasteTests: XCTestCase {
 
     /// On Mac Catalyst `UIPasteboard.general` IS the system pasteboard, so these tests
     /// would otherwise wipe whatever the developer had copied. Borrow it and give it
-    /// back.
+    /// back. Only there: on iOS reading another app's pasteboard raises the paste
+    /// permission alert, which hangs an unattended simulator run (#271), and the
+    /// simulator's clipboard holds nothing to keep.
     private var borrowedClipboard: [[String: Any]] = []
 
     override func setUp() {
         super.setUp()
+        #if targetEnvironment(macCatalyst)
         borrowedClipboard = UIPasteboard.general.items
+        #endif
     }
 
     override func tearDown() {
+        #if targetEnvironment(macCatalyst)
         UIPasteboard.general.items = borrowedClipboard
+        #endif
         UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey)
         super.tearDown()
     }

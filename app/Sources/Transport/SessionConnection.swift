@@ -12,7 +12,8 @@ final class SessionConnection: ObservableObject {
     @Published private(set) var state: ConnectionState = .connecting
     /// One quiet status line, gone after `noticeLife` or on entering `.failed` (the retry
     /// capsule wins). A refused paste also clears on the next accepted write; a sticky
-    /// one (a paste lost in reconnect) outlives typing, or the user never sees it.
+    /// one (a paste lost in reconnect) outlives typing, or the user never sees it, but
+    /// not time: it still goes after `noticeLife` (QA #62), the status line stays free.
     @Published private(set) var notice: String?
     private var noticeSticky = false
     private var noticeClear: Task<Void, Never>?
@@ -257,16 +258,20 @@ final class SessionConnection: ObservableObject {
     /// stays: `write` refuses a single frame over the cap, but a hand-back (`requeue`) of
     /// one a live stream took is kept whole. A dropped paste (or long typed text) gets
     /// `lostNotice`, sticky like a lost hand-back's: the key that pushed it out would
-    /// otherwise clear it before it was read.
+    /// otherwise clear it before it was read. Evicted keys (frames `lostNotice` keeps
+    /// silent: a redo after a drop, but here the user never sees them go) get the typed
+    /// notice once, unless a notice is already up: not re-announced per evicted key.
     private func trimOutbox() {
         var i = 0
+        var lostKeys = false
         while outboxBytes > Self.outboxCap, i < outbox.count - 1 {
             guard case .bytes(let b) = outbox[i] else { i += 1; continue }
             outbox.remove(at: i)
             outboxBytes -= b.count
             if i < requeueAt { requeueAt -= 1 }
-            if let text = Self.lostNotice(for: .bytes(b)) { show(text, sticky: true) }
+            if let text = Self.lostNotice(for: .bytes(b)) { show(text, sticky: true) } else { lostKeys = true }
         }
+        if lostKeys, notice == nil { show("Typed text lost in reconnect, type it again", sticky: true) }
     }
 
     private func clearOutbox() {
