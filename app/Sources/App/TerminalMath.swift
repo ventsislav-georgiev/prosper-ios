@@ -52,7 +52,8 @@ enum TerminalMath {
     /// spelled), and so does every other C0 control (^C/^Z/^\ would signal through the
     /// pty's ISIG even inside a paste) — xterm's default for pastes (allowPasteControls
     /// off). C1 controls go too: nvim takes U+009B (CSI) and U+0080 like ESC and runs
-    /// what follows as commands (#293).
+    /// what follows as commands (#293). DEL (0x7F) is kept: inside a bracketed paste the
+    /// host takes it as a literal byte, not as an erase key.
     static func pasteBytes(_ s: String, thenEnter: Bool = false, bracketed: Bool = true) -> [UInt8] {
         let kept = s.unicodeScalars.filter {
             ($0.value >= 0x20 && !c1Controls.contains($0.value)) || $0 == "\t" || $0 == "\n" || $0 == "\r"

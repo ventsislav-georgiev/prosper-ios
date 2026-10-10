@@ -268,6 +268,14 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertNil(tv.markedTextRange, "the mark outlived a C1 pasted insert")
         XCTAssertEqual(spy.sent.count, before + 1, "onPaste did not fire exactly once")
         XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~xy\u{1b}[201~".utf8))
+
+        // #303: a replace over a pending mark takes SwiftTerm's own path, not the paste route.
+        tv.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0))
+        let r = try XCTUnwrap(tv.markedTextRange)
+        let n = spy.sent.count
+        _ = (tv as NSObject).perform(#selector(UITextInput.replace(_:withText:)), with: r, with: "a\nb")
+        XCTAssertFalse(spy.sent[n...].contains { $0.starts(with: Array("\u{1b}[200~".utf8)) },
+                       "a replace over a pending mark went out as a paste")
     }
 
     /// #271 QA #81: a host that never turned bracketed paste on (bash 3.2) printed the
