@@ -205,6 +205,22 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(Array(b.dropFirst(6).dropLast(6)), Array("ls\n  -la".utf8))
     }
 
+    /// #262 QA #79 probe b: a closer inside the clipboard text must not end the paste
+    /// early. No ESC survives in the body, so the only closer is ours, at the end.
+    func testPastedTextCannotCloseThePasteEarly() {
+        let b = TerminalMath.pasteBytes("a \u{1b}[201~ rm -rf x\r")
+        XCTAssertEqual(b, Array("\u{1b}[200~a [201~ rm -rf x\r\u{1b}[201~".utf8))
+        XCTAssertEqual(b.firstRange(of: Array("\u{1b}[201~".utf8))?.lowerBound, b.count - 6,
+                       "an injected closer reached the wire: the host runs what follows it")
+    }
+
+    /// Every C0 control but TAB, LF and CR goes (^C would signal through the pty's ISIG);
+    /// UTF-8 text is untouched.
+    func testPastedTextKeepsOnlyFormattingControls() {
+        let b = TerminalMath.pasteBytes("a\u{03}\u{1a}\u{1c}\u{07}\u{00}\tb\r\nż→🙂")
+        XCTAssertEqual(Array(b.dropFirst(6).dropLast(6)), Array("a\tb\r\nż→🙂".utf8))
+    }
+
     /// Insert & Send: Enter comes after the end marker, never inside the paste.
     func testPasteThenEnterPutsCRAfterTheEndMarker() {
         let b = TerminalMath.pasteBytes("echo hi", thenEnter: true)

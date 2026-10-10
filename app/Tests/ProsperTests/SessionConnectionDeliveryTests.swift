@@ -271,6 +271,47 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(s2.bytes, paste)
     }
 
+    /// #262 QA #79: a key typed offline past the cap pushes out the queued paste. That
+    /// loss is told, sticky past the key that caused it, not silent.
+    func testPasteEvictedByTheCapShowsTheLostNotice() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        let wrap = TerminalMath.pasteBytes("").count
+        conn.send(TerminalMath.pasteBytes(String(repeating: "a", count: SessionConnection.outboxCap - wrap))[...])
+        XCTAssertNil(conn.notice)
+
+        conn.send(Array("k".utf8)[...])
+        XCTAssertEqual(conn.queuedByteCount, 1, "the paste was not evicted")
+        XCTAssertEqual(conn.notice, "Paste lost in reconnect, paste again", "the paste vanished silently")
+        conn.send(Array("l".utf8)[...])
+        XCTAssertEqual(conn.notice, "Paste lost in reconnect, paste again", "the next key cleared the notice")
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await waitUntil("flush") { s2.text == "kl" }
+    }
+
+    /// #262 QA #79 probe b, on the real wire: clipboard text carrying ESC[201~ reaches
+    /// the host as ONE bracketed frame whose only closer is the last six bytes, so
+    /// nothing after the injected closer runs.
+    func testInjectedPasteCloserNeverReachesTheWire() async throws {
+        let (s1, host, listener) = try await loopbackStream(on: DispatchQueue(label: "t.conn"))
+        defer { listener.cancel() }
+        let (conn, t) = make()
+        t.prepared = [s1]
+        conn.start(cols: 80, rows: 24)
+        try await waitUntil("live on the prompt") { conn.state == .connected }
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        conn.send(TerminalMath.pasteBytes("a \u{1b}[201~ rm -rf x\r")[...])
+        try await waitUntil("paste on the wire") { !host.input.isEmpty }
+        let close = SessionConnection.pasteClose
+        XCTAssertEqual(host.input, [SessionConnection.pasteOpen + Array("a [201~ rm -rf x\r".utf8) + close])
+        let frame = try XCTUnwrap(host.input.first)
+        XCTAssertEqual(frame.firstRange(of: close)?.lowerBound, frame.count - close.count,
+                       "an injected closer reached the host: it runs what follows")
+        conn.close()
+    }
+
     /// Live with nothing queued, the cap does not apply: an over-cap paste streams.
     func testPasteOverTheCapStreamsWhenLive() async throws {
         let (conn, t) = make()

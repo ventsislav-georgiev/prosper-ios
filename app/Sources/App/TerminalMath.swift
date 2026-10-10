@@ -38,8 +38,19 @@ enum TerminalMath {
     /// 2004 on attach, so the terminal's `bracketedPasteMode` is stale after a reconnect.
     /// `thenEnter` puts CR after the end marker, so the TUI submits the whole text
     /// instead of seeing a newline inside the paste.
+    ///
+    /// Every paste goes through here (shortcut bar, Insert & Send, and SwiftTerm's
+    /// `paste:` via `DchTerminalView.onPaste`), and the clipboard is untrusted: text
+    /// copied from a web page or a chat can carry ESC[201~, end the paste early and have
+    /// the host RUN whatever follows (#262). So the text keeps only TAB, LF, CR and
+    /// non-control bytes: every ESC goes (no closer, no other escape sequence can be
+    /// spelled), and so does every other C0 control (^C/^Z/^\ would signal through the
+    /// pty's ISIG even inside a paste) — xterm's default for pastes (allowPasteControls
+    /// off). A byte filter is safe on UTF-8: bytes under 0x20 never occur inside a
+    /// multi-byte sequence.
     static func pasteBytes(_ s: String, thenEnter: Bool = false) -> [UInt8] {
-        Array("\u{1b}[200~".utf8) + Array(s.utf8) + Array("\u{1b}[201~".utf8) + (thenEnter ? [0x0d] : [])
+        let text = s.utf8.filter { $0 >= 0x20 || $0 == 0x09 || $0 == 0x0a || $0 == 0x0d }
+        return Array("\u{1b}[200~".utf8) + text + Array("\u{1b}[201~".utf8) + (thenEnter ? [0x0d] : [])
     }
 
     /// Jog-wheel scrolling: how many whole lines to scroll during `elapsed` seconds

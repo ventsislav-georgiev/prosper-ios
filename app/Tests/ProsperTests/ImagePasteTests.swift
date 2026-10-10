@@ -1,6 +1,7 @@
 import XCTest
 import UIKit
 import UniformTypeIdentifiers
+import SwiftTerm
 @testable import Prosper
 
 /// The image button only ever sent ctrl-V, which makes Claude Code read the clipboard
@@ -91,6 +92,29 @@ final class ImagePasteTests: XCTestCase {
 
         XCTAssertEqual(spy.clipboards, [])
         XCTAssertEqual(spy.sent, [[0x16]])
+    }
+
+    /// #262 QA #79: SwiftTerm's paste (Cmd-V, edit menu) with ctrl armed sent one control
+    /// byte of the opener, then the text unbracketed — every line ran — and it carried an
+    /// injected closer. It now leaves as ONE sanitized bracketed frame and leaves ctrl
+    /// armed for the next typed key.
+    func testCtrlArmedPasteGoesOutWholeBracketedAndSanitized() async throws {
+        let (vc, spy) = try await makeVC()
+        spy.emit("\u{1b}[?2004h")   // the shell turned bracketed paste on, as zsh does
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let bar = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? ShortcutBar }.first)
+        bar.onKey?(ShortcutKey(id: "ctrl", label: "ctrl", kind: .ctrl))
+        XCTAssertTrue(bar.ctrlArmed, "precondition: ctrl armed")
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        UIPasteboard.general.string = "a \u{1b}[201~ rm -rf x\r"
+
+        tv.paste(nil)
+
+        XCTAssertEqual(spy.sent, [Array("\u{1b}[200~a [201~ rm -rf x\r\u{1b}[201~".utf8)],
+                       "the paste was cut by the armed ctrl or kept the injected closer")
+        XCTAssertTrue(bar.ctrlArmed, "a paste consumed the modifier meant for a typed key")
+        vc.send(source: tv, data: [0x63][...])
+        XCTAssertEqual(spy.sent.last, [0x03], "ctrl no longer applies to the next key")
     }
 
     /// A bar saved by an older build pinned `pasteImg` to plain ctrl-V forever, so the

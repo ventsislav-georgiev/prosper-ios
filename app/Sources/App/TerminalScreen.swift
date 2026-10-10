@@ -251,6 +251,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         tv.onResize = { [weak self] cols, rows in
             MainActor.assumeIsolated { self?.conn.resize(cols: cols, rows: rows) }
         }
+        tv.onPaste = { [weak self] s in self?.sendText(s) }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -892,6 +893,16 @@ private final class ScrollThumb: UIView {
 
 private final class DchTerminalView: TerminalView {
     var onResize: ((Int, Int) -> Void)?
+    /// The clipboard text of a `paste:` (Cmd-V, edit menu).
+    var onPaste: ((String) -> Void)?
+
+    /// SwiftTerm's paste sends the clipboard raw, through `send(source:data:)` where an
+    /// armed ctrl keeps one byte of it, and unbracketed when its `bracketedPasteMode`
+    /// is stale. It goes the shortcut bar's way instead: `TerminalMath.pasteBytes`,
+    /// sanitized and always bracketed, whole, ctrl untouched (#262).
+    override func paste(_ sender: Any?) {
+        if let s = UIPasteboard.general.string, !s.isEmpty { onPaste?(s) }
+    }
     private var lastCols = 0
     private var lastRows = 0
 

@@ -98,9 +98,11 @@ final class SessionConnection: ObservableObject {
 
     /// Keystrokes and pastes. Goes straight out on a live stream with nothing queued;
     /// otherwise queues behind what's already waiting, so order survives any drop.
-    /// SwiftTerm's paste comes as opener, text and closer in separate sends: held until
-    /// the closer and written as ONE frame (#253), so a drop loses or resends the whole
-    /// paste, never a lone ESC[201~ that zsh, past KEYTIMEOUT, turns into a bell and "~".
+    /// A paste split over sends (SwiftTerm's own paste was opener, text and closer; it
+    /// now goes through `TerminalMath.pasteBytes`, #262) is held until the closer and
+    /// written as ONE frame (#253), so a drop loses or resends the whole paste, never a
+    /// lone ESC[201~ that zsh, past KEYTIMEOUT, turns into a bell and "~". Pasted text is
+    /// sanitized in `pasteBytes`, not here: this layer can't tell a pasted ESC from a key.
     func send(_ bytes: ArraySlice<UInt8>) {
         guard !bytes.isEmpty else { return }
         heldPaste = (heldPaste ?? []) + bytes
@@ -213,6 +215,13 @@ final class SessionConnection: ObservableObject {
     /// close failsafe hands back what it still holds first, #251): it can no longer go
     /// ahead of that input, and sent behind it the host sees the keys out of order —
     /// dropped instead, with `lostNotice`.
+    ///
+    /// Known duplicate window (#251/#253): the close failsafe hands back every frame
+    /// whose completion had not reported after 1 s, and some of those did reach the
+    /// host (a completion that was stuck, or raced the failsafe). Resent here, such a
+    /// frame runs twice — and since a paste is one frame, that is a WHOLE paste: zsh,
+    /// bash and node run the command twice when the paste ends with CR. Without an
+    /// app-level ack from the server there is no telling which frames arrived; accepted.
     private func requeue(_ out: Outbound, from g: Int) {
         guard !isOver else { return }
         // A paste is one frame (`send`), so it is dropped whole. A lone ESC[201~ (only
@@ -246,7 +255,9 @@ final class SessionConnection: ObservableObject {
     /// paste loses its ESC[200~ opener and every pasted line runs as a command, and a
     /// cut keystroke frame can split a CSI or UTF-8 sequence. The last frame always
     /// stays: `write` refuses a single frame over the cap, but a hand-back (`requeue`) of
-    /// one a live stream took is kept whole.
+    /// one a live stream took is kept whole. A dropped paste (or long typed text) gets
+    /// `lostNotice`, sticky like a lost hand-back's: the key that pushed it out would
+    /// otherwise clear it before it was read.
     private func trimOutbox() {
         var i = 0
         while outboxBytes > Self.outboxCap, i < outbox.count - 1 {
@@ -254,6 +265,7 @@ final class SessionConnection: ObservableObject {
             outbox.remove(at: i)
             outboxBytes -= b.count
             if i < requeueAt { requeueAt -= 1 }
+            if let text = Self.lostNotice(for: .bytes(b)) { show(text, sticky: true) }
         }
     }
 
