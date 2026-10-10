@@ -247,11 +247,11 @@ final class SessionConnection: ObservableObject {
     /// app-level ack from the server there is no telling which frames arrived; accepted.
     private func requeue(_ out: Outbound, from g: Int) {
         guard !isOver else { return }
-        // A paste is one frame (`send`), so it is dropped whole. ESC-led frames of 3+ bytes
-        // (CSI/SS3 arrows, scroll bursts, SGR mouse reports) stay silent, as does a lone ESC[201~ (only after
+        // A paste is one frame (`send`), so it is dropped whole. CSI/SS3-led frames (ESC[ / ESC O:
+        // arrows, scroll bursts, SGR mouse reports) stay silent, as does a lone ESC[201~ (only after
         // `pasteWaitMax`): zsh already ended paste mode on KEYTIMEOUT, and a stray closer
         // rings the bell and inserts "~" (#241 QA #63). Typed keys (`isTypedKey`: plain bytes, a
-        // lone Esc, alt+letter) get the typed notice: a lost Esc makes vim insert the next command.
+        // lone Esc, alt+key incl. alt+é) get the typed notice: a lost Esc makes vim insert the next command.
         if g < sentGen {
             if let text = Self.lostNotice(for: out) { show(text, sticky: true) }
             else if case .bytes(let b) = out, Self.isTypedKey(b) { showTypedLost() }
@@ -278,8 +278,13 @@ final class SessionConnection: ObservableObject {
     static let pasteLost = "Paste lost in reconnect, paste again"
     static let typedLost = "Typed text lost in reconnect, type it again"
 
-    /// A typed key: not ESC-led, or a lone Esc / alt+letter (CSI, SS3 and mouse reports are 3+ bytes).
-    static func isTypedKey(_ b: [UInt8]) -> Bool { b.first != 0x1b || b.count <= 2 }
+    /// A typed key: not ESC-led, a lone Esc, or alt+key (ESC + char; optionAsMetaKey makes alt+é
+    /// ESC + multibyte UTF-8, #304). Only CSI (ESC[) and SS3 (ESC O) sequences — cursor and
+    /// function keys, mouse reports — are not typed. alt+[ and alt+O are ESC[ / ESC O byte for
+    /// byte, so they stay silent too; accepted.
+    static func isTypedKey(_ b: [UInt8]) -> Bool {
+        b.first != 0x1b || b.count < 2 || (b[1] != 0x5b && b[1] != 0x4f)
+    }
 
     static func lostNotice(for out: Outbound) -> String? {
         switch out {

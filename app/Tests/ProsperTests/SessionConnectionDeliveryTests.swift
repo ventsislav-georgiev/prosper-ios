@@ -687,7 +687,7 @@ final class SessionConnectionDeliveryTests: XCTestCase {
     }
 
     /// #241 L2: a dropped hand-back is a paste by its ESC[200~ opener, not by its size.
-    /// Keys get the typed notice since #289.
+    /// Keys get the typed notice since #289; only CSI/SS3 sequences stay silent (#304).
     func testLateHandBackIsClassifiedByThePasteOpenerNotSize() async throws {
         let keys = Array("\u{1b}[A\u{1b}[A\u{1b}[A\u{1b}[Aabcd".utf8)   // 16 bytes, no opener
         let paste = TerminalMath.pasteBytes("abc")                           // 15 bytes framed
@@ -696,7 +696,11 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         let cases: [([UInt8], String?)] = [(keys, nil), (paste, SessionConnection.pasteLost),
                                            (typed, SessionConnection.typedLost), (mouse, nil),
                                            ([0x1b], SessionConnection.typedLost),         // lone Esc (#296)
-                                           ([0x1b, 0x66], SessionConnection.typedLost)]   // alt+f
+                                           ([0x1b, 0x66], SessionConnection.typedLost),   // alt+f
+                                           (Array("\u{1b}[A".utf8), nil),                 // cursor up, CSI (#304)
+                                           (Array("\u{1b}OP".utf8), nil),                 // F1, SS3
+                                           ([0x1b] + Array("é".utf8), SessionConnection.typedLost),  // alt+é
+                                           ([0x1b] + Array("б".utf8), SessionConnection.typedLost)]  // alt+б
         for (frame, expected) in cases {
             let (conn, t) = make()
             let s1 = try await startLive(conn, t)
