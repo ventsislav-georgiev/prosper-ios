@@ -180,6 +180,11 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertFalse(bar.ctrlArmed, "the typed key must disarm ctrl")
         bar.onKey?(ShortcutKey(id: "ctrl", label: "ctrl", kind: .ctrl))
         XCTAssertTrue(bar.ctrlArmed, "precondition: ctrl re-armed")
+        vc.send(source: tv, data: [0x7e][...])
+        XCTAssertEqual(spy.sent.last, [0x1e], "ctrl+~ (0x7e, top of the chord range) must send 0x1e")
+        XCTAssertFalse(bar.ctrlArmed, "ctrl+~ must disarm ctrl")
+        bar.onKey?(ShortcutKey(id: "ctrl", label: "ctrl", kind: .ctrl))
+        XCTAssertTrue(bar.ctrlArmed, "precondition: ctrl re-armed")
 
         vc.send(source: tv, data: [0x1b][...])
         XCTAssertEqual(spy.sent.last, [0x1b], "a lone Esc must go out unchanged")
