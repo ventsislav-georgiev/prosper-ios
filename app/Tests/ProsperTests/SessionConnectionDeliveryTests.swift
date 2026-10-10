@@ -342,15 +342,14 @@ final class SessionConnectionDeliveryTests: XCTestCase {
                        "typing on cleared the lost-paste notice before the user could read it")
     }
 
-    /// #241 QA #63: SwiftTerm's paste sends opener, body and closer as three frames. A
-    /// closer handed back after the next stream sent is dropped silently: zsh ended paste
-    /// mode on KEYTIMEOUT, and a stray ESC[201~ rings the bell and inserts "~".
+    /// #241 QA #63: a paste whose closer came after `pasteWaitMax` left as two frames. A
+    /// lone closer handed back after the next stream sent is dropped silently: zsh ended
+    /// paste mode on KEYTIMEOUT, and a stray ESC[201~ rings the bell and inserts "~".
     func testLateLonePasteCloserIsDroppedSilently() async throws {
         let (conn, t) = make()
         let s1 = try await startLive(conn, t)
         let open = SessionConnection.pasteOpen, body = Array("echo hi\n".utf8)
         let close: [UInt8] = [27, 91, 50, 48, 49, 126]   // ESC[201~
-        for f in [open, body, close] { conn.send(f[...]) }
         try await stall(s1, conn, t)
         s1.bounce(.bytes(open))               // handed back in time
         s1.bounce(.bytes(body))
@@ -364,71 +363,134 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertNil(conn.notice)
     }
 
-    /// #251 QA #73: the real stream accepted a paste's closer, then its link dropped
-    /// before the send completion reported, and close() reached its 1 s failsafe. The
-    /// closer goes back before the stream ends, so the next stream sends it first, ahead
-    /// of the next key, and the late ECANCELED completion doesn't send it twice. Lost, it
-    /// leaves bash, python and vim in bracketed-paste mode.
-    func testPasteCloserPendingAtTheCloseFailsafeReachesTheNextStreamInOrder() async throws {
-        final class Wire: @unchecked Sendable {   // main queue only
-            var bytes = Data()
-            /// Input frames the host received; resize/redraw/snapshot frames skipped.
-            var input: [[UInt8]] {
-                var b = bytes, out: [[UInt8]] = []
-                while let (type, p) = try? FrameCodec.pop(&b) { if type == 0x10 { out.append([UInt8](p)) } }
-                return out
-            }
-        }
-        let host = Wire()
-        let listener = try NWListener(using: .tcp, on: .any)
-        listener.newConnectionHandler = { c in
-            c.start(queue: .main)
-            c.send(content: FrameCodec.encode(0x10, Data("$ ".utf8)), completion: .idempotent)
-            func read() {
-                c.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { d, _, done, err in
-                    if let d { host.bytes.append(d) }
-                    if !done, err == nil { read() }
-                }
-            }
-            read()
-        }
-        listener.start(queue: .main)
-        defer { listener.cancel() }
-        try await waitUntil("listener") { (listener.port?.rawValue ?? 0) != 0 }
+    /// SwiftTerm's paste is three sends: opener, text, closer. They leave as ONE frame.
+    func testSwiftTermPasteGoesOutAsOneFrame() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        let open = SessionConnection.pasteOpen, body = Array("echo hi\n".utf8), close = SessionConnection.pasteClose
+        for f in [open, body] { conn.send(f[...]) }
+        XCTAssertEqual(s1.sent, [], "an open paste went out before its closer")
+        conn.send(close[...])
+        conn.send(Array("k".utf8)[...])
+        XCTAssertEqual(s1.sent, [.bytes(open + body + close), .bytes(Array("k".utf8))])
+    }
 
-        // The stream's callback queue: suspended, a send completion can't report.
+    /// A closer that never comes: after `pasteWaitMax` the held bytes go out as they are.
+    func testAPasteWithNoCloserGoesOutAfterTheWait() async throws {
+        let old = SessionConnection.pasteWaitMax
+        SessionConnection.pasteWaitMax = .milliseconds(100)
+        defer { SessionConnection.pasteWaitMax = old }
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        let open = SessionConnection.pasteOpen, body = Array("echo hi\n".utf8)
+        conn.send(open[...]); conn.send(body[...])
+        XCTAssertEqual(s1.sent, [])
+        try await waitUntil("held bytes released") { s1.sent.count == 1 }
+        XCTAssertEqual(s1.sent, [.bytes(open + body)])
+        conn.send(Array("k".utf8)[...])
+        XCTAssertEqual(s1.sent, [.bytes(open + body), .bytes(Array("k".utf8))])
+    }
+
+    /// An image paste behind a held text paste does not jump it.
+    func testClipboardFlushesAHeldPasteFirst() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        let png = Data([0x89, 0x50, 0x4e, 0x47])
+        conn.send(SessionConnection.pasteOpen[...])
+        conn.putClipboard(png)
+        XCTAssertEqual(s1.sent, [.bytes(SessionConnection.pasteOpen), .clipboard(png)])
+    }
+
+    func testOpensPasteUntilTheCloser() {
+        let open = SessionConnection.pasteOpen, close = SessionConnection.pasteClose, body = Array("ls\n".utf8)
+        XCTAssertTrue(SessionConnection.opensPaste(open))
+        XCTAssertTrue(SessionConnection.opensPaste(open + body))
+        XCTAssertFalse(SessionConnection.opensPaste(open + body + close))
+        XCTAssertFalse(SessionConnection.opensPaste(TerminalMath.pasteBytes("ls", thenEnter: true)))
+        XCTAssertFalse(SessionConnection.opensPaste(body), "plain text is no paste")
+        XCTAssertFalse(SessionConnection.opensPaste(close), "a lone closer opens nothing")
+        XCTAssertFalse(SessionConnection.opensPaste([]))
+    }
+
+    /// #253 QA #75 (#251 QA #73): the link drops with SwiftTerm's paste and a key accepted
+    /// by the real stream but unreported, and close() reaches its 1 s failsafe. The paste
+    /// is one frame, so it goes back whole, never a lone ESC[201~ that zsh, past
+    /// KEYTIMEOUT, turns into a bell and "~". Both frames go back in send order, ahead of
+    /// the next key, and the late ECANCELED completions send nothing twice.
+    func testFramesPendingAtTheCloseFailsafeAreResentWholeAndInOrder() async throws {
         let q = DispatchQueue(label: "t.conn")
+        let (s1, host, listener) = try await loopbackStream(on: q)
+        defer { listener.cancel() }
         var suspended = false
         defer { if suspended { q.resume() } }
-        let c = NWConnection(host: "127.0.0.1", port: listener.port!, using: .tcp)
-        c.start(queue: q)
-        try await waitUntil("connected") { c.state == .ready }
-        let s1 = ProsperStream(conn: c)
 
         let (conn, t) = make()
         t.prepared = [s1]
         conn.start(cols: 80, rows: 24)
         try await waitUntil("live on the prompt") { conn.state == .connected }
         try await Task.sleep(nanoseconds: 100_000_000)
+        conn.send(Array("a".utf8)[...])
+        try await waitUntil("live: a on the wire") { host.input == [Array("a".utf8)] }
 
-        let open = SessionConnection.pasteOpen, body = Array("echo hi\n".utf8)
-        let close: [UInt8] = [27, 91, 50, 48, 49, 126]   // ESC[201~
-        conn.send(open[...]); conn.send(body[...])
-        try await waitUntil("opener and body on the wire") { host.input == [open, body] }
-
-        q.suspend(); suspended = true
-        conn.send(close[...])                 // accepted; its completion can't report
+        q.suspend(); suspended = true         // a send completion can't report
+        let open = SessionConnection.pasteOpen, body = Array("echo $((40+2))".utf8), close = SessionConnection.pasteClose
+        for f in [open, body, close] { conn.send(f[...]) }
+        conn.send([0x0d][...])                // Enter: a second accepted frame
         s1.close()                            // the link drops: only the failsafe ends it
         try await waitUntil("reattach") { t.streams.count == 1 }
         let s2 = t.streams[0]
         s2.emit("$ ")
-        try await waitUntil("closer flushed") { s2.sent.count == 1 }
+        try await waitUntil("pending frames resent") { s2.sent.count == 2 }
         conn.send(Array("k".utf8)[...])
-        q.resume(); suspended = false         // the late ECANCELED completion
+        q.resume(); suspended = false         // the late ECANCELED completions
         try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertEqual(s2.sent, [.bytes(close), .bytes(Array("k".utf8))])
+        XCTAssertEqual(s2.sent, [.bytes(open + body + close), .bytes([0x0d]), .bytes(Array("k".utf8))])
         XCTAssertEqual(conn.queuedByteCount, 0)
         XCTAssertNil(conn.notice)
+    }
+
+    /// #251 M4: the failsafe's hand-backs reach main before the stream's end does, so
+    /// SessionConnection requeues them at the old stream's generation, not as late ones.
+    func testFailsafeHandsBackBeforeTheStreamEnds() async throws {
+        let q = DispatchQueue(label: "t.conn")
+        let (s, _, listener) = try await loopbackStream(on: q)
+        defer { listener.cancel() }
+        let log = Box<[String]>([])
+        s.onUnsent = { out in   // as SessionConnection does: main queue, in order
+            DispatchQueue.main.async { if case .bytes(let b) = out { log.v.append(String(decoding: b, as: UTF8.self)) } }
+        }
+        let reader = Task { @MainActor in
+            for await _ in s.output {}
+            log.v.append("end")
+        }
+        q.suspend()
+        XCTAssertTrue(s.send(Array("a".utf8)[...]))
+        XCTAssertTrue(s.send(Array("b".utf8)[...]))
+        s.close()
+        await reader.value                    // the 1 s failsafe ends it
+        q.resume()                            // late ECANCELED: nothing handed back twice
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(log.v, ["a", "b", "end"])
+    }
+
+    /// #251 M5: output ends only once the stream is closed AND every write reported; a
+    /// write that reported on an open link does not end it.
+    func testSettledWritesDoNotEndAnOpenStream() async throws {
+        let q = DispatchQueue(label: "t.conn")
+        let (s, host, listener) = try await loopbackStream(on: q)
+        defer { listener.cancel() }
+        let ended = Box(false)
+        let reader = Task { @MainActor in
+            for await _ in s.output {}
+            ended.v = true
+        }
+        XCTAssertTrue(s.send(Array("a".utf8)[...]))
+        try await waitUntil("a on the wire") { host.input == [Array("a".utf8)] }
+        try await Task.sleep(nanoseconds: 200_000_000)   // its completion has reported
+        XCTAssertFalse(ended.v, "a settled write ended a live stream")
+        s.close()
+        await reader.value
+        XCTAssertTrue(ended.v)
     }
 
     /// #241 L2: a dropped hand-back is a paste by its ESC[200~ opener, not by its size.
@@ -619,7 +681,7 @@ final class SessionConnectionDeliveryTests: XCTestCase {
     /// The real stream: once the server hangs up, input is refused (so the caller keeps
     /// it) instead of vanishing into a cancelled NWConnection.
     func testProsperStreamRefusesInputOnceTheLinkIsGone() async throws {
-        let listener = try NWListener(using: .tcp, on: .any)
+        let listener = try loopbackListener()
         listener.newConnectionHandler = { c in
             c.start(queue: .main)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { c.cancel() }
@@ -635,6 +697,52 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertFalse(stream.send([0x62][...]), "a dead stream swallowed input")
         XCTAssertFalse(stream.putClipboard(Data([1])))
     }
+
+    private func loopbackListener() throws -> NWListener {
+        let p = NWParameters.tcp
+        p.requiredInterfaceType = .loopback
+        return try NWListener(using: p, on: .any)
+    }
+
+    /// A real ProsperStream to a loopback host that says "$ " and records what it reads.
+    /// `q` is the stream's callback queue: suspended, no send completion can report.
+    private func loopbackStream(on q: DispatchQueue) async throws -> (ProsperStream, Wire, NWListener) {
+        let host = Wire()
+        let listener = try loopbackListener()
+        listener.newConnectionHandler = { c in
+            c.start(queue: .main)
+            c.send(content: FrameCodec.encode(0x10, Data("$ ".utf8)), completion: .idempotent)
+            func read() {
+                c.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { d, _, done, err in
+                    if let d { host.bytes.append(d) }
+                    if !done, err == nil { read() }
+                }
+            }
+            read()
+        }
+        listener.start(queue: .main)
+        try await waitUntil("listener") { (listener.port?.rawValue ?? 0) != 0 }
+        let c = NWConnection(host: "127.0.0.1", port: listener.port!, using: .tcp)
+        c.start(queue: q)
+        try await waitUntil("connected") { c.state == .ready }
+        return (ProsperStream(conn: c), host, listener)
+    }
+}
+
+/// What the loopback host read (main queue only).
+final class Wire: @unchecked Sendable {
+    var bytes = Data()
+    /// Input frames the host received; resize/redraw/snapshot frames skipped.
+    var input: [[UInt8]] {
+        var b = bytes, out: [[UInt8]] = []
+        while let (type, p) = try? FrameCodec.pop(&b) { if type == 0x10 { out.append([UInt8](p)) } }
+        return out
+    }
+}
+
+final class Box<T>: @unchecked Sendable {   // main queue only
+    var v: T
+    init(_ v: T) { self.v = v }
 }
 
 // MARK: - Fakes

@@ -44,6 +44,9 @@ final class SessionConnection: ObservableObject {
     /// hand-back from an older stream than that is too late to keep its place (#230).
     private var gen = 0
     private var sentGen = 0
+    /// A paste's frames so far, waiting for its closer (`send`).
+    private var heldPaste: [UInt8]?
+    private var pasteWait: Task<Void, Never>?
 
     /// ponytail: 64 KB of keystrokes/paste held across a drop, counted as framed bytes —
     /// a bracketed paste's 12-byte wrapper included, so 65524 bytes of pasted text; past it the OLDEST whole
@@ -56,6 +59,10 @@ final class SessionConnection: ObservableObject {
     static let liveFallback: Duration = .seconds(1)
     /// Bracketed-paste opener (`TerminalMath.pasteBytes`): what marks a frame as a paste.
     static let pasteOpen = Array("\u{1b}[200~".utf8)
+    static let pasteClose = Array("\u{1b}[201~".utf8)
+    /// ponytail: longest hold for a paste's closer (`send`); past it the held bytes go out
+    /// as they are. SwiftTerm sends all three parts in one main-thread turn.
+    static var pasteWaitMax: Duration = .seconds(2)
     /// ponytail: an unwrapped frame over this is typed text (SwiftTerm's own paste with
     /// a stale bracketed mode, dictation/IME commits, a scroll burst), not one key or
     /// escape sequence. Raise if long key sequences start showing the notice.
@@ -91,9 +98,29 @@ final class SessionConnection: ObservableObject {
 
     /// Keystrokes and pastes. Goes straight out on a live stream with nothing queued;
     /// otherwise queues behind what's already waiting, so order survives any drop.
+    /// SwiftTerm's paste comes as opener, text and closer in separate sends: held until
+    /// the closer and written as ONE frame (#253), so a drop loses or resends the whole
+    /// paste, never a lone ESC[201~ that zsh, past KEYTIMEOUT, turns into a bell and "~".
     func send(_ bytes: ArraySlice<UInt8>) {
         guard !bytes.isEmpty else { return }
-        write(.bytes(Array(bytes)))
+        heldPaste = (heldPaste ?? []) + bytes
+        guard Self.opensPaste(heldPaste!) else { flushPaste(); return }
+        pasteWait = pasteWait ?? Task { [weak self] in
+            try? await Task.sleep(for: Self.pasteWaitMax)
+            if !Task.isCancelled { self?.flushPaste() }
+        }
+    }
+
+    /// Writes what the paste hold has, as it is.
+    private func flushPaste() {
+        pasteWait?.cancel()
+        pasteWait = nil
+        if let b = heldPaste { heldPaste = nil; write(.bytes(b)) }
+    }
+
+    /// Opens a bracketed paste and doesn't close it: the frames so far of one still coming.
+    static func opensPaste(_ b: [UInt8]) -> Bool {
+        b.starts(with: pasteOpen) && b.firstRange(of: pasteClose) == nil
     }
 
     private func write(_ out: Outbound) {
@@ -188,9 +215,9 @@ final class SessionConnection: ObservableObject {
     /// dropped instead, with `lostNotice`.
     private func requeue(_ out: Outbound, from g: Int) {
         guard !isOver else { return }
-        // A late lone ESC[201~ (SwiftTerm sends a paste's closer as its own frame) is
-        // dropped too: zsh already ended paste mode on KEYTIMEOUT, and a stray closer
-        // rings the bell and inserts a literal "~" (#241 QA #63).
+        // A paste is one frame (`send`), so it is dropped whole. A lone ESC[201~ (only
+        // after `pasteWaitMax`) is dropped too: zsh already ended paste mode on
+        // KEYTIMEOUT, and a stray closer rings the bell and inserts "~" (#241 QA #63).
         if g < sentGen {
             if let text = Self.lostNotice(for: out) { show(text, sticky: true) }
             return
@@ -266,7 +293,7 @@ final class SessionConnection: ObservableObject {
     /// the paste keystroke. Frames are ordered on one connection and the server sets
     /// the clipboard before acking, so a ctrl-V sent right after lands second.
     /// Queued like keystrokes, so it stays ahead of the ctrl-V that follows it.
-    func putClipboard(_ image: Data) { write(.clipboard(image)) }
+    func putClipboard(_ image: Data) { flushPaste(); write(.clipboard(image)) }
 
     /// Repair the screen after anything that can leave it stale (rotation, font
     /// change, foreground, reattach). Two independent paths, weakest first:
