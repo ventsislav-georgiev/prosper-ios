@@ -243,6 +243,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
         conn.onBytes = { [weak self, weak tv] slice in
             tv?.feed(byteArray: slice)
+            if !slice.isEmpty { MainActor.assumeIsolated { self?.fedHostBytes = true } }
             // Dynamic re-lift: as output streams and the caret moves down, keep the
             // bottom row above the keyboard. rangeChanged doesn't fire reliably on
             // stream (verified in the spike) — the feed path is the dependable hook.
@@ -416,14 +417,17 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
     }
 
+    private var fedHostBytes = false
+
     /// Text reaches the pty as ONE bracketed paste, exactly what `dch --send` does on
     /// the Mac: readline, Claude Code and vim insert it verbatim instead of running
     /// each line at its newline. Wrapped only when the host turned 2004 on (SwiftTerm's
     /// `bracketedPasteMode`); dch re-arms it on every attach (master.c:2017), so it is
-    /// not stale after a reconnect. Sanitized either way.
+    /// not stale after a reconnect; before a fresh view has fed any host byte the re-arm
+    /// can't have landed yet, so it is wrapped regardless. Sanitized either way.
     private func sendText(_ s: String, thenEnter: Bool = false) {
         conn.send(ArraySlice(TerminalMath.pasteBytes(s, thenEnter: thenEnter,
-                                                     bracketed: tv.getTerminal().bracketedPasteMode)))
+                                                     bracketed: fedHostBytes ? tv.getTerminal().bracketedPasteMode : true)))
     }
 
     /// Push the copied image to the remote machine's clipboard, then send the paste

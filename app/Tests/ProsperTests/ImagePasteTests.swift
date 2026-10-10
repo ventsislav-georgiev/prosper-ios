@@ -37,7 +37,7 @@ final class ImagePasteTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeVC() async throws -> (TerminalHostVC, SpyStream) {
+    private func makeVC(live: Bool = true) async throws -> (TerminalHostVC, SpyStream) {
         let transport = SpyTransport()
         let conn = SessionConnection(transport: transport,
                                      session: DchSession(name: "t", alias: nil))
@@ -47,8 +47,10 @@ final class ImagePasteTests: XCTestCase {
         vc.startIfNeeded()
         try await Task.sleep(nanoseconds: 200_000_000)
         // The session's first output is what opens it to input (SessionConnection.goLive).
-        transport.stream.emit("$ ")
-        try await Task.sleep(nanoseconds: 50_000_000)
+        if live {
+            transport.stream.emit("$ ")
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
         return (vc, transport.stream)
     }
 
@@ -155,6 +157,26 @@ final class ImagePasteTests: XCTestCase {
         tv.paste(nil)
 
         XCTAssertEqual(spy.sent, [Array("a [201~ b".utf8)], "marks sent to a host that never asked for them")
+    }
+
+    /// A paste composed before a fresh view fed any host byte can't know 2004 yet (dch
+    /// re-arms it in the attach replay), so it goes bracketed; once host bytes have
+    /// been fed without 2004h, no marks (#280).
+    func testPasteBeforeFirstHostByteGoesBracketed() async throws {
+        let (vc, spy) = try await makeVC(live: false)
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        UIPasteboard.general.string = "a \u{1b}[201~ b"
+
+        tv.paste(nil)
+        spy.emit("$ ")
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(spy.sent, [Array("\u{1b}[200~a [201~ b\u{1b}[201~".utf8)],
+                       "a paste before the re-arm landed went out unbracketed")
+
+        tv.paste(nil)
+
+        XCTAssertEqual(spy.sent.last, Array("a [201~ b".utf8), "marks sent after the host showed no 2004")
     }
 
     /// A bar saved by an older build pinned `pasteImg` to plain ctrl-V forever, so the
