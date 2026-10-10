@@ -1,4 +1,5 @@
 import GameController
+import os
 import SwiftUI
 import SwiftTerm
 import UIKit
@@ -163,6 +164,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         view.backgroundColor = .black
 
         let tv = DchTerminalView(frame: .zero, font: TerminalFont.mono(size: TerminalPrefs.fontSize))
+        _ = DchTerminalView.routeReplace   // dictation/predictive replace goes the paste way (#281)
         self.tv = tv
         tv.terminalDelegate = self
         tv.backgroundColor = .black
@@ -900,32 +902,56 @@ private final class ScrollThumb: UIView {
 private final class DchTerminalView: TerminalView {
     var onResize: ((Int, Int) -> Void)?
     /// The clipboard text of a `paste:` (Cmd-V, edit menu).
-    var onPaste: ((String) -> Void)?
+    var onPaste: (String) -> Void = { _ in }
 
     /// SwiftTerm's paste sends the clipboard raw, through `send(source:data:)` where an
     /// armed ctrl keeps one byte of it. It goes the shortcut bar's way instead:
     /// `TerminalMath.pasteBytes`, sanitized, bracketed when the host turned 2004 on,
     /// whole, ctrl untouched (#262).
     override func paste(_ sender: Any?) {
-        if let s = UIPasteboard.general.string, !s.isEmpty { onPaste?(s) }
+        if let s = UIPasteboard.general.string, !s.isEmpty { onPaste(s) }
     }
 
     /// Keyboard text (a clipboard keyboard extension, dictation, predictive text) lands
     /// here and SwiftTerm sends it raw, so an ESC sequence or a CR inside it acted as
     /// typed on the host (#270, QA #81). Text carrying any control byte goes the paste
-    /// way instead — filtered and bracketed. One key (a letter, Return's "\n", Tab) and
-    /// plain printable words keep SwiftTerm's typed path: no control byte means nothing
-    /// to inject or run, and its auto-period and ctrl/meta handling stay as they were.
-    /// `replace(_:withText:)` (autocorrect) is `public`, not `open`: it can't be
-    /// overridden and carries system-lexicon text, not clipboard text.
+    /// way instead — filtered and bracketed. One key (any single byte: a letter, Return's
+    /// "\n", Tab, or a third-party keyboard's ESC/^C) and plain printable words keep
+    /// SwiftTerm's typed path: no control byte means nothing to inject or run, and its
+    /// auto-period and ctrl/meta handling stay as they were.
     override func insertText(_ text: String) {
-        let b = Array(text.utf8)
-        let oneKey = b.count == 1 && (b[0] == 0x09 || b[0] == 0x0a || b[0] == 0x0d)
-        if !oneKey, b.contains(where: { $0 < 0x20 }), let onPaste {
-            onPaste(text)
-        } else {
-            super.insertText(text)
+        if Self.isPaste(text) { onPaste(text) } else { super.insertText(text) }
+    }
+
+    /// `replace(_:withText:)` (predictive text, text replacement, dictation updates) is
+    /// `public`, not `open`, and SwiftTerm sends it raw — a dictated newline ran the line
+    /// (#281). Neither an override nor a claimed `@objc(replaceRange:withText:)` compiles
+    /// (selector conflict with the superclass), but UIKit calls it by selector, so the
+    /// method is added to this subclass at runtime. Text under the paste rule deletes the
+    /// replaced range the typed way, then goes out as a paste. A SwiftTerm bump that
+    /// drops the method logs and leaves replace raw rather than crashing.
+    static let routeReplace: Void = {
+        let sel = #selector(UITextInput.replace(_:withText:))
+        typealias Fn = @convention(c) (AnyObject, Selector, UITextRange, NSString) -> Void
+        guard let method = class_getInstanceMethod(TerminalView.self, sel),
+              let imp = class_getMethodImplementation(TerminalView.self, sel) else {
+            Logger(subsystem: "eu.illegible.prosper", category: "input")
+                .error("replace(_:withText:) not routed: selector missing")
+            return
         }
+        let base = unsafeBitCast(imp, to: Fn.self)
+        let route: @convention(block) (DchTerminalView, UITextRange, NSString) -> Void = { tv, range, text in
+            guard tv.markedTextRange == nil, isPaste(text as String) else { return base(tv, sel, range, text) }
+            base(tv, sel, range, "")
+            tv.onPaste(text as String)
+        }
+        let types = method_getTypeEncoding(method)
+        class_addMethod(DchTerminalView.self, sel, imp_implementationWithBlock(route), types)
+    }()
+
+    private static func isPaste(_ text: String) -> Bool {
+        let b = Array(text.utf8)
+        return b.count != 1 && b.contains(where: { $0 < 0x20 })
     }
     private var lastCols = 0
     private var lastRows = 0

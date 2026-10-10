@@ -141,10 +141,37 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertEqual(spy.sent.last, Array("hi".utf8), "a predicted word must stay typed")
         tv.insertText("\n")
         XCTAssertEqual(spy.sent.last, [0x0d], "Return must still send CR")
+        tv.insertText(" ")
+        XCTAssertEqual(spy.sent.last, [0x20], "a space must go out as typed")
+        tv.insertText("hi there")
+        XCTAssertEqual(spy.sent.last, Array("hi there".utf8), "words with a space must go out as typed")
+        tv.insertText("\t")
+        XCTAssertEqual(spy.sent.last, [0x09], "a lone Tab must go out as typed")
+        tv.insertText("\r")
+        XCTAssertEqual(spy.sent.last, [0x0d], "a lone CR must go out as typed")
+        // #281: one control key from a third-party keyboard is a key, not an empty paste
+        tv.insertText("\u{03}")
+        XCTAssertEqual(spy.sent.last, [0x03], "a lone ^C was lost to an empty paste")
 
         tv.insertText("a\u{1b}[31mb\r")
         XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~a[31mb\r\u{1b}[201~".utf8),
                        "inserted text reached the host unsanitized or unbracketed")
+    }
+
+    /// #281 QA #87: predictive text, text replacement and dictation updates go through
+    /// `replace(_:withText:)`, which SwiftTerm sent raw — a dictated newline ran the line.
+    /// UIKit calls it by selector; text with a control byte now leaves as a paste.
+    func testReplacedTextWithNewlineGoesOutBracketedAndSanitized() async throws {
+        let (vc, spy) = try await makeVC()
+        spy.emit("\u{1b}[?2004h")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        let range = try XCTUnwrap(tv.textRange(from: tv.endOfDocument, to: tv.endOfDocument))
+
+        _ = (tv as NSObject).perform(#selector(UITextInput.replace(_:withText:)), with: range, with: "a\u{1b}\nb")
+
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~a\nb\u{1b}[201~".utf8),
+                       "replaced text reached the host raw or unbracketed")
     }
 
     /// #271 QA #81: a host that never turned bracketed paste on (bash 3.2) printed the
