@@ -439,8 +439,8 @@ final class SessionConnectionDeliveryTests: XCTestCase {
 
     /// #230: ProsperStream's 1 s close failsafe can end stream A before its hand-back
     /// arrives. Once stream B has taken the user's next key, A's late hand-back can't go
-    /// ahead of it any more; sent behind it the host would see "ka". It is dropped — a
-    /// keystroke silently, a paste with a notice.
+    /// ahead of it any more; sent behind it the host would see "ka". It is dropped with a
+    /// sticky notice: the typed one for a keystroke (#289), the paste one for a paste.
     func testLateHandBackFromAnOlderStreamIsDroppedOnceTheNextStreamSent() async throws {
         let (conn, t) = make()
         let s1 = try await startLive(conn, t)
@@ -456,11 +456,11 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000)
         XCTAssertEqual(s2.text, "k", "late hand-back sent behind newer input")
         XCTAssertEqual(conn.queuedByteCount, 0)
-        XCTAssertNil(conn.notice, "a dropped keystroke is silent")
+        XCTAssertEqual(conn.notice, SessionConnection.typedLost, "a dropped keystroke vanished silently")
 
         let paste = TerminalMath.pasteBytes("echo hi\n")
         s1.bounce(.bytes(paste))
-        try await waitUntil("paste notice") { conn.notice != nil }
+        try await waitUntil("paste notice") { conn.notice == SessionConnection.pasteLost }
         XCTAssertEqual(conn.notice, "Paste lost in reconnect, paste again")
         conn.send(Array("l".utf8)[...])
         XCTAssertEqual(s2.text, "kl")
@@ -487,6 +487,70 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(s2.sent, [.bytes(open), .bytes(body)], "late lone closer resent")
         XCTAssertEqual(conn.queuedByteCount, 0)
         XCTAssertNil(conn.notice)
+    }
+
+    /// #289: a late-dropped key is told, but leaves `lossy` unset on purpose: nothing
+    /// queued is behind a gap, so the next key typed offline still queues and arrives.
+    func testLateDroppedKeyLeavesInputOpen() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        conn.send(Array("a".utf8)[...])
+        try await stall(s1, conn, t)
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        conn.send(Array("k".utf8)[...])
+        s1.bounce(.bytes(Array("a".utf8)))   // A's late hand-back, dropped
+        try await waitUntil("typed notice") { conn.notice == SessionConnection.typedLost }
+
+        try await stall(s2, conn, t)
+        conn.send(Array("l".utf8)[...])
+        XCTAssertEqual(conn.queuedByteCount, 1, "a key refused after a late drop")
+        let s3 = try await reattachLive(conn, t, index: 2)
+        try await waitUntil("flush") { s3.text == "l" }
+    }
+
+    /// #284: a hand-back over the cap on its own (a live paste that streamed, then came
+    /// back) is kept whole; only the keys queued behind it go.
+    func testOverCapHandBackIsKeptItself() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        let paste = TerminalMath.pasteBytes(String(repeating: "echo hi\n", count: 9000))
+        conn.send(paste[...])
+        XCTAssertEqual(s1.bytes, paste)
+        try await stall(s1, conn, t)
+        conn.send(Array("x".utf8)[...])
+        s1.bounce(.bytes(paste))
+        try await waitUntil("hand-back") { conn.queuedByteCount != 1 }
+        XCTAssertEqual(conn.queuedByteCount, paste.count, "the hand-back itself was evicted")
+        XCTAssertEqual(conn.notice, SessionConnection.typedLost)
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await waitUntil("flush") { conn.queuedByteCount == 0 }
+        XCTAssertEqual(s2.sent, [.bytes(paste)])
+    }
+
+    /// #284: a flush cut short by a dying stream leaves the gap still queued, so the
+    /// queue stays `lossy`: a key typed then is refused, not queued behind the gap.
+    func testPartialFlushKeepsTheQueueLossy() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        for c in ["1", "2", "3"] { conn.send(Array(c.utf8)[...]) }
+        conn.send(TerminalMath.pasteBytes(String(repeating: "echo hi\n", count: 9000))[...])   // refused: lossy
+        XCTAssertEqual(conn.queuedByteCount, 3)
+
+        t.release()
+        try await waitUntil("reattach") { t.streams.count == 2 }
+        let s2 = t.streams[1]
+        s2.acceptLimit = 1
+        s2.emit("$ ")
+        try await waitUntil("partial flush") { s2.text == "1" }
+        conn.send(Array("4".utf8)[...])
+        XCTAssertEqual(conn.queuedByteCount, 2, "a key queued behind the gap after a partial flush")
+        s2.drop()
+        try await waitUntil("third attach") { t.streams.count == 3 }
+        let s3 = t.streams[2]
+        s3.emit("$ ")
+        try await waitUntil("rest flushed") { s3.text == "23" }
     }
 
     /// SwiftTerm's paste is three sends: opener, text, closer. They leave as ONE frame.
@@ -620,10 +684,11 @@ final class SessionConnectionDeliveryTests: XCTestCase {
     }
 
     /// #241 L2: a dropped hand-back is a paste by its ESC[200~ opener, not by its size.
+    /// Keys get the typed notice since #289.
     func testLateHandBackIsClassifiedByThePasteOpenerNotSize() async throws {
         let keys = Array("\u{1b}[A\u{1b}[A\u{1b}[A\u{1b}[Aabcd".utf8)   // 16 bytes, no opener
         let paste = TerminalMath.pasteBytes("abc")                           // 15 bytes framed
-        for (frame, expected) in [(keys, nil), (paste, "Paste lost in reconnect, paste again")] {
+        for (frame, expected) in [(keys, SessionConnection.typedLost), (paste, SessionConnection.pasteLost)] {
             let (conn, t) = make()
             let s1 = try await startLive(conn, t)
             try await stall(s1, conn, t)

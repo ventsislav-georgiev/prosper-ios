@@ -231,7 +231,8 @@ final class SessionConnection: ObservableObject {
     /// already taken input (a hand-back that missed its stream's end; ProsperStream's
     /// close failsafe hands back what it still holds first, #251): it can no longer go
     /// ahead of that input, and sent behind it the host sees the keys out of order —
-    /// dropped instead, with `lostNotice`.
+    /// dropped instead, with `lostNotice`, or for keys the typed notice: sent at once on a
+    /// live stream (no `lossy` gate on that path), the user saw nothing go (#289).
     ///
     /// A hand-back that pushes the queue past the cap is kept: it is older than every
     /// frame behind it. The NEWEST whole frames go from the end until it fits (never a
@@ -247,10 +248,11 @@ final class SessionConnection: ObservableObject {
     private func requeue(_ out: Outbound, from g: Int) {
         guard !isOver else { return }
         // A paste is one frame (`send`), so it is dropped whole. A lone ESC[201~ (only
-        // after `pasteWaitMax`) is dropped too: zsh already ended paste mode on
+        // after `pasteWaitMax`) is dropped too, silently: zsh already ended paste mode on
         // KEYTIMEOUT, and a stray closer rings the bell and inserts "~" (#241 QA #63).
         if g < sentGen {
             if let text = Self.lostNotice(for: out) { show(text, sticky: true) }
+            else if out != .bytes(Self.pasteClose) { showTypedLost() }
             return
         }
         let at = min(requeueAt, outbox.count)
@@ -294,9 +296,11 @@ final class SessionConnection: ObservableObject {
         for f in frames {
             if let text = Self.lostNotice(for: f) { show(text, sticky: true) } else { keys = true }
         }
-        if keys, notice == nil || !noticeSticky || notice == Self.pasteLost {
-            show(Self.typedLost, sticky: true)
-        }
+        if keys { showTypedLost() }
+    }
+
+    private func showTypedLost() {
+        if notice == nil || !noticeSticky || notice == Self.pasteLost { show(Self.typedLost, sticky: true) }
     }
 
     private func clearOutbox() {
