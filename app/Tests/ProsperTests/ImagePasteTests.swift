@@ -168,6 +168,19 @@ final class ImagePasteTests: XCTestCase {
             XCTAssertTrue(bar.ctrlArmed, "\(text) consumed the arm")
         }
 
+        vc.send(source: tv, data: Array("hi".utf8)[...])
+        XCTAssertEqual(spy.sent.last, [0x68, 0x69], "two ASCII bytes in one frame must go out whole")
+        XCTAssertTrue(bar.ctrlArmed, "a two-byte frame consumed the arm")
+
+        vc.send(source: tv, data: [0x7f][...])
+        XCTAssertEqual(spy.sent.last, [0x7f], "a lone DEL must go out unchanged, not as ^_")
+        XCTAssertTrue(bar.ctrlArmed, "a lone DEL consumed the arm")
+        vc.send(source: tv, data: [0x61][...])
+        XCTAssertEqual(spy.sent.last, [0x01], "ctrl must still apply after a DEL")
+        XCTAssertFalse(bar.ctrlArmed, "the typed key must disarm ctrl")
+        bar.onKey?(ShortcutKey(id: "ctrl", label: "ctrl", kind: .ctrl))
+        XCTAssertTrue(bar.ctrlArmed, "precondition: ctrl re-armed")
+
         vc.send(source: tv, data: [0x1b][...])
         XCTAssertEqual(spy.sent.last, [0x1b], "a lone Esc must go out unchanged")
         XCTAssertFalse(bar.ctrlArmed, "a lone Esc must disarm ctrl")

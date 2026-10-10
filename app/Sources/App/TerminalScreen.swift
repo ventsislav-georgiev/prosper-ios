@@ -717,11 +717,13 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         MainActor.assumeIsolated {
             if coalescing != nil {
                 coalescing?.append(contentsOf: data)   // scroll burst — one write, see emitScroll
-            } else if ctrlArmed, data.count == 1, let b = data.first, b < 0x80 {
+            } else if ctrlArmed, data.count == 1, let b = data.first, b < 0x7f {
                 // Only a single typed ASCII key takes the armed ctrl: an ESC-led frame is a
                 // terminal reply (OSC/DCS/APC, kitty flags) or a key sequence (arrows,
-                // alt+key), multi-byte text (é, emoji) is not a ctrl chord; all pass through
-                // whole, leaving ctrl armed (#315, #320). A lone Esc is a typed key: it goes
+                // alt+key), multi-byte text (é, emoji) is not a ctrl chord, and neither is a
+                // lone DEL (0x7f: backspace, or one per character autocorrect replaces — it
+                // would go out as ^_ and eat the arm); all pass through whole, leaving ctrl
+                // armed (#315, #320, #326). A lone Esc is a typed key: it goes
                 // out unchanged (controlByte(0x1b) == 0x1b) and disarms.
                 ctrlArmed = false
                 shortcutBar?.ctrlArmed = false
