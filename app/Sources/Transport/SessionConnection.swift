@@ -247,12 +247,13 @@ final class SessionConnection: ObservableObject {
     /// app-level ack from the server there is no telling which frames arrived; accepted.
     private func requeue(_ out: Outbound, from g: Int) {
         guard !isOver else { return }
-        // A paste is one frame (`send`), so it is dropped whole. A lone ESC[201~ (only
-        // after `pasteWaitMax`) is dropped too, silently: zsh already ended paste mode on
-        // KEYTIMEOUT, and a stray closer rings the bell and inserts "~" (#241 QA #63).
+        // A paste is one frame (`send`), so it is dropped whole. ESC-led frames (keys, CSI,
+        // scroll bursts, SGR mouse reports) stay silent, as does a lone ESC[201~ (only after
+        // `pasteWaitMax`): zsh already ended paste mode on KEYTIMEOUT, and a stray closer
+        // rings the bell and inserts "~" (#241 QA #63). Plain typed keys get the typed notice.
         if g < sentGen {
             if let text = Self.lostNotice(for: out) { show(text, sticky: true) }
-            else if out != .bytes(Self.pasteClose) { showTypedLost() }
+            else if case .bytes(let b) = out, b.first != 0x1b { showTypedLost() }
             return
         }
         let at = min(requeueAt, outbox.count)

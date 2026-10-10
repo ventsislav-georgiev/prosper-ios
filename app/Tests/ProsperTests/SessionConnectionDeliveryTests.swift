@@ -688,7 +688,11 @@ final class SessionConnectionDeliveryTests: XCTestCase {
     func testLateHandBackIsClassifiedByThePasteOpenerNotSize() async throws {
         let keys = Array("\u{1b}[A\u{1b}[A\u{1b}[A\u{1b}[Aabcd".utf8)   // 16 bytes, no opener
         let paste = TerminalMath.pasteBytes("abc")                           // 15 bytes framed
-        for (frame, expected) in [(keys, SessionConnection.typedLost), (paste, SessionConnection.pasteLost)] {
+        let typed = Array("abcdefghijklmnop".utf8)                           // 16 bytes, no ESC
+        let mouse = Array("\u{1b}[<64;10;10M".utf8)                          // SGR mouse report
+        let cases: [([UInt8], String?)] = [(keys, nil), (paste, SessionConnection.pasteLost),
+                                           (typed, SessionConnection.typedLost), (mouse, nil)]
+        for (frame, expected) in cases {
             let (conn, t) = make()
             let s1 = try await startLive(conn, t)
             try await stall(s1, conn, t)
