@@ -35,9 +35,15 @@ final class SessionConnection: ObservableObject {
     private var live = false
     private var liveFallback: Task<Void, Never>?
     /// User writes no stream could take yet, oldest first. Delivered in order, never
-    /// dropped short of the cap, cleared only when the session is over.
+    /// dropped short of the cap, cleared only when the session is over. Always a PREFIX
+    /// of what the user entered since the last full flush: see `lossy`.
     private var outbox: [Outbound] = []
     private var outboxBytes = 0
+    /// Something the user entered was dropped (`write` refused it, or `requeue` evicted
+    /// it). Until the outbox has flushed to empty on a live stream, or is cleared, new
+    /// input is refused too: queued behind the gap, a later Return would run the line
+    /// without what was lost (QA #90: "echo rm -rf *" running as "rm -rf *").
+    private var lossy = false
     /// Where the next `onUnsent` hand-back goes: ahead of everything queued after the
     /// stream that accepted it stopped taking input.
     private var requeueAt = 0
@@ -50,10 +56,10 @@ final class SessionConnection: ObservableObject {
     private var pasteWait: Task<Void, Never>?
 
     /// ponytail: 64 KB of keystrokes/paste held across a drop, counted as framed bytes —
-    /// a bracketed paste's 12-byte wrapper included, so 65524 bytes of pasted text; past it the OLDEST whole
-    /// frames go. A frame is never cut. A single write over the cap is refused up front
-    /// with a `notice` (it could never survive the next frame queued behind it); only a
-    /// live stream with nothing queued takes one. Clipboard images don't count — one per
+    /// a bracketed paste's 12-byte wrapper included, so 65524 bytes of pasted text. A
+    /// write that would push the queue past it is refused, and so is everything after it
+    /// (`lossy`); nothing already queued is ever dropped for it. A single write over the
+    /// cap gets its own `notice`; only a live stream with nothing queued takes one. Clipboard images don't count — one per
     /// explicit paste-image tap. Raise if pastes routinely exceed it.
     static let outboxCap = 64 * 1024
     /// Longest wait for the reattached session's first output before flushing anyway.
@@ -126,20 +132,29 @@ final class SessionConnection: ObservableObject {
         b.starts(with: pasteOpen) && b.firstRange(of: pasteClose) == nil
     }
 
+    /// Live with nothing queued: straight out. Otherwise queued at the end, unless the
+    /// queue is `lossy` or this frame would push it past the cap: then it is refused and
+    /// the queue goes lossy, so the outbox stays a prefix of what the user entered.
     private func write(_ out: Outbound) {
         guard !isOver else { return }
         if outbox.isEmpty, live, let s = stream {
             if push(out, to: s) { clearNotice(); return }
             live = false   // closed under us: queue for the next stream
         }
-        if case .bytes(let b) = out, b.count > Self.outboxCap {
-            show("Paste too large to send while offline (\((b.count + 1023) / 1024) KB)")
+        let size = Self.size(out)
+        if size > Self.outboxCap {
+            lossy = true
+            show("Paste too large to send while offline (\((size + 1023) / 1024) KB)")
             return
         }
+        if lossy || outboxBytes + size > Self.outboxCap { lose([out]); return }
         clearNotice()
         outbox.append(out)
-        if case .bytes(let b) = out { outboxBytes += b.count }
-        trimOutbox()
+        outboxBytes += size
+    }
+
+    private static func size(_ out: Outbound) -> Int {
+        if case .bytes(let b) = out { b.count } else { 0 }   // images don't count
     }
 
     private func show(_ text: String, sticky: Bool = false) {
@@ -203,8 +218,9 @@ final class SessionConnection: ObservableObject {
             guard push(next, to: s) else { live = false; break }
             outbox.removeFirst()
             sent += 1
-            if case .bytes(let b) = next { outboxBytes -= b.count }
+            outboxBytes -= Self.size(next)
         }
+        if outbox.isEmpty { lossy = false }   // the gap is behind us: input may queue again
         // Everything still queued came after what this stream just took, so its
         // hand-backs go to the front, not behind hand-backs it never reached.
         if sent > 0 { requeueAt = 0 }
@@ -216,6 +232,11 @@ final class SessionConnection: ObservableObject {
     /// close failsafe hands back what it still holds first, #251): it can no longer go
     /// ahead of that input, and sent behind it the host sees the keys out of order —
     /// dropped instead, with `lostNotice`.
+    ///
+    /// A hand-back that pushes the queue past the cap is kept: it is older than every
+    /// frame behind it. The NEWEST whole frames go from the end until it fits (never a
+    /// cut one: a cut paste loses its ESC[200~ opener and every line runs as a command),
+    /// and the queue goes `lossy`. Earlier hand-backs ahead of it stay too.
     ///
     /// Known duplicate window (#251/#253): the close failsafe hands back every frame
     /// whose completion had not reported after 1 s, and some of those did reach the
@@ -232,10 +253,17 @@ final class SessionConnection: ObservableObject {
             if let text = Self.lostNotice(for: out) { show(text, sticky: true) }
             return
         }
-        outbox.insert(out, at: min(requeueAt, outbox.count))
+        let at = min(requeueAt, outbox.count)
+        outbox.insert(out, at: at)
         requeueAt += 1
-        if case .bytes(let b) = out { outboxBytes += b.count }
-        trimOutbox()
+        outboxBytes += Self.size(out)
+        var lost: [Outbound] = []
+        while outboxBytes > Self.outboxCap, outbox.count > at + 1 {
+            let last = outbox.removeLast()
+            outboxBytes -= Self.size(last)
+            lost.insert(last, at: 0)
+        }
+        if !lost.isEmpty { lose(lost) }
         flushOutbox()
     }
 
@@ -243,41 +271,39 @@ final class SessionConnection: ObservableObject {
     /// an image, unwrapped text by size. A lost keystroke, or a frame opening with ESC
     /// (keys, CSI, a scroll burst of arrows or SGR mouse reports), is harmless to redo
     /// and stays silent.
+    static let pasteLost = "Paste lost in reconnect, paste again"
+    static let typedLost = "Typed text lost in reconnect, type it again"
+
     static func lostNotice(for out: Outbound) -> String? {
         switch out {
         case .clipboard: return "Image paste lost in reconnect, paste again"
-        case .bytes(let b) where b.starts(with: pasteOpen): return "Paste lost in reconnect, paste again"
-        case .bytes(let b) where b.first != 0x1b && b.count > keystrokeMax: return "Typed text lost in reconnect, type it again"
+        case .bytes(let b) where b.starts(with: pasteOpen): return pasteLost
+        case .bytes(let b) where b.first != 0x1b && b.count > keystrokeMax: return typedLost
         case .bytes: return nil
         }
     }
 
-    /// Drops the oldest WHOLE frames until the queue fits the cap. Never cuts one: a cut
-    /// paste loses its ESC[200~ opener and every pasted line runs as a command, and a
-    /// cut keystroke frame can split a CSI or UTF-8 sequence. The last frame always
-    /// stays: `write` refuses a single frame over the cap, but a hand-back (`requeue`) of
-    /// one a live stream took is kept whole. A dropped paste (or long typed text) gets
-    /// `lostNotice`, sticky like a lost hand-back's: the key that pushed it out would
-    /// otherwise clear it before it was read. Evicted keys (frames `lostNotice` keeps
-    /// silent: a redo after a drop, but here the user never sees them go) get the typed
-    /// notice once, unless a notice is already up: not re-announced per evicted key.
-    private func trimOutbox() {
-        var i = 0
-        var lostKeys = false
-        while outboxBytes > Self.outboxCap, i < outbox.count - 1 {
-            guard case .bytes(let b) = outbox[i] else { i += 1; continue }
-            outbox.remove(at: i)
-            outboxBytes -= b.count
-            if i < requeueAt { requeueAt -= 1 }
-            if let text = Self.lostNotice(for: .bytes(b)) { show(text, sticky: true) } else { lostKeys = true }
+    /// Frames the outbox dropped or refused: the queue goes `lossy`. A paste, image or
+    /// long typed text gets its `lostNotice`, sticky: the next key would otherwise clear
+    /// it before it was read. Lost keys (silent in `lostNotice`) get the typed notice
+    /// once, unless a sticky notice is already up; a paste-lost one doesn't count, so
+    /// it never hides that keys went too: the typed notice replaces it.
+    private func lose(_ frames: [Outbound]) {
+        lossy = true
+        var keys = false
+        for f in frames {
+            if let text = Self.lostNotice(for: f) { show(text, sticky: true) } else { keys = true }
         }
-        if lostKeys, notice == nil { show("Typed text lost in reconnect, type it again", sticky: true) }
+        if keys, notice == nil || !noticeSticky || notice == Self.pasteLost {
+            show(Self.typedLost, sticky: true)
+        }
     }
 
     private func clearOutbox() {
         outbox.removeAll()
         outboxBytes = 0
         requeueAt = 0
+        lossy = false
     }
 
     func resize(cols: Int, rows: Int) {

@@ -215,8 +215,9 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(t.calls, 6, "retry gets the full 1 + maxAttempts again, no attach succeeding in between")
     }
 
-    /// Past the cap the OLDEST whole frames go; the frames that fit arrive intact, none cut.
-    func testCapDropsTheOldestWholeFrames() async throws {
+    /// #284 QA #90: past the cap the NEWEST frames are refused; the oldest that fit arrive
+    /// intact, none cut, so what runs is a prefix of what was typed.
+    func testCapKeepsTheOldestWholeFrames() async throws {
         let (conn, t) = make()
         let s1 = try await startLive(conn, t)
         try await stall(s1, conn, t)
@@ -229,13 +230,71 @@ final class SessionConnectionDeliveryTests: XCTestCase {
 
         let s2 = try await reattachLive(conn, t, index: 1)
         try await waitUntil("flush") { s2.bytes.count == kept }
-        XCTAssertEqual(s2.bytes, Array(all.suffix(kept)))
+        XCTAssertEqual(s2.bytes, Array(all.prefix(kept)))
+        XCTAssertTrue(s2.sent.allSatisfy { if case .bytes(let b) = $0 { b.count == 1000 } else { false } },
+                      "a frame was cut")
+    }
+
+    /// #284 QA #90 probe C1: offline, "echo rm -rf *" + Return, then a paste that fills
+    /// the cap. Evicting the oldest frames ran `rm -rf *` on reconnect. Now the paste is
+    /// refused, every key after it too, and only the typed line runs.
+    func testAPasteThatFillsTheCapNeverEvictsTheTypedLine() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        let line = "echo rm -rf *\r"
+        line.utf8.forEach { conn.send([$0][...]) }
+        let wrap = TerminalMath.pasteBytes("").count
+        conn.send(TerminalMath.pasteBytes(String(repeating: "a", count: SessionConnection.outboxCap - wrap))[...])
+        XCTAssertEqual(conn.queuedByteCount, line.utf8.count, "the typed line lost keys, or the paste queued")
+        XCTAssertEqual(conn.notice, SessionConnection.pasteLost)
+        conn.send(Array("x".utf8)[...])
+        XCTAssertEqual(conn.notice, SessionConnection.typedLost, "keys lost behind a lost paste were not told")
+        XCTAssertEqual(conn.queuedByteCount, line.utf8.count, "a key queued behind the lost paste")
+        conn.send(Array("y".utf8)[...])
+        XCTAssertEqual(conn.notice, SessionConnection.typedLost, "the next key cleared the notice")
+
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await waitUntil("flush") { conn.queuedByteCount == 0 }
+        XCTAssertEqual(s2.text, line)
+        conn.send(Array("z".utf8)[...])
+        XCTAssertEqual(s2.text, line + "z", "input still refused after the flush")
+        try await stall(s2, conn, t)
+        conn.send(Array("w".utf8)[...])
+        XCTAssertEqual(conn.queuedByteCount, 1, "typing does not queue again")
+    }
+
+    /// #284: a hand-back that overflows a full queue is kept (it is the oldest); the
+    /// NEWEST whole frames go from the end, and later keys are refused until the flush.
+    func testRequeueOverflowKeepsTheHandBackAndDropsTheNewest() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        let frame = Array(repeating: UInt8(ascii: "q"), count: 1000)
+        for _ in 0..<65 { conn.send(frame[...]) }
+        conn.send(Array("xy".utf8)[...])
+        XCTAssertEqual(conn.queuedByteCount, 65_002)
+        XCTAssertNil(conn.notice)
+
+        let handBack = Array(repeating: UInt8(ascii: "h"), count: 1000)
+        s1.bounce(.bytes(handBack))
+        try await waitUntil("hand-back") { conn.queuedByteCount != 65_002 }
+        XCTAssertEqual(conn.queuedByteCount, 65_000, "not the hand-back plus 64 whole frames")
+        XCTAssertEqual(conn.notice, SessionConnection.typedLost)
+        conn.send(Array("k".utf8)[...])
+        XCTAssertEqual(conn.queuedByteCount, 65_000, "a key queued behind the gap")
+
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await waitUntil("flush") { conn.queuedByteCount == 0 }
+        XCTAssertEqual(s2.bytes, handBack + Array(repeating: UInt8(ascii: "q"), count: 64_000))
         XCTAssertTrue(s2.sent.allSatisfy { if case .bytes(let b) = $0 { b.count == 1000 } else { false } },
                       "a frame was cut")
     }
 
     /// #229: a paste over the cap, sent while offline, is refused up front with a notice.
     /// Queued, it could only survive until the next frame behind it, then vanish silently.
+    /// #284: the keys after it are refused too, until the flush: run without the paste,
+    /// they are not what the user meant.
     func testPasteOverTheCapWhileOfflineIsRefusedWithANotice() async throws {
         let (conn, t) = make()
         let s1 = try await startLive(conn, t)
@@ -248,9 +307,12 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(conn.notice, "Paste too large to send while offline (71 KB)")
 
         conn.send(Array("y".utf8)[...])
-        XCTAssertNil(conn.notice, "the next accepted write clears the notice")
+        XCTAssertEqual(conn.queuedByteCount, 1, "a key queued behind the refused paste")
+        XCTAssertEqual(conn.notice, SessionConnection.typedLost)
         let s2 = try await reattachLive(conn, t, index: 1)
-        try await waitUntil("flush") { s2.text == "xy" }
+        try await waitUntil("flush") { s2.text == "x" && conn.queuedByteCount == 0 }
+        conn.send(Array("z".utf8)[...])
+        XCTAssertEqual(s2.text, "xz", "input still refused after the flush")
     }
 
     /// A paste just under the cap, queued during a stall, arrives whole with its brackets.
@@ -271,27 +333,29 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(s2.bytes, paste)
     }
 
-    /// #262 QA #79: a key typed offline past the cap pushes out the queued paste. That
-    /// loss is told, sticky past the key that caused it, not silent.
-    func testPasteEvictedByTheCapShowsTheLostNotice() async throws {
+    /// #262 QA #79, #284: a key typed offline past the cap no longer pushes out the
+    /// queued paste; the key is refused and that is told, sticky past the next key.
+    func testKeysPastTheCapBehindAPasteAreRefusedWithANotice() async throws {
         let (conn, t) = make()
         let s1 = try await startLive(conn, t)
         try await stall(s1, conn, t)
         let wrap = TerminalMath.pasteBytes("").count
-        conn.send(TerminalMath.pasteBytes(String(repeating: "a", count: SessionConnection.outboxCap - wrap))[...])
+        let paste = TerminalMath.pasteBytes(String(repeating: "a", count: SessionConnection.outboxCap - wrap))
+        conn.send(paste[...])
         XCTAssertNil(conn.notice)
 
         conn.send(Array("k".utf8)[...])
-        XCTAssertEqual(conn.queuedByteCount, 1, "the paste was not evicted")
-        XCTAssertEqual(conn.notice, "Paste lost in reconnect, paste again", "the paste vanished silently")
+        XCTAssertEqual(conn.queuedByteCount, paste.count, "the paste was evicted")
+        XCTAssertEqual(conn.notice, SessionConnection.typedLost, "the key vanished silently")
         conn.send(Array("l".utf8)[...])
-        XCTAssertEqual(conn.notice, "Paste lost in reconnect, paste again", "the next key cleared the notice")
+        XCTAssertEqual(conn.notice, SessionConnection.typedLost, "the next key cleared the notice")
         let s2 = try await reattachLive(conn, t, index: 1)
-        try await waitUntil("flush") { s2.text == "kl" }
+        try await waitUntil("flush") { s2.bytes.count == paste.count }
+        XCTAssertEqual(s2.bytes, paste)
     }
 
-    /// #271 QA #81: keys the cap evicts (a frame `lostNotice` keeps silent) are told
-    /// once too, sticky past the next key, instead of dropping silently.
+    /// #271 QA #81, #284: keys past the cap (a frame `lostNotice` keeps silent) are
+    /// refused, told once, sticky past the next key; the queued arrows stay.
     func testKeysEvictedByTheCapShowTheTypedLostNotice() async throws {
         let (conn, t) = make()
         let s1 = try await startLive(conn, t)
@@ -302,12 +366,13 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertNil(conn.notice)
 
         conn.send(Array("ab".utf8)[...])
-        XCTAssertEqual(conn.queuedByteCount, 2, "the keys were not evicted")
-        XCTAssertEqual(conn.notice, "Typed text lost in reconnect, type it again", "the keys vanished silently")
+        XCTAssertEqual(conn.queuedByteCount, arrows.count, "the arrows were evicted, or the keys queued")
+        XCTAssertEqual(conn.notice, SessionConnection.typedLost, "the keys vanished silently")
         conn.send(Array("c".utf8)[...])
-        XCTAssertEqual(conn.notice, "Typed text lost in reconnect, type it again", "the next key cleared the notice")
+        XCTAssertEqual(conn.notice, SessionConnection.typedLost, "the next key cleared the notice")
         let s2 = try await reattachLive(conn, t, index: 1)
-        try await waitUntil("flush") { s2.text == "abc" }
+        try await waitUntil("flush") { s2.bytes.count == arrows.count }
+        XCTAssertEqual(s2.bytes, arrows)
     }
 
     /// #262 QA #79 probe b, on the real wire: clipboard text carrying ESC[201~ reaches
