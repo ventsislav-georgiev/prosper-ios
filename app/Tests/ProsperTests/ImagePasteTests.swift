@@ -240,6 +240,10 @@ final class ImagePasteTests: XCTestCase {
         tv.insertText("\u{80}x\u{85}\u{9f}y")
         XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~xy\u{1b}[201~".utf8), "a C1 control survived the paste")
         XCTAssertFalse(spy.sent.contains { $0.contains(0x9b) }, "a raw CSI byte reached the host")
+
+        // #299: U+001F (^_) is the top C0 control; it must route as a paste, not go raw.
+        tv.insertText("a\u{1f}b")
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~ab\u{1b}[201~".utf8), "^_ through insertText went raw")
     }
 
     /// QA #99: a pending mark (multistage input) is dropped when inserted text goes out as
@@ -255,6 +259,15 @@ final class ImagePasteTests: XCTestCase {
         tv.insertText("a\nb")
         XCTAssertNil(tv.markedTextRange, "the mark outlived a pasted insert")
         XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~a\nb\u{1b}[201~".utf8))
+
+        // #299 M1: a C1-only insert over a mark also drops the mark and pastes exactly once.
+        tv.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0))
+        XCTAssertNotNil(tv.markedTextRange)
+        let before = spy.sent.count
+        tv.insertText("x\u{9b}y")
+        XCTAssertNil(tv.markedTextRange, "the mark outlived a C1 pasted insert")
+        XCTAssertEqual(spy.sent.count, before + 1, "onPaste did not fire exactly once")
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~xy\u{1b}[201~".utf8))
     }
 
     /// #271 QA #81: a host that never turned bracketed paste on (bash 3.2) printed the
