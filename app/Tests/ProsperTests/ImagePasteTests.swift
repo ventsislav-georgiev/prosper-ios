@@ -151,6 +151,34 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertFalse(bar.ctrlArmed, "the typed key must disarm ctrl")
     }
 
+    /// #320 QA #126: only a single typed ASCII byte takes the armed ctrl. Multi-byte text
+    /// (é was sent as 0x03 = ^C) passes through whole and keeps the arm; a lone Esc goes
+    /// out unchanged and disarms.
+    func testCtrlArmedAppliesOnlyToSingleAsciiByte() async throws {
+        let (vc, spy) = try await makeVC()
+        let bar = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? ShortcutBar }.first)
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        bar.onKey?(ShortcutKey(id: "ctrl", label: "ctrl", kind: .ctrl))
+        XCTAssertTrue(bar.ctrlArmed, "precondition: ctrl armed")
+
+        for text in ["é", "😀"] {
+            let bytes = Array(text.utf8)
+            vc.send(source: tv, data: bytes[...])
+            XCTAssertEqual(spy.sent.last, bytes, "\(text) was mangled by the armed ctrl")
+            XCTAssertTrue(bar.ctrlArmed, "\(text) consumed the arm")
+        }
+
+        vc.send(source: tv, data: [0x1b][...])
+        XCTAssertEqual(spy.sent.last, [0x1b], "a lone Esc must go out unchanged")
+        XCTAssertFalse(bar.ctrlArmed, "a lone Esc must disarm ctrl")
+
+        bar.onKey?(ShortcutKey(id: "ctrl", label: "ctrl", kind: .ctrl))
+        XCTAssertTrue(bar.ctrlArmed, "precondition: ctrl re-armed")
+        vc.send(source: tv, data: [0x61][...])
+        XCTAssertEqual(spy.sent.last, [0x01], "ctrl no longer applies to the typed key")
+        XCTAssertFalse(bar.ctrlArmed, "the typed key must disarm ctrl")
+    }
+
     /// #270 QA #81: a clipboard keyboard, dictation or predictive text inserts through
     /// `insertText`, which SwiftTerm sent raw — an embedded ESC sequence coloured the
     /// line and the CR ran it. Text carrying a control byte now leaves as a sanitized

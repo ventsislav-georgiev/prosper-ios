@@ -737,6 +737,7 @@ final class SessionConnectionDeliveryTests: XCTestCase {
             ([0x1b] + Array("é".utf8), true), ([0x1b] + Array("б".utf8), true), (Array("a".utf8), true), // plain key
             (Array("\u{1b}[27u".utf8), true), (Array("\u{1b}[97;5u".utf8), true),   // kitty Esc, ctrl+a (#314)
             (Array("\u{1b}[13;2u".utf8), true), (Array("\u{1b}[?1u".utf8), false),  // kitty shift+enter; flags reply
+            (Array("\u{1b}[97;1:2u".utf8), true),                                     // kitty key-repeat event (colon)
             (Array("\u{1b}[<64;10;10M".utf8), false)]                                // SGR mouse report
         for (frame, typed) in cases {
             XCTAssertEqual(SessionConnection.isTypedKey(frame), typed, "\(frame) misclassified")
