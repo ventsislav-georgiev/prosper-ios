@@ -338,6 +338,94 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(conn.notice, "Paste lost in reconnect, paste again")
         conn.send(Array("l".utf8)[...])
         XCTAssertEqual(s2.text, "kl")
+        XCTAssertEqual(conn.notice, "Paste lost in reconnect, paste again",
+                       "typing on cleared the lost-paste notice before the user could read it")
+    }
+
+    /// #241 L2: a dropped hand-back is a paste by its ESC[200~ opener, not by its size.
+    func testLateHandBackIsClassifiedByThePasteOpenerNotSize() async throws {
+        let keys = Array("\u{1b}[A\u{1b}[A\u{1b}[A\u{1b}[Aabcdefgh".utf8)   // 20 bytes, no opener
+        let paste = TerminalMath.pasteBytes("abc")                           // 15 bytes framed
+        for (frame, expected) in [(keys, nil), (paste, "Paste lost in reconnect, paste again")] {
+            let (conn, t) = make()
+            let s1 = try await startLive(conn, t)
+            try await stall(s1, conn, t)
+            let s2 = try await reattachLive(conn, t, index: 1)
+            try await Task.sleep(nanoseconds: 50_000_000)
+            conn.send(Array("k".utf8)[...])
+            XCTAssertEqual(s2.text, "k")
+
+            s1.bounce(.bytes(frame))
+            try await Task.sleep(nanoseconds: 100_000_000)
+            XCTAssertEqual(conn.notice, expected, "\(frame.count)-byte frame misclassified")
+            conn.close()
+        }
+    }
+
+    /// #241 (f): a late clipboard hand-back is an image paste lost: notice, sticky past typing.
+    func testLateClipboardHandBackShowsTheImageNotice() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        let png = Data([0x89, 0x50, 0x4e, 0x47])
+        conn.putClipboard(png)
+        XCTAssertEqual(s1.sent, [.clipboard(png)])
+        try await stall(s1, conn, t)
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        conn.send(Array("k".utf8)[...])
+        XCTAssertEqual(s2.text, "k")
+
+        s1.bounce(.clipboard(png))
+        try await waitUntil("image notice") { conn.notice != nil }
+        XCTAssertEqual(conn.notice, "Image paste lost in reconnect, paste again")
+        XCTAssertEqual(s2.sent, [.bytes(Array("k".utf8))], "late clipboard sent behind newer input")
+        conn.send(Array("l".utf8)[...])
+        XCTAssertEqual(conn.notice, "Image paste lost in reconnect, paste again", "typing cleared the image notice")
+    }
+
+    /// #241: an accepted LIVE write clears the refusal notice, not just a queued one.
+    func testAcceptedLiveWriteClearsTheRefusalNotice() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        conn.send(TerminalMath.pasteBytes(String(repeating: "a", count: SessionConnection.outboxCap))[...])
+        XCTAssertNotNil(conn.notice)
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        conn.send(Array("y".utf8)[...])
+        XCTAssertEqual(s2.text, "y", "went out live")
+        XCTAssertNil(conn.notice, "an accepted live write left the refusal notice up")
+    }
+
+    /// #241: a second refusal restarts the notice's life instead of inheriting the first one's.
+    func testASecondRefusalRestartsTheNoticeTimer() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        let paste = TerminalMath.pasteBytes(String(repeating: "a", count: SessionConnection.outboxCap))
+        conn.send(paste[...])
+        try await Task.sleep(for: .milliseconds(2500))
+        conn.send(paste[...])
+        try await Task.sleep(for: .milliseconds(2500))   // 5 s after the first, 2.5 s after the second
+        XCTAssertNotNil(conn.notice, "the first refusal's timer cleared the second notice early")
+        try await waitUntil("expiry", timeout: 3) { conn.notice == nil }
+    }
+
+    /// #241: the backoff giving up while a notice is up clears it, so the tappable retry
+    /// capsule (statusChip prefers the notice) is never hidden.
+    func testEnteringFailedClearsTheNotice() async throws {
+        let t = DeliveryTransport()
+        let conn = SessionConnection(transport: t, session: DchSession(name: "t", alias: nil),
+                                     backoff: BackoffPolicy(base: [0], cap: 0, maxAttempts: 1))
+        conn.onBytes = { _ in }
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        conn.send(TerminalMath.pasteBytes(String(repeating: "a", count: SessionConnection.outboxCap))[...])
+        XCTAssertNotNil(conn.notice)
+        t.failAttaches = true
+        t.release()
+        try await waitUntil("failed") { if case .failed = conn.state { true } else { false } }
+        XCTAssertNil(conn.notice, "a notice is hiding the Tap-to-retry capsule")
     }
 
     /// Image paste during a drop: the clipboard must still land before the ctrl-V.
@@ -402,7 +490,7 @@ final class SessionConnectionDeliveryTests: XCTestCase {
 // MARK: - Fakes
 
 /// Hands out a fresh stream per attach; `hold` parks the next attach until `release`;
-/// `failAttaches` makes every attach throw. `calls` counts attach attempts.
+/// `failAttaches` makes every attach throw (a parked one once released). `calls` counts attach attempts.
 @MainActor
 final class DeliveryTransport: SessionTransport {
     var streams: [DeliveryStream] = []
@@ -415,12 +503,12 @@ final class DeliveryTransport: SessionTransport {
     func listSessions() async throws -> [DchSession] { [] }
     func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream {
         calls += 1
-        if failAttaches { throw TransportError.notConnected }
         if hold {
             parked = true
             await withCheckedContinuation { gate = $0 }
             parked = false
         }
+        if failAttaches { throw TransportError.notConnected }   // after the hold: a parked attach can fail
         let s = DeliveryStream()
         streams.append(s)
         return s

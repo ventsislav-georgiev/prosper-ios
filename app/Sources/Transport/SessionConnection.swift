@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Drives one attached session and keeps it alive across drops (PLAN §15.1). The
 /// terminal view feeds bytes in via `send`/`resize` and renders bytes out via
@@ -9,9 +10,11 @@ import Foundation
 @MainActor
 final class SessionConnection: ObservableObject {
     @Published private(set) var state: ConnectionState = .connecting
-    /// One quiet status line (a refused paste); cleared by the next accepted write or
-    /// after `noticeLife`.
+    /// One quiet status line, gone after `noticeLife` or on entering `.failed` (the retry
+    /// capsule wins). A refused paste also clears on the next accepted write; a sticky
+    /// one (a paste lost in reconnect) outlives typing, or the user never sees it.
     @Published private(set) var notice: String?
+    private var noticeSticky = false
     private var noticeClear: Task<Void, Never>?
     static let noticeLife: Duration = .seconds(4)
 
@@ -42,7 +45,8 @@ final class SessionConnection: ObservableObject {
     private var gen = 0
     private var sentGen = 0
 
-    /// ponytail: 64 KB of keystrokes/paste held across a drop; past it the OLDEST whole
+    /// ponytail: 64 KB of keystrokes/paste held across a drop, counted as framed bytes —
+    /// a bracketed paste's 12-byte wrapper included, so 65524 bytes of pasted text; past it the OLDEST whole
     /// frames go. A frame is never cut. A single write over the cap is refused up front
     /// with a `notice` (it could never survive the next frame queued behind it); only a
     /// live stream with nothing queued takes one. Clipboard images don't count — one per
@@ -50,9 +54,8 @@ final class SessionConnection: ObservableObject {
     static let outboxCap = 64 * 1024
     /// Longest wait for the reattached session's first output before flushing anyway.
     static let liveFallback: Duration = .seconds(1)
-    /// ponytail: frames up to this size count as a keystroke (a key, CSI or UTF-8
-    /// sequence); larger ones as a paste for the dropped-hand-back notice.
-    static let keystrokeMax = 16
+    /// Bracketed-paste opener (`TerminalMath.pasteBytes`): what marks a frame as a paste.
+    static let pasteOpen = Array("\u{1b}[200~".utf8)
     /// Bytes waiting for a stream (tests).
     var queuedByteCount: Int { outboxBytes }
 
@@ -105,8 +108,12 @@ final class SessionConnection: ObservableObject {
         trimOutbox()
     }
 
-    private func show(_ text: String) {
+    private func show(_ text: String, sticky: Bool = false) {
         notice = text
+        noticeSticky = sticky
+        if UIAccessibility.isVoiceOverRunning {
+            UIAccessibility.post(notification: .announcement, argument: text)
+        }
         noticeClear?.cancel()
         noticeClear = Task { [weak self] in
             try? await Task.sleep(for: Self.noticeLife)
@@ -115,8 +122,9 @@ final class SessionConnection: ObservableObject {
         }
     }
 
-    private func clearNotice() {
-        guard notice != nil else { return }
+    /// Input clears a refusal notice; only `force` (entering `.failed`) clears a sticky one.
+    private func clearNotice(force: Bool = false) {
+        guard notice != nil, force || !noticeSticky else { return }
         noticeClear?.cancel()
         notice = nil
     }
@@ -178,8 +186,9 @@ final class SessionConnection: ObservableObject {
         guard !isOver else { return }
         if g < sentGen {
             switch out {
-            case .bytes(let b) where b.count > Self.keystrokeMax: show("Paste lost in reconnect, paste again")
-            case .clipboard: show("Image paste lost in reconnect, paste again")
+            case .bytes(let b) where b.starts(with: Self.pasteOpen):
+                show("Paste lost in reconnect, paste again", sticky: true)
+            case .clipboard: show("Image paste lost in reconnect, paste again", sticky: true)
             default: break
             }
             return
@@ -351,6 +360,7 @@ final class SessionConnection: ObservableObject {
             if attempt > backoff.maxAttempts {
                 state = .failed("Couldn't reconnect to \(session.title).")
                 clearOutbox()
+                clearNotice(force: true)
                 return
             }
             state = attempt == 1 ? .stalled : .reconnecting(attempt: attempt)

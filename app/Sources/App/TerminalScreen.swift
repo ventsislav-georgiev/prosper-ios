@@ -72,8 +72,8 @@ struct TerminalScreen: View {
     }
 
     @ViewBuilder private var statusChip: some View {
-        // A refused paste happens while offline, so it outranks "Reconnecting…" for its
-        // few seconds; `.failed` never sets one (input is dropped there before the check).
+        // A refused or lost paste happens around a drop, so it outranks "Reconnecting…"
+        // for its few seconds; entering `.failed` clears it, so the retry capsule shows.
         if let notice = conn.notice {
             Label(notice, systemImage: "exclamationmark.triangle")
                 .font(.caption).padding(.horizontal, 12).padding(.vertical, 6)
