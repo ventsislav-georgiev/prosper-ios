@@ -703,7 +703,8 @@ final class SessionConnectionDeliveryTests: XCTestCase {
                                            ([0x1b] + Array("б".utf8), SessionConnection.typedLost),  // alt+б
                                            (Array("\u{1b}]11;rgb:1e1e/1e1e/1e1e\u{1b}\\".utf8), nil), // OSC 11 reply (#309)
                                            ([0x1b, 0x1b, 0x5b, 0x41], nil),               // alt+up, ESC ESC [ A
-                                           ([0x1b, 0x5b], SessionConnection.typedLost)]   // alt+[
+                                           ([0x1b, 0x5b], SessionConnection.typedLost),   // alt+[
+                                           (Array("\u{1b}[27u".utf8), SessionConnection.typedLost)] // kitty Esc (#314)
         for (frame, expected) in cases {
             let (conn, t) = make()
             let s1 = try await startLive(conn, t)
@@ -733,7 +734,10 @@ final class SessionConnectionDeliveryTests: XCTestCase {
             ([0x1b, 0x5b], true), ([0x1b, 0x4f], true),                     // alt+[, alt+O
             ([0x1b, 0x5d], true), ([0x1b, 0x1b], true),                     // alt+], ESC ESC
             ([0x1b], true), ([0x1b, 0x66], true),                           // lone Esc, alt+f
-            ([0x1b] + Array("é".utf8), true), ([0x1b] + Array("б".utf8), true), (Array("a".utf8), true)]                // plain key
+            ([0x1b] + Array("é".utf8), true), ([0x1b] + Array("б".utf8), true), (Array("a".utf8), true), // plain key
+            (Array("\u{1b}[27u".utf8), true), (Array("\u{1b}[97;5u".utf8), true),   // kitty Esc, ctrl+a (#314)
+            (Array("\u{1b}[13;2u".utf8), true), (Array("\u{1b}[?1u".utf8), false),  // kitty shift+enter; flags reply
+            (Array("\u{1b}[<64;10;10M".utf8), false)]                                // SGR mouse report
         for (frame, typed) in cases {
             XCTAssertEqual(SessionConnection.isTypedKey(frame), typed, "\(frame) misclassified")
         }

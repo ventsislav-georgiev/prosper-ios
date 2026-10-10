@@ -284,8 +284,16 @@ final class SessionConnection: ObservableObject {
     /// second byte of `[` (CSI: cursor/function keys, mouse reports), `O` (SS3), ESC (a
     /// meta-prefixed sequence such as alt+arrow ESC ESC [ A), or `]` / `P` / `_` / `^` (the
     /// OSC / DCS / APC / PM replies the terminal sends to nvim/vim queries, #309) is not typed.
+    /// Except a kitty keyboard protocol key report (`isKittyKey`, #314): under the flags nvim and
+    /// fish push, Esc is ESC[27u and ctrl+a ESC[97;5u, so those are typed keys.
     static func isTypedKey(_ b: [UInt8]) -> Bool {
-        b.first != 0x1b || b.count <= 2 || !Set<UInt8>([0x1b, 0x5b, 0x4f, 0x5d, 0x50, 0x5f, 0x5e]).contains(b[1])
+        isKittyKey(b) || b.first != 0x1b || b.count <= 2 || !Set<UInt8>([0x1b, 0x5b, 0x4f, 0x5d, 0x50, 0x5f, 0x5e]).contains(b[1])
+    }
+
+    /// ESC [ <digits ; :> u. The reply to a kitty flags query, ESC[?1u, starts with `?` and is not one.
+    static func isKittyKey(_ b: [UInt8]) -> Bool {
+        b.count >= 4 && b[0] == 0x1b && b[1] == 0x5b && b.last == 0x75
+            && b[2...].dropLast().allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x3b || $0 == 0x3a }
     }
 
     static func lostNotice(for out: Outbound) -> String? {
