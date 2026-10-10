@@ -34,8 +34,10 @@ enum TerminalMath {
 
     /// Text for the pty as ONE bracketed paste (ESC[200~ … ESC[201~) — what `dch --send`
     /// does on the Mac: readline, Claude Code and vim insert it verbatim instead of
-    /// running each line at its newline. Always wrapped: dch does not replay DECSET
-    /// 2004 on attach, so the terminal's `bracketedPasteMode` is stale after a reconnect.
+    /// running each line at its newline. Wrapped only when `bracketed` (the host turned
+    /// DECSET 2004 on): a host that never did (bash 3.2) shows the marks as `00~…01~`.
+    /// The mode is trustworthy after a reconnect: dch re-arms every set DEC mode,
+    /// 2004 included, ahead of the screen replay on each attach (dch master.c:2017).
     /// `thenEnter` puts CR after the end marker, so the TUI submits the whole text
     /// instead of seeing a newline inside the paste.
     ///
@@ -48,8 +50,9 @@ enum TerminalMath {
     /// pty's ISIG even inside a paste) — xterm's default for pastes (allowPasteControls
     /// off). A byte filter is safe on UTF-8: bytes under 0x20 never occur inside a
     /// multi-byte sequence.
-    static func pasteBytes(_ s: String, thenEnter: Bool = false) -> [UInt8] {
+    static func pasteBytes(_ s: String, thenEnter: Bool = false, bracketed: Bool = true) -> [UInt8] {
         let text = s.utf8.filter { $0 >= 0x20 || $0 == 0x09 || $0 == 0x0a || $0 == 0x0d }
+        guard bracketed else { return text + (thenEnter ? [0x0d] : []) }
         return Array("\u{1b}[200~".utf8) + text + Array("\u{1b}[201~".utf8) + (thenEnter ? [0x0d] : [])
     }
 

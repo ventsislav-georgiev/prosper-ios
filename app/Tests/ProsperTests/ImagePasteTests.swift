@@ -129,6 +129,8 @@ final class ImagePasteTests: XCTestCase {
     /// bracketed paste; one typed key and a plain word still go out as typed.
     func testInsertedTextWithControlBytesGoesOutBracketedAndSanitized() async throws {
         let (vc, spy) = try await makeVC()
+        spy.emit("\u{1b}[?2004h")   // the shell turned bracketed paste on
+        try await Task.sleep(nanoseconds: 50_000_000)
         let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
 
         tv.insertText("a")
@@ -141,6 +143,18 @@ final class ImagePasteTests: XCTestCase {
         tv.insertText("a\u{1b}[31mb\r")
         XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~a[31mb\r\u{1b}[201~".utf8),
                        "inserted text reached the host unsanitized or unbracketed")
+    }
+
+    /// #271 QA #81: a host that never turned bracketed paste on (bash 3.2) printed the
+    /// marks as `00~…01~`. Cmd-V there sends the text sanitized, with no marks.
+    func testPasteToAHostWithoutBracketedPasteSendsNoMarks() async throws {
+        let (vc, spy) = try await makeVC()
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        UIPasteboard.general.string = "a \u{1b}[201~ b"
+
+        tv.paste(nil)
+
+        XCTAssertEqual(spy.sent, [Array("a [201~ b".utf8)], "marks sent to a host that never asked for them")
     }
 
     /// A bar saved by an older build pinned `pasteImg` to plain ctrl-V forever, so the

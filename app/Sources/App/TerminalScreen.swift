@@ -418,10 +418,12 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// Text reaches the pty as ONE bracketed paste, exactly what `dch --send` does on
     /// the Mac: readline, Claude Code and vim insert it verbatim instead of running
-    /// each line at its newline. Always wrapped — dch does not replay DECSET 2004 on
-    /// attach, so SwiftTerm's `bracketedPasteMode` is stale after a reconnect.
+    /// each line at its newline. Wrapped only when the host turned 2004 on (SwiftTerm's
+    /// `bracketedPasteMode`); dch re-arms it on every attach (master.c:2017), so it is
+    /// not stale after a reconnect. Sanitized either way.
     private func sendText(_ s: String, thenEnter: Bool = false) {
-        conn.send(ArraySlice(TerminalMath.pasteBytes(s, thenEnter: thenEnter)))
+        conn.send(ArraySlice(TerminalMath.pasteBytes(s, thenEnter: thenEnter,
+                                                     bracketed: tv.getTerminal().bracketedPasteMode)))
     }
 
     /// Push the copied image to the remote machine's clipboard, then send the paste
@@ -897,9 +899,9 @@ private final class DchTerminalView: TerminalView {
     var onPaste: ((String) -> Void)?
 
     /// SwiftTerm's paste sends the clipboard raw, through `send(source:data:)` where an
-    /// armed ctrl keeps one byte of it, and unbracketed when its `bracketedPasteMode`
-    /// is stale. It goes the shortcut bar's way instead: `TerminalMath.pasteBytes`,
-    /// sanitized and always bracketed, whole, ctrl untouched (#262).
+    /// armed ctrl keeps one byte of it. It goes the shortcut bar's way instead:
+    /// `TerminalMath.pasteBytes`, sanitized, bracketed when the host turned 2004 on,
+    /// whole, ctrl untouched (#262).
     override func paste(_ sender: Any?) {
         if let s = UIPasteboard.general.string, !s.isEmpty { onPaste?(s) }
     }

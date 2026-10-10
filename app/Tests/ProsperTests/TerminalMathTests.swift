@@ -227,6 +227,12 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(Array(b.suffix(7)), Array("\u{1b}[201~\r".utf8))
     }
 
+    /// #271: unbracketed (the host never set 2004) the text is still filtered, unmarked.
+    func testUnbracketedPasteIsFilteredWithoutMarks() {
+        XCTAssertEqual(TerminalMath.pasteBytes("a\u{1b}[201~\u{03}b\n", thenEnter: true, bracketed: false),
+                       Array("a[201~b\n\r".utf8))
+    }
+
     // MARK: trimTrailingBlankLines — copy mode's text
 
     /// The blank rows under the prompt go; interior blank lines, leading text and the
