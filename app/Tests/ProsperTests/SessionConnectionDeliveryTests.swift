@@ -343,13 +343,13 @@ final class SessionConnectionDeliveryTests: XCTestCase {
     }
 
     /// #241 QA #63: SwiftTerm's paste sends opener, body and closer as three frames. A
-    /// closer handed back after the next stream sent is resent, not dropped: lost, the
-    /// host stays in bracketed-paste mode; stray, it is ignored.
-    func testLateLonePasteCloserIsResentOnTheNextStream() async throws {
+    /// closer handed back after the next stream sent is dropped silently: zsh ended paste
+    /// mode on KEYTIMEOUT, and a stray ESC[201~ rings the bell and inserts "~".
+    func testLateLonePasteCloserIsDroppedSilently() async throws {
         let (conn, t) = make()
         let s1 = try await startLive(conn, t)
         let open = SessionConnection.pasteOpen, body = Array("echo hi\n".utf8)
-        let close = SessionConnection.pasteClose
+        let close: [UInt8] = [27, 91, 50, 48, 49, 126]   // ESC[201~
         for f in [open, body, close] { conn.send(f[...]) }
         try await stall(s1, conn, t)
         s1.bounce(.bytes(open))               // handed back in time
@@ -358,8 +358,9 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         try await waitUntil("flush") { s2.sent.count == 2 }
 
         s1.bounce(.bytes(close))              // late: after the failsafe, s2 already sent
-        try await waitUntil("closer resent") { s2.sent.count == 3 }
-        XCTAssertEqual(s2.sent, [.bytes(open), .bytes(body), .bytes(close)])
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(s2.sent, [.bytes(open), .bytes(body)], "late lone closer resent")
+        XCTAssertEqual(conn.queuedByteCount, 0)
         XCTAssertNil(conn.notice)
     }
 
