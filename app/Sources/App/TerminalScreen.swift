@@ -903,6 +903,24 @@ private final class DchTerminalView: TerminalView {
     override func paste(_ sender: Any?) {
         if let s = UIPasteboard.general.string, !s.isEmpty { onPaste?(s) }
     }
+
+    /// Keyboard text (a clipboard keyboard extension, dictation, predictive text) lands
+    /// here and SwiftTerm sends it raw, so an ESC sequence or a CR inside it acted as
+    /// typed on the host (#270, QA #81). Text carrying any control byte goes the paste
+    /// way instead — filtered and bracketed. One key (a letter, Return's "\n", Tab) and
+    /// plain printable words keep SwiftTerm's typed path: no control byte means nothing
+    /// to inject or run, and its auto-period and ctrl/meta handling stay as they were.
+    /// `replace(_:withText:)` (autocorrect) is `public`, not `open`: it can't be
+    /// overridden and carries system-lexicon text, not clipboard text.
+    override func insertText(_ text: String) {
+        let b = Array(text.utf8)
+        let oneKey = b.count == 1 && (b[0] == 0x09 || b[0] == 0x0a || b[0] == 0x0d)
+        if !oneKey, b.contains(where: { $0 < 0x20 }), let onPaste {
+            onPaste(text)
+        } else {
+            super.insertText(text)
+        }
+    }
     private var lastCols = 0
     private var lastRows = 0
 

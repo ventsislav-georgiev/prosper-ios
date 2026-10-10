@@ -117,6 +117,26 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertEqual(spy.sent.last, [0x03], "ctrl no longer applies to the next key")
     }
 
+    /// #270 QA #81: a clipboard keyboard, dictation or predictive text inserts through
+    /// `insertText`, which SwiftTerm sent raw — an embedded ESC sequence coloured the
+    /// line and the CR ran it. Text carrying a control byte now leaves as a sanitized
+    /// bracketed paste; one typed key and a plain word still go out as typed.
+    func testInsertedTextWithControlBytesGoesOutBracketedAndSanitized() async throws {
+        let (vc, spy) = try await makeVC()
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+
+        tv.insertText("a")
+        XCTAssertEqual(spy.sent.last, [0x61], "a typed letter must stay one raw byte")
+        tv.insertText("hi")
+        XCTAssertEqual(spy.sent.last, Array("hi".utf8), "a predicted word must stay typed")
+        tv.insertText("\n")
+        XCTAssertEqual(spy.sent.last, [0x0d], "Return must still send CR")
+
+        tv.insertText("a\u{1b}[31mb\r")
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[200~a[31mb\r\u{1b}[201~".utf8),
+                       "inserted text reached the host unsanitized or unbracketed")
+    }
+
     /// A bar saved by an older build pinned `pasteImg` to plain ctrl-V forever, so the
     /// fix would never reach anyone who had touched their shortcuts.
     func testSavedBarPicksUpNewKeyDefinitions() {
