@@ -16,7 +16,7 @@ final class SessionConnection: ObservableObject {
     @Published private(set) var notice: String?
     private var noticeSticky = false
     private var noticeClear: Task<Void, Never>?
-    static let noticeLife: Duration = .seconds(4)
+    static var noticeLife: Duration = .seconds(4)
 
     let session: DchSession
     private let transport: SessionTransport

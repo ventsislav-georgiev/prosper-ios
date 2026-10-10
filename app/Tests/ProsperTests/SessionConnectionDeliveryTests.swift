@@ -445,6 +445,50 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertNil(conn.notice, "a notice is hiding the Tap-to-retry capsule")
     }
 
+    /// QA #62: entering `.failed` clears a STICKY notice too (force), not just a refusal.
+    func testEnteringFailedClearsAStickyNotice() async throws {
+        let t = DeliveryTransport()
+        let conn = SessionConnection(transport: t, session: DchSession(name: "t", alias: nil),
+                                     backoff: BackoffPolicy(base: [0], cap: 0, maxAttempts: 1))
+        conn.onBytes = { _ in }
+        let s1 = try await startLive(conn, t)
+        let png = Data([0x89, 0x50, 0x4e, 0x47])
+        conn.putClipboard(png)
+        try await stall(s1, conn, t)
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        conn.send(Array("k".utf8)[...])
+        s1.bounce(.clipboard(png))
+        try await waitUntil("sticky notice") { conn.notice != nil }
+        conn.send(Array("l".utf8)[...])
+        XCTAssertNotNil(conn.notice, "precondition: the notice is sticky")
+        t.failAttaches = true
+        s2.drop()
+        try await waitUntil("failed") { if case .failed = conn.state { true } else { false } }
+        XCTAssertNil(conn.notice, "a sticky notice is hiding the Tap-to-retry capsule")
+    }
+
+    /// QA #62: a sticky notice outlives typing only; it still expires after `noticeLife`.
+    func testAStickyNoticeStillExpiresAfterNoticeLife() async throws {
+        let old = SessionConnection.noticeLife
+        SessionConnection.noticeLife = .milliseconds(50)
+        defer { SessionConnection.noticeLife = old }
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        let png = Data([0x89, 0x50, 0x4e, 0x47])
+        conn.putClipboard(png)
+        try await stall(s1, conn, t)
+        _ = try await reattachLive(conn, t, index: 1)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        conn.send(Array("k".utf8)[...])
+        s1.bounce(.clipboard(png))
+        try await waitUntil("sticky notice") { conn.notice != nil }
+        conn.send(Array("l".utf8)[...])
+        XCTAssertNotNil(conn.notice, "typing cleared the sticky notice")
+        try await waitUntil("sticky notice expired") { conn.notice == nil }
+        conn.close()
+    }
+
     /// Image paste during a drop: the clipboard must still land before the ctrl-V.
     func testClipboardStaysAheadOfItsKeystrokeAcrossADrop() async throws {
         let (conn, t) = make()
