@@ -364,6 +364,73 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertNil(conn.notice)
     }
 
+    /// #251 QA #73: the real stream accepted a paste's closer, then its link dropped
+    /// before the send completion reported, and close() reached its 1 s failsafe. The
+    /// closer goes back before the stream ends, so the next stream sends it first, ahead
+    /// of the next key, and the late ECANCELED completion doesn't send it twice. Lost, it
+    /// leaves bash, python and vim in bracketed-paste mode.
+    func testPasteCloserPendingAtTheCloseFailsafeReachesTheNextStreamInOrder() async throws {
+        final class Wire: @unchecked Sendable {   // main queue only
+            var bytes = Data()
+            /// Input frames the host received; resize/redraw/snapshot frames skipped.
+            var input: [[UInt8]] {
+                var b = bytes, out: [[UInt8]] = []
+                while let (type, p) = try? FrameCodec.pop(&b) { if type == 0x10 { out.append([UInt8](p)) } }
+                return out
+            }
+        }
+        let host = Wire()
+        let listener = try NWListener(using: .tcp, on: .any)
+        listener.newConnectionHandler = { c in
+            c.start(queue: .main)
+            c.send(content: FrameCodec.encode(0x10, Data("$ ".utf8)), completion: .idempotent)
+            func read() {
+                c.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { d, _, done, err in
+                    if let d { host.bytes.append(d) }
+                    if !done, err == nil { read() }
+                }
+            }
+            read()
+        }
+        listener.start(queue: .main)
+        defer { listener.cancel() }
+        try await waitUntil("listener") { (listener.port?.rawValue ?? 0) != 0 }
+
+        // The stream's callback queue: suspended, a send completion can't report.
+        let q = DispatchQueue(label: "t.conn")
+        var suspended = false
+        defer { if suspended { q.resume() } }
+        let c = NWConnection(host: "127.0.0.1", port: listener.port!, using: .tcp)
+        c.start(queue: q)
+        try await waitUntil("connected") { c.state == .ready }
+        let s1 = ProsperStream(conn: c)
+
+        let (conn, t) = make()
+        t.prepared = [s1]
+        conn.start(cols: 80, rows: 24)
+        try await waitUntil("live on the prompt") { conn.state == .connected }
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        let open = SessionConnection.pasteOpen, body = Array("echo hi\n".utf8)
+        let close: [UInt8] = [27, 91, 50, 48, 49, 126]   // ESC[201~
+        conn.send(open[...]); conn.send(body[...])
+        try await waitUntil("opener and body on the wire") { host.input == [open, body] }
+
+        q.suspend(); suspended = true
+        conn.send(close[...])                 // accepted; its completion can't report
+        s1.close()                            // the link drops: only the failsafe ends it
+        try await waitUntil("reattach") { t.streams.count == 1 }
+        let s2 = t.streams[0]
+        s2.emit("$ ")
+        try await waitUntil("closer flushed") { s2.sent.count == 1 }
+        conn.send(Array("k".utf8)[...])
+        q.resume(); suspended = false         // the late ECANCELED completion
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(s2.sent, [.bytes(close), .bytes(Array("k".utf8))])
+        XCTAssertEqual(conn.queuedByteCount, 0)
+        XCTAssertNil(conn.notice)
+    }
+
     /// #241 L2: a dropped hand-back is a paste by its ESC[200~ opener, not by its size.
     func testLateHandBackIsClassifiedByThePasteOpenerNotSize() async throws {
         let keys = Array("\u{1b}[A\u{1b}[A\u{1b}[A\u{1b}[Aabcd".utf8)   // 16 bytes, no opener
@@ -579,6 +646,8 @@ final class DeliveryTransport: SessionTransport {
     var streams: [DeliveryStream] = []
     var hold = false
     var failAttaches = false
+    /// Streams handed out before any fresh `DeliveryStream`, in order.
+    var prepared: [TerminalStream] = []
     private(set) var calls = 0
     private(set) var parked = false
     private var gate: CheckedContinuation<Void, Never>?
@@ -592,6 +661,7 @@ final class DeliveryTransport: SessionTransport {
             parked = false
         }
         if failAttaches { throw TransportError.notConnected }   // after the hold: a parked attach can fail
+        if !prepared.isEmpty { return prepared.removeFirst() }
         let s = DeliveryStream()
         streams.append(s)
         return s

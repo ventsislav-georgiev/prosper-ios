@@ -220,7 +220,9 @@ final class ProsperStream: TerminalStream {
     // `send` runs on main, completions and the pump on the connection's queue.
     private let lock = NSLock()
     private var closed = false
-    private var inFlight = 0
+    /// Accepted writes whose completion hasn't reported yet, by send order.
+    private var pending: [Int: Outbound] = [:]
+    private var seq = 0
     private var finished = false
 
     /// Set by the terminal view; called on the network queue's callback thread.
@@ -288,25 +290,26 @@ final class ProsperStream: TerminalStream {
     private func deliver(_ out: Outbound, _ frame: Data) -> Bool {
         lock.lock()
         if closed { lock.unlock(); return false }
-        inFlight += 1
+        seq += 1
+        let id = seq
+        pending[id] = out
         lock.unlock()
         conn.send(content: frame, completion: .contentProcessed { [self] error in
-            if error != nil {
-                close()              // a failed send means the link is gone; refuse the rest
-                onUnsent?(out)
-            }
-            settle()
+            if error != nil { close() }   // a failed send means the link is gone; refuse the rest
+            settle(id, unsent: error != nil)
         })
         return true
     }
 
     /// Output finishes only after every accepted write has reported, so all
-    /// `onUnsent` hand-backs land before SessionConnection sees the stream end.
-    private func settle() {
+    /// `onUnsent` hand-backs land before SessionConnection sees the stream end. A
+    /// write the close failsafe already handed back is not handed back twice.
+    private func settle(_ id: Int, unsent: Bool) {
         lock.lock()
-        inFlight -= 1
-        let done = closed && inFlight == 0
+        let out = pending.removeValue(forKey: id)
+        let done = closed && pending.isEmpty
         lock.unlock()
+        if unsent, let out { onUnsent?(out) }
         if done { finish() }
     }
 
@@ -335,12 +338,22 @@ final class ProsperStream: TerminalStream {
         lock.lock()
         if closed { lock.unlock(); return }
         closed = true
-        let idle = inFlight == 0
+        let idle = pending.isEmpty
         lock.unlock()
         conn.cancel()   // pending sends complete with ECANCELED → onUnsent → settle
         if idle { finish() }
-        // Failsafe: never let a completion that doesn't fire park the reconnect loop. A
-        // hand-back landing after it is dropped once a newer stream took input (#230).
-        DispatchQueue.global().asyncAfter(deadline: .now() + 1) { [self] in finish() }
+        // Failsafe: never let a completion that doesn't fire park the reconnect loop.
+        // What it still holds never reported reaching the stack, so it goes back first,
+        // in order, before output ends: handed back after the next stream took input it
+        // would be dropped as late (#230), and a lost paste closer wedges bash/vim (#251).
+        // ponytail: a success completion racing this exact moment gets its frame resent.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1) { [self] in
+            lock.lock()
+            let unsent = pending.sorted { $0.key < $1.key }.map(\.value)
+            pending.removeAll()
+            lock.unlock()
+            unsent.forEach { onUnsent?($0) }
+            finish()
+        }
     }
 }

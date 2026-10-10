@@ -182,9 +182,10 @@ final class SessionConnection: ObservableObject {
 
     /// A frame the transport took but couldn't put on the wire: back in line, ahead of
     /// everything typed after it. Unless it comes from an older stream than one that has
-    /// already taken input (ProsperStream's 1 s close failsafe can let the next stream
-    /// go live first): it can no longer go ahead of that input, and sent behind it the
-    /// host sees the keys out of order — dropped instead, with `lostNotice`.
+    /// already taken input (a hand-back that missed its stream's end; ProsperStream's
+    /// close failsafe hands back what it still holds first, #251): it can no longer go
+    /// ahead of that input, and sent behind it the host sees the keys out of order —
+    /// dropped instead, with `lostNotice`.
     private func requeue(_ out: Outbound, from g: Int) {
         guard !isOver else { return }
         // A late lone ESC[201~ (SwiftTerm sends a paste's closer as its own frame) is
