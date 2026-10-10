@@ -717,7 +717,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         MainActor.assumeIsolated {
             if coalescing != nil {
                 coalescing?.append(contentsOf: data)   // scroll burst — one write, see emitScroll
-            } else if ctrlArmed, let b = data.first {
+            } else if ctrlArmed, let b = data.first, b != 0x1b {
+                // Only a plain typed key takes the armed ctrl: an ESC-led frame is a
+                // terminal reply (OSC/DCS/APC, kitty flags) or a key sequence (arrows,
+                // alt+key) and passes through whole, leaving ctrl armed (#315).
                 ctrlArmed = false
                 shortcutBar?.ctrlArmed = false
                 conn.send(ArraySlice([controlByte(b)]))

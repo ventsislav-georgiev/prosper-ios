@@ -125,6 +125,32 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertEqual(spy.sent.last, [0x03], "ctrl no longer applies to the next key")
     }
 
+    /// #315 QA #122: an armed ctrl hit the first byte of ANY outbound frame, so a
+    /// terminal reply (nvim's OSC 11 colour reply at startup) or an arrow key went out
+    /// as one garbage control byte. ESC-led frames now pass through whole and keep the
+    /// arm for the next typed key.
+    func testCtrlArmedLeavesEscLedFramesWholeAndStaysArmed() async throws {
+        let (vc, spy) = try await makeVC()
+        let bar = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? ShortcutBar }.first)
+        bar.onKey?(ShortcutKey(id: "ctrl", label: "ctrl", kind: .ctrl))
+        XCTAssertTrue(bar.ctrlArmed, "precondition: ctrl armed")
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+
+        let reply = Array("\u{1b}]11;rgb:1e1e/1e1e/1e1e\u{1b}\\".utf8)
+        vc.send(source: tv, data: reply[...])
+        XCTAssertEqual(spy.sent.last, reply, "the OSC reply was mangled by the armed ctrl")
+        XCTAssertTrue(bar.ctrlArmed, "a terminal reply consumed the arm")
+
+        let up: [UInt8] = [0x1b, 0x5b, 0x41]
+        vc.send(source: tv, data: up[...])
+        XCTAssertEqual(spy.sent.last, up, "an arrow key was mangled by the armed ctrl")
+        XCTAssertTrue(bar.ctrlArmed, "an arrow key consumed the arm")
+
+        vc.send(source: tv, data: [0x61][...])
+        XCTAssertEqual(spy.sent.last, [0x01], "ctrl no longer applies to the typed key")
+        XCTAssertFalse(bar.ctrlArmed, "the typed key must disarm ctrl")
+    }
+
     /// #270 QA #81: a clipboard keyboard, dictation or predictive text inserts through
     /// `insertText`, which SwiftTerm sent raw — an embedded ESC sequence coloured the
     /// line and the CR ran it. Text carrying a control byte now leaves as a sanitized
