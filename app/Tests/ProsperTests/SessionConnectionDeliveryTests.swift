@@ -457,13 +457,16 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(s2.text, "k", "late hand-back sent behind newer input")
         XCTAssertEqual(conn.queuedByteCount, 0)
         XCTAssertEqual(conn.notice, SessionConnection.typedLost, "a dropped keystroke vanished silently")
+        conn.send(Array("m".utf8)[...])
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(conn.notice, SessionConnection.typedLost, "the next key cleared the typed-lost notice")
 
         let paste = TerminalMath.pasteBytes("echo hi\n")
         s1.bounce(.bytes(paste))
         try await waitUntil("paste notice") { conn.notice == SessionConnection.pasteLost }
         XCTAssertEqual(conn.notice, "Paste lost in reconnect, paste again")
         conn.send(Array("l".utf8)[...])
-        XCTAssertEqual(s2.text, "kl")
+        XCTAssertEqual(s2.text, "kml")
         XCTAssertEqual(conn.notice, "Paste lost in reconnect, paste again",
                        "typing on cleared the lost-paste notice before the user could read it")
     }
@@ -691,7 +694,9 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         let typed = Array("abcdefghijklmnop".utf8)                           // 16 bytes, no ESC
         let mouse = Array("\u{1b}[<64;10;10M".utf8)                          // SGR mouse report
         let cases: [([UInt8], String?)] = [(keys, nil), (paste, SessionConnection.pasteLost),
-                                           (typed, SessionConnection.typedLost), (mouse, nil)]
+                                           (typed, SessionConnection.typedLost), (mouse, nil),
+                                           ([0x1b], SessionConnection.typedLost),         // lone Esc (#296)
+                                           ([0x1b, 0x66], SessionConnection.typedLost)]   // alt+f
         for (frame, expected) in cases {
             let (conn, t) = make()
             let s1 = try await startLive(conn, t)

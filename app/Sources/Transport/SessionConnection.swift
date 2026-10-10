@@ -247,13 +247,14 @@ final class SessionConnection: ObservableObject {
     /// app-level ack from the server there is no telling which frames arrived; accepted.
     private func requeue(_ out: Outbound, from g: Int) {
         guard !isOver else { return }
-        // A paste is one frame (`send`), so it is dropped whole. ESC-led frames (keys, CSI,
-        // scroll bursts, SGR mouse reports) stay silent, as does a lone ESC[201~ (only after
+        // A paste is one frame (`send`), so it is dropped whole. ESC-led frames of 3+ bytes
+        // (CSI/SS3 arrows, scroll bursts, SGR mouse reports) stay silent, as does a lone ESC[201~ (only after
         // `pasteWaitMax`): zsh already ended paste mode on KEYTIMEOUT, and a stray closer
-        // rings the bell and inserts "~" (#241 QA #63). Plain typed keys get the typed notice.
+        // rings the bell and inserts "~" (#241 QA #63). Typed keys (`isTypedKey`: plain bytes, a
+        // lone Esc, alt+letter) get the typed notice: a lost Esc makes vim insert the next command.
         if g < sentGen {
             if let text = Self.lostNotice(for: out) { show(text, sticky: true) }
-            else if case .bytes(let b) = out, b.first != 0x1b { showTypedLost() }
+            else if case .bytes(let b) = out, Self.isTypedKey(b) { showTypedLost() }
             return
         }
         let at = min(requeueAt, outbox.count)
@@ -276,6 +277,9 @@ final class SessionConnection: ObservableObject {
     /// and stays silent.
     static let pasteLost = "Paste lost in reconnect, paste again"
     static let typedLost = "Typed text lost in reconnect, type it again"
+
+    /// A typed key: not ESC-led, or a lone Esc / alt+letter (CSI, SS3 and mouse reports are 3+ bytes).
+    static func isTypedKey(_ b: [UInt8]) -> Bool { b.first != 0x1b || b.count <= 2 }
 
     static func lostNotice(for out: Outbound) -> String? {
         switch out {
