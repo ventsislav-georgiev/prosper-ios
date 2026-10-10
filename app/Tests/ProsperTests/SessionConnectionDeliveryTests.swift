@@ -371,6 +371,11 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(SessionConnection.lostNotice(for: plain(40)), "Typed text lost in reconnect, type it again")
         XCTAssertEqual(SessionConnection.lostNotice(for: plain(17)), "Typed text lost in reconnect, type it again")
         XCTAssertNil(SessionConnection.lostNotice(for: plain(16)))
+        let arrows = Array(String(repeating: "\u{1b}[A", count: 10).utf8)          // 30 bytes
+        let mouse = Array(String(repeating: "\u{1b}[<64;1;1M", count: 10).utf8)    // 100 bytes
+        XCTAssertEqual(arrows.count, 30); XCTAssertEqual(mouse.count, 100)
+        XCTAssertNil(SessionConnection.lostNotice(for: .bytes(arrows)), "a scroll burst of arrows is not typed text")
+        XCTAssertNil(SessionConnection.lostNotice(for: .bytes(mouse)), "an SGR mouse burst is not typed text")
         XCTAssertEqual(SessionConnection.lostNotice(for: .clipboard(Data([1]))), "Image paste lost in reconnect, paste again")
     }
 

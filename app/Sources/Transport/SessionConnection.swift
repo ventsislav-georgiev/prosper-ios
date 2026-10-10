@@ -199,13 +199,14 @@ final class SessionConnection: ObservableObject {
     }
 
     /// What to tell the user about a dropped hand-back: a paste by its ESC[200~ opener,
-    /// an image, unwrapped text by size. A lost keystroke is visibly unsent on screen
+    /// an image, unwrapped text by size. A lost keystroke, or a frame opening with ESC
+    /// (keys, CSI, a scroll burst of arrows or SGR mouse reports), is harmless to redo
     /// and stays silent.
     static func lostNotice(for out: Outbound) -> String? {
         switch out {
         case .clipboard: return "Image paste lost in reconnect, paste again"
         case .bytes(let b) where b.starts(with: pasteOpen): return "Paste lost in reconnect, paste again"
-        case .bytes(let b) where b.count > keystrokeMax: return "Typed text lost in reconnect, type it again"
+        case .bytes(let b) where b.first != 0x1b && b.count > keystrokeMax: return "Typed text lost in reconnect, type it again"
         case .bytes: return nil
         }
     }
