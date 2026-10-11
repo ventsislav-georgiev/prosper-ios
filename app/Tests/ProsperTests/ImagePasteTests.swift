@@ -369,7 +369,8 @@ final class ImagePasteTests: XCTestCase {
         let (vc, spy) = try await makeVC(live: false)
         let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
         UIPasteboard.general.string = "a \u{1b}[201~ b"
-        // A redraw and a screen mirror are not host bytes: kills M7b and M8 (#396).
+        // A redraw and a mirror are not host bytes (M7b, M8, #396). The mirror crosses a Task hop in
+        // SessionConnection (:426) before applyScreen runs, so the 50 ms sleep must stay before the paste.
         vc.forceRedraw()
         spy.onScreen?(ArraySlice(Array("$ ".utf8)))
         try await Task.sleep(nanoseconds: 50_000_000)
