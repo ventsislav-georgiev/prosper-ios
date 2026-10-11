@@ -369,6 +369,10 @@ final class ImagePasteTests: XCTestCase {
         let (vc, spy) = try await makeVC(live: false)
         let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
         UIPasteboard.general.string = "a \u{1b}[201~ b"
+        // A redraw and a screen mirror are not host bytes: kills M7b and M8 (#396).
+        vc.forceRedraw()
+        spy.onScreen?(ArraySlice(Array("$ ".utf8)))
+        try await Task.sleep(nanoseconds: 50_000_000)
 
         tv.paste(nil)
         spy.emit("$ ")
