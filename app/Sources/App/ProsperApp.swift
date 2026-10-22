@@ -330,7 +330,7 @@ struct SessionListView: View {
             } else if let error {
                 Text(error).foregroundStyle(.secondary)
             }
-            ForEach(sessions) { s in row(s) }
+            ForEach(DchSession.ordered(sessions)) { s in row(s) }
         }
         .navigationTitle("Sessions")
         .toolbar {
@@ -574,6 +574,18 @@ struct SessionListView: View {
                 case .unknown:           break
                 }
             }
+        }
+    }
+}
+
+extension DchSession {
+    /// Display order for the Sessions screen: by the shown title, case-insensitive and
+    /// numeric-aware (s2 before s10), ties on `name`. Applied at render time so
+    /// `sessions` (and the poll's equality check) stays in server order.
+    static func ordered(_ list: [DchSession]) -> [DchSession] {
+        list.sorted {
+            let c = $0.title.localizedStandardCompare($1.title)
+            return c == .orderedSame ? $0.name < $1.name : c == .orderedAscending
         }
     }
 }

@@ -148,4 +148,11 @@ final class SessionActivityPlanTests: XCTestCase {
         XCTAssertLessThanOrEqual(SessionLiveActivities.staleAfter, SessionLiveActivities.dismissAfter,
                                  "and it must go stale well before a finished session is dismissed")
     }
+
+    func testSessionsOrderedByTitle() {
+        let list = [DchSession(name: "s10"), DchSession(name: "b", alias: "Zed"),
+                    DchSession(name: "s2"), DchSession(name: "y", alias: "alpha"),
+                    DchSession(name: "x", alias: "alpha"), DchSession(name: "Beta")]
+        XCTAssertEqual(DchSession.ordered(list).map(\.name), ["x", "y", "Beta", "s2", "s10", "b"])
+    }
 }
