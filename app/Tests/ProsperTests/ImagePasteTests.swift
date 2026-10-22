@@ -550,4 +550,88 @@ final class ImagePasteTests: XCTestCase {
                        "the user's set and order must survive, the send key added at the end")
         XCTAssertEqual(loaded.first?.kind, .pasteImage, "stale kind kept the image paste broken")
     }
+
+    // MARK: long-press copies the block under the finger as one line (#458)
+
+    /// Where a hold on visible row `row` lands in `tv` — content space, as a gesture's
+    /// `location(in:)` reports it.
+    private func rowPoint(_ tv: TerminalView, _ row: Int) -> CGPoint {
+        let cellH = tv.caretFrame.height > 0 ? tv.caretFrame.height
+                  : tv.bounds.height / CGFloat(tv.getTerminal().rows)
+        return CGPoint(x: 20, y: (CGFloat(row) + 0.5) * cellH + tv.contentOffset.y)
+    }
+
+    private let claudeScreen = "\u{1b}[2J\u{1b}[H\r\n"
+        + "⏺ git commit -m \"fix the\r\n"
+        + "    wrapped thing\"\r\n"
+        + "  ⎿  [main abc123] fix\r\n"
+
+    func testLongPressCopiesTheWrappedCommandAsOneLine() async throws {
+        let (vc, _) = try await makeVC()
+        let (_, tv) = try barAndTerminal(vc)
+        tv.feed(text: claudeScreen)
+
+        vc.copyLine(at: rowPoint(tv, 2))
+
+        XCTAssertEqual(UIPasteboard.general.string, "git commit -m \"fix the wrapped thing\"",
+                       "the ⏺ head and its continuation must land as one runnable line, ⎿ left out")
+        let toast = vc.view.subviews.flatMap(\.subviews).compactMap { ($0 as? UILabel)?.text }
+            .first { $0.hasPrefix("Copied as one line") }
+        XCTAssertEqual(toast, "Copied as one line\ngit commit -m \"fix the wrapped thing\"")
+    }
+
+    /// A blank row copies nothing: the clipboard keeps what it had, no toast.
+    func testLongPressOnABlankRowLeavesTheClipboardAlone() async throws {
+        let (vc, _) = try await makeVC()
+        let (_, tv) = try barAndTerminal(vc)
+        tv.feed(text: claudeScreen)
+        UIPasteboard.general.string = "kept"
+
+        vc.copyLine(at: rowPoint(tv, 0))
+        vc.copyLine(at: rowPoint(tv, 6))
+
+        XCTAssertEqual(UIPasteboard.general.string, "kept")
+        XCTAssertFalse(vc.view.subviews.flatMap(\.subviews).contains {
+            ($0 as? UILabel)?.text?.hasPrefix("Copied") == true
+        }, "a blank hold must not toast")
+    }
+
+    /// Scrolled back, the row under the finger is a scrollback row: visible row + yDisp.
+    func testLongPressInScrollbackCopiesTheRowOnScreen() async throws {
+        let (vc, _) = try await makeVC()
+        let (_, tv) = try barAndTerminal(vc)
+        let term = tv.getTerminal()
+        tv.feed(text: (0..<120).map { "line \($0)\r\n\r\n" }.joined())
+        tv.scrollUp(lines: 30)
+        let row = (0..<term.rows).first {
+            term.getLine(row: $0)?.translateToString(trimRight: true).hasPrefix("line ") == true
+        }
+        let r = try XCTUnwrap(row)
+        let shown = term.getLine(row: r)!.translateToString(trimRight: true)
+        XCTAssertGreaterThan(term.buffer.yDisp, 0, "precondition: scrolled into the scrollback")
+        XCTAssertNotEqual(shown, "line 0", "precondition: the top of the buffer is off screen")
+
+        vc.copyLine(at: rowPoint(tv, r))
+
+        XCTAssertEqual(UIPasteboard.general.string, shown)
+    }
+
+    /// The hold must not also fire the tap (keyboard) or the pan (copy mode): both wait
+    /// for the long-press to fail, and still recognize alongside each other.
+    func testTapAndPanWaitForTheLongPress() async throws {
+        let (vc, _) = try await makeVC()
+        let (_, tv) = try barAndTerminal(vc)
+        let all = tv.gestureRecognizers ?? []
+        let holds = all.filter { $0 is UILongPressGestureRecognizer }
+        XCTAssertEqual(holds.count, 1, "SwiftTerm's own long-press must stay stripped")
+        let hold = try XCTUnwrap(holds.first)
+        let tap = try XCTUnwrap(all.first { $0 is UITapGestureRecognizer && $0.delegate === vc })
+        let pan = try XCTUnwrap(all.first { $0 is UIPanGestureRecognizer && $0.delegate === vc })
+
+        XCTAssertTrue(vc.gestureRecognizer(tap, shouldRequireFailureOf: hold))
+        XCTAssertTrue(vc.gestureRecognizer(pan, shouldRequireFailureOf: hold))
+        XCTAssertFalse(vc.gestureRecognizer(tap, shouldRequireFailureOf: pan))
+        XCTAssertFalse(vc.gestureRecognizer(pan, shouldRequireFailureOf: tap))
+        XCTAssertTrue(vc.gestureRecognizer(tap, shouldRecognizeSimultaneouslyWith: pan))
+    }
 }

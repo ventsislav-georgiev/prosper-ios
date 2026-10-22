@@ -311,6 +311,67 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(TerminalMath.oneLine("中文中文\n中文", cols: 4), "中文中文中文")
     }
 
+    // MARK: commandBlock — the long-press copy's block (#458)
+
+    private let claude = [
+        "",
+        "⏺ git commit -m \"fix the",
+        "    wrapped thing\"",
+        "  ⎿  [main abc123] fix the wrapped thing",
+        "",
+    ]
+
+    /// A wrapped command under a ⏺ head: the head's marker is blanked, the ⎿ result row
+    /// below is the next block and stays out.
+    func testCommandBlockTakesTheWrappedCommandUnderItsHead() {
+        let block = TerminalMath.commandBlock(claude, at: 2)
+        XCTAssertEqual(block, ["  git commit -m \"fix the", "    wrapped thing\""])
+        XCTAssertEqual(TerminalMath.oneLine(block.joined(separator: "\n"), cols: 80),
+                       "git commit -m \"fix the wrapped thing\"")
+    }
+
+    /// Claude Code draws its bullet as ● off macOS (a Linux session host).
+    func testCommandBlockTakesTheLinuxBulletAsAHead() {
+        let rows = ["● Bash(npm run", "  build)", "  ⎿  done"]
+        XCTAssertEqual(TerminalMath.commandBlock(rows, at: 1), ["  Bash(npm run", "  build)"])
+    }
+
+    func testCommandBlockFromTheHeadRowItself() {
+        XCTAssertEqual(TerminalMath.commandBlock(claude, at: 1),
+                       ["  git commit -m \"fix the", "    wrapped thing\""])
+    }
+
+    /// The ⎿ row is a head of its own: held there, it copies just itself.
+    func testCommandBlockResultRowIsItsOwnBlock() {
+        XCTAssertEqual(TerminalMath.commandBlock(claude, at: 3), ["     [main abc123] fix the wrapped thing"])
+    }
+
+    /// No marker anywhere: the paragraph between the blank rows, whole.
+    func testCommandBlockCodeParagraphBetweenBlankRows() {
+        let rows = ["  Run:", "", "  docker run --rm \\", "    -it ubuntu bash", "   ", "  Then exit."]
+        XCTAssertEqual(TerminalMath.commandBlock(rows, at: 3), ["  docker run --rm \\", "    -it ubuntu bash"])
+        XCTAssertEqual(TerminalMath.commandBlock(rows, at: 0), ["  Run:"])
+        XCTAssertEqual(TerminalMath.commandBlock(rows, at: 5), ["  Then exit."])
+    }
+
+    /// A marker row going up ends the block even with no blank row in between; ╭/╰
+    /// end it too but keep their glyph.
+    func testCommandBlockStopsAtTheNearestHeadAbove() {
+        let rows = ["⏺ first", "  one", "⏺ second", "  two", "╭───", "│ boxed"]
+        XCTAssertEqual(TerminalMath.commandBlock(rows, at: 3), ["  second", "  two"])
+        XCTAssertEqual(TerminalMath.commandBlock(rows, at: 1), ["  first", "  one"])
+        XCTAssertEqual(TerminalMath.commandBlock(rows, at: 4), ["╭───"])
+        XCTAssertEqual(TerminalMath.commandBlock(rows, at: 5), ["  boxed"])
+    }
+
+    func testCommandBlockOnABlankOrMissingRowIsEmpty() {
+        XCTAssertEqual(TerminalMath.commandBlock(claude, at: 0), [])
+        XCTAssertEqual(TerminalMath.commandBlock(["a", "   ", "b"], at: 1), [])
+        XCTAssertEqual(TerminalMath.commandBlock(claude, at: 99), [])
+        XCTAssertEqual(TerminalMath.commandBlock(claude, at: -1), [])
+        XCTAssertEqual(TerminalMath.commandBlock([], at: 0), [])
+    }
+
     // MARK: modified — the shortcut bar's sticky modifiers
 
     private typealias M = TerminalMath.Modifiers

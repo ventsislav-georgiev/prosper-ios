@@ -143,6 +143,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// instead of the socket, so N wheel events cost one write. See `emitScroll`.
     private var coalescing: [UInt8]?
     private var shortcutBar: ShortcutBar?
+    private var longPress: UILongPressGestureRecognizer?
 
     /// macOS Terminal.app's vibrant 16-color ANSI palette (SwiftTerm's default is
     /// muted). 8-bit values widened to 16-bit (×257 maps 255→65535).
@@ -239,6 +240,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         disableSelectionGestures()
         addSelectionGesture()
         addTapGesture()
+        addLongPressGesture()
         addScrollThumb()
 
         conn.onScreen = { [weak self] screen in
@@ -574,6 +576,73 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         tv.addGestureRecognizer(tap)
     }
 
+    /// Hold on the text = copy the command under the finger as one line (`copyLine`).
+    private func addLongPressGesture() {
+        let lp = UILongPressGestureRecognizer(target: self, action: #selector(onLongPress(_:)))
+        tv.addGestureRecognizer(lp)
+        longPress = lp
+    }
+
+    @objc private func onLongPress(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
+        copyLine(at: g.location(in: tv))
+    }
+
+    /// Copy the block under `p` (`tv` coordinates) — a wrapped command under Claude's ⏺,
+    /// a code paragraph — to the clipboard as one line (`TerminalMath.commandBlock`, then
+    /// `oneLine`). A blank row copies nothing and leaves the clipboard alone.
+    func copyLine(at p: CGPoint) {
+        let term = tv.getTerminal()
+        // Screen rows, not getText's soft-joined lines: the touched row is then just the
+        // visible row + yDisp, and oneLine glues a soft-wrapped (full) row back with "".
+        var rows: [String] = []
+        var i = term.buffer.totalLinesTrimmed
+        while let line = term.getScrollInvariantLine(row: i) {
+            rows.append(line.translateToString(trimRight: true, skipNullCellsFollowingWide: true))
+            i += 1
+        }
+        // The real cell height (SwiftTerm's caret): bounds / rows also spreads the strip
+        // under the last row over the grid, and a hold near the bottom lands a row high.
+        let cellH = tv.caretFrame.height > 0 ? tv.caretFrame.height : tv.bounds.height / CGFloat(max(1, term.rows))
+        let row = min(max(0, Int((p.y - tv.contentOffset.y) / cellH)), term.rows - 1)
+        let block = TerminalMath.commandBlock(rows, at: term.buffer.yDisp + row)
+        let text = TerminalMath.oneLine(block.joined(separator: "\n"), cols: term.cols)
+        guard !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        showToast("Copied as one line\n" + (text.count > 60 ? String(text.prefix(60)) + "…" : text))
+    }
+
+    /// A pill under the nav bar that fades out by itself.
+    private func showToast(_ text: String) {
+        let label = UILabel()
+        label.text = text
+        label.numberOfLines = 2
+        label.lineBreakMode = .byTruncatingTail
+        label.textAlignment = .center
+        label.textColor = .white
+        label.font = .preferredFont(forTextStyle: .footnote)
+        let pill = UIView()
+        pill.backgroundColor = UIColor(white: 0.18, alpha: 0.95)
+        pill.layer.cornerRadius = 12
+        pill.isUserInteractionEnabled = false
+        pill.addSubview(label)
+        view.addSubview(pill)
+        for v in [label, pill] { v.translatesAutoresizingMaskIntoConstraints = false }
+        let m = pill.layoutMarginsGuide
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: m.topAnchor), label.bottomAnchor.constraint(equalTo: m.bottomAnchor),
+            label.leadingAnchor.constraint(equalTo: m.leadingAnchor), label.trailingAnchor.constraint(equalTo: m.trailingAnchor),
+            pill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            pill.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            pill.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -32),
+        ])
+        UIAccessibility.post(notification: .announcement, argument: text)
+        UIView.animate(withDuration: 0.3, delay: 1.5, options: []) { pill.alpha = 0 } completion: { _ in
+            pill.removeFromSuperview()
+        }
+    }
+
     /// Grid cell under a point in `tv` coordinates. `TerminalView` is a scroll view, so
     /// a gesture location is in CONTENT space while the grid is laid out against the
     /// visible bounds — subtract the offset or every row lands short by however far the
@@ -731,6 +800,14 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     // Let our scroll pan and the single-tap coexist.
     func gestureRecognizer(_ g: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+    // ...but not with the long-press: the tap and the copy-mode pan wait for it to fail
+    // (lift under 0.5 s, or drift past 10 pt), so a hold neither raises the keyboard nor
+    // opens copy mode, and a quick tap or a drag behaves as before.
+    func gestureRecognizer(_ g: UIGestureRecognizer,
+                           shouldRequireFailureOf other: UIGestureRecognizer) -> Bool {
+        other === longPress && g !== longPress
+    }
 
     // MARK: - TerminalViewDelegate (nonisolated; SwiftTerm calls on main)
 

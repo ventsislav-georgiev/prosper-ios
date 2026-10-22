@@ -63,6 +63,29 @@ enum TerminalMath {
         return out
     }
 
+    /// The rows a long-press copies (#458): the maximal run of non-blank rows around
+    /// `row`, empty when `row` itself is blank. A Claude Code marker row (⏺, or ● off
+    /// macOS; ⎿ │ ╭ ╰ first) above is the block's head and ends it; one below starts the
+    /// next block and stays out. The head's ⏺/●/⎿/│ and its space turn into spaces rather
+    /// than vanish: `oneLine` trims them anyway, and the row keeps its width, so a full
+    /// head row still counts as full there.
+    static func commandBlock(_ rows: [String], at row: Int) -> [String] {
+        func blank(_ i: Int) -> Bool { rows[i].allSatisfy(\.isWhitespace) }
+        func marker(_ i: Int) -> Bool { rows[i].first { !$0.isWhitespace }.map { "⏺●⎿│╭╰".contains($0) } ?? false }
+        guard rows.indices.contains(row), !blank(row) else { return [] }
+        var top = row, bottom = row
+        while !marker(top), top > 0, !blank(top - 1) { top -= 1 }
+        while bottom + 1 < rows.count, !blank(bottom + 1), !marker(bottom + 1) { bottom += 1 }
+        var block = Array(rows[top...bottom])
+        let head = block[0]
+        if let i = head.firstIndex(where: { !$0.isWhitespace }), "⏺●⎿│".contains(head[i]) {
+            let next = head.index(after: i)
+            let end = next < head.endIndex && head[next] == " " ? head.index(after: next) : next
+            block[0].replaceSubrange(i..<end, with: String(repeating: " ", count: head.distance(from: i, to: end)))
+        }
+        return block
+    }
+
     /// C1 control scalars, U+0080..U+009F: 8-bit forms of ESC sequences (U+009B is CSI).
     static let c1Controls: ClosedRange<UInt32> = 0x80...0x9F
 
