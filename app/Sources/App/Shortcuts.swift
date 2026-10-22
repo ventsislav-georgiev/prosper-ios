@@ -192,9 +192,10 @@ final class ShortcutBar: UIView {
     /// actually changed (rotation) or the key set was rebuilt; every other layout pass
     /// is a no-op. Runs BEFORE `super` so the moved caps lay out in this same pass.
     /// Two rows → both caps of column i get that column's width, so the edges line up;
-    /// one row → natural widths. When the row/grid fits, or overflows by under 6%, every
-    /// column is then scaled by one factor (`filled`) so it spans the bar exactly; a wider
-    /// overflow keeps its widths and scrolls. The split always reads natural widths,
+    /// one row → natural widths. A fitting row/grid has every column scaled by one factor
+    /// (`filled`) so it spans the bar exactly — one row is kept only when it fits, so it is
+    /// only ever widened; a two-row grid overflowing by under 6% is squeezed the same way,
+    /// and a wider overflow keeps its widths and scrolls. The split always reads natural widths,
     /// never the widened or squeezed ones.
     override func layoutSubviews() {
         if bounds.width != arrangedWidth, rows.count == 2 {
@@ -474,7 +475,8 @@ final class KeyCapButton: UIButton {
     var led: UIView?
     var ring: UIView?
     /// The width the cap's content wants, ignoring `columnWidth` — never narrower than the
-    /// 36pt cap is tall, so a lone arrow or ^C stays at least square.
+    /// 36pt cap is tall, so a lone arrow or ^C starts square (a squeeze can still take it
+    /// to about 34x36).
     var naturalWidth: CGFloat { max(contentWidth, 36) }
     /// Content plus full padding, whatever padding a squeeze left on the cap.
     private var contentWidth: CGFloat {

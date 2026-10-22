@@ -348,6 +348,31 @@ final class ShortcutCapTests: XCTestCase {
         }
     }
 
+    /// QA #279: one bar re-laid out across squeezed widths (Split View, Stage Manager)
+    /// keeps every cap's natural width — the squeeze's shrunken insets never feed back.
+    @MainActor
+    func testSqueezedBarReLaidOutAcrossWidthsIsStable() throws {
+        let bar = try makeBar(Shortcuts.defaults.map(\.id), width: 375)
+        var first: [CGFloat]?
+        for width: CGFloat in [375, 393, 375, 390, 380, 375] {
+            bar.frame.size.width = width
+            bar.layoutIfNeeded()
+            let caps = Self.caps(bar)
+            let sv = try XCTUnwrap(caps[0].superview?.superview?.superview as? UIScrollView)
+            XCTAssertLessThanOrEqual(sv.contentSize.width, sv.bounds.width + 0.01, "\(width): scrolls")
+            for c in caps {
+                if let t = c.titleLabel, !(t.text ?? "").isEmpty {
+                    XCTAssertLessThanOrEqual(t.intrinsicContentSize.width, t.bounds.width + 0.5,
+                                             "\(width): \(t.text ?? "") truncates")
+                }
+            }
+            let natural = caps.map(\.naturalWidth)
+            if let first {
+                for (a, b) in zip(natural, first) { XCTAssertEqual(a, b, accuracy: 0.01, "\(width): drift") }
+            } else { first = natural }
+        }
+    }
+
     /// A saved bar that is exactly the old default was never customized: it loads as the
     /// new default. Any other keeps its set and order and gains the send key if missing.
     func testOldDefaultBarMigratesAndSendIsAlwaysThere() throws {
