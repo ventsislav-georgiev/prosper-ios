@@ -406,8 +406,16 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             // bar's is for bar keys, and raising the keyboard would cover the output.
             // Every other key acts on its own: the bar is always visible, and only the
             // nav-bar button or a terminal tap moves the keyboard.
-            if key.kind != .shift, modifiers[key.kind]?.mode != .off, !tv.isFirstResponder {
-                _ = tv.becomeFirstResponder()
+            // A once tap waits out the double-tap window first: the bar rides the rising
+            // keyboard, so a second tap would land on its bottom row and type a chord
+            // instead of locking (QA #277). The re-check drops a raise the user undid.
+            guard key.kind != .shift, let mode = modifiers[key.kind]?.mode, mode != .off,
+                  !tv.isFirstResponder else { return }
+            if mode == .locked { _ = tv.becomeFirstResponder(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + ShiftState.doubleTapWindow) { [weak self] in
+                guard let self, self.modifiers[key.kind]?.mode != .off,
+                      !self.tv.isFirstResponder else { return }
+                _ = self.tv.becomeFirstResponder()
             }
         case .pasteText:
             if let s = UIPasteboard.general.string, !s.isEmpty { sendText(s) }

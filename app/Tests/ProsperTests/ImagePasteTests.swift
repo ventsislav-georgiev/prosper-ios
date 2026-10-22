@@ -276,6 +276,42 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertEqual(bar.modes[.alt], .off)
     }
 
+    /// QA #277: a once ctrl/alt with the keyboard down raises it only after the double-tap
+    /// window — the bar rides the rising keyboard, so a second tap landed on its bottom row
+    /// and typed a chord instead of locking. A lock raises at once; a modifier spent before
+    /// the window ends raises nothing.
+    func testOnceModifierRaisesKeyboardOnlyAfterDoubleTapWindow() async throws {
+        let (vc, _) = try await makeVC()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = vc
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let (bar, tv) = try barAndTerminal(vc)
+        let ctrl = try catalogKey("ctrl"), alt = try catalogKey("alt")
+        let settle = UInt64((ShiftState.doubleTapWindow + 0.2) * 1_000_000_000)
+
+        bar.onKey?(ctrl)
+        XCTAssertFalse(tv.isFirstResponder, "a once ctrl raised the keyboard under the next tap")
+        bar.onKey?(ctrl)
+        XCTAssertEqual(bar.modes[.ctrl], .locked, "a quick second tap must lock ctrl")
+        XCTAssertTrue(tv.isFirstResponder, "a locked ctrl must raise the keyboard at once")
+        bar.onKey?(ctrl)
+        _ = tv.resignFirstResponder()
+
+        bar.onKey?(alt)
+        bar.onKey?(try catalogKey("left"))   // spends alt inside the window
+        try await Task.sleep(nanoseconds: settle)
+        XCTAssertFalse(tv.isFirstResponder, "a spent alt still raised the keyboard")
+
+        bar.onKey?(alt)
+        XCTAssertFalse(tv.isFirstResponder)
+        try await Task.sleep(nanoseconds: settle)
+        XCTAssertEqual(bar.modes[.alt], .once)
+        XCTAssertTrue(tv.isFirstResponder, "a once alt must raise the keyboard after the window")
+        _ = tv.resignFirstResponder()
+    }
+
     /// paste and paste img never take the modifiers and never spend them.
     func testPasteKeysDontSpendModifiers() async throws {
         let (vc, spy) = try await makeVC()
