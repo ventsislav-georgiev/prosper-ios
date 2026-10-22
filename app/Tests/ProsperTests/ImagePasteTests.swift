@@ -279,7 +279,7 @@ final class ImagePasteTests: XCTestCase {
     /// QA #277: a once ctrl/alt with the keyboard down raises it only after the double-tap
     /// window — the bar rides the rising keyboard, so a second tap landed on its bottom row
     /// and typed a chord instead of locking. A lock raises at once; a modifier spent before
-    /// the window ends raises nothing.
+    /// the window ends raises nothing. shift never raises, once or locked.
     func testOnceModifierRaisesKeyboardOnlyAfterDoubleTapWindow() async throws {
         let (vc, _) = try await makeVC()
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
@@ -290,6 +290,21 @@ final class ImagePasteTests: XCTestCase {
         let (bar, tv) = try barAndTerminal(vc)
         let ctrl = try catalogKey("ctrl"), alt = try catalogKey("alt")
         let settle = UInt64((ShiftState.doubleTapWindow + 0.2) * 1_000_000_000)
+
+        let shift = try catalogKey("shift")
+        bar.onKey?(shift)
+        XCTAssertEqual(bar.modes[.shift], .once)
+        XCTAssertFalse(tv.isFirstResponder, "a once shift raised the keyboard")
+        try await Task.sleep(nanoseconds: settle)
+        XCTAssertFalse(tv.isFirstResponder, "a once shift raised the keyboard after the window")
+        bar.onKey?(shift)   // past the window: turns it off
+        bar.onKey?(shift)
+        bar.onKey?(shift)
+        XCTAssertEqual(bar.modes[.shift], .locked, "precondition: a quick double tap locks shift")
+        XCTAssertFalse(tv.isFirstResponder, "a locked shift raised the keyboard")
+        try await Task.sleep(nanoseconds: settle)
+        XCTAssertFalse(tv.isFirstResponder, "a locked shift raised the keyboard after the window")
+        bar.onKey?(shift)
 
         bar.onKey?(ctrl)
         XCTAssertFalse(tv.isFirstResponder, "a once ctrl raised the keyboard under the next tap")
