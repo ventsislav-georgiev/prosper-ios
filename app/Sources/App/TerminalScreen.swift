@@ -986,6 +986,7 @@ private final class DchTerminalView: TerminalView {
     private lazy var compactKeyboard: TerminalKeyboard = {
         let kb = TerminalKeyboard()
         kb.target = self
+        kb.sendBytes = { [weak self] in self?.send($0) }   // through the host's send, like any key
         return kb
     }()
 

@@ -151,6 +151,20 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertFalse(bar.ctrlArmed, "the typed key must disarm ctrl")
     }
 
+    /// The compact keyboard's return is a newline like Slack's: ESC CR on the wire, whole
+    /// through the host's send (submitting is the bar's enter).
+    func testCompactKeyboardReturnSendsMetaEnter() async throws {
+        let saved = TerminalKeyboard.hardwareKeyboardConnected
+        TerminalKeyboard.hardwareKeyboardConnected = { false }
+        defer { TerminalKeyboard.hardwareKeyboardConnected = saved }
+        try XCTSkipUnless(TerminalKeyboard.appliesHere, "iPhone only")
+        let (vc, spy) = try await makeVC()
+        let kb = try XCTUnwrap(vc.keyboardInputView as? TerminalKeyboard)
+        let before = spy.sent.count
+        kb.press(.ret)
+        XCTAssertEqual(Array(spy.sent[before...]), [[0x1b, 0x0d]])
+    }
+
     /// #320 QA #126: only a single typed ASCII byte takes the armed ctrl. Multi-byte text
     /// (é was sent as 0x03 = ^C) passes through whole and keeps the arm; a lone Esc goes
     /// out unchanged and disarms.

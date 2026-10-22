@@ -107,8 +107,8 @@ final class TerminalKeyboardTests: XCTestCase {
     /// the space bar off the bottom edge.
     func testHeight() {
         XCTAssertEqual(TerminalKeyboard.height, TerminalKeyboard.keysHeight + TerminalKeyboard.bottomPadding)
-        XCTAssertEqual(TerminalKeyboard.height, 206)
-        XCTAssertTrue((14...16).contains(TerminalKeyboard.bottomPadding))
+        XCTAssertEqual(TerminalKeyboard.height, 225)
+        XCTAssertTrue((26...28).contains(TerminalKeyboard.bottomPadding))
         XCTAssertEqual(TerminalKeyboard().frame.height, TerminalKeyboard.height)
     }
 
@@ -120,7 +120,7 @@ final class TerminalKeyboardTests: XCTestCase {
                 kb.layoutIfNeeded()
                 let caps = Dictionary(kb.subviews.compactMap { $0 as? UIButton }
                     .map { ($0.title(for: .normal) ?? $0.accessibilityLabel ?? "", $0) }) { a, _ in a }
-                let space = try XCTUnwrap(caps["space"]), ret = try XCTUnwrap(caps["return"])
+                let space = try XCTUnwrap(caps["space"]), ret = try XCTUnwrap(caps["new line"])
                 let pageKey = try XCTUnwrap(caps[page == .letters ? "123" : "ABC"])
                 XCTAssertGreaterThanOrEqual(space.frame.width, 110, "\(page) at \(width)")
                 XCTAssertEqual(pageKey.frame.minX, TerminalKeyboard.bottomRowInset, accuracy: 0.001)
@@ -197,6 +197,20 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(t.ended(6), [.press(.char("w"))])
     }
 
+    /// The home gesture is cancelled inside the slop: a cancelled touch that began under
+    /// the bottom row types nothing, however little it moved. Lifted normally, it types.
+    func testTrackerCancelBegunBelowTheKeysTypesNothing() {
+        var t = KeyTouchTracker()
+        _ = t.began(1, .space, at: CGPoint(x: 200, y: 215), belowKeys: true)
+        XCTAssertEqual(t.cancelled(1, at: CGPoint(x: 200, y: 213)), [], "moved 2 pt")
+        _ = t.began(2, .space, at: CGPoint(x: 200, y: 215), belowKeys: true)
+        XCTAssertEqual(t.cancelled(2, at: CGPoint(x: 200, y: 215)), [], "didn't move")
+        _ = t.began(3, .space, at: CGPoint(x: 200, y: 215), belowKeys: true)
+        XCTAssertEqual(t.ended(3), [.press(.space)], "a tap there still types")
+        _ = t.began(4, .space, at: CGPoint(x: 200, y: 180))
+        XCTAssertEqual(t.cancelled(4, at: CGPoint(x: 200, y: 180)), [.press(.space)], "on the key: types")
+    }
+
     func testTrackerSlideTypesTheKeyUnderTheFingerAtLift() {
         var t = KeyTouchTracker()
         _ = t.began(1, .char("q"))
@@ -240,6 +254,8 @@ final class TerminalKeyboardTests: XCTestCase {
         let (kb, caps) = laidOut()
         let spy = SpyInput()
         kb.target = spy
+        var sent: [[UInt8]] = []
+        kb.sendBytes = { sent.append($0) }
         func at(_ label: String) throws -> CGPoint {
             let f = try XCTUnwrap(caps[label], label).frame
             return CGPoint(x: f.midX, y: f.midY)
@@ -274,6 +290,20 @@ final class TerminalKeyboardTests: XCTestCase {
         kb.track(.cancelled, id: 20, at: CGPoint(x: strip.x, y: strip.y - 30))
         XCTAssertEqual(spy.calls, ["w", "p"], "a home swipe must not type a space")
         XCTAssertFalse(try XCTUnwrap(caps["space"]).isHighlighted)
+        // The system cancels the home gesture inside the slop: still nothing.
+        kb.track(.began, id: 21, at: strip)
+        kb.track(.cancelled, id: 21, at: CGPoint(x: strip.x, y: strip.y - 3))
+        XCTAssertEqual(spy.calls, ["w", "p"], "a short home swipe must not type a space")
+        // Just under the space bar's frame counts as the strip too.
+        let under = CGPoint(x: strip.x, y: try XCTUnwrap(caps["space"]).frame.maxY + 1)
+        kb.track(.began, id: 22, at: under)
+        kb.track(.cancelled, id: 22, at: under)
+        XCTAssertEqual(spy.calls, ["w", "p"])
+        // A cancelled tap on the space bar itself still types.
+        kb.track(.began, id: 23, at: try at("space"))
+        kb.track(.cancelled, id: 23, at: try at("space"))
+        XCTAssertEqual(spy.calls, ["w", "p", " "])
+        spy.calls.removeLast()
 
         // Rolled typing: q types when w goes down, and w's bubble takes over.
         kb.track(.began, id: 3, at: try at("q"))
@@ -291,7 +321,8 @@ final class TerminalKeyboardTests: XCTestCase {
         kb.track(.ended, id: 5, at: CGPoint(x: try at("space").x, y: bottom))
         kb.track(.began, id: 6, at: CGPoint(x: kb.bounds.maxX - 1, y: bottom))
         kb.track(.ended, id: 6, at: CGPoint(x: kb.bounds.maxX - 1, y: bottom))
-        XCTAssertEqual(spy.calls.suffix(2), [" ", "\n"])
+        XCTAssertEqual(spy.calls.last, " ")
+        XCTAssertEqual(sent, [TerminalKeyboard.newlineBytes], "the corner maps to return")
         kb.track(.began, id: 7, at: try at(","))
         XCTAssertEqual(kb.previewText, ",")
         kb.track(.ended, id: 7, at: try at(","))
@@ -301,7 +332,7 @@ final class TerminalKeyboardTests: XCTestCase {
         kb.track(.ended, id: 10, at: try at("/"))
         XCTAssertEqual(spy.calls.suffix(3), [",", "?", "/"])
 
-        for label in ["shift", "delete", "space", "return", "123"] {
+        for label in ["shift", "delete", "space", "new line", "123"] {
             kb.track(.began, id: 9, at: try at(label))
             XCTAssertNil(kb.previewText, "\(label) shows no preview")
             XCTAssertTrue(try XCTUnwrap(caps[label]).isHighlighted, "\(label) looks pressed")
@@ -348,6 +379,8 @@ final class TerminalKeyboardTests: XCTestCase {
         let kb = TerminalKeyboard()
         let spy = SpyInput()
         kb.target = spy
+        var sent: [[UInt8]] = []
+        kb.sendBytes = { sent.append($0) }
         kb.press(.char("h"))
         kb.press(.shift)
         kb.press(.char("i"))
@@ -359,7 +392,8 @@ final class TerminalKeyboardTests: XCTestCase {
         kb.press(.char("a")); kb.press(.char("b"))
         kb.press(.page(.numbers))
         kb.press(.char("|"))
-        XCTAssertEqual(spy.calls, ["h", "I", "x", " ", "\n", "⌫", "A", "B", "|"])
+        XCTAssertEqual(spy.calls, ["h", "I", "x", " ", "⌫", "A", "B", "|"], "return types no text")
+        XCTAssertEqual(sent, [[0x1b, 0x0d]], "return is meta-enter, a newline that doesn't submit")
         XCTAssertEqual(kb.page, .numbers)
     }
 

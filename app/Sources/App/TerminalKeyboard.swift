@@ -37,6 +37,9 @@ struct ShiftState: Equatable {
 ///   the user pressed the key before a system gesture took it. One that traveled further
 ///   was a swipe (the home gesture starting in the strip under the space bar) and types
 ///   nothing. Page keys never type on cancel, as a cancel shouldn't flip the page.
+/// - A cancelled touch that began below the bottom row's keys types nothing however
+///   little it traveled: that strip is where the home gesture starts, and the system
+///   cancels it inside `tapSlop`. One there that lifts normally still types.
 ///
 /// Points are in the view's coordinates; the defaults suit callers that don't care
 /// about travel.
@@ -50,6 +53,7 @@ struct KeyTouchTracker {
     private struct Touch {
         let id: Int; var key: Key; var done: Bool
         let start: CGPoint; var travel: CGFloat = 0
+        var belowKeys = false
         mutating func reach(_ p: CGPoint) { travel = max(travel, hypot(p.x - start.x, p.y - start.y)) }
     }
     private var touches: [Touch] = []
@@ -64,7 +68,8 @@ struct KeyTouchTracker {
 
     private static func actsOnDown(_ key: Key) -> Bool { key == .shift || key == .backspace }
 
-    mutating func began(_ id: Int, _ key: Key, at point: CGPoint = .zero) -> [Effect] {
+    /// `belowKeys`: the touch began in the strip under the bottom row.
+    mutating func began(_ id: Int, _ key: Key, at point: CGPoint = .zero, belowKeys: Bool = false) -> [Effect] {
         var out: [Effect] = []
         for i in touches.indices where !touches[i].done {
             out.append(.press(touches[i].key))
@@ -75,7 +80,7 @@ struct KeyTouchTracker {
         case .backspace: out += [.press(.backspace), .startRepeat]
         default: break
         }
-        touches.append(Touch(id: id, key: key, done: Self.actsOnDown(key), start: point))
+        touches.append(Touch(id: id, key: key, done: Self.actsOnDown(key), start: point, belowKeys: belowKeys))
         return out
     }
 
@@ -100,7 +105,7 @@ struct KeyTouchTracker {
         if t.key == .backspace { return held.contains(.backspace) ? [] : [.stopRepeat] }
         if t.done { return [] }
         if cancelled, case .page = t.key { return [] }
-        if cancelled, t.travel > Self.tapSlop { return [] }
+        if cancelled, t.travel > Self.tapSlop || t.belowKeys { return [] }
         return [.press(t.key)]
     }
 
@@ -111,8 +116,8 @@ struct KeyTouchTracker {
 ///
 /// Why it exists: on Face ID iPhones the system keyboard reserves an empty ~73 pt strip
 /// under its keys (globe/dictation) plus padding above them, and an app can't shrink
-/// it. This one is four 40 pt rows with only `bottomPadding` under them, reaching into
-/// the home-indicator strip instead of stopping above it: 206 pt against the system's
+/// it. This one is four 38 pt rows with only `bottomPadding` under them, reaching into
+/// the home-indicator strip instead of stopping above it: 225 pt against the system's
 /// 308. The bottom row pulls in from the sides so its outer keys clear the display's
 /// rounded corners, and carries `,` `/` `?` beside space on every page. Character keys
 /// show a press preview above the key.
@@ -123,29 +128,35 @@ struct KeyTouchTracker {
 /// cancelled swipe, like the home gesture, types nothing).
 ///
 /// Output goes through the terminal's own `UIKeyInput` (`insertText` / `deleteBackward`),
-/// so SwiftTerm's return mapping and the host's sticky ctrl behave exactly as they do
-/// for the system keyboard.
+/// so the host's sticky ctrl behaves exactly as it does for the system keyboard. Return
+/// is the exception: like Slack's it types a newline, `newlineBytes` (meta-enter) sent
+/// raw through `sendBytes`; submitting is the shortcut bar's enter. The system keyboard
+/// keeps return = submit.
 final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     enum Page { case letters, numbers, symbols }
     enum Key: Hashable {
         case char(String), shift, backspace, space, ret, page(Page)
     }
 
-    static let rowHeight: CGFloat = 40
-    static let rowGap: CGFloat = 8
+    static let rowHeight: CGFloat = 38
+    static let rowGap: CGFloat = 13
     static let topPadding: CGFloat = 6
-    static let keyGap: CGFloat = 6
+    static let keyGap: CGFloat = 9
     static let sideMargin: CGFloat = 3
     static let keysHeight = topPadding + 4 * rowHeight + 3 * rowGap
     /// Under the bottom row, in place of the 34 pt home-indicator inset: enough to keep
-    /// the space bar off the very bottom edge, where the home gesture starts. (Deferring
-    /// that gesture does nothing on iPhone; a cancelled tap still types, see the tracker.)
-    static let bottomPadding: CGFloat = 16
+    /// the space bar off the bottom edge, where the home gesture starts. (Deferring that
+    /// gesture does nothing on iPhone; a cancelled touch begun here types nothing, see
+    /// the tracker.)
+    static let bottomPadding: CGFloat = 28
     /// How far from the screen edge the bottom row starts, so its outer keys sit inside
     /// the display's rounded corners: on the iPhone 17 Pro the edge is 20 pt in at 16 pt
     /// up. Landscape's side safe area already exceeds it.
     static let bottomRowInset: CGFloat = 24
     static let height = keysHeight + bottomPadding
+    /// ESC CR, meta-enter: Claude Code's "insert newline, don't submit". Return sends it;
+    /// so does the shortcut bar's `snl` key.
+    static let newlineBytes: [UInt8] = [0x1b, 0x0d]
 
     /// Whether this device gets the compact keyboard: iPhone with no hardware keyboard.
     /// iPad, the Mac and a connected keyboard keep system behavior.
@@ -191,6 +202,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     weak var target: UIKeyInput?
+    /// Raw bytes to the terminal, past `insertText` (which makes multi-byte control text
+    /// a paste).
+    var sendBytes: (([UInt8]) -> Void)?
     private(set) var page: Page = .letters
     private(set) var shift = ShiftState()
 
@@ -232,7 +246,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             target?.insertText(letter && shift.uppercase ? c.uppercased() : c)
             if letter, shift.mode == .once { shift.typedLetter(); refreshLabels() }
         case .space: target?.insertText(" ")
-        case .ret: target?.insertText("\n")   // SwiftTerm sends `returnByteSequence` (CR)
+        case .ret: sendBytes?(Self.newlineBytes)
         case .backspace: target?.deleteBackward()
         case .shift:
             shift.tap(at: CACurrentMediaTime())
@@ -302,7 +316,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .began:
             feedback()
             let before = page
-            perform(tracker.began(id, key(at: point), at: point))
+            let bottomRow = caps.last?.map(\.frame.maxY).max() ?? .infinity
+            perform(tracker.began(id, key(at: point), at: point, belowKeys: point.y > bottomRow))
             // A rolled-over page key just switched the page under this finger.
             if page != before { tracker.moved(id, key(at: point)) }
         case .moved:
@@ -361,7 +376,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                 cap.fill = shift.uppercase ? Style.key : Style.special
             case .backspace: image = "delete.left"; label = "delete"
             case .space: title = "space"; label = "space"
-            case .ret: title = "return"; label = "return"
+            case .ret: image = "return.left"; label = "new line"
             case .page(let p):
                 switch p {
                 case .letters: title = "ABC"; label = "letters"
