@@ -112,6 +112,70 @@ final class KeyboardExtensionTests: XCTestCase {
         }
     }
 
+    // MARK: Hit-testing
+
+    /// Where real hit-testing puts a touch on each cap: the tracker must get the keys'
+    /// (UIKit's content views sit inside a UIInputView), never the globe's.
+    private func assertKeysFeed(_ kb: TerminalKeyboard, _ context: String,
+                                file: StaticString = #filePath, line: UInt = #line) throws {
+        var caps: [String: UIButton] = [:]
+        for case let b as UIButton in kb.subviews { caps[b.accessibilityLabel ?? ""] = b }
+        for label in ["q", "h", "l", "space", "1"] {
+            let cap = try XCTUnwrap(caps[label] ?? caps[label.uppercased()], "\(label) in \(context)", file: file, line: line)
+            XCTAssertTrue(TerminalKeyboard.feeds(kb.hitTest(CGPoint(x: cap.frame.midX, y: cap.frame.midY), with: nil)),
+                          "\(label) in \(context)", file: file, line: line)
+        }
+        if let globe = caps["next keyboard"] {
+            XCTAssertFalse(TerminalKeyboard.feeds(kb.hitTest(CGPoint(x: globe.frame.midX, y: globe.frame.midY), with: nil)),
+                           "globe in \(context)", file: file, line: line)
+        }
+    }
+
+    func testKeyTouchesReachTheTrackerInTheApp() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone only")
+        let saved = TerminalKeyboard.hardwareKeyboardConnected   // a simulator reports one
+        TerminalKeyboard.hardwareKeyboardConnected = { false }
+        defer { TerminalKeyboard.hardwareKeyboardConnected = saved }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let vc = TerminalHostVC(conn: SessionConnection(transport: SpyTransport(),
+                                                       session: DchSession(name: "t", alias: nil)),
+                                handle: TermHandle())
+        window.rootViewController = vc
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let frame = expectation(forNotification: UIResponder.keyboardDidChangeFrameNotification, object: nil)
+        vc.toggleKeyboard()
+        wait(for: [frame], timeout: 3)
+        defer { vc.toggleKeyboard() }
+        try assertKeysFeed(try XCTUnwrap(vc.keyboardInputView as? TerminalKeyboard), "the app")
+    }
+
+    func testKeyTouchesReachTheTrackerInTheExtension() throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let ivc = UIInputViewController()
+        let kb = TerminalKeyboard()
+        kb.showsGlobe = true
+        kb.translatesAutoresizingMaskIntoConstraints = false
+        ivc.view.addSubview(kb)
+        NSLayoutConstraint.activate([
+            kb.topAnchor.constraint(equalTo: ivc.view.topAnchor),
+            kb.leadingAnchor.constraint(equalTo: ivc.view.leadingAnchor),
+            kb.trailingAnchor.constraint(equalTo: ivc.view.trailingAnchor),
+            kb.bottomAnchor.constraint(equalTo: ivc.view.bottomAnchor),
+        ])
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 254)
+        window.rootViewController = ivc
+        window.isHidden = false
+        defer { window.isHidden = true }
+        window.layoutIfNeeded()
+        var labels = Set<String>()
+        for case let b as UIButton in kb.subviews { labels.insert(b.accessibilityLabel ?? "") }
+        XCTAssertTrue(labels.contains("next keyboard"), "the globe is checked")
+        try assertKeysFeed(kb, "the extension")
+    }
+
     // MARK: Bottom pad
 
     func testBottomInsetSetsTheHeight() throws {
@@ -132,6 +196,10 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertTrue(cap("Really?  ", .sentences))
         XCTAssertTrue(cap("Go! ", .sentences))
         XCTAssertTrue(cap("line\n", .sentences))
+        XCTAssertTrue(cap("He said \"hi.\" ", .sentences), "after a closing quote")
+        XCTAssertTrue(cap("(done.) ", .sentences), "after a closing bracket")
+        XCTAssertTrue(cap("“OK?” ", .sentences))
+        XCTAssertFalse(cap("(hi) ", .sentences), "a bracket alone ends nothing")
         XCTAssertTrue(cap("  ", .sentences), "only spaces before it")
         XCTAssertFalse(cap("Hi.", .sentences), "not before the space")
         XCTAssertFalse(cap("Hello wor", .sentences), "mid-word")

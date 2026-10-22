@@ -353,7 +353,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// Whether the next letter starts capitalized, given the text before the cursor and
     /// the field's autocapitalization: at the start of the field, after a newline, and
-    /// (sentences) after `. ` `? ` `! ` or (words) after any space. Nil text is the start.
+    /// (sentences) after `. ` `? ` `! ` (closing quotes and brackets
+    /// between them allowed) or (words) after any space. Nil text is the start.
     static func shouldCapitalize(before text: String?, type: UITextAutocapitalizationType) -> Bool {
         let text = text ?? ""
         switch type {
@@ -363,7 +364,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             guard let last = text.last else { return true }
             if last.isNewline { return true }
             guard last == " " else { return false }
-            let rest = text.reversed().drop { $0 == " " }
+            // A closing quote or bracket after the stop still ends the sentence: `"hi." `.
+            let rest = text.reversed().drop { $0 == " " }.drop { "\"')]”’".contains($0) }
             guard let end = rest.first else { return true }   // only spaces before it
             return end.isNewline || ".?!".contains(end)
         default: return false
@@ -466,9 +468,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { feed(touches, .ended) }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { feed(touches, .cancelled) }
 
+    /// Whether a touch that hit-tested to `view` is the tracker's. Not `=== self`: UIKit
+    /// puts its own content views inside a UIInputView, so key touches land on those. Only
+    /// a control (the globe cap) takes its own touches.
+    static func feeds(_ view: UIView?) -> Bool { !(view is UIControl) }
+
     private func feed(_ touches: Set<UITouch>, _ phase: UITouch.Phase) {
-        // Only touches that hit this view: a globe cap's are its own, whatever reaches here.
-        let byID = Dictionary(uniqueKeysWithValues: touches.filter { $0.view === self }.map { (Int(bitPattern: ObjectIdentifier($0)), $0) })
+        let byID = Dictionary(uniqueKeysWithValues: touches.filter { Self.feeds($0.view) }.map { (Int(bitPattern: ObjectIdentifier($0)), $0) })
         for id in Self.inputOrder(byID.map { ($0.key, $0.value.timestamp) }) {
             track(phase, id: id, at: byID[id]!.location(in: self))
         }
