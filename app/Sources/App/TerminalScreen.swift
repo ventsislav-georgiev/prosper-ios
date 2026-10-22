@@ -492,6 +492,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             return conn.send(ArraySlice(bytes))
         }
         for kind in modifiers.keys { modifiers[kind]?.typedLetter() }
+        // A letter that went out as ^C or alt+b was a command, not text: the compact
+        // keyboard's word ends there.
+        if !lit.isDisjoint(with: [.ctrl, .alt]) { (keyboardInputView as? TerminalKeyboard)?.resetWord() }
         shortcutBar?.modes = modifiers.mapValues(\.mode)
         conn.send(ArraySlice(out))
     }
@@ -598,14 +601,22 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     func copyLine(at p: CGPoint) {
         let term = tv.getTerminal()
         // Screen rows, not getText's soft-joined lines: the touched row is then just the
-        // buffer line under the point, and oneLine glues a soft-wrapped (full) row back with "".
+        // buffer line under the point, mapped to its merged row. A soft-wrapped continuation
+        // (isWrapped: a shell line typed past the edge) is appended to the row above with no
+        // glue: that wrap falls at any column, mid-word too, so oneLine's word-wrap rule
+        // must never see it as a row break (QA #287).
         var rows: [String] = []
+        let touched = cell(at: p, term).line
+        var line = touched
         var i = term.buffer.totalLinesTrimmed
-        while let line = term.getScrollInvariantLine(row: i) {
-            rows.append(line.translateToString(trimRight: true, skipNullCellsFollowingWide: true))
+        while let l = term.getScrollInvariantLine(row: i) {
+            // trimRight drops only never-written cells, never a typed space: a wrap right
+            // after a space keeps it, and the cell a wide char left empty at the edge goes.
+            let s = l.translateToString(trimRight: true, skipNullCellsFollowingWide: true)
+            if l.isWrapped, !rows.isEmpty { rows[rows.count - 1] += s } else { rows.append(s) }
+            if i - term.buffer.totalLinesTrimmed == touched { line = rows.count - 1 }
             i += 1
         }
-        let line = cell(at: p, term).line
         // ponytail: in vim/less, whose `~` rows and status line are never blank, a hold
         // joins the whole paragraph under the finger; detect those apps if that bites.
         let block = TerminalMath.commandBlock(rows, at: line)

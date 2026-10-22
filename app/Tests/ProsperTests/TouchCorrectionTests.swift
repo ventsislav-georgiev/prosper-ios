@@ -208,6 +208,31 @@ final class TouchCorrectionTests: XCTestCase {
         XCTAssertEqual(kb.word, "")
     }
 
+    /// A letter the bar's sticky ctrl sends as ^C is a command, not the start of a word:
+    /// after ^C, "l" and a touch on s's left edge types s ("ls"), not a ("cla", QA #287).
+    func testHostEndsTheWordOnALetterSentAsAControlKey() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone only")
+        let saved = K.hardwareKeyboardConnected
+        K.hardwareKeyboardConnected = { false }
+        defer { K.hardwareKeyboardConnected = saved }
+        let vc = TerminalHostVC(conn: SessionConnection(transport: SpyTransport(),
+                                                       session: DchSession(name: "t", alias: nil)),
+                                handle: TermHandle())
+        vc.view.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        vc.view.layoutIfNeeded()
+        let kb = try XCTUnwrap(vc.keyboardInputView as? K)
+        kb.frame = CGRect(x: 0, y: 0, width: 402, height: K.height)
+        kb.layoutIfNeeded()
+        let s = try XCTUnwrap(kb.subviews.lazy.compactMap { $0 as? UIButton }.first { $0.title(for: .normal) == "s" }).frame
+        let bar = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? ShortcutBar }.first)
+
+        bar.onKey?(ShortcutKey(id: "ctrl", label: "ctrl", kind: .ctrl))
+        kb.press(.char("c"))
+        XCTAssertEqual(kb.word, "", "^C starts no word")
+        let typed = type("l", thenTap: CGPoint(x: s.minX + 1, y: s.midY), on: kb)
+        XCTAssertEqual(typed, "s")
+    }
+
     // MARK: Cost
 
     /// One ambiguous decision with everything consulted: the dictionary misses "tesr", the

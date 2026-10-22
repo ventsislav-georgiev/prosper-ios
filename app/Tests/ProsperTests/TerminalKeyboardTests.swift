@@ -412,6 +412,27 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(spy.calls.last, "|")
     }
 
+    /// A finger that slides from s to d before the timer holds d, the key under it when
+    /// the hold fires: d's &, not s's #.
+    func testAHoldConvertsTheKeyUnderTheFingerWhenItFires() throws {
+        let (kb, caps) = laidOut()
+        let spy = SpyInput()
+        kb.target = spy
+        let s = try XCTUnwrap(caps["s"]).frame, d = try XCTUnwrap(caps["d"]).frame
+        kb.track(.began, id: 1, at: CGPoint(x: s.midX, y: s.midY))
+        kb.track(.moved, id: 1, at: CGPoint(x: d.midX, y: d.midY))
+        kb.fireHold()
+        XCTAssertEqual(kb.previewText, "&")
+        kb.track(.ended, id: 1, at: CGPoint(x: d.midX, y: d.midY))
+        XCTAssertEqual(spy.calls, ["&"])
+    }
+
+    /// The hold threshold is the spec, not whatever the constant says: the other hold
+    /// tests wait `holdDelay`, so they pass at any value.
+    func testHoldDelayIsTheSpec() {
+        XCTAssertEqual(KeyTouchTracker.holdDelay, 0.35)
+    }
+
     // MARK: Press preview
 
     private func laidOut(width: CGFloat = 402) -> (TerminalKeyboard, [String: UIButton]) {

@@ -64,8 +64,9 @@ enum TerminalMath {
                 while out.last?.isWhitespace == true { out.removeLast() }
                 continue
             }
-            // ponytail: "full" is width % cols == 0 — SwiftTerm's getText already joins
-            // soft-wrapped rows (k*cols wide), and a hard wrap at cols is one row. Two
+            // ponytail: "full" is width % cols == 0 — callers join SwiftTerm's soft-wrapped
+            // (isWrapped) rows before this sees them (copy mode's getText, copyLine's row
+            // merge), so such a line is k*cols wide, and a hard wrap at cols is one row. Two
             // separate tokens, the first ending exactly at the last column, whose combined
             // length exceeds the box get glued — rare, it takes a token nearly a row long.
             // Wide CJK/emoji count as one column (SwiftTerm's UnicodeUtil.columnWidth is

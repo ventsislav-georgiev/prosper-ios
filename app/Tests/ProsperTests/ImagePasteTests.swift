@@ -741,6 +741,38 @@ final class ImagePasteTests: XCTestCase {
                        "! for c in gke_example-ci_europe-west4-b_ci-primary gke_example-system_europe-west1-b_ci-primary; do kubectl --context $c -n web-frontend-controller rollout restart deploy/web-frontend-controller; done")
     }
 
+    /// SwiftTerm's own soft wrap (a shell line typed past the right edge, `isWrapped`)
+    /// splits at any column, mid-word too: a hold on either row gives back exactly what
+    /// was typed — no space inside "hello" or the URL, the one space kept when the wrap
+    /// falls right after it, none for the cell a wide char left empty (QA #287 F1).
+    func testLongPressOnASoftWrappedShellLineCopiesItExactly() async throws {
+        let (vc, _) = try await makeVC()
+        let (_, tv) = try barAndTerminal(vc)
+        let term = tv.getTerminal()
+        let cols = term.cols
+        XCTAssertGreaterThanOrEqual(cols, 40, "precondition: room for the lines below")
+        // "$ echo xx…x hell" | "o world"
+        let midWord = "$ echo " + String(repeating: "x", count: cols - 12) + " hello world"
+        // a 40-char URL split 20 | 20, shorter than the row, so the word-wrap rule spaces it
+        let url = "$ curl -fsSL " + String(repeating: "y", count: cols - 34) + " https://example.com/"
+            + String(repeating: "a", count: 20)
+        // "$ printf zz…z " | "tail": row 0's last cell is the space
+        let afterSpace = "$ printf " + String(repeating: "z", count: cols - 10) + " tail"
+        // wide chars that leave the last cell empty: the next one wraps, no space between
+        let head = cols.isMultiple(of: 2) ? "$ echo " : "$ echo a"
+        let wide = head + String(repeating: "漢", count: (cols - head.count) / 2 + 2)
+        tv.feed(text: "\u{1b}[H\u{1b}[2J" + [midWord, url, afterSpace, wide].joined(separator: "\r\n\r\n"))
+
+        for (want, row) in [(midWord, 0), (url, 3), (afterSpace, 6), (wide, 9)] {
+            XCTAssertEqual(term.getLine(row: row + 1)?.isWrapped, true, "precondition: row \(row) soft-wraps")
+            for hold in [row, row + 1] {
+                UIPasteboard.general.string = "none"
+                vc.copyLine(at: rowPoint(tv, hold))
+                XCTAssertEqual(UIPasteboard.general.string, want, "hold on row \(hold)")
+            }
+        }
+    }
+
     /// Quick holds replace the toast instead of stacking pills.
     func testASecondHoldReplacesTheToast() async throws {
         let (vc, _) = try await makeVC()
