@@ -186,7 +186,19 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static let topPadding: CGFloat = 6
     static let keyGap: CGFloat = 9
     static let sideMargin: CGFloat = 3
-    static let keysHeight = topPadding + 5 * rowHeight + 4 * rowGap
+    static let keysHeight = keysHeight(compact: false)
+    /// Rows, gaps and the top pad: the above, or in a compact vertical size class (iPhone
+    /// landscape) shorter ones. The portrait keys on a 402 pt tall landscape screen took
+    /// 63% of it and hid the focused field; these come to 174 pt, about the system
+    /// keyboard's share. The top pad still leaves the extension's 36 pt bar + 4 ≥ the
+    /// bubble's compact rise (`KeyPreview.rise(compact:)`).
+    static func metrics(compact: Bool) -> (row: CGFloat, gap: CGFloat, top: CGFloat) {
+        compact ? (30, 5, 4) : (rowHeight, rowGap, topPadding)
+    }
+    static func keysHeight(compact: Bool) -> CGFloat {
+        let m = metrics(compact: compact)
+        return m.top + 5 * m.row + 4 * m.gap
+    }
     /// Under the bottom row, in place of the 34 pt home-indicator inset: enough to keep
     /// the space bar off the bottom edge, where the home gesture starts. (Deferring that
     /// gesture does nothing on iPhone; a cancelled touch begun here types nothing, see
@@ -195,7 +207,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// This keyboard's pad under the bottom row: `bottomPadding` in the app. The extension
     /// sets a few points, since iOS already keeps its own strip under a custom keyboard.
     var bottomInset = TerminalKeyboard.bottomPadding {
-        didSet { heightConstraint.constant = Self.keysHeight + bottomInset }
+        didSet { fitHeight() }
     }
     /// How far from the screen edge the bottom row starts, so its outer keys sit inside
     /// the display's rounded corners: on the iPhone 17 Pro the edge is 20 pt in at 16 pt
@@ -290,6 +302,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var holdTimer: Timer?
     private var holdTouch: (id: Int, at: CGPoint)?
     private var heightConstraint: NSLayoutConstraint!
+    private var keysHeightConstraint: NSLayoutConstraint!
+    private var compact: Bool { traitCollection.verticalSizeClass == .compact }
 
     init() {
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.height), inputViewStyle: .keyboard)
@@ -299,19 +313,33 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         addLayoutGuide(keysArea)
         heightConstraint = heightAnchor.constraint(equalToConstant: Self.height)
         heightConstraint.priority = .required - 1
+        keysHeightConstraint = keysArea.heightAnchor.constraint(equalToConstant: Self.keysHeight)
         NSLayoutConstraint.activate([
             keysArea.topAnchor.constraint(equalTo: topAnchor),
             keysArea.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor),
             keysArea.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor),
-            keysArea.heightAnchor.constraint(equalToConstant: Self.keysHeight),
+            keysHeightConstraint,
             heightConstraint,
         ])
+        fitHeight()
         build()
         _ = Self.checker   // loads the lexicon now, not on the first ambiguous touch
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
     var enableInputClicksWhenVisible: Bool { true }
+
+    /// The height follows the size class: rotation, or the extension's traits arriving.
+    /// (`traitCollectionDidChange`: `registerForTraitChanges` is iOS 17.)
+    override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+        super.traitCollectionDidChange(previous)
+        if previous?.verticalSizeClass != traitCollection.verticalSizeClass { fitHeight(); setNeedsLayout() }
+    }
+
+    private func fitHeight() {
+        keysHeightConstraint.constant = Self.keysHeight(compact: compact)
+        heightConstraint.constant = keysHeightConstraint.constant + bottomInset
+    }
 
     /// What a key does. The touch tracker's presses land here; so do the tests'.
     func press(_ key: Key) {
@@ -626,7 +654,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         guard cap !== previewCap || preview.label.text != text || preview.superview == nil else { return }
         let host: UIView = window ?? self
         host.addSubview(preview)   // also brings it to the front
-        preview.show(text, over: convert(cap.frame, to: host), within: host.bounds)
+        preview.show(text, over: convert(cap.frame, to: host), within: host.bounds,
+                     rise: KeyPreview.rise(compact: compact))
         previewCap = cap
     }
 
@@ -701,13 +730,14 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     override func layoutSubviews() {
         super.layoutSubviews()
         let area = keysArea.layoutFrame.insetBy(dx: Self.sideMargin, dy: 0)
+        let m = Self.metrics(compact: compact)
         for (r, row) in caps.enumerated() {
-            let y = area.minY + Self.topPadding + CGFloat(r) * (Self.rowHeight + Self.rowGap)
+            let y = area.minY + m.top + CGFloat(r) * (m.row + m.gap)
             // The bottom row clears the screen's rounded corners (a no-op in landscape).
             let pull = r == caps.count - 1 ? max(0, Self.bottomRowInset - area.minX) : 0
             let rowArea = area.insetBy(dx: pull, dy: 0)
             for (cap, f) in zip(row, Self.place(row.map(\.key), width: rowArea.width)) {
-                cap.frame = CGRect(x: rowArea.minX + f.x, y: y, width: f.w, height: Self.rowHeight)
+                cap.frame = CGRect(x: rowArea.minX + f.x, y: y, width: f.w, height: m.row)
             }
         }
     }
@@ -829,6 +859,8 @@ extension TerminalKeyboard {
     fileprivate final class KeyPreview: UIView {
         static let extra: CGFloat = 10    // bubble overhang past each side of the key
         static let rise: CGFloat = 48     // bubble height above the key's top
+        /// Landscape's shorter bar and top pad leave the extension 40 pt over the digits.
+        static func rise(compact: Bool) -> CGFloat { compact ? 40 : rise }
         let label = UILabel()
         private let shape = CAShapeLayer()
 
@@ -849,10 +881,10 @@ extension TerminalKeyboard {
         required init?(coder: NSCoder) { fatalError("not used") }
 
         /// `key` and `limit` in the superview's coordinates.
-        func show(_ text: String, over key: CGRect, within limit: CGRect) {
+        func show(_ text: String, over key: CGRect, within limit: CGRect, rise: CGFloat) {
             let w = key.width + 2 * Self.extra
             let x = min(max(key.midX - w / 2, limit.minX + 2), limit.maxX - 2 - w)
-            let bubble = CGRect(x: x, y: key.minY - Self.rise, width: w, height: Self.rise + 8)
+            let bubble = CGRect(x: x, y: key.minY - rise, width: w, height: rise + 8)
             frame = bubble.union(key)
             let local = { (r: CGRect) in r.offsetBy(dx: -self.frame.minX, dy: -self.frame.minY) }
             let path = UIBezierPath(roundedRect: local(bubble), cornerRadius: 9)

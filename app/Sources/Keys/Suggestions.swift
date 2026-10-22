@@ -404,17 +404,21 @@ final class TypingMemory {
 ///
 /// 44 pt, and never under 42: a top-row press bubble rises 48 pt above a key whose top
 /// is 6 pt below the keyboard's, and a custom keyboard can't draw above its own view, so
-/// the bar is the bubbles' headroom too. A plain view on the extension's dark backdrop
-/// (`host`), not a UIInputView: one of those slips its own `_UIInputViewContent` halves
-/// over its subviews, and they took the right slot's touches.
+/// the bar is the bubbles' headroom too. In a compact vertical size class (landscape)
+/// 36 pt, over a 4 pt top pad and a 40 pt rise (`TerminalKeyboard.metrics(compact:)`).
+/// A plain view on the extension's dark backdrop (`host`), not a UIInputView: one of
+/// those slips its own `_UIInputViewContent` halves over its subviews, and they took the
+/// right slot's touches.
 final class SuggestionBar: UIView {
     static let height: CGFloat = 44
+    static func height(compact: Bool) -> CGFloat { compact ? 36 : height }
     let suggestions: Suggestions
     /// The key button's action: the controller's `advanceToNextInputMode`.
     var nextKeyboard: (() -> Void)?
     private(set) var state: Suggestions.State = .slots([nil, nil, nil])
     private weak var keyboard: TerminalKeyboard?
     private(set) var slotButtons: [UIButton] = []
+    private var heightConstraint: NSLayoutConstraint?
     private var hairlines: [UIView] = []
     let autofillButton = UIButton(configuration: .plain())
 
@@ -466,7 +470,7 @@ final class SuggestionBar: UIView {
     }
 
     /// Stacks the bar over `keyboard` in the extension's `view`, which is then the bar's
-    /// 44 pt plus the keyboard's own height: the digit row's bubbles rise into the bar.
+    /// height plus the keyboard's own height: the digit row's bubbles rise into the bar.
     /// The view gets an opaque dark fill: the keys are fixed dark grays, and a light
     /// app's backdrop behind them would read as a light keyboard with dark keys.
     func host(_ keyboard: TerminalKeyboard, in view: UIView) {
@@ -475,16 +479,24 @@ final class SuggestionBar: UIView {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
         }
+        let height = heightAnchor.constraint(equalToConstant: Self.height(compact: traitCollection.verticalSizeClass == .compact))
+        heightConstraint = height
         NSLayoutConstraint.activate([
             topAnchor.constraint(equalTo: view.topAnchor),
             leadingAnchor.constraint(equalTo: view.leadingAnchor),
             trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            heightAnchor.constraint(equalToConstant: Self.height),
+            height,
             keyboard.topAnchor.constraint(equalTo: bottomAnchor),
             keyboard.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             keyboard.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             keyboard.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+    }
+
+    /// The height follows the size class, like the keyboard's (rotation).
+    override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+        super.traitCollectionDidChange(previous)
+        heightConstraint?.constant = Self.height(compact: traitCollection.verticalSizeClass == .compact)
     }
 
     /// Recompute from the text: after each key, and when the host changes the text or

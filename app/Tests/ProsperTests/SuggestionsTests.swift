@@ -239,6 +239,9 @@ final class SuggestionsTests: XCTestCase {
         kb.bottomInset = 6
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402,
                                             height: SuggestionBar.height + TerminalKeyboard.keysHeight + 6))
+        // A window with no scene takes its size class from its own size: this short one
+        // would read compact. The extension's follows the device (the landscape test).
+        if #available(iOS 17, *) { window.traitOverrides.verticalSizeClass = .regular }
         let view = UIView(frame: window.bounds)
         window.addSubview(view)
         bar.host(kb, in: view)
@@ -260,6 +263,38 @@ final class SuggestionsTests: XCTestCase {
             kb.track(.ended, id: 1, at: p)
         }
         XCTAssertEqual(doc.text, "!)", "the held symbols typed")
+    }
+
+    /// The same in landscape: a 36 pt bar, the keys' 174 pt and its height constraint
+    /// following, the digits' shorter bubbles still inside, and the bar back to 44 pt.
+    func testTopRowBubblesFitInTheExtensionsViewInLandscape() throws {
+        guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
+        let (kb, bar, _) = rig()
+        kb.bottomInset = 6
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 874, height: 36 + 174 + 6))
+        window.traitOverrides.verticalSizeClass = .compact
+        let view = UIView(frame: window.bounds)
+        window.addSubview(view)
+        bar.host(kb, in: view)
+        window.isHidden = false
+        defer { window.isHidden = true }
+        window.layoutIfNeeded()
+        let height = try XCTUnwrap(kb.constraints.first { $0.firstItem === kb && $0.firstAttribute == .height })
+        XCTAssertEqual(height.constant, 174 + 6)
+        XCTAssertEqual(bar.frame, CGRect(x: 0, y: 0, width: 874, height: 36))
+        XCTAssertEqual(kb.frame.minY, 36)
+        for label in ["1", "0"] {
+            let cap = try XCTUnwrap(kb.subviews.compactMap { $0 as? UIButton }.first { $0.accessibilityLabel == label })
+            let p = CGPoint(x: cap.frame.midX, y: cap.frame.midY)
+            kb.track(.began, id: 1, at: p)
+            XCTAssertTrue(window.bounds.contains(try XCTUnwrap(kb.previewFrame)), "\(label): \(kb.previewFrame!)")
+            kb.fireHold()
+            XCTAssertTrue(window.bounds.contains(try XCTUnwrap(kb.previewFrame)), "\(label) held")
+            kb.track(.ended, id: 1, at: p)
+        }
+        window.traitOverrides.verticalSizeClass = .regular
+        window.layoutIfNeeded()
+        XCTAssertEqual(bar.frame.height, SuggestionBar.height, "rotated back")
     }
 
     func testTappingTheQuotedWordKeepsAndLearnsIt() {

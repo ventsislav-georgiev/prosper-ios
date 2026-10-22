@@ -114,6 +114,51 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(caps.map(\.frame.maxY).max(), TerminalKeyboard.keysHeight)
     }
 
+    /// Landscape (a compact vertical size class): 174 pt of keys in five 30 pt rows that
+    /// don't overlap, the height following the traits both ways, hints still top-right,
+    /// touches still on the key drawn there, and a top-row bubble rising 40 pt.
+    func testLandscapeRowsAreShorterAndFollowTheTraits() throws {
+        guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 874, height: 402))
+        window.traitOverrides.verticalSizeClass = .compact
+        let kb = TerminalKeyboard()
+        kb.frame = CGRect(x: 0, y: 0, width: 874, height: TerminalKeyboard.height)
+        window.addSubview(kb)
+        window.isHidden = false
+        defer { window.isHidden = true }
+        window.layoutIfNeeded()
+        let height = try XCTUnwrap(kb.constraints.first { $0.firstItem === kb && $0.firstAttribute == .height })
+        XCTAssertEqual(TerminalKeyboard.keysHeight(compact: true), 174)
+        XCTAssertEqual(height.constant, 174 + TerminalKeyboard.bottomPadding)
+        var caps: [String: UIButton] = [:]
+        for case let b as UIButton in kb.subviews { caps[b.accessibilityLabel ?? ""] = b }
+        let tops = Set(caps.values.map(\.frame.minY)).sorted()
+        XCTAssertEqual(tops.count, 5)
+        XCTAssertTrue(caps.values.allSatisfy { $0.frame.height == 30 })
+        for (a, b) in zip(tops, tops.dropFirst()) { XCTAssertLessThan(a + 30, b, "rows overlap") }
+        XCTAssertEqual(caps.values.map(\.frame.maxY).max(), 174)
+        let g = try XCTUnwrap(caps["g"])
+        g.layoutIfNeeded()
+        let hint = try XCTUnwrap(g.subviews.compactMap { $0 as? UILabel }.first { $0.text == "-" })
+        XCTAssertGreaterThanOrEqual(hint.frame.minX, g.bounds.midX)
+        XCTAssertLessThanOrEqual(hint.frame.maxY, g.bounds.midY)
+        for label in ["1", "q", "g", "space"] {
+            let f = try XCTUnwrap(caps[label]).frame
+            XCTAssertEqual(kb.key(at: CGPoint(x: f.midX, y: f.midY)), label == "space" ? .space : .char(label))
+            XCTAssertEqual(kb.key(at: CGPoint(x: f.midX, y: f.maxY + 2)), label == "space" ? .space : .char(label),
+                           "just under \(label): still its row")
+        }
+        let one = try XCTUnwrap(caps["1"]).frame
+        kb.track(.began, id: 1, at: CGPoint(x: one.midX, y: one.midY))
+        XCTAssertEqual(try XCTUnwrap(kb.previewFrame).minY, one.minY - 40)
+        kb.track(.cancelled, id: 1, at: CGPoint(x: one.midX, y: one.midY))
+
+        window.traitOverrides.verticalSizeClass = .regular
+        window.layoutIfNeeded()
+        XCTAssertEqual(height.constant, TerminalKeyboard.height, "back to portrait")
+        XCTAssertEqual(kb.subviews.compactMap { $0 as? UIButton }.map(\.frame.maxY).max(), TerminalKeyboard.keysHeight)
+    }
+
     /// Render check, run by hand: `TK_SNAPSHOT_DIR=<dir>` saves the keyboard at 375 and
     /// 402 pt, lowercase, shifted, and with `s` held (its bubble showing #).
     func testSnapshotPages() throws {
