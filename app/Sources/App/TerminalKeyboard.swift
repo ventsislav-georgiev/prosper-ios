@@ -118,11 +118,11 @@ struct KeyTouchTracker {
 ///
 /// Why it exists: on Face ID iPhones the system keyboard reserves an empty ~73 pt strip
 /// under its keys (globe/dictation) plus padding above them, and an app can't shrink
-/// it. This one is four 38 pt rows with only `bottomPadding` under them, reaching into
-/// the home-indicator strip instead of stopping above it: 225 pt against the system's
-/// 308. The bottom row pulls in from the sides so its outer keys clear the display's
-/// rounded corners, and carries `,` `/` `?` beside space on every page. Character keys
-/// show a press preview above the key.
+/// it. This one is five 38 pt rows with only `bottomPadding` under them, reaching into
+/// the home-indicator strip instead of stopping above it: 276 pt against the system's
+/// 308, with a digit row the system keyboard doesn't have. The bottom row pulls in from
+/// the sides so its outer keys clear the display's rounded corners, and carries `,` `/`
+/// `?` beside space on every page. Character keys show a press preview above the key.
 ///
 /// Touches are handled by this view, not per key: each finger goes to the nearest key
 /// (no dead zones in the gaps or margins) and `KeyTouchTracker` decides what it types,
@@ -135,7 +135,7 @@ struct KeyTouchTracker {
 /// raw through `sendBytes`; submitting is the shortcut bar's enter. The system keyboard
 /// keeps return = submit.
 final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
-    enum Page { case letters, numbers, symbols }
+    enum Page { case letters, numbers }
     enum Key: Hashable {
         case char(String), shift, backspace, space, ret, page(Page)
     }
@@ -145,7 +145,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static let topPadding: CGFloat = 6
     static let keyGap: CGFloat = 9
     static let sideMargin: CGFloat = 3
-    static let keysHeight = topPadding + 4 * rowHeight + 3 * rowGap
+    static let keysHeight = topPadding + 5 * rowHeight + 4 * rowGap
     /// Under the bottom row, in place of the 34 pt home-indicator inset: enough to keep
     /// the space bar off the bottom edge, where the home gesture starts. (Deferring that
     /// gesture does nothing on iPhone; a cancelled touch begun here types nothing, see
@@ -174,15 +174,17 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private static func chars(_ s: String) -> [Key] { s.map { .char(String($0)) } }
 
-    /// The bottom row is the same on every page but for its page key: `, / ?` beside
-    /// space, for prose and paths. The two symbol pages hold every other printable ASCII
-    /// character that isn't a letter, once each; the common ones are on the first page.
+    /// Five rows on both pages, so a page switch never changes the height. Digits lead
+    /// both (shift doesn't change them). The bottom row is the same on every page but for
+    /// its page key: `, / ?` beside space, for prose and paths. The numbers page holds
+    /// every other printable ASCII character that isn't a letter or digit, once each.
     static func rows(for page: Page) -> [[Key]] {
         func bottom(_ other: Page) -> [Key] {
             [.page(other), .char(","), .char("/"), .space, .char("?"), .ret]
         }
         switch page {
         case .letters: return [
+            chars("1234567890"),
             chars("qwertyuiop"),
             chars("asdfghjkl"),
             [.shift] + chars("zxcvbnm") + [.backspace],
@@ -191,13 +193,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .numbers: return [
             chars("1234567890"),
             chars("-#()_$='\"&"),
-            [.page(.symbols)] + chars(".@*`+;:") + [.backspace],
-            bottom(.letters),
-        ]
-        case .symbols: return [
             chars("[]{}|<>%^~"),
-            chars("!\\"),
-            [.page(.numbers), .backspace],
+            chars(".@*`+;:!\\") + [.backspace],
             bottom(.letters),
         ]
         }
@@ -383,7 +380,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                 switch p {
                 case .letters: title = "ABC"; label = "letters"
                 case .numbers: title = "123"; label = "numbers"
-                case .symbols: title = "#+="; label = "more symbols"
                 }
             }
             cap.titleLabel?.font = title?.count == 1 ? Style.letterFont : Style.wordFont
@@ -468,14 +464,17 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// Horizontal slots for one row, in a row `width` wide. A letter is one unit (ten
     /// units and nine gaps fill the width). A row of nine or more characters stretches
-    /// them to fill it. A row with space gives space the rest; a row led by a special key
-    /// (shift / page) pins it and the last key to the edges and centers the letters
-    /// between; anything else is centered.
+    /// them to fill it; with a trailing backspace, that is pinned to the right edge and
+    /// the characters share the rest. A row with space gives space the rest; a row led by
+    /// a special key (shift / page) pins it and the last key to the edges and centers the
+    /// letters between; anything else is centered.
     static func place(_ keys: [Key], width: CGFloat) -> [(x: CGFloat, w: CGFloat)] {
         let g = keyGap, u = (width - 9 * g) / 10
-        if keys.count >= 9, keys.allSatisfy({ if case .char = $0 { return true } else { return false } }) {
-            let kw = (width - g * CGFloat(keys.count - 1)) / CGFloat(keys.count)
-            return keys.indices.map { (CGFloat($0) * (kw + g), kw) }
+        let n = keys.prefix { if case .char = $0 { return true } else { return false } }.count
+        if n >= 9, n == keys.count || (n == keys.count - 1 && keys.last == .backspace) {
+            let tail = n < keys.count ? 1.5 * u + g : 0
+            let kw = (width - tail - g * CGFloat(n - 1)) / CGFloat(n)
+            return keys.indices.map { $0 < n ? (CGFloat($0) * (kw + g), kw) : (width - 1.5 * u, 1.5 * u) }
         }
         func w(_ k: Key) -> CGFloat {
             switch k {

@@ -26,14 +26,18 @@ final class TerminalKeyboardTests: XCTestCase {
         keys.compactMap { if case .char(let c) = $0 { return c } else { return nil } }
     }
 
-    /// The shared bottom row counts once; every other key on every page counts as is, so a
-    /// character on two pages, or twice on one, fails as surely as a missing one.
+    /// The shared digit and bottom rows count once; every other key on every page counts
+    /// as is, so a character on two pages, or twice on one, fails as surely as a missing one.
     func testEveryPrintableAsciiIsReachableExactlyOnce() {
-        let pages: [TerminalKeyboard.Page] = [.letters, .numbers, .symbols]
+        let pages: [TerminalKeyboard.Page] = [.letters, .numbers]
+        let digits = chars(TerminalKeyboard.rows(for: .letters).first!)
         let shared = chars(TerminalKeyboard.rows(for: .letters).last!)
         XCTAssertEqual(shared, [",", "/", "?"])
-        let upper = pages.flatMap { chars(Array(TerminalKeyboard.rows(for: $0).dropLast().joined())) }
-        let all = upper + shared
+        for page in pages {
+            XCTAssertEqual(chars(TerminalKeyboard.rows(for: page).first!), digits, "\(page)")
+        }
+        let middle = pages.map { chars(Array(TerminalKeyboard.rows(for: $0).dropFirst().dropLast().joined())) }
+        let all = digits + middle.joined() + shared
         let dupes = Dictionary(grouping: all, by: { $0 }).filter { $0.value.count > 1 }.keys.sorted()
         XCTAssertEqual(dupes, [], "reachable more than once")
         let letters = chars(.letters).filter { $0.first!.isLetter }
@@ -43,8 +47,53 @@ final class TerminalKeyboardTests: XCTestCase {
         let printable = (0x21...0x7E).map { String(UnicodeScalar(UInt8($0))) }
         XCTAssertEqual(reachable.sorted(), printable.sorted(),
                        "missing \(Set(printable).subtracting(reachable).sorted())")
-        XCTAssertEqual(chars(Array(TerminalKeyboard.rows(for: .numbers).dropLast().joined())).count, 27)
-        XCTAssertEqual(chars(Array(TerminalKeyboard.rows(for: .symbols).dropLast().joined())).count, 12)
+        XCTAssertEqual(middle.map(\.count), [26, 29])
+    }
+
+    func testLettersPageLeadsWithTheDigits() throws {
+        XCTAssertEqual(chars(TerminalKeyboard.rows(for: .letters)[0]), "1234567890".map(String.init))
+        let (kb, caps) = laidOut()
+        let spy = SpyInput()
+        kb.target = spy
+        let five = try XCTUnwrap(caps["5"]).frame
+        XCTAssertLessThan(five.maxY, try XCTUnwrap(caps["q"]).frame.minY, "digits sit above qwerty")
+        kb.track(.began, id: 1, at: CGPoint(x: five.midX, y: five.midY))
+        kb.track(.ended, id: 1, at: CGPoint(x: five.midX, y: five.midY))
+        kb.press(.shift)
+        kb.press(.char("5"))
+        XCTAssertEqual(spy.calls, ["5", "5"], "shift doesn't change a digit")
+        XCTAssertEqual(kb.shift.mode, .once, "nor does a digit spend it")
+    }
+
+    /// Five rows on every page, so switching pages never changes the keyboard's height.
+    func testEveryPageHasFiveRowsAndTheSameHeight() {
+        let kb = TerminalKeyboard()
+        kb.frame = CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.height)
+        var bottoms: [CGFloat] = []
+        for page in [TerminalKeyboard.Page.letters, .numbers] {
+            XCTAssertEqual(TerminalKeyboard.rows(for: page).count, 5, "\(page)")
+            kb.press(.page(page))
+            kb.layoutIfNeeded()
+            let caps = kb.subviews.compactMap { $0 as? UIButton }
+            XCTAssertEqual(Set(caps.map(\.frame.minY)).count, 5, "\(page)")
+            bottoms.append(caps.map(\.frame.maxY).max()!)
+        }
+        XCTAssertEqual(bottoms, [TerminalKeyboard.keysHeight, TerminalKeyboard.keysHeight])
+    }
+
+    /// Render check, run by hand: `TK_SNAPSHOT_DIR=<dir>` saves both pages at 402 pt.
+    func testSnapshotPages() throws {
+        guard let dir = ProcessInfo.processInfo.environment["TK_SNAPSHOT_DIR"] else {
+            throw XCTSkip("set TK_SNAPSHOT_DIR to render")
+        }
+        let (kb, _) = laidOut()
+        kb.backgroundColor = .black
+        for (page, name) in [(TerminalKeyboard.Page.letters, "letters"), (.numbers, "numbers")] {
+            kb.press(.page(page))
+            kb.layoutIfNeeded()
+            let png = UIGraphicsImageRenderer(bounds: kb.bounds).pngData { kb.layer.render(in: $0.cgContext) }
+            try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("460-\(name).png"))
+        }
     }
 
     func testSymbolPageRows() {
@@ -52,11 +101,24 @@ final class TerminalKeyboardTests: XCTestCase {
         func row(_ page: K.Page, _ i: Int) -> [String] { chars(K.rows(for: page)[i]) }
         XCTAssertEqual(row(.numbers, 0), "1234567890".map(String.init))
         XCTAssertEqual(row(.numbers, 1), ["-", "#", "(", ")", "_", "$", "=", "'", "\"", "&"])
-        XCTAssertEqual(K.rows(for: .numbers)[2],
-                       [.page(.symbols)] + ".@*`+;:".map { .char(String($0)) } + [.backspace])
-        XCTAssertEqual(row(.symbols, 0), ["[", "]", "{", "}", "|", "<", ">", "%", "^", "~"])
-        XCTAssertEqual(row(.symbols, 1), ["!", "\\"])
-        XCTAssertEqual(K.rows(for: .symbols)[2], [.page(.numbers), .backspace])
+        XCTAssertEqual(row(.numbers, 2), ["[", "]", "{", "}", "|", "<", ">", "%", "^", "~"])
+        XCTAssertEqual(K.rows(for: .numbers)[3], ".@*`+;:!\\".map { .char(String($0)) } + [.backspace])
+    }
+
+    /// Nine characters and a backspace: the backspace is pinned right, the characters
+    /// share the rest, and nothing overflows or overlaps on any iPhone width.
+    func testNumbersBackspaceRowFits() {
+        let row = TerminalKeyboard.rows(for: .numbers)[3]
+        for width in [375, 393, 402, 440] as [CGFloat] {
+            let w = width - 2 * TerminalKeyboard.sideMargin
+            let slots = TerminalKeyboard.place(row, width: w)
+            XCTAssertEqual(slots.first!.x, 0, accuracy: 0.001)
+            XCTAssertEqual(slots.last!.x + slots.last!.w, w, accuracy: 0.001, "backspace at the right edge")
+            XCTAssertGreaterThan(slots.last!.w, slots[0].w, "backspace is wider than a key")
+            for (a, b) in zip(slots, slots.dropFirst()) {
+                XCTAssertGreaterThanOrEqual(b.x - (a.x + a.w), TerminalKeyboard.keyGap - 0.001, "overlap at \(width)")
+            }
+        }
     }
 
     func testCommonSymbolsAreOnTheFirstSymbolsPage() {
@@ -65,7 +127,7 @@ final class TerminalKeyboardTests: XCTestCase {
     }
 
     func testRowsFitTheWidth() {
-        for page in [TerminalKeyboard.Page.letters, .numbers, .symbols] {
+        for page in [TerminalKeyboard.Page.letters, .numbers] {
             for row in TerminalKeyboard.rows(for: page) {
                 let slots = TerminalKeyboard.place(row, width: 396)
                 XCTAssertEqual(slots.count, row.count)
@@ -79,15 +141,15 @@ final class TerminalKeyboardTests: XCTestCase {
     }
 
     func testARowFillsTheWidth() {
-        let row = TerminalKeyboard.rows(for: .letters)[1]
+        let row = TerminalKeyboard.rows(for: .letters)[2]
         XCTAssertEqual(row.count, 9)
         let slots = TerminalKeyboard.place(row, width: 393)
         XCTAssertEqual(slots.first!.x, 0, accuracy: 0.001)
         XCTAssertEqual(slots.last!.x + slots.last!.w, 393, accuracy: 0.001)
-        let top = TerminalKeyboard.place(TerminalKeyboard.rows(for: .letters)[0], width: 393)
+        let top = TerminalKeyboard.place(TerminalKeyboard.rows(for: .letters)[1], width: 393)
         XCTAssertGreaterThan(slots[0].w, top[0].w, "nine keys in the width of ten are wider")
         // Short character rows stay one unit wide, centered.
-        let short = TerminalKeyboard.place(TerminalKeyboard.rows(for: .symbols)[1], width: 393)
+        let short = TerminalKeyboard.place([.char("!"), .char("\\")], width: 393)
         XCTAssertEqual(short.count, 2)
         XCTAssertEqual(short[0].w, top[0].w, accuracy: 0.001)
         XCTAssertEqual(short[1].w, top[0].w, accuracy: 0.001)
@@ -96,7 +158,7 @@ final class TerminalKeyboardTests: XCTestCase {
 
     func testBottomRowIsSharedByEveryPage() {
         let pages: [(TerminalKeyboard.Page, TerminalKeyboard.Page)] =
-            [(.letters, .numbers), (.numbers, .letters), (.symbols, .letters)]
+            [(.letters, .numbers), (.numbers, .letters)]
         for (page, other) in pages {
             XCTAssertEqual(TerminalKeyboard.rows(for: page).last!,
                            [.page(other), .char(","), .char("/"), .space, .char("?"), .ret], "\(page)")
@@ -107,7 +169,7 @@ final class TerminalKeyboardTests: XCTestCase {
     /// the space bar off the bottom edge.
     func testHeight() {
         XCTAssertEqual(TerminalKeyboard.height, TerminalKeyboard.keysHeight + TerminalKeyboard.bottomPadding)
-        XCTAssertEqual(TerminalKeyboard.height, 225)
+        XCTAssertEqual(TerminalKeyboard.height, 276)
         XCTAssertTrue((26...28).contains(TerminalKeyboard.bottomPadding))
         XCTAssertEqual(TerminalKeyboard().frame.height, TerminalKeyboard.height)
     }
@@ -115,7 +177,7 @@ final class TerminalKeyboardTests: XCTestCase {
     func testBottomRowClearsTheCornersAndSpaceStaysWide() throws {
         for width in [375, 393, 402, 440] as [CGFloat] {
             let (kb, _) = laidOut(width: width)
-            for page in [TerminalKeyboard.Page.letters, .numbers, .symbols] {
+            for page in [TerminalKeyboard.Page.letters, .numbers] {
                 kb.press(.page(page))
                 kb.layoutIfNeeded()
                 let caps = Dictionary(kb.subviews.compactMap { $0 as? UIButton }
@@ -266,7 +328,6 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(kb.previewText, "q")
         XCTAssertTrue(q.isHighlighted)
         let qf = try XCTUnwrap(kb.previewFrame)
-        XCTAssertLessThan(qf.minY, 0, "a top-row bubble rises above the keyboard")
         XCTAssertGreaterThanOrEqual(qf.minX, 0, "edge key keeps its bubble on screen")
         kb.track(.moved, id: 1, at: try at("w"))
         XCTAssertEqual(kb.previewText, "w", "the preview follows the finger")
@@ -276,6 +337,11 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertNil(kb.previewText)
         XCTAssertFalse(w.isHighlighted)
         XCTAssertEqual(spy.calls, ["w"])
+        kb.track(.began, id: 11, at: try at("1"))
+        XCTAssertLessThan(try XCTUnwrap(kb.previewFrame).minY, 0, "a top-row bubble rises above the keyboard")
+        kb.track(.ended, id: 11, at: try at("1"))
+        XCTAssertEqual(spy.calls, ["w", "1"])
+        spy.calls.removeLast()
 
         kb.track(.began, id: 2, at: try at("p"))
         XCTAssertLessThanOrEqual(try XCTUnwrap(kb.previewFrame).maxX, 402)
