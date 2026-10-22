@@ -591,9 +591,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// Copy the block under `p` (`tv` coordinates) — a wrapped command under Claude's ⏺,
     /// a code paragraph — to the clipboard as one line (`TerminalMath.commandBlock`, then
-    /// `oneLine`). A blank row copies nothing and leaves the clipboard alone. On the
-    /// alternate screen (vim, less) only the touched row: its `~` rows and status line
-    /// are never blank, so a block there is the whole screen.
+    /// `oneLine`). A blank row copies nothing and leaves the clipboard alone. Both
+    /// screens alike: Claude Code's fullscreen mode lives on the alternate one (#459).
     func copyLine(at p: CGPoint) {
         let term = tv.getTerminal()
         // Screen rows, not getText's soft-joined lines: the touched row is then just the
@@ -605,9 +604,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             i += 1
         }
         let line = cell(at: p, term).line
-        let block = term.isCurrentBufferAlternate
-            ? (rows.indices.contains(line) ? [rows[line]] : [])
-            : TerminalMath.commandBlock(rows, at: line)
+        // ponytail: in vim/less, whose `~` rows and status line are never blank, a hold
+        // joins the whole paragraph under the finger; detect those apps if that bites.
+        let block = TerminalMath.commandBlock(rows, at: line)
         let text = TerminalMath.oneLine(block.joined(separator: "\n"), cols: term.cols)
         guard !text.isEmpty else { return }
         UIPasteboard.general.string = text

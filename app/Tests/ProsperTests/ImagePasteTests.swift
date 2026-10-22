@@ -712,17 +712,33 @@ final class ImagePasteTests: XCTestCase {
         }
     }
 
-    /// vim's `~` rows and status line are never blank: on the alternate screen a hold
-    /// copies the touched row only, not the whole screen.
-    func testLongPressOnTheAlternateScreenCopiesOnlyTheTouchedRow() async throws {
+    /// #459: Claude Code's fullscreen mode runs on the alternate screen, and a hold there
+    /// copies the whole wrapped "!" command as one line, " \\" continuations dropped.
+    func testLongPressOnTheAlternateScreenCopiesTheWrappedCommand() async throws {
         let (vc, _) = try await makeVC()
+        vc.view.frame.size.width = 800   // the device's rows are 68 wide: no soft wrap here
+        vc.view.layoutIfNeeded()
         let (_, tv) = try barAndTerminal(vc)
-        tv.feed(text: "\u{1b}[?1049h\u{1b}[H\u{1b}[2Jimport Foundation\r\nfunc main() {\r\n~\r\n~\r\n\"main.swift\" 4L")
+        XCTAssertGreaterThanOrEqual(tv.getTerminal().cols, 70, "precondition: rows fit unwrapped")
+        let rows = [
+            "● The paste wrapped the line again. This version ends each line with",
+            "  \\, so wrapped lines join back up:",
+            "",
+            "  ! for c in gke_example-ci_europe-west4-b_ci-primary \\",
+            "    gke_example-system_europe-west1-b_ci-primary; do \\",
+            "    kubectl --context $c -n web-frontend-controller rollout restart \\",
+            "    deploy/web-frontend-controller; done",
+            "",
+            "* Churned for 2s · done 7:40 PM",
+        ]
+        tv.feed(text: "\u{1b}[?1049h\u{1b}[H\u{1b}[2J" + rows.joined(separator: "\r\n"))
         XCTAssertTrue(tv.getTerminal().isCurrentBufferAlternate, "precondition: alternate screen")
+        UIPasteboard.general.string = "none"
 
-        vc.copyLine(at: rowPoint(tv, 1))
+        vc.copyLine(at: rowPoint(tv, 5))
 
-        XCTAssertEqual(UIPasteboard.general.string, "func main() {")
+        XCTAssertEqual(UIPasteboard.general.string,
+                       "! for c in gke_example-ci_europe-west4-b_ci-primary gke_example-system_europe-west1-b_ci-primary; do kubectl --context $c -n web-frontend-controller rollout restart deploy/web-frontend-controller; done")
     }
 
     /// Quick holds replace the toast instead of stacking pills.

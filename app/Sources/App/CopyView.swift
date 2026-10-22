@@ -7,7 +7,8 @@ import UIKit
 /// pasting elsewhere. "One line" joins the terminal-wrapped lines of a selection
 /// back into one command (`TerminalMath.oneLine`).
 final class CopyTextVC: UIViewController, UITextViewDelegate {
-    /// Remembered across copy sessions: on next time if the user left it on.
+    /// Remembered across copy sessions. On until the user turns it off: a copied
+    /// command is almost always pasted somewhere that runs each newline.
     static let oneLineKey = "copyOneLine"
 
     private let text: String
@@ -18,7 +19,7 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
     private var scrolled = false
     /// The last selection as selected, so the toggle can recompute or restore it.
     private var selection: String?
-    private var oneLine = UserDefaults.standard.bool(forKey: CopyTextVC.oneLineKey)
+    private var oneLine = UserDefaults.standard.object(forKey: CopyTextVC.oneLineKey) as? Bool ?? true
     private lazy var oneLineItem: UIBarButtonItem = {
         let b = UIBarButtonItem(image: UIImage(systemName: "arrow.right.to.line"), style: .plain,
                                 target: self, action: #selector(toggleOneLine))

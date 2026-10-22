@@ -36,29 +36,44 @@ enum TerminalMath {
     /// command they were. Claude Code hard-wraps at the width with a continuation
     /// indent, so a copied command keeps newlines and does not run. Blank lines go,
     /// each line is trimmed both sides (the copy indent, the continuation indent), and
-    /// a line that filled the row joins with "" — the wrap fell mid-token, as in a URL
-    /// or a path — any other with " ", a word-wrap break. A trailing " \" (shell
-    /// continuation) drops the backslash and joins with " ".
+    /// lines join with " ", a word-wrap break. Only a line that filled the row AND whose
+    /// last token plus the next line's first one would not fit the wrap box joins with
+    /// "": Ink word-wraps, and splits a token only when it is longer than the line —
+    /// a URL, a path. A trailing " \" (shell continuation) drops the backslash and
+    /// joins with " ".
     static func oneLine(_ text: String, cols: Int) -> String {
         var out = ""
         var glue = ""
+        // The previous line filled its row: its last token's length and the wrap box
+        // (cols less its indent). The glue is decided once the next line's head is seen.
+        var full: (tail: Int, box: Int)?
         for raw in text.split(whereSeparator: \.isNewline) {
             // Display width counts the indent: the row is full, indent and all.
             let right = String(raw.reversed().drop(while: \.isWhitespace).reversed())
             guard !right.isEmpty else { continue }
-            out += glue + right.drop(while: \.isWhitespace)
+            let line = right.drop(while: \.isWhitespace)
+            if let f = full {
+                let head = line.prefix(while: { !$0.isWhitespace }).count
+                glue = f.tail + head > f.box ? "" : " "
+            }
+            out += glue + line
+            full = nil
+            glue = " "
             if right.hasSuffix(" \\") {
                 out.removeLast()
                 while out.last?.isWhitespace == true { out.removeLast() }
-                glue = " "
                 continue
             }
             // ponytail: "full" is width % cols == 0 — SwiftTerm's getText already joins
-            // soft-wrapped rows (k*cols wide), and a hard wrap at cols is one row. A word
-            // that ends exactly at the last column gets glued to the next one, and wide
-            // CJK/emoji count as one column (SwiftTerm's UnicodeUtil.columnWidth is
+            // soft-wrapped rows (k*cols wide), and a hard wrap at cols is one row. Two
+            // separate tokens, the first ending exactly at the last column, whose combined
+            // length exceeds the box get glued — rare, it takes a token nearly a row long.
+            // Wide CJK/emoji count as one column (SwiftTerm's UnicodeUtil.columnWidth is
             // internal); use cell widths if that bites.
-            glue = cols > 0 && right.count % cols == 0 ? "" : " "
+            if cols > 0, right.count % cols == 0 {
+                let tail = right.reversed().prefix(while: { !$0.isWhitespace }).count
+                full = (tail, cols - (right.count - line.count))
+            }
         }
         return out
     }

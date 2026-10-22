@@ -30,7 +30,7 @@ final class CopyViewTests: XCTestCase {
     func testOneLineToggleJoinsAndRestoresTheSelection() throws {
         let saved = UserDefaults.standard.object(forKey: CopyTextVC.oneLineKey)
         defer { UserDefaults.standard.set(saved, forKey: CopyTextVC.oneLineKey) }
-        UserDefaults.standard.removeObject(forKey: CopyTextVC.oneLineKey)
+        UserDefaults.standard.set(false, forKey: CopyTextVC.oneLineKey)
 
         let raw = "curl https://exa\n  mple.com \\\n  -o out"
         let vc = CopyTextVC(text: raw, cols: 16)
@@ -53,5 +53,29 @@ final class CopyViewTests: XCTestCase {
         tap()
         XCTAssertEqual(editor.text, raw)
         XCTAssertFalse(UserDefaults.standard.bool(forKey: CopyTextVC.oneLineKey))
+    }
+
+    /// #459: never toggled, One line starts on, so a selected wrapped command lands in
+    /// the editor (the clipboard) already joined.
+    @MainActor
+    func testOneLineIsOnByDefault() throws {
+        let saved = UserDefaults.standard.object(forKey: CopyTextVC.oneLineKey)
+        defer { UserDefaults.standard.set(saved, forKey: CopyTextVC.oneLineKey) }
+        UserDefaults.standard.removeObject(forKey: CopyTextVC.oneLineKey)
+
+        let raw = "curl https://exa\n  mple.com \\\n  -o out"
+        let vc = CopyTextVC(text: raw, cols: 16)
+        let win = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 700))
+        win.rootViewController = UINavigationController(rootViewController: vc)
+        win.isHidden = false
+        win.layoutIfNeeded()
+        let views = vc.view.subviews.compactMap { $0 as? UITextView }
+        let (source, editor) = (views[0], views[1])
+        source.selectedRange = NSRange(location: 0, length: raw.utf16.count)
+        vc.textViewDidChangeSelection(source)
+        XCTAssertEqual(editor.text, "curl https://example.com -o out")
+        let item = try XCTUnwrap(vc.navigationItem.rightBarButtonItems?
+            .first { $0.accessibilityLabel == "One line" })
+        XCTAssertTrue(item.isSelected)
     }
 }

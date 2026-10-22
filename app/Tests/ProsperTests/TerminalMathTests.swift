@@ -301,11 +301,22 @@ final class TerminalMathTests: XCTestCase {
                        TerminalMath.oneLine("a b\n  c\nd", cols: 80))
     }
 
-    /// Pinned ceilings (the ponytail on oneLine): a word that ends exactly at the last
-    /// column is glued to the next; a full row whose trailing spaces the copy trimmed
-    /// reads as short and joins with " "; wide CJK counts one column per character.
+    /// #459: a full row joins with "" only when its last token and the next line's first
+    /// could not have shared the wrap box (cols less the indent) — Ink split a token.
+    func testOneLineFullRowGluesOnlyATokenTooLongForTheBox() {
+        XCTAssertEqual(TerminalMath.oneLine("  https://www.exampl\n  e.com/a/very/long/\n  path/x", cols: 20),
+                       "https://www.example.com/a/very/long/path/x")
+        XCTAssertEqual(TerminalMath.oneLine("  echo one two three\n  four", cols: 20),
+                       "echo one two three four")
+    }
+
+    /// Pinned ceilings (the ponytail on oneLine): two tokens, the first ending exactly at
+    /// the last column, too long together for the box are glued; a full row whose
+    /// trailing spaces the copy trimmed reads as short and joins with " "; wide CJK
+    /// counts one column per character.
     func testOneLineDocumentedCeilings() {
-        XCTAssertEqual(TerminalMath.oneLine("echo hello\nworld", cols: 10), "echo helloworld")
+        XCTAssertEqual(TerminalMath.oneLine("echo hello\nworld", cols: 10), "echo hello world")
+        XCTAssertEqual(TerminalMath.oneLine("a hellohello\nworld", cols: 12), "a hellohelloworld")
         XCTAssertEqual(TerminalMath.oneLine("abcdefgh  \nij", cols: 10), "abcdefgh ij")
         XCTAssertEqual(TerminalMath.oneLine("中文中文\n中文", cols: 8), "中文中文 中文")
         XCTAssertEqual(TerminalMath.oneLine("中文中文\n中文", cols: 4), "中文中文中文")
@@ -352,6 +363,25 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(TerminalMath.commandBlock(rows, at: 3), ["  docker run --rm \\", "    -it ubuntu bash"])
         XCTAssertEqual(TerminalMath.commandBlock(rows, at: 0), ["  Run:"])
         XCTAssertEqual(TerminalMath.commandBlock(rows, at: 5), ["  Then exit."])
+    }
+
+    /// #459: the "!" command Claude printed with no backslashes, as wrapped at 68 cols
+    /// under its ● head, held on a middle row: one line, every break a space — the
+    /// "… --context" row is exactly 68 wide yet ended on a word.
+    func testCommandBlockJoinsTheUnescapedBangCommand() {
+        let rows = [
+            "● The paste wrapped the line again:",
+            "",
+            "  ! for c in gke_example-ci_europe-west4-b_ci-primary",
+            "  gke_example-system_europe-west1-b_ci-primary; do kubectl --context",
+            "  $c -n web-frontend-controller rollout restart",
+            "  deploy/web-frontend-controller; done",
+            "",
+        ]
+        let block = TerminalMath.commandBlock(rows, at: 4)
+        XCTAssertEqual(block, Array(rows[2...5]))
+        XCTAssertEqual(TerminalMath.oneLine(block.joined(separator: "\n"), cols: 68),
+                       "! for c in gke_example-ci_europe-west4-b_ci-primary gke_example-system_europe-west1-b_ci-primary; do kubectl --context $c -n web-frontend-controller rollout restart deploy/web-frontend-controller; done")
     }
 
     /// A marker row going up ends the block even with no blank row in between; ╭/╰
