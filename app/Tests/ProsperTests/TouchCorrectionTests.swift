@@ -172,8 +172,8 @@ final class TouchCorrectionTests: XCTestCase {
         XCTAssertEqual(kb.word, "te")
         kb.press(.shift); kb.press(.char("x"))
         XCTAssertEqual(kb.word, "tex", "shift keeps the word, lowercase")
-        for key in [K.Key.space, .char("1"), .char("/"), .ret, .page(.numbers)] {
-            kb.press(.page(.letters)); kb.press(.char("a"))
+        for key in [K.Key.space, .char("1"), .char("/"), .char("#"), .ret] {
+            kb.press(.char("a"))
             XCTAssertEqual(kb.word.last, "a")
             kb.press(key)
             XCTAssertEqual(kb.word, "", "\(key)")

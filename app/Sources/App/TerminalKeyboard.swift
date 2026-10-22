@@ -36,10 +36,13 @@ struct ShiftState: Equatable {
 ///   to correct works.
 /// - A new touch types any earlier one still waiting first, so rolled typing keeps its
 ///   order and a second tap on a key that's still held counts twice.
+/// - A character touch still waiting after `holdDelay` (the view's timer calls `hold`)
+///   becomes that key's `holdSymbol` and stays it: lifting types the symbol. A touch a
+///   rollover already typed has nothing left to convert.
 /// - A cancelled touch that was still a tap (it traveled at most `tapSlop`) still types:
 ///   the user pressed the key before a system gesture took it. One that traveled further
 ///   was a swipe (the home gesture starting in the strip under the space bar) and types
-///   nothing. Page keys never type on cancel, as a cancel shouldn't flip the page.
+///   nothing.
 /// - A cancelled touch that began below the bottom row's keys types nothing however
 ///   little it traveled: that strip is where the home gesture starts, and the system
 ///   cancels it inside `tapSlop`. One there that lifts normally still types.
@@ -52,11 +55,16 @@ struct KeyTouchTracker {
 
     /// How far a finger may travel and still count as a tap if it's cancelled.
     static let tapSlop: CGFloat = 10
+    /// How long a character touch stays down before it types its symbol instead.
+    static let holdDelay: TimeInterval = 0.35
 
     private struct Touch {
         let id: Int; var key: Key; var done: Bool
         let start: CGPoint; var travel: CGFloat = 0
         var belowKeys = false
+        /// Set by a hold: what the touch types instead of `key`.
+        var symbol: String?
+        var output: Key { symbol.map(Key.char) ?? key }
         mutating func reach(_ p: CGPoint) { travel = max(travel, hypot(p.x - start.x, p.y - start.y)) }
     }
     private var touches: [Touch] = []
@@ -68,6 +76,8 @@ struct KeyTouchTracker {
         guard let t = touches.last, !t.done, case .char = t.key else { return nil }
         return t.key
     }
+    /// The symbol that touch will type, once a hold converted it: the preview shows it.
+    var previewSymbol: String? { previewKey == nil ? nil : touches.last?.symbol }
 
     private static func actsOnDown(_ key: Key) -> Bool { key == .shift || key == .backspace }
 
@@ -75,7 +85,7 @@ struct KeyTouchTracker {
     mutating func began(_ id: Int, _ key: Key, at point: CGPoint = .zero, belowKeys: Bool = false) -> [Effect] {
         var out: [Effect] = []
         for i in touches.indices where !touches[i].done {
-            out.append(.press(touches[i].key))
+            out.append(.press(touches[i].output))
             touches[i].done = true
         }
         switch key {
@@ -92,8 +102,19 @@ struct KeyTouchTracker {
     mutating func moved(_ id: Int, _ key: Key, at point: CGPoint? = nil) {
         guard let i = touches.firstIndex(where: { $0.id == id }) else { return }
         if let point { touches[i].reach(point) }
-        guard !touches[i].done, !Self.actsOnDown(key) else { return }
+        guard !touches[i].done, touches[i].symbol == nil, !Self.actsOnDown(key) else { return }
         touches[i].key = key
+    }
+
+    /// The touch has stayed down `holdDelay`, now over `key`: the nearest key, uncorrected,
+    /// since a hold is deliberate. True if it now types that key's symbol.
+    mutating func hold(_ id: Int, over key: Key) -> Bool {
+        guard let i = touches.firstIndex(where: { $0.id == id }), !touches[i].done,
+              touches[i].symbol == nil, case .char(let c) = key,
+              let symbol = TerminalKeyboard.holdSymbol[c] else { return false }
+        touches[i].key = key
+        touches[i].symbol = symbol
+        return true
     }
 
     mutating func ended(_ id: Int) -> [Effect] { finish(id, cancelled: false) }
@@ -107,9 +128,8 @@ struct KeyTouchTracker {
         let t = touches.remove(at: i)
         if t.key == .backspace { return held.contains(.backspace) ? [] : [.stopRepeat] }
         if t.done { return [] }
-        if cancelled, case .page = t.key { return [] }
         if cancelled, t.travel > Self.tapSlop || t.belowKeys { return [] }
-        return [.press(t.key)]
+        return [.press(t.output)]
     }
 
     mutating func reset() { touches.removeAll() }
@@ -122,8 +142,12 @@ struct KeyTouchTracker {
 /// it. This one is five 38 pt rows with only `bottomPadding` under them, reaching into
 /// the home-indicator strip instead of stopping above it: 276 pt against the system's
 /// 308, with a digit row the system keyboard doesn't have. The bottom row pulls in from
-/// the sides so its outer keys clear the display's rounded corners, and carries `,` `/`
-/// `?` beside space on every page. Character keys show a press preview above the key.
+/// the sides so its outer keys clear the display's rounded corners, and carries `.` `,`
+/// `/` `?` beside space. Character keys show a press preview above the key.
+///
+/// There is one page, no symbols page: like Gboard, each letter and digit shows a small
+/// symbol in its corner (`holdSymbol`) and holding the key types it, so every printable
+/// ASCII character is a tap or a hold away and none costs a page switch and back.
 ///
 /// Touches are handled by this view, not per key: each finger goes to the nearest key
 /// (no dead zones in the gaps or margins) and `KeyTouchTracker` decides what it types,
@@ -137,9 +161,8 @@ struct KeyTouchTracker {
 /// raw through `sendBytes`; submitting is the shortcut bar's enter. The system keyboard
 /// keeps return = submit.
 final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
-    enum Page { case letters, numbers }
     enum Key: Hashable {
-        case char(String), shift, backspace, space, ret, page(Page)
+        case char(String), shift, backspace, space, ret
     }
 
     static let rowHeight: CGFloat = 38
@@ -176,37 +199,31 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private static func chars(_ s: String) -> [Key] { s.map { .char(String($0)) } }
 
-    /// Five rows on both pages, so a page switch never changes the height. Digits lead
-    /// both (shift doesn't change them). The bottom row is the same on every page but for
-    /// its page key: `, / ?` beside space, for prose and paths. The numbers page holds
-    /// every other printable ASCII character that isn't a letter or digit, once each.
-    static func rows(for page: Page) -> [[Key]] {
-        func bottom(_ other: Page) -> [Key] {
-            [.page(other), .char(","), .char("/"), .space, .char("?"), .ret]
-        }
-        switch page {
-        case .letters: return [
-            chars("1234567890"),
-            chars("qwertyuiop"),
-            chars("asdfghjkl"),
-            [.shift] + chars("zxcvbnm") + [.backspace],
-            bottom(.numbers),
-        ]
-        case .numbers: return [
-            chars("1234567890"),
-            chars("-#()_$='\"&"),
-            chars("[]{}|<>%^~"),
-            chars(".@*`+;:!\\") + [.backspace],
-            bottom(.letters),
-        ]
-        }
-    }
+    /// Digits lead (shift doesn't change them), then qwerty, then `. , / ?` beside space
+    /// for prose and paths. Every other symbol is a hold (`holdSymbol`).
+    static let rows: [[Key]] = [
+        chars("1234567890"),
+        chars("qwertyuiop"),
+        chars("asdfghjkl"),
+        [.shift] + chars("zxcvbnm") + [.backspace],
+        [.char("."), .char(","), .char("/"), .space, .char("?"), .ret],
+    ]
+
+    /// What holding a letter or digit types, shown in its corner: the digits' US shift
+    /// symbols, the letters' Gboard ones, with q and w carrying ` and \. With the taps
+    /// that covers all 32 printable ASCII symbols; a few appear twice (@ # $ & * ( ) /),
+    /// where both spots are familiar. Keyed by the lowercase key, whatever shift shows.
+    static let holdSymbol: [String: String] = [
+        "1": "!", "2": "@", "3": "#", "4": "$", "5": "%", "6": "^", "7": "&", "8": "*", "9": "(", "0": ")",
+        "q": "`", "w": "\\", "e": "~", "r": "|", "t": "[", "y": "]", "u": "<", "i": ">", "o": "{", "p": "}",
+        "a": "@", "s": "#", "d": "&", "f": "*", "g": "-", "h": "+", "j": "=", "k": "(", "l": ")",
+        "z": "_", "x": "$", "c": "\"", "v": "'", "b": ":", "n": ";", "m": "/",
+    ]
 
     weak var target: UIKeyInput?
     /// Raw bytes to the terminal, past `insertText` (which makes multi-byte control text
     /// a paste).
     var sendBytes: (([UInt8]) -> Void)?
-    private(set) var page: Page = .letters
     private(set) var shift = ShiftState()
     /// The letters typed since the last non-letter, lowercase: the prefix touch correction
     /// continues. Backspace drops one, shift keeps it, any other key clears it. Keys from
@@ -230,6 +247,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private let preview = KeyPreview()
     private weak var previewCap: Cap?
     private var tracker = KeyTouchTracker()
+    /// The touch the hold timer is waiting on, and where it is now: only the newest touch
+    /// can still be waiting (a new one types the others), so one timer is enough.
+    private var holdTimer: Timer?
+    private var holdTouch: (id: Int, at: CGPoint)?
 
     init() {
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.height), inputViewStyle: .keyboard)
@@ -272,9 +293,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .shift:
             shift.tap(at: CACurrentMediaTime())
             refreshLabels()
-        case .page(let p):
-            page = p
-            build()
         }
     }
 
@@ -285,6 +303,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         static let keyPressed = UIColor(white: 0.58, alpha: 1)
         static let special = UIColor(white: 0.27, alpha: 1)      // ~#454545
         static let specialPressed = UIColor(white: 0.42, alpha: 1)
+        static let hint = UIColor(white: 1, alpha: 0.6)           // secondary label
+        static let hintFont = UIFont.systemFont(ofSize: 10)
         static let letterFont = UIFont.systemFont(ofSize: 22)
         static let wordFont = UIFont.systemFont(ofSize: 16)
         static let symbol = UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
@@ -293,19 +313,33 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private func build() {
         hidePreview()
         caps.joined().forEach { $0.removeFromSuperview() }
-        caps = Self.rows(for: page).map { $0.map(makeCap) }
+        caps = Self.rows.map { $0.map(makeCap) }
         refreshLabels()
         setNeedsLayout()
     }
 
     private func makeCap(_ key: Key) -> Cap {
         let cap = Cap(key: key)
+        // Digits take the special keys' dimmer fill, setting the row off from the letters.
         let plain: Bool
-        switch key { case .char, .space: plain = true; default: plain = false }
+        switch key {
+        case .char(let c): plain = c.first?.isNumber != true
+        case .space: plain = true
+        default: plain = false
+        }
         cap.fill = plain ? Style.key : Style.special
         cap.pressedFill = plain ? Style.keyPressed : Style.specialPressed
         cap.accessibilityTraits = .keyboardKey
         cap.activate = { [weak self] in self?.press(key) }
+        if case .char(let c) = key, let symbol = Self.holdSymbol[c] {
+            cap.hint.text = symbol
+            cap.hint.font = Style.hintFont
+            cap.hint.textColor = Style.hint
+            // VoiceOver can't hold a key: the symbol is the cap's action instead.
+            cap.accessibilityCustomActions = [UIAccessibilityCustomAction(name: symbol) { [weak self] _ in
+                self?.press(.char(symbol)); return true
+            }]
+        }
         addSubview(cap)
         return cap
     }
@@ -337,18 +371,20 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .began:
             knownCache = [:]; screenCache = nil
             feedback()
-            let before = page
             let bottomRow = caps.last?.map(\.frame.maxY).max() ?? .infinity
             perform(tracker.began(id, key(at: point), at: point, belowKeys: point.y > bottomRow))
-            // A rolled-over page key just switched the page under this finger.
-            if page != before { tracker.moved(id, key(at: point)) }
+            stopHold()
+            if tracker.previewKey != nil { startHold(id, at: point) }
         case .moved:
             tracker.moved(id, key(at: point), at: point)
+            if holdTouch?.id == id { holdTouch?.at = point }
         case .ended:
             tracker.moved(id, key(at: point), at: point)
             perform(tracker.ended(id))
+            if holdTouch?.id == id { stopHold() }
         case .cancelled:
             perform(tracker.cancelled(id, at: point))   // only how far it traveled matters
+            if holdTouch?.id == id { stopHold() }
         default:
             return
         }
@@ -360,9 +396,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// word. Began, moved and the preview all ask here, so they agree.
     func key(at point: CGPoint) -> Key {
         let keys = caps.joined().map { ($0.key, $0.frame) }
-        guard let nearest = keys.min(by: { Self.distance(point, $0.1) < Self.distance(point, $1.1) })?.0
-        else { return .space }
-        return Self.corrected(nearest, at: point, keys: keys, prefix: word) { s in
+        return Self.corrected(nearest(at: point), at: point, keys: keys, prefix: word) { s in
             if let known = knownCache[s] { return known }
             var known = Self.dictionaryKnows(s) || ShellWords.all.contains { $0.hasPrefix(s) }
             if !known {   // the screen last, and only if the dictionaries don't settle it
@@ -372,6 +406,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             knownCache[s] = known
             return known
         }
+    }
+
+    /// The key nearest `point`, uncorrected: what a hold converts.
+    private func nearest(at point: CGPoint) -> Key {
+        caps.joined().min { Self.distance(point, $0.frame) < Self.distance(point, $1.frame) }?.key ?? .space
     }
 
     /// Start the next word afresh: a key went to the terminal some other way.
@@ -397,7 +436,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         let held = tracker.held
         for cap in caps.joined() { cap.isHighlighted = held.contains(cap.key) }
         let cap = tracker.previewKey.flatMap { k in caps.joined().first { $0.key == k } }
-        if let cap { showPreview(cap) } else { hidePreview() }
+        if let cap { showPreview(cap, tracker.previewSymbol) } else { hidePreview() }
     }
 
     private func refreshLabels() {
@@ -417,11 +456,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             case .backspace: image = "delete.left"; label = "delete"
             case .space: title = "space"; label = "space"
             case .ret: image = "return.left"; label = "new line"
-            case .page(let p):
-                switch p {
-                case .letters: title = "ABC"; label = "letters"
-                case .numbers: title = "123"; label = "numbers"
-                }
             }
             cap.titleLabel?.font = title?.count == 1 ? Style.letterFont : Style.wordFont
             cap.setTitle(title, for: .normal)
@@ -435,11 +469,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     // MARK: - Press preview
 
     /// The preview goes in the keyboard's window, not this view, so a top-row bubble can
-    /// rise over the shortcut bar whatever the input host's ancestors clip.
-    private func showPreview(_ cap: Cap) {
-        guard let text = cap.title(for: .normal) else { return }
+    /// rise over the shortcut bar whatever the input host's ancestors clip. A held key's
+    /// bubble shows the `symbol` it will type.
+    private func showPreview(_ cap: Cap, _ symbol: String?) {
+        guard let text = symbol ?? cap.title(for: .normal) else { return }
         guard cap !== previewCap || preview.label.text != text || preview.superview == nil else { return }
-        layoutIfNeeded()   // a key pressed right after a page switch has no frame yet
         let host: UIView = window ?? self
         host.addSubview(preview)   // also brings it to the front
         preview.show(text, over: convert(cap.frame, to: host), within: host.bounds)
@@ -459,6 +493,31 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         UIDevice.current.playInputClick()
         haptics.impactOccurred(intensity: 0.7)
         haptics.prepare()
+    }
+
+    // Hold: a character touch still waiting after `holdDelay` types its symbol on lift.
+    private func startHold(_ id: Int, at point: CGPoint) {
+        holdTouch = (id, point)
+        let t = Timer(timeInterval: KeyTouchTracker.holdDelay, repeats: false) { [weak self] _ in self?.fireHold() }
+        RunLoop.main.add(t, forMode: .common)
+        holdTimer = t
+    }
+
+    private func stopHold() {
+        holdTimer?.invalidate()
+        holdTimer = nil
+        holdTouch = nil
+    }
+
+    /// The hold timer's end; tests call it in place of waiting. Converts on the key under
+    /// the finger now, without correction: a hold is deliberate.
+    func fireHold() {
+        guard let h = holdTouch else { return }
+        stopHold()
+        guard tracker.hold(h.id, over: nearest(at: h.at)) else { return }
+        haptics.impactOccurred()
+        haptics.prepare()
+        refreshPressed()
     }
 
     // Backspace: the tracker deletes once on touch-down; this repeats after a pause while held.
@@ -484,7 +543,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { stopRepeat(); tracker.reset(); refreshPressed() }   // dismissed mid-hold
+        if window == nil { stopRepeat(); stopHold(); tracker.reset(); refreshPressed() }   // dismissed mid-hold
     }
 
     // MARK: - Layout
@@ -505,17 +564,15 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// Horizontal slots for one row, in a row `width` wide. A letter is one unit (ten
     /// units and nine gaps fill the width). A row of nine or more characters stretches
-    /// them to fill it; with a trailing backspace, that is pinned to the right edge and
-    /// the characters share the rest. A row with space gives space the rest; a row led by
-    /// a special key (shift / page) pins it and the last key to the edges and centers the
-    /// letters between; anything else is centered.
+    /// them to fill it. A row with space gives space the rest; a row led by a special key
+    /// (shift) pins it and the last key to the edges and centers the letters between;
+    /// anything else is centered.
     static func place(_ keys: [Key], width: CGFloat) -> [(x: CGFloat, w: CGFloat)] {
         let g = keyGap, u = (width - 9 * g) / 10
         let n = keys.prefix { if case .char = $0 { return true } else { return false } }.count
-        if n >= 9, n == keys.count || (n == keys.count - 1 && keys.last == .backspace) {
-            let tail = n < keys.count ? 1.5 * u + g : 0
-            let kw = (width - tail - g * CGFloat(n - 1)) / CGFloat(n)
-            return keys.indices.map { $0 < n ? (CGFloat($0) * (kw + g), kw) : (width - 1.5 * u, 1.5 * u) }
+        if n >= 9, n == keys.count {
+            let kw = (width - g * CGFloat(n - 1)) / CGFloat(n)
+            return keys.indices.map { (CGFloat($0) * (kw + g), kw) }
         }
         func w(_ k: Key) -> CGFloat {
             switch k {
@@ -556,8 +613,8 @@ extension TerminalKeyboard {
     /// goes to the closest letter within half a key width that does: "tes" and a touch
     /// on r's right edge types t. A centered hit, an empty prefix, a known continuation
     /// or no known neighbor keeps `nearest`, so only an already ambiguous touch ever
-    /// moves. Only letters are corrected: digits and symbols never, nor the numbers page,
-    /// where the prefix is empty anyway. Lowercase in and out; `press` applies shift.
+    /// moves. Only letters are corrected: digits and symbols never. A hold isn't corrected
+    /// at all (`fireHold`). Lowercase in and out; `press` applies shift.
     ///
     /// The center is checked first, so `known` (and the screen it may read) is asked only
     /// for an ambiguous touch.
@@ -674,12 +731,13 @@ extension TerminalKeyboard {
 }
 
 /// One key, drawn only: flat fill that lightens while `isHighlighted` (set by the
-/// keyboard's touch tracking) and a hairline bottom shadow like the system keys.
-/// Touches go through to the keyboard view.
+/// keyboard's touch tracking), a hairline bottom shadow like the system keys, and the
+/// hold symbol's `hint` in the top-right corner. Touches go through to the keyboard view.
 private final class Cap: UIButton {
     let key: TerminalKeyboard.Key
     var fill: UIColor = .gray { didSet { refill() } }
     var pressedFill: UIColor = .lightGray
+    let hint = UILabel()
 
     init(key: TerminalKeyboard.Key) {
         self.key = key
@@ -692,8 +750,16 @@ private final class Cap: UIButton {
         setTitleColor(.white, for: .normal)
         tintColor = .white
         isUserInteractionEnabled = false
+        addSubview(hint)
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        hint.sizeToFit()
+        // Tucked into the corner: at 375 pt a 22 pt M or Z reaches within 3 pt of it.
+        hint.frame.origin = CGPoint(x: bounds.maxX - hint.frame.width - 2.5, y: 0)
+    }
 
     override var isHighlighted: Bool { didSet { refill() } }
     private func refill() { backgroundColor = isHighlighted ? pressedFill : fill }
