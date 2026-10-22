@@ -87,9 +87,9 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(ShortcutBar.columnWidths(top: [], bottom: []), [])
     }
 
-    /// The default set at iPhone 17 width (402 pt; at 393 its grid is 1 pt too wide and
-    /// scrolls): every column's two caps share an edge and a width, and a one-row set
-    /// keeps natural widths.
+    /// The default set at iPhone 17 width (402 pt; narrower phones squeeze, see
+    /// testDefaultBarFitsTheNarrowPhones): every column's two caps share an edge and a
+    /// width, and a one-row set keeps natural widths.
     @MainActor
     func testTwoRowBarColumnsLineUp() throws {
         let saved = UserDefaults.standard.string(forKey: Shortcuts.storageKey)
@@ -311,6 +311,41 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(bar.rowCount, 2)
         let top = caps.filter { $0.superview === caps[0].superview }
         XCTAssertEqual(top.compactMap(\.accessibilityLabel), Shortcuts.defaults.prefix(8).map(\.label))
+    }
+
+    /// A grid at most 6% too wide squeezes to fit instead of scrolling; wider still scrolls.
+    func testFilledSqueezesASmallOverflow() {
+        let w: [CGFloat] = [40, 60, 100]                 // span 212
+        let f = ShortcutBar.filled(w, spacing: 6, available: 200)
+        XCTAssertLessThanOrEqual(f.reduce(0, +) + 12, 200)
+        XCTAssertEqual(f.reduce(0, +) + 12, 200, accuracy: 0.5)
+        XCTAssertEqual(f[2] / f[0], 2.5, accuracy: 0.05)
+        let edge = 200 * ShortcutBar.minFillScale + 12  // exactly the narrowest squeeze
+        XCTAssertNotEqual(ShortcutBar.filled(w, spacing: 6, available: edge), w)
+        XCTAssertEqual(ShortcutBar.filled(w, spacing: 6, available: edge - 1), w)
+    }
+
+    /// QA #277: the default bar on the narrower phones (SE/mini 375, 390, 393) squeezes
+    /// instead of clipping the send key; 402+ is untouched. Nothing scrolls, the send cap
+    /// sits wholly inside the bar, and no cap's label truncates.
+    @MainActor
+    func testDefaultBarFitsTheNarrowPhones() throws {
+        for width: CGFloat in [375, 390, 393, 402, 440] {
+            let bar = try makeBar(Shortcuts.defaults.map(\.id), width: width)
+            XCTAssertEqual(bar.rowCount, 2, "\(width)")
+            let caps = Self.caps(bar)
+            let sv = try XCTUnwrap(caps[0].superview?.superview?.superview as? UIScrollView)
+            XCTAssertLessThanOrEqual(sv.contentSize.width, sv.bounds.width + 0.01, "\(width): scrolls")
+            let send = try XCTUnwrap(caps.first { $0.accessibilityLabel == "send" })
+            XCTAssertTrue(bar.bounds.contains(send.convert(send.bounds, to: bar)), "\(width): send clipped")
+            for c in caps {
+                if let t = c.titleLabel, !(t.text ?? "").isEmpty {
+                    XCTAssertLessThanOrEqual(t.intrinsicContentSize.width, t.bounds.width + 0.5,
+                                             "\(width): \(t.text ?? "") truncates")
+                }
+            }
+            print("454-widths \(width): \(caps.map { "\($0.accessibilityLabel ?? "?")=\($0.frame.width)/\($0.naturalWidth)" })")
+        }
     }
 
     /// A saved bar that is exactly the old default was never customized: it loads as the

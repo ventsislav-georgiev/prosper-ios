@@ -192,9 +192,10 @@ final class ShortcutBar: UIView {
     /// actually changed (rotation) or the key set was rebuilt; every other layout pass
     /// is a no-op. Runs BEFORE `super` so the moved caps lay out in this same pass.
     /// Two rows → both caps of column i get that column's width, so the edges line up;
-    /// one row → natural widths. When the row/grid fits, every column is then scaled by
-    /// one factor (`filled`) so it spans the bar exactly; an overflowing bar keeps its
-    /// widths and scrolls. The split always reads natural widths, never the widened ones.
+    /// one row → natural widths. When the row/grid fits, or overflows by under 6%, every
+    /// column is then scaled by one factor (`filled`) so it spans the bar exactly; a wider
+    /// overflow keeps its widths and scrolls. The split always reads natural widths,
+    /// never the widened or squeezed ones.
     override func layoutSubviews() {
         if bounds.width != arrangedWidth, rows.count == 2 {
             arrangedWidth = bounds.width
@@ -207,7 +208,7 @@ final class ShortcutBar: UIView {
             // addArrangedSubview re-parents: a cap leaves whichever row held it.
             for (i, cap) in caps.enumerated() {
                 rows[i < k ? 0 : 1].addArrangedSubview(cap)
-                cap.minWidth = cols[i < k ? i : i - k]
+                cap.columnWidth = cols[i < k ? i : i - k]
             }
             rows[1].isHidden = k == caps.count   // hidden → the stack gives row 1 the full height
             rowCount = rows[1].isHidden ? 1 : 2
@@ -223,14 +224,19 @@ final class ShortcutBar: UIView {
         }
     }
 
-    /// Fits (`sum + spacing` < available) → scale every width by one factor so the span
-    /// equals `available`, edges floored to the `pixel` grid so rounding never overshoots
-    /// (a sub-pixel gap at the end is accepted). Overflows → unchanged, so it scrolls.
+    /// The narrowest `filled` squeezes a bar instead of scrolling it: the default 8+8 grid
+    /// needs 0.943 on a 375 pt phone; a squeezed cap takes it out of its side padding.
+    static let minFillScale: CGFloat = 0.94
+
+    /// Fits (`sum + spacing` < available), or would at `minFillScale` → scale every width
+    /// by one factor so the span equals `available`, edges floored to the `pixel` grid so
+    /// rounding never overshoots (a sub-pixel gap at the end is accepted). Overflows by
+    /// more → unchanged, so it scrolls.
     static func filled(_ widths: [CGFloat], spacing: CGFloat, available: CGFloat,
                        pixel: CGFloat = 0.5) -> [CGFloat] {
         let sum = widths.reduce(0, +)
         let gaps = spacing * CGFloat(max(0, widths.count - 1))
-        guard sum > 0, sum + gaps < available else { return widths }
+        guard sum > 0, sum * minFillScale + gaps <= available else { return widths }
         let factor = (available - gaps) / sum
         // Floor the running edge, not each width: per-width floors would lose a pixel
         // per column; this loses under one pixel in total.
@@ -331,7 +337,7 @@ final class ShortcutBar: UIView {
     private func makeButton(_ key: ShortcutKey) -> KeyCapButton {
         var cfg = UIButton.Configuration.plain()
         cfg.baseForegroundColor = Neon.blueBright
-        cfg.contentInsets = .init(top: 5, leading: 8, bottom: 5, trailing: 8)
+        cfg.contentInsets = .init(top: 5, leading: KeyCapButton.padding, bottom: 5, trailing: KeyCapButton.padding)
         if let sym = key.systemImage {
             cfg.image = UIImage(systemName: sym,
                 withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
@@ -446,17 +452,37 @@ final class KeyCapButton: UIButton {
     var pressedFill: UIColor = .clear
     /// Resting halo strength — armed ctrl glows harder than the rest.
     var idleGlow: Float = 0.5 { didSet { if !isHighlighted { layer.shadowOpacity = idleGlow } } }
-    /// The bar's column width. The cap is at least this wide — through its intrinsic
-    /// size, so its required hugging holds instead of fighting a width constraint.
-    var minWidth: CGFloat = 0 { didSet { if minWidth != oldValue { invalidateIntrinsicContentSize() } } }
+    /// Side padding around the glyph at natural width.
+    static let padding: CGFloat = 8
+    /// The bar's column width; once set the cap is exactly this wide — through its
+    /// intrinsic size, so its required hugging holds instead of fighting a width
+    /// constraint. Under the content's width (the bar squeezing to fit) the side padding
+    /// gives up the difference, so the label never truncates.
+    var columnWidth: CGFloat = 0 {
+        didSet {
+            guard columnWidth != oldValue else { return }
+            let side = Self.padding - max(0, contentWidth - columnWidth) / 2
+            if var cfg = configuration, cfg.contentInsets.leading != side {
+                cfg.contentInsets.leading = side
+                cfg.contentInsets.trailing = side
+                configuration = cfg
+            }
+            invalidateIntrinsicContentSize()
+        }
+    }
     /// A modifier cap's locked light, and the send cap's inner ring; nil on other caps.
     var led: UIView?
     var ring: UIView?
-    /// The width the cap's content wants, ignoring `minWidth` — never narrower than the
+    /// The width the cap's content wants, ignoring `columnWidth` — never narrower than the
     /// 36pt cap is tall, so a lone arrow or ^C stays at least square.
-    var naturalWidth: CGFloat { max(super.intrinsicContentSize.width, 36) }
+    var naturalWidth: CGFloat { max(contentWidth, 36) }
+    /// Content plus full padding, whatever padding a squeeze left on the cap.
+    private var contentWidth: CGFloat {
+        let insets = configuration?.contentInsets ?? .zero
+        return super.intrinsicContentSize.width - insets.leading - insets.trailing + 2 * Self.padding
+    }
     override var intrinsicContentSize: CGSize {
-        CGSize(width: max(naturalWidth, minWidth), height: super.intrinsicContentSize.height)
+        CGSize(width: columnWidth > 0 ? columnWidth : naturalWidth, height: super.intrinsicContentSize.height)
     }
 
     override var isHighlighted: Bool {
