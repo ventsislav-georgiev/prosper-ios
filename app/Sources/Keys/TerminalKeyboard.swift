@@ -1,5 +1,4 @@
 import GameController
-import SwiftTerm
 import UIKit
 
 /// The shift key: a tap uppercases the next letter only, a quick second tap locks caps,
@@ -25,6 +24,13 @@ struct ShiftState: Equatable {
 
     /// A letter went out: a one-shot shift is spent, caps lock stays.
     mutating func typedLetter() { if mode == .once { mode = .off } }
+
+    /// Auto-capitalization (the keyboard extension only): one-shot on at a sentence start,
+    /// off elsewhere. Caps lock is the user's and stays.
+    ///
+    /// ponytail: off also clears a one-shot the user tapped, so shift then a digit then
+    /// a letter types it lowercase. Track who set it if that ever matters.
+    mutating func autoShift(_ on: Bool) { if mode != .locked { mode = on ? .once : .off } }
 }
 
 /// Every finger on the compact keyboard, in press order, and what each one types. Pure,
@@ -160,9 +166,19 @@ struct KeyTouchTracker {
 /// is the exception: like Slack's it types a newline, `newlineBytes` (meta-enter) sent
 /// raw through `sendBytes`; submitting is the shortcut bar's enter. The system keyboard
 /// keeps return = submit.
+///
+/// The same view is the Prosper keyboard extension's, for every other app (Sources/Keys
+/// is compiled by both targets; nothing here may reach into Sources/App or SwiftTerm).
+/// There `target` is the host's `UITextDocumentProxy` and `sendBytes` is nil, so return
+/// types a real "\n", titled by the field's return key (`returnTitle`); the globe key
+/// shows when iOS asks for one (`showsGlobe`), shift follows the field's
+/// auto-capitalization (`autoCapitalize`) and a second space after a word types ". "
+/// (`doubleSpacePeriod`).
 final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     enum Key: Hashable {
         case char(String), shift, backspace, space, ret
+        /// Next keyboard; the extension's only. Its cap takes its own touches (`makeCap`).
+        case globe
     }
 
     static let rowHeight: CGFloat = 38
@@ -176,6 +192,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// gesture does nothing on iPhone; a cancelled touch begun here types nothing, see
     /// the tracker.)
     static let bottomPadding: CGFloat = 28
+    /// This keyboard's pad under the bottom row: `bottomPadding` in the app. The extension
+    /// sets a few points, since iOS already keeps its own strip under a custom keyboard.
+    var bottomInset = TerminalKeyboard.bottomPadding {
+        didSet { heightConstraint.constant = Self.keysHeight + bottomInset }
+    }
     /// How far from the screen edge the bottom row starts, so its outer keys sit inside
     /// the display's rounded corners: on the iPhone 17 Pro the edge is 20 pt in at 16 pt
     /// up. Landscape's side safe area already exceeds it.
@@ -222,8 +243,18 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     weak var target: UIKeyInput?
     /// Raw bytes to the terminal, past `insertText` (which makes multi-byte control text
-    /// a paste).
+    /// a paste). Nil in the extension: return then types "\n".
     var sendBytes: (([UInt8]) -> Void)?
+    /// Return's title, from the field's return key (`returnTitle(for:)`); nil draws the
+    /// `return.left` arrow. The extension sets it, the app never does.
+    var returnTitle: String? { didSet { refreshLabels() } }
+    /// A globe key before `.`, for the extension when iOS asks for one
+    /// (`needsInputModeSwitchKey`: Touch ID iPhones and iPad; Face ID iPhones draw their
+    /// own under the keyboard). The app never shows it.
+    var showsGlobe = false { didSet { if showsGlobe != oldValue { build() } } }
+    /// A second space after a word types ". " (`periodReplacesSpace`), like the system
+    /// keyboard. The extension sets it; the terminal never wants it.
+    var doubleSpacePeriod = false
     private(set) var shift = ShiftState()
     /// The letters typed since the last non-letter, lowercase: the prefix touch correction
     /// continues. Backspace drops one, shift keeps it, any other key clears it. Keys from
@@ -251,6 +282,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// can still be waiting (a new one types the others), so one timer is enough.
     private var holdTimer: Timer?
     private var holdTouch: (id: Int, at: CGPoint)?
+    private var heightConstraint: NSLayoutConstraint!
 
     init() {
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.height), inputViewStyle: .keyboard)
@@ -258,14 +290,14 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         isMultipleTouchEnabled = true
         overrideUserInterfaceStyle = .dark
         addLayoutGuide(keysArea)
-        let height = heightAnchor.constraint(equalToConstant: Self.height)
-        height.priority = .required - 1
+        heightConstraint = heightAnchor.constraint(equalToConstant: Self.height)
+        heightConstraint.priority = .required - 1
         NSLayoutConstraint.activate([
             keysArea.topAnchor.constraint(equalTo: topAnchor),
             keysArea.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor),
             keysArea.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor),
             keysArea.heightAnchor.constraint(equalToConstant: Self.keysHeight),
-            height,
+            heightConstraint,
         ])
         build()
         _ = Self.checker   // loads the lexicon now, not on the first ambiguous touch
@@ -287,12 +319,83 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             let letter = c.first?.isLetter == true
             target?.insertText(letter && shift.uppercase ? c.uppercased() : c)
             if letter, shift.mode == .once { shift.typedLetter(); refreshLabels() }
-        case .space: target?.insertText(" ")
-        case .ret: sendBytes?(Self.newlineBytes)
+        case .space:
+            if doubleSpacePeriod, let doc = target as? UITextDocumentProxy,
+               Self.periodReplacesSpace(before: doc.documentContextBeforeInput, keyboardType: doc.keyboardType ?? .default) {
+                doc.deleteBackward()
+                doc.insertText(". ")
+            } else {
+                target?.insertText(" ")
+            }
+        case .ret: if let sendBytes { sendBytes(Self.newlineBytes) } else { target?.insertText("\n") }
         case .backspace: target?.deleteBackward()
         case .shift:
             shift.tap(at: CACurrentMediaTime())
             refreshLabels()
+            return   // the user's shift: auto-capitalization doesn't undo it
+        case .globe: return   // its cap acts on its own; the tracker never yields it (`nearest`)
+        }
+        autoCapitalize()
+    }
+
+    /// Shift on at a sentence start, off elsewhere, when the target is a host app's text
+    /// field that asks for it: the extension's. The app's target, the terminal, isn't a
+    /// document proxy, so it never auto-capitalizes. `press` calls it after every key;
+    /// the extension's controller also does when the field or the selection changes.
+    func autoCapitalize() {
+        guard let doc = target as? UITextDocumentProxy else { return }
+        let on = Self.shouldCapitalize(before: doc.documentContextBeforeInput,
+                                       type: doc.autocapitalizationType ?? .none)
+        let before = shift
+        shift.autoShift(on)
+        if shift != before { refreshLabels() }
+    }
+
+    /// Whether the next letter starts capitalized, given the text before the cursor and
+    /// the field's autocapitalization: at the start of the field, after a newline, and
+    /// (sentences) after `. ` `? ` `! ` or (words) after any space. Nil text is the start.
+    static func shouldCapitalize(before text: String?, type: UITextAutocapitalizationType) -> Bool {
+        let text = text ?? ""
+        switch type {
+        case .allCharacters: return true
+        case .words: return text.last.map { $0.isWhitespace } ?? true
+        case .sentences:
+            guard let last = text.last else { return true }
+            if last.isNewline { return true }
+            guard last == " " else { return false }
+            let rest = text.reversed().drop { $0 == " " }
+            guard let end = rest.first else { return true }   // only spaces before it
+            return end.isNewline || ".?!".contains(end)
+        default: return false
+        }
+    }
+
+    /// Whether a space typed now replaces the space before the cursor with ". ": the text
+    /// ends in a letter or digit and exactly one space. Never in a field where a period
+    /// would break the value: URLs, email, web search, number and phone pads.
+    static func periodReplacesSpace(before text: String?, keyboardType: UIKeyboardType) -> Bool {
+        switch keyboardType {
+        case .URL, .emailAddress, .webSearch, .numberPad, .asciiCapableNumberPad, .decimalPad,
+             .phonePad, .namePhonePad: return false
+        default: break
+        }
+        let tail = Array((text ?? "").suffix(2))
+        return tail.count == 2 && tail[1] == " " && (tail[0].isLetter || tail[0].isNumber)
+    }
+
+    /// Return's title for a host field's return key type; nil keeps the arrow.
+    static func returnTitle(for type: UIReturnKeyType) -> String? {
+        switch type {
+        case .go: return "go"
+        case .google, .yahoo, .search: return "search"
+        case .join: return "join"
+        case .next: return "next"
+        case .route: return "route"
+        case .send: return "send"
+        case .done: return "done"
+        case .emergencyCall: return "emergency"
+        case .continue: return "continue"
+        default: return nil
         }
     }
 
@@ -313,7 +416,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private func build() {
         hidePreview()
         caps.joined().forEach { $0.removeFromSuperview() }
-        caps = Self.rows.map { $0.map(makeCap) }
+        var rows = Self.rows
+        if showsGlobe { rows[rows.count - 1].insert(.globe, at: 0) }
+        caps = rows.map { $0.map(makeCap) }
         refreshLabels()
         setNeedsLayout()
     }
@@ -330,7 +435,17 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         cap.fill = plain ? Style.key : Style.special
         cap.pressedFill = plain ? Style.keyPressed : Style.specialPressed
         cap.accessibilityTraits = .keyboardKey
-        cap.activate = { [weak self] in self?.press(key) }
+        if key == .globe {
+            // The one cap that takes its own touches: `handleInputModeList` wants a
+            // control's touch events, to switch on a tap and list keyboards on a hold.
+            // A nil target sends it up the responder chain to the extension's
+            // UIInputViewController. VoiceOver's activate falls back to a real tap.
+            cap.isUserInteractionEnabled = true
+            cap.addTarget(nil, action: #selector(UIInputViewController.handleInputModeList(from:with:)),
+                          for: .allTouchEvents)
+        } else {
+            cap.activate = { [weak self] in self?.press(key) }
+        }
         if case .char(let c) = key, let symbol = Self.holdSymbol[c] {
             cap.hint.text = symbol
             cap.hint.font = Style.hintFont
@@ -352,7 +467,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { feed(touches, .cancelled) }
 
     private func feed(_ touches: Set<UITouch>, _ phase: UITouch.Phase) {
-        let byID = Dictionary(uniqueKeysWithValues: touches.map { (Int(bitPattern: ObjectIdentifier($0)), $0) })
+        // Only touches that hit this view: a globe cap's are its own, whatever reaches here.
+        let byID = Dictionary(uniqueKeysWithValues: touches.filter { $0.view === self }.map { (Int(bitPattern: ObjectIdentifier($0)), $0) })
         for id in Self.inputOrder(byID.map { ($0.key, $0.value.timestamp) }) {
             track(phase, id: id, at: byID[id]!.location(in: self))
         }
@@ -408,9 +524,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
     }
 
-    /// The key nearest `point`, uncorrected: what a hold converts.
+    /// The key nearest `point`, uncorrected: what a hold converts. Never the globe: a
+    /// touch beside its cap goes to the next key over, since only the cap can open the
+    /// keyboard list.
     private func nearest(at point: CGPoint) -> Key {
-        caps.joined().min { Self.distance(point, $0.frame) < Self.distance(point, $1.frame) }?.key ?? .space
+        caps.joined().filter { $0.key != .globe }.min { Self.distance(point, $0.frame) < Self.distance(point, $1.frame) }?.key ?? .space
     }
 
     /// Start the next word afresh: a key went to the terminal some other way.
@@ -455,7 +573,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                 cap.fill = shift.uppercase ? Style.key : Style.special
             case .backspace: image = "delete.left"; label = "delete"
             case .space: title = "space"; label = "space"
-            case .ret: image = "return.left"; label = "new line"
+            case .ret:
+                if let returnTitle { title = returnTitle; label = returnTitle } else { image = "return.left"; label = "new line" }
+            case .globe: image = "globe"; label = "next keyboard"
             }
             cap.titleLabel?.font = title?.count == 1 ? Style.letterFont : Style.wordFont
             cap.setTitle(title, for: .normal)
@@ -576,7 +696,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
         func w(_ k: Key) -> CGFloat {
             switch k {
-            case .char: return u
+            case .char, .globe: return u
             case .ret: return 2.25 * u
             default: return 1.5 * u
             }
@@ -669,22 +789,6 @@ extension TerminalKeyboard {
         return checker.rangeOfMisspelledWord(in: s, range: range, startingAt: 0, wrap: false,
                                              language: language).location == NSNotFound
     }
-
-    /// The lowercase runs of three or more letters in the visible rows and up to
-    /// `scrollback` lines above them: what the host hands `screenWords`.
-    static func screenWords(in term: Terminal, scrollback: Int = 200) -> Set<String> {
-        let first = term.buffer.totalLinesTrimmed
-        let top = first + term.buffer.yDisp
-        var out = Set<String>()
-        for row in max(first, top - scrollback) ..< top + term.rows {
-            guard let line = term.getScrollInvariantLine(row: row) else { continue }
-            let text = line.translateToString(trimRight: true).lowercased()
-            for run in text.utf8.split(whereSeparator: { $0 < 0x61 || $0 > 0x7A }) where run.count >= 3 {
-                out.insert(String(decoding: run, as: UTF8.self))
-            }
-        }
-        return out
-    }
 }
 
 extension TerminalKeyboard {
@@ -749,6 +853,8 @@ private final class Cap: UIButton {
         layer.shadowRadius = 0
         setTitleColor(.white, for: .normal)
         tintColor = .white
+        titleLabel?.adjustsFontSizeToFitWidth = true   // a long return title ("emergency")
+        titleLabel?.minimumScaleFactor = 0.5
         isUserInteractionEnabled = false
         addSubview(hint)
     }

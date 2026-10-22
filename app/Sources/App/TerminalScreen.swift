@@ -1149,3 +1149,23 @@ private final class DchTerminalView: TerminalView {
         return CGFloat(r + 1) * cellH
     }
 }
+
+/// SwiftTerm stays out of the shared key core (Sources/Keys): the keyboard extension
+/// doesn't link it.
+extension TerminalKeyboard {
+    /// The lowercase runs of three or more letters in the visible rows and up to
+    /// `scrollback` lines above them: what the host hands `screenWords`.
+    static func screenWords(in term: Terminal, scrollback: Int = 200) -> Set<String> {
+        let first = term.buffer.totalLinesTrimmed
+        let top = first + term.buffer.yDisp
+        var out = Set<String>()
+        for row in max(first, top - scrollback) ..< top + term.rows {
+            guard let line = term.getScrollInvariantLine(row: row) else { continue }
+            let text = line.translateToString(trimRight: true).lowercased()
+            for run in text.utf8.split(whereSeparator: { $0 < 0x61 || $0 > 0x7A }) where run.count >= 3 {
+                out.insert(String(decoding: run, as: UTF8.self))
+            }
+        }
+        return out
+    }
+}

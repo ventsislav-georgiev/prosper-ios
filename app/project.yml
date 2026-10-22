@@ -42,6 +42,10 @@ targets:
       - target: ProsperWidgets
         embed: true
         platformFilter: iOS
+      # The compact keyboard as a system keyboard for every app. iOS-only like the widget.
+      - target: ProsperKeyboard
+        embed: true
+        platformFilter: iOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios
@@ -89,6 +93,39 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.widgets
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        CODE_SIGNING_ALLOWED: NO
+  # The compact keyboard as an iOS custom keyboard. Shares only Sources/Keys with the app
+  # and must not link SwiftTerm: the system launches it under a ~50-70 MB memory cap.
+  ProsperKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Keyboard
+      - path: Sources/Keys
+    # A real NSExtension dict, for the reason in ProsperWidgets above.
+    info:
+      path: Keyboard/Info.plist
+      properties:
+        CFBundleDisplayName: Prosper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
+          NSExtensionAttributes:
+            IsASCIICapable: true
+            PrefersRightToLeft: false
+            PrimaryLanguage: en-US
+            # Only so the user can opt in to key clicks and haptics, which iOS withholds
+            # from a keyboard without full access. The keyboard never touches the network
+            # or the pasteboard.
+            RequestsOpenAccess: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.keyboard
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES
