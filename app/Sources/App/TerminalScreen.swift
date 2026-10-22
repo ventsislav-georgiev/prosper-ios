@@ -654,7 +654,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// pins the offset to contentSize − bounds there, which puts the strip under the last
     /// row (bounds mod cellH) at the TOP, and every row lands one low for most of its
     /// height (#284). bounds / rows smears that strip over the grid the same way. The
-    /// cell size is the caret's — SwiftTerm's cellDimension is internal.
+    /// cell size is the caret's — SwiftTerm's cellDimension is internal. `line` is the
+    /// buffer line actually under the point, so at the live bottom the strip above the
+    /// screen gives yDisp − 1; `row`/`col` stay clamped to the screen for clicks.
     private func cell(at p: CGPoint, _ term: Terminal) -> (line: Int, row: Int, col: Int) {
         let caret = tv.caretFrame.size
         let size = caret.width > 0 && caret.height > 0 ? caret
@@ -665,7 +667,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             point: CGPoint(x: p.x, y: p.y - top),
             size: CGSize(width: size.width * CGFloat(term.cols), height: size.height * CGFloat(term.rows)),
             rows: term.rows, cols: term.cols)
-        return (term.buffer.yDisp + row, row, col)
+        return (min(max(0, Int(p.y / size.height)), term.buffer.yDisp + term.rows - 1), row, col)
     }
 
     /// Screen cell under a point in `tv` coordinates (see `cell(at:)`) — what the tap's

@@ -671,6 +671,29 @@ final class ImagePasteTests: XCTestCase {
         }
     }
 
+    /// At the live bottom the strip above screen row 0 shows most of line yDisp − 1; a
+    /// hold there copies that line, not row 0 (QA #285).
+    func testLongPressInTheTopStripTakesTheLineShownThere() async throws {
+        let (vc, _) = try await makeVC()
+        let (_, tv) = try barAndTerminal(vc)
+        let term = tv.getTerminal()
+        let lineAbove = { term.getScrollInvariantLine(row: term.buffer.yDisp - 1)?.translateToString(trimRight: true) ?? "" }
+        tv.feed(text: (0..<120).map { "line \($0)\r\n\r\n" }.joined())
+        if lineAbove().isEmpty { tv.feed(text: "\r\n") }     // blank rows alternate: one more puts text there
+        tv.layoutIfNeeded()
+        let strip = tv.bounds.height - CGFloat(term.rows) * tv.caretFrame.height
+        XCTAssertGreaterThan(strip, 1, "precondition: a sub-row strip")
+        let above = lineAbove()
+        XCTAssertTrue(above.hasPrefix("line "), "precondition: line yDisp − 1 has text")
+        XCTAssertNotEqual(above, term.getLine(row: 0)?.translateToString(trimRight: true),
+                          "precondition: the strip and row 0 show different lines")
+        UIPasteboard.general.string = "none"
+
+        vc.copyLine(at: CGPoint(x: 2.5 * tv.caretFrame.width, y: tv.contentOffset.y + strip / 2))
+
+        XCTAssertEqual(UIPasteboard.general.string, above)
+    }
+
     /// The tap's cell (mouse click, `tapRaisesKeyboard`) at the live bottom: top, middle
     /// and bottom pixel of the first, a middle and the last row all map to that row.
     func testGridPosAtTheLiveBottomIsTheCellUnderTheFinger() async throws {
