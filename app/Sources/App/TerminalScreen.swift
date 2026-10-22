@@ -692,7 +692,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let term = tv.getTerminal()
         let all = term.getText(start: Position(col: 0, row: 0),
                                end: Position(col: term.cols, row: Int.max))
-        let vc = CopyTextVC(text: TerminalMath.trimTrailingBlankLines(all))
+        let vc = CopyTextVC(text: TerminalMath.trimTrailingBlankLines(all), cols: term.cols)
         present(UINavigationController(rootViewController: vc), animated: true)
     }
 

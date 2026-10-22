@@ -252,6 +252,65 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(TerminalMath.trimTrailingBlankLines(""), "")
     }
 
+    // MARK: oneLine — copy mode's "One line" toggle (#457)
+
+    func testOneLineWordWrapJoinsWithASpace() {
+        XCTAssertEqual(TerminalMath.oneLine("git commit -m\nfix the thing", cols: 20),
+                       "git commit -m fix the thing")
+    }
+
+    /// A row filled to exactly cols broke mid-token (a URL, a path): glued with "".
+    /// A soft-wrapped row SwiftTerm already joined (2*cols wide) reads the same.
+    func testOneLineMidTokenWrapAtColsJoinsWithNothing() {
+        XCTAssertEqual(TerminalMath.oneLine("curl https://exa\nmple.com/a", cols: 16),
+                       "curl https://example.com/a")
+        XCTAssertEqual(TerminalMath.oneLine("curl https://exa" + "mple.com/a/b/c/d\ne", cols: 16),
+                       "curl https://example.com/a/b/c/de")
+    }
+
+    /// Claude Code's continuation indent and the copy indent go; the indent still
+    /// counts towards a full row. Lines under "⏺ " leave no double spaces.
+    func testOneLineDropsCopyAndContinuationIndents() {
+        XCTAssertEqual(TerminalMath.oneLine("  ⏺ npm run\n    build --prod", cols: 40),
+                       "⏺ npm run build --prod")
+        XCTAssertEqual(TerminalMath.oneLine("⏺ ls -la\n  /usr/local/\n  bin", cols: 80),
+                       "⏺ ls -la /usr/local/ bin")
+        XCTAssertEqual(TerminalMath.oneLine("  abcdefgh\n  ij", cols: 10), "abcdefghij")
+    }
+
+    /// " \" is a shell continuation; a bare trailing "\" (C:\dir\, a regex) is text.
+    func testOneLineBackslashContinuation() {
+        XCTAssertEqual(TerminalMath.oneLine("docker run \\\n  -it ubuntu", cols: 80),
+                       "docker run -it ubuntu")
+        XCTAssertEqual(TerminalMath.oneLine("cd C:\\dir\\\nnext", cols: 80), "cd C:\\dir\\ next")
+    }
+
+    /// Blank lines (paragraph breaks too) go; the paragraphs join with " ".
+    func testOneLineDropsBlankLines() {
+        XCTAssertEqual(TerminalMath.oneLine("\n  a b\n\n   \nc d\n\n", cols: 80), "a b c d")
+        XCTAssertEqual(TerminalMath.oneLine("\n \n", cols: 80), "")
+    }
+
+    func testOneLineSingleLineUnchanged() {
+        XCTAssertEqual(TerminalMath.oneLine("echo hello world", cols: 80), "echo hello world")
+        XCTAssertEqual(TerminalMath.oneLine("echo hello world", cols: 16), "echo hello world")
+    }
+
+    func testOneLineCRLFMatchesLF() {
+        XCTAssertEqual(TerminalMath.oneLine("a b\r\n  c\r\nd", cols: 80),
+                       TerminalMath.oneLine("a b\n  c\nd", cols: 80))
+    }
+
+    /// Pinned ceilings (the ponytail on oneLine): a word that ends exactly at the last
+    /// column is glued to the next; a full row whose trailing spaces the copy trimmed
+    /// reads as short and joins with " "; wide CJK counts one column per character.
+    func testOneLineDocumentedCeilings() {
+        XCTAssertEqual(TerminalMath.oneLine("echo hello\nworld", cols: 10), "echo helloworld")
+        XCTAssertEqual(TerminalMath.oneLine("abcdefgh  \nij", cols: 10), "abcdefgh ij")
+        XCTAssertEqual(TerminalMath.oneLine("中文中文\n中文", cols: 8), "中文中文 中文")
+        XCTAssertEqual(TerminalMath.oneLine("中文中文\n中文", cols: 4), "中文中文中文")
+    }
+
     // MARK: modified — the shortcut bar's sticky modifiers
 
     private typealias M = TerminalMath.Modifiers

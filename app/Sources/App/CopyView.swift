@@ -4,16 +4,31 @@ import UIKit
 /// text view, so selecting is the system's: drag handles, double-tap a word,
 /// triple-tap a line, Select All. The selection lands in the editor below, and the
 /// editor's text IS the clipboard: trim prompts or joined newlines there before
-/// pasting elsewhere.
+/// pasting elsewhere. "One line" joins the terminal-wrapped lines of a selection
+/// back into one command (`TerminalMath.oneLine`).
 final class CopyTextVC: UIViewController, UITextViewDelegate {
+    /// Remembered across copy sessions: on next time if the user left it on.
+    static let oneLineKey = "copyOneLine"
+
     private let text: String
+    private let cols: Int
     private let source = UITextView()
     private let editor = UITextView()
     private let caption = UILabel()
     private var scrolled = false
+    /// The last selection as selected, so the toggle can recompute or restore it.
+    private var selection: String?
+    private var oneLine = UserDefaults.standard.bool(forKey: CopyTextVC.oneLineKey)
+    private lazy var oneLineItem: UIBarButtonItem = {
+        let b = UIBarButtonItem(image: UIImage(systemName: "arrow.right.to.line"), style: .plain,
+                                target: self, action: #selector(toggleOneLine))
+        b.accessibilityLabel = "One line"
+        return b
+    }()
 
-    init(text: String) {
+    init(text: String, cols: Int) {
         self.text = text
+        self.cols = cols
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -24,8 +39,11 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
         view.backgroundColor = .black
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             title: "Select All", style: .plain, target: self, action: #selector(selectAllText))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .done, target: self, action: #selector(done))
+        navigationItem.rightBarButtonItems = [
+            UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(done)),
+            oneLineItem,
+        ]
+        oneLineItem.isSelected = oneLine
 
         let font = TerminalFont.mono(size: TerminalPrefs.fontSize)
         source.text = text
@@ -96,8 +114,24 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
     func textViewDidChangeSelection(_ tv: UITextView) {
         guard tv === source, tv.selectedRange.length > 0,
               let r = tv.selectedTextRange, let s = tv.text(in: r) else { return }
-        editor.text = s
+        selection = s
+        fillEditor()
+    }
+
+    /// The editor gets the selection, joined when "One line" is on. Recomputed from
+    /// the raw selection, so toggling off restores it.
+    private func fillEditor() {
+        guard let selection else { return }
+        editor.text = oneLine ? TerminalMath.oneLine(selection, cols: cols) : selection
         sync()
+    }
+
+    @objc private func toggleOneLine() {
+        oneLine.toggle()
+        oneLineItem.isSelected = oneLine
+        UserDefaults.standard.set(oneLine, forKey: Self.oneLineKey)
+        fillEditor()
+        updateCaption()
     }
 
     func textViewDidChange(_ tv: UITextView) {
@@ -113,9 +147,9 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
 
     private func updateCaption() {
         let n = editor.text.count
-        caption.text = n == 0
+        caption.text = (n == 0
             ? "Select text above. What's in this box is what gets pasted."
-            : "On the clipboard · \(n) characters"
+            : "On the clipboard · \(n) characters") + (oneLine ? " · one line" : "")
     }
 
     @objc private func selectAllText() {

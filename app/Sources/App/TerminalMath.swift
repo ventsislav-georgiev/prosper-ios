@@ -32,6 +32,37 @@ enum TerminalMath {
         return tail.firstIndex(where: \.isNewline).map { String(s[..<$0]) } ?? s
     }
 
+    /// Copy mode's "One line": terminal-wrapped lines joined back into the one
+    /// command they were. Claude Code hard-wraps at the width with a continuation
+    /// indent, so a copied command keeps newlines and does not run. Blank lines go,
+    /// each line is trimmed both sides (the copy indent, the continuation indent), and
+    /// a line that filled the row joins with "" — the wrap fell mid-token, as in a URL
+    /// or a path — any other with " ", a word-wrap break. A trailing " \" (shell
+    /// continuation) drops the backslash and joins with " ".
+    static func oneLine(_ text: String, cols: Int) -> String {
+        var out = ""
+        var glue = ""
+        for raw in text.split(whereSeparator: \.isNewline) {
+            // Display width counts the indent: the row is full, indent and all.
+            let right = String(raw.reversed().drop(while: \.isWhitespace).reversed())
+            guard !right.isEmpty else { continue }
+            out += glue + right.drop(while: \.isWhitespace)
+            if right.hasSuffix(" \\") {
+                out.removeLast()
+                while out.last?.isWhitespace == true { out.removeLast() }
+                glue = " "
+                continue
+            }
+            // ponytail: "full" is width % cols == 0 — SwiftTerm's getText already joins
+            // soft-wrapped rows (k*cols wide), and a hard wrap at cols is one row. A word
+            // that ends exactly at the last column gets glued to the next one, and wide
+            // CJK/emoji count as one column (SwiftTerm's UnicodeUtil.columnWidth is
+            // internal); use cell widths if that bites.
+            glue = cols > 0 && right.count % cols == 0 ? "" : " "
+        }
+        return out
+    }
+
     /// C1 control scalars, U+0080..U+009F: 8-bit forms of ESC sequences (U+009B is CSI).
     static let c1Controls: ClosedRange<UInt32> = 0x80...0x9F
 
