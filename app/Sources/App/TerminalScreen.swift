@@ -144,6 +144,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var coalescing: [UInt8]?
     private var shortcutBar: ShortcutBar?
     private var longPress: UILongPressGestureRecognizer?
+    private weak var toast: UIView?
 
     /// macOS Terminal.app's vibrant 16-color ANSI palette (SwiftTerm's default is
     /// muted). 8-bit values widened to 16-bit (×257 maps 255→65535).
@@ -590,22 +591,23 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// Copy the block under `p` (`tv` coordinates) — a wrapped command under Claude's ⏺,
     /// a code paragraph — to the clipboard as one line (`TerminalMath.commandBlock`, then
-    /// `oneLine`). A blank row copies nothing and leaves the clipboard alone.
+    /// `oneLine`). A blank row copies nothing and leaves the clipboard alone. On the
+    /// alternate screen (vim, less) only the touched row: its `~` rows and status line
+    /// are never blank, so a block there is the whole screen.
     func copyLine(at p: CGPoint) {
         let term = tv.getTerminal()
         // Screen rows, not getText's soft-joined lines: the touched row is then just the
-        // visible row + yDisp, and oneLine glues a soft-wrapped (full) row back with "".
+        // buffer line under the point, and oneLine glues a soft-wrapped (full) row back with "".
         var rows: [String] = []
         var i = term.buffer.totalLinesTrimmed
         while let line = term.getScrollInvariantLine(row: i) {
             rows.append(line.translateToString(trimRight: true, skipNullCellsFollowingWide: true))
             i += 1
         }
-        // The real cell height (SwiftTerm's caret): bounds / rows also spreads the strip
-        // under the last row over the grid, and a hold near the bottom lands a row high.
-        let cellH = tv.caretFrame.height > 0 ? tv.caretFrame.height : tv.bounds.height / CGFloat(max(1, term.rows))
-        let row = min(max(0, Int((p.y - tv.contentOffset.y) / cellH)), term.rows - 1)
-        let block = TerminalMath.commandBlock(rows, at: term.buffer.yDisp + row)
+        let line = cell(at: p, term).line
+        let block = term.isCurrentBufferAlternate
+            ? (rows.indices.contains(line) ? [rows[line]] : [])
+            : TerminalMath.commandBlock(rows, at: line)
         let text = TerminalMath.oneLine(block.joined(separator: "\n"), cols: term.cols)
         guard !text.isEmpty else { return }
         UIPasteboard.general.string = text
@@ -615,6 +617,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// A pill under the nav bar that fades out by itself.
     private func showToast(_ text: String) {
+        toast?.removeFromSuperview()   // a quick second hold replaces the pill, not stacks on it
         let label = UILabel()
         label.text = text
         label.numberOfLines = 2
@@ -628,6 +631,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         pill.isUserInteractionEnabled = false
         pill.addSubview(label)
         view.addSubview(pill)
+        toast = pill
         for v in [label, pill] { v.translatesAutoresizingMaskIntoConstraints = false }
         let m = pill.layoutMarginsGuide
         NSLayoutConstraint.activate([
@@ -643,14 +647,32 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
     }
 
-    /// Grid cell under a point in `tv` coordinates. `TerminalView` is a scroll view, so
-    /// a gesture location is in CONTENT space while the grid is laid out against the
-    /// visible bounds — subtract the offset or every row lands short by however far the
-    /// content is scrolled.
-    private func gridPos(_ p: CGPoint, _ term: Terminal) -> (row: Int, col: Int) {
-        let visible = CGPoint(x: p.x - tv.contentOffset.x, y: p.y - tv.contentOffset.y)
-        return TerminalMath.gridCell(point: visible, size: tv.bounds.size,
-                                     rows: term.rows, cols: term.cols)
+    /// The cell under a point in `tv` coordinates: buffer `line`, screen `row`
+    /// (line − yDisp) and `col`. `TerminalView` is a scroll view, so a gesture location is
+    /// in CONTENT space, and SwiftTerm draws buffer line i at content y = i × cellH
+    /// whatever the offset. Offset-relative math is wrong at the live bottom: SwiftTerm
+    /// pins the offset to contentSize − bounds there, which puts the strip under the last
+    /// row (bounds mod cellH) at the TOP, and every row lands one low for most of its
+    /// height (#284). bounds / rows smears that strip over the grid the same way. The
+    /// cell size is the caret's — SwiftTerm's cellDimension is internal.
+    private func cell(at p: CGPoint, _ term: Terminal) -> (line: Int, row: Int, col: Int) {
+        let caret = tv.caretFrame.size
+        let size = caret.width > 0 && caret.height > 0 ? caret
+            : CGSize(width: tv.bounds.width / CGFloat(max(1, term.cols)),
+                     height: tv.bounds.height / CGFloat(max(1, term.rows)))
+        let top = CGFloat(term.buffer.yDisp) * size.height     // screen row 0, content space
+        let (row, col) = TerminalMath.gridCell(
+            point: CGPoint(x: p.x, y: p.y - top),
+            size: CGSize(width: size.width * CGFloat(term.cols), height: size.height * CGFloat(term.rows)),
+            rows: term.rows, cols: term.cols)
+        return (term.buffer.yDisp + row, row, col)
+    }
+
+    /// Screen cell under a point in `tv` coordinates (see `cell(at:)`) — what the tap's
+    /// mouse click and `tapRaisesKeyboard` take.
+    func gridPos(_ p: CGPoint, _ term: Terminal) -> (row: Int, col: Int) {
+        let c = cell(at: p, term)
+        return (c.row, c.col)
     }
 
     /// Tap on the input line → raise the keyboard. Tap on content above it while a

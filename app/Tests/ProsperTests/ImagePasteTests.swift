@@ -553,12 +553,33 @@ final class ImagePasteTests: XCTestCase {
 
     // MARK: long-press copies the block under the finger as one line (#458)
 
-    /// Where a hold on visible row `row` lands in `tv` — content space, as a gesture's
-    /// `location(in:)` reports it.
-    private func rowPoint(_ tv: TerminalView, _ row: Int) -> CGPoint {
-        let cellH = tv.caretFrame.height > 0 ? tv.caretFrame.height
-                  : tv.bounds.height / CGFloat(tv.getTerminal().rows)
-        return CGPoint(x: 20, y: (CGFloat(row) + 0.5) * cellH + tv.contentOffset.y)
+    /// Where a hold `dy` points into screen row `row` lands in `tv` (mid-row by default),
+    /// in content space as a gesture's `location(in:)` reports it. The oracle is
+    /// SwiftTerm's own layout — buffer line i is drawn at content y = i × cellH — not the
+    /// app's mapping, so a wrong mapping can't agree with itself (#284).
+    private func rowPoint(_ tv: TerminalView, _ row: Int, _ dy: CGFloat? = nil, col: Int = 2) -> CGPoint {
+        let cell = tv.caretFrame.size
+        XCTAssertGreaterThan(cell.height, 0, "precondition: the caret gives the cell size")
+        return CGPoint(x: (CGFloat(col) + 0.5) * cell.width,
+                       y: CGFloat(tv.getTerminal().buffer.yDisp + row) * cell.height + (dy ?? cell.height / 2))
+    }
+
+    /// Scrollback, then at the live bottom two one-row blocks stacked: `⏺ alpha` with
+    /// `⏺ beta` right under it. Returns alpha's screen row once the layout is the one
+    /// that broke #458: the offset pinned to contentSize − bounds with a real strip.
+    private func liveBottomWithScrollback(_ tv: TerminalView) throws -> Int {
+        let term = tv.getTerminal()
+        tv.feed(text: (0..<120).map { "line \($0)\r\n\r\n" }.joined() + "⏺ alpha\r\n⏺ beta\r\n")
+        tv.layoutIfNeeded()
+        let cellH = tv.caretFrame.height
+        XCTAssertGreaterThan(term.buffer.yDisp, 0, "precondition: there is scrollback")
+        XCTAssertGreaterThan(tv.bounds.height - CGFloat(term.rows) * cellH, 1,
+                             "precondition: a sub-row strip, or no mapping can be told apart")
+        XCTAssertLessThan(tv.contentOffset.y, CGFloat(term.buffer.yDisp) * cellH - 1,
+                          "precondition: the live bottom pins the offset short of yDisp × cellH")
+        return try XCTUnwrap((0..<term.rows).first {
+            term.getLine(row: $0)?.translateToString(trimRight: true) == "⏺ alpha"
+        })
     }
 
     private let claudeScreen = "\u{1b}[2J\u{1b}[H\r\n"
@@ -633,5 +654,65 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertFalse(vc.gestureRecognizer(tap, shouldRequireFailureOf: pan))
         XCTAssertFalse(vc.gestureRecognizer(pan, shouldRequireFailureOf: tap))
         XCTAssertTrue(vc.gestureRecognizer(tap, shouldRecognizeSimultaneouslyWith: pan))
+    }
+
+    /// The normal state — Claude running with history above, the view at the bottom. A
+    /// hold anywhere on alpha's row copies alpha, never the beta block under it.
+    func testLongPressAtTheLiveBottomTakesTheRowUnderTheFinger() async throws {
+        let (vc, _) = try await makeVC()
+        let (_, tv) = try barAndTerminal(vc)
+        let r = try liveBottomWithScrollback(tv)
+        let cellH = tv.caretFrame.height
+
+        for dy in [0.5, cellH / 2, cellH - 0.5] {
+            UIPasteboard.general.string = "none"
+            vc.copyLine(at: rowPoint(tv, r, dy))
+            XCTAssertEqual(UIPasteboard.general.string, "alpha", "hold \(dy) pt into the row")
+        }
+    }
+
+    /// The tap's cell (mouse click, `tapRaisesKeyboard`) at the live bottom: top, middle
+    /// and bottom pixel of the first, a middle and the last row all map to that row.
+    func testGridPosAtTheLiveBottomIsTheCellUnderTheFinger() async throws {
+        let (vc, _) = try await makeVC()
+        let (_, tv) = try barAndTerminal(vc)
+        _ = try liveBottomWithScrollback(tv)
+        let term = tv.getTerminal()
+        let cellH = tv.caretFrame.height
+
+        for row in [0, term.rows / 2, term.rows - 1] {
+            for dy in [0.5, cellH / 2, cellH - 0.5] {
+                let cell = vc.gridPos(rowPoint(tv, row, dy, col: 3), term)
+                XCTAssertEqual(cell.row, row, "row \(row), \(dy) pt in")
+                XCTAssertEqual(cell.col, 3)
+            }
+        }
+    }
+
+    /// vim's `~` rows and status line are never blank: on the alternate screen a hold
+    /// copies the touched row only, not the whole screen.
+    func testLongPressOnTheAlternateScreenCopiesOnlyTheTouchedRow() async throws {
+        let (vc, _) = try await makeVC()
+        let (_, tv) = try barAndTerminal(vc)
+        tv.feed(text: "\u{1b}[?1049h\u{1b}[H\u{1b}[2Jimport Foundation\r\nfunc main() {\r\n~\r\n~\r\n\"main.swift\" 4L")
+        XCTAssertTrue(tv.getTerminal().isCurrentBufferAlternate, "precondition: alternate screen")
+
+        vc.copyLine(at: rowPoint(tv, 1))
+
+        XCTAssertEqual(UIPasteboard.general.string, "func main() {")
+    }
+
+    /// Quick holds replace the toast instead of stacking pills.
+    func testASecondHoldReplacesTheToast() async throws {
+        let (vc, _) = try await makeVC()
+        let (_, tv) = try barAndTerminal(vc)
+        tv.feed(text: claudeScreen)
+
+        vc.copyLine(at: rowPoint(tv, 2))
+        vc.copyLine(at: rowPoint(tv, 3))
+
+        let toasts = vc.view.subviews.flatMap(\.subviews).compactMap { ($0 as? UILabel)?.text }
+            .filter { $0.hasPrefix("Copied as one line") }
+        XCTAssertEqual(toasts, ["Copied as one line\n[main abc123] fix"])
     }
 }
