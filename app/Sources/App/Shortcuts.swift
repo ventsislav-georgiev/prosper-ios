@@ -2,12 +2,13 @@ import SwiftUI
 import UIKit
 
 /// One key on the shortcut bar above the keyboard. `bytes` are sent verbatim to the
-/// remote pty; `.ctrl` is a sticky modifier (next typed letter → control char);
+/// remote pty; `.ctrl`, `.alt` and `.shift` are sticky modifiers (tap: the next key,
+/// double tap: locked) for typed letters and the bar's own keys;
 /// `.pasteText` injects the iOS clipboard string; `.insertText` opens a compose
 /// sheet whose text is sent as one paste; `.redraw` jiggles the pty size so the
 /// remote TUI repaints.
 struct ShortcutKey: Codable, Hashable, Identifiable {
-    enum Kind: String, Codable { case bytes, ctrl, pasteText, pasteImage, insertText, redraw }
+    enum Kind: String, Codable { case bytes, ctrl, alt, shift, pasteText, pasteImage, insertText, redraw }
     var id: String
     var label: String
     var kind: Kind
@@ -57,6 +58,8 @@ enum Shortcuts {
         ShortcutKey(id: "tab",     label: "tab",   kind: .bytes, bytes: [0x09]),
         ShortcutKey(id: "stab",    label: "⇧tab",  kind: .bytes, bytes: [0x1b, 0x5b, 0x5a]),
         ShortcutKey(id: "ctrl",    label: "ctrl",  kind: .ctrl),
+        ShortcutKey(id: "alt",     label: "alt",   kind: .alt),
+        ShortcutKey(id: "shift",   label: "shift", kind: .shift),
         ShortcutKey(id: "ctlc",    label: "^C",    kind: .bytes, bytes: [0x03]),
         ShortcutKey(id: "ctld",    label: "^D",    kind: .bytes, bytes: [0x04]),
         ShortcutKey(id: "ctlr",    label: "^R",    kind: .bytes, bytes: [0x12]),
@@ -84,19 +87,30 @@ enum Shortcuts {
         // The same bytes as the compact keyboard's return key (iPhone); where the system
         // keyboard is up, return submits and this is the only newline.
         ShortcutKey(id: "snl",     label: "⇧⏎",    kind: .bytes, bytes: TerminalKeyboard.newlineBytes),
-        // Plain CR: submit, as the system keyboard's return does; text cap to pair with ⇧⏎.
-        // In the default set.
-        ShortcutKey(id: "enter",   label: "⏎",     kind: .bytes, bytes: [0x0d]),
+        // Plain CR: submit. The compact keyboard's return types a newline, so this is the
+        // only way to send — Slack's paper plane, and mandatory (`sendID`).
+        ShortcutKey(id: "enter",   label: "send",  kind: .bytes, bytes: [0x0d], systemImage: "paperplane.fill"),
         // Manual repaint: same size-jiggle the server does on reattach/foreground.
         // Claude Code (and other TUIs) sometimes leave stale/missing glyphs until a
         // SIGWINCH — this is the button form of "resize the window to fix it".
         ShortcutKey(id: "redraw",  label: "redraw", kind: .redraw, systemImage: "arrow.clockwise"),
     ]
 
+    /// The send key: every bar has it, and the editor can't remove it.
+    static let sendID = "enter"
+
+    /// Two rows of eight on a phone, columns paired: paste/esc, paste img/ctrl, ↑/←, ↓/→,
+    /// tab/pgup, shift/pgdn, home/end, insert/send.
     static var defaults: [ShortcutKey] {
-        ["paste", "pasteImg", "up", "down", "stab", "snl", "enter", "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"]
+        ["paste", "pasteImg", "up", "down", "tab", "shift", "home", "insert",
+         "esc", "ctrl", "left", "right", "pgup", "pgdn", "end", "enter"]
             .compactMap { id in catalog.first { $0.id == id } }
     }
+
+    /// The default bar before ctrl/alt/shift were sticky and enter became send. A saved
+    /// bar that is exactly this was never customized, so it loads as today's default.
+    static let previousDefaultIDs = ["paste", "pasteImg", "up", "down", "stab", "snl", "enter",
+                                     "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"]
 
     static func load() -> [ShortcutKey] {
         guard let raw = UserDefaults.standard.string(forKey: storageKey),
@@ -104,10 +118,16 @@ enum Shortcuts {
               let keys = try? JSONDecoder().decode([ShortcutKey].self, from: data),
               !keys.isEmpty
         else { return defaults }
+        if keys.map(\.id) == previousDefaultIDs { return defaults }
         // Keep the user's SET and ORDER, but take each key's definition from the
         // catalog: a saved bar from an older build otherwise pins the old bytes/kind
-        // forever (an image-paste key stuck on plain ctrl-V, say).
-        return keys.map { saved in catalog.first { $0.id == saved.id } ?? saved }
+        // forever (an image-paste key stuck on plain ctrl-V, say). A bar without the
+        // send key gets it at the end — it is the only way to submit.
+        var loaded = keys.map { saved in catalog.first { $0.id == saved.id } ?? saved }
+        if !loaded.contains(where: { $0.id == sendID }), let send = catalog.first(where: { $0.id == sendID }) {
+            loaded.append(send)
+        }
+        return loaded
     }
 
     static func save(_ keys: [ShortcutKey]) {
@@ -128,8 +148,10 @@ final class ShortcutBar: UIView {
     private static let capHeight: CGFloat = 36
     private static let spacing: CGFloat = 6     // between caps, and between the rows
     var onKey: ((ShortcutKey) -> Void)?
-    var ctrlArmed = false { didSet { refreshCtrl() } }
-    private weak var ctrlButton: KeyCapButton?
+    /// Each sticky modifier's state, set by the owner; a missing kind is off.
+    var modes: [ShortcutKey.Kind: ShiftState.Mode] = [:] { didSet { refreshModifiers() } }
+    var ctrlArmed: Bool { (modes[.ctrl] ?? .off) != .off }
+    private var modifierCaps: [ShortcutKey.Kind: KeyCapButton] = [:]
     private weak var container: UIView?
     private var caps: [KeyCapButton] = []
     private var rows: [UIStackView] = []        // [top, bottom]
@@ -243,7 +265,7 @@ final class ShortcutBar: UIView {
     private func build() {
         guard let container else { return }
         container.subviews.forEach { $0.removeFromSuperview() }
-        ctrlButton = nil
+        modifierCaps = [:]
 
         let scroll = UIScrollView()
         scroll.showsHorizontalScrollIndicator = false
@@ -284,12 +306,12 @@ final class ShortcutBar: UIView {
 
         caps = Shortcuts.load().map { key in
             let b = makeButton(key)
-            if key.kind == .ctrl { ctrlButton = b }
+            if [.ctrl, .alt, .shift].contains(key.kind) { modifierCaps[key.kind] = b }
             return b
         }
         arrangedWidth = -1        // new caps → split again on the next layout pass
         setNeedsLayout()
-        refreshCtrl()
+        refreshModifiers()
     }
 
     // Neon keycaps, matching Prosper's theme palette (theme-default/theme.json):
@@ -321,6 +343,10 @@ final class ShortcutBar: UIView {
         cfg.background.cornerRadius = 7
         cfg.background.strokeColor = Neon.blue.withAlphaComponent(0.55)
         cfg.background.strokeWidth = 1
+        if key.id == Shortcuts.sendID {                 // the send key's outer stroke, brighter
+            cfg.background.strokeColor = Neon.blue
+            cfg.background.strokeWidth = 1.5
+        }
         let b = KeyCapButton(configuration: cfg)
         b.accessibilityLabel = key.label   // an icon cap would otherwise read its SF Symbol name
         b.idleFill = Neon.card
@@ -339,17 +365,66 @@ final class ShortcutBar: UIView {
         b.setContentHuggingPriority(.required, for: .horizontal)
         b.setContentCompressionResistancePriority(.required, for: .horizontal)
         b.addAction(UIAction { [weak self] _ in self?.onKey?(key) }, for: .touchUpInside)
+        if [.ctrl, .alt, .shift].contains(key.kind) {
+            // Locked's neon light: a short glowing bar under the label, inside the cap.
+            let led = UIView()
+            led.isUserInteractionEnabled = false
+            led.backgroundColor = Neon.blueBright
+            led.layer.cornerRadius = 1.25
+            led.layer.shadowColor = Neon.blue.cgColor
+            led.layer.shadowOpacity = 1
+            led.layer.shadowRadius = 3
+            led.layer.shadowOffset = .zero
+            led.isHidden = true
+            led.translatesAutoresizingMaskIntoConstraints = false
+            b.addSubview(led)
+            NSLayoutConstraint.activate([
+                led.widthAnchor.constraint(equalToConstant: 15),
+                led.heightAnchor.constraint(equalToConstant: 2.5),
+                led.centerXAnchor.constraint(equalTo: b.centerXAnchor),
+                led.bottomAnchor.constraint(equalTo: b.bottomAnchor, constant: -3.5),
+            ])
+            b.led = led
+        }
+        if key.id == Shortcuts.sendID {
+            // The send key outshines the rest: a doubled neon border (an inner ring inside
+            // the outer stroke) and a stronger halo.
+            let ring = UIView()
+            ring.isUserInteractionEnabled = false
+            ring.layer.borderColor = Neon.blueBright.cgColor
+            ring.layer.borderWidth = 1
+            ring.layer.cornerRadius = 4.5
+            ring.translatesAutoresizingMaskIntoConstraints = false
+            b.addSubview(ring)
+            NSLayoutConstraint.activate([
+                ring.leadingAnchor.constraint(equalTo: b.leadingAnchor, constant: 2.5),
+                ring.trailingAnchor.constraint(equalTo: b.trailingAnchor, constant: -2.5),
+                ring.topAnchor.constraint(equalTo: b.topAnchor, constant: 2.5),
+                ring.bottomAnchor.constraint(equalTo: b.bottomAnchor, constant: -2.5),
+            ])
+            b.ring = ring
+            b.layer.shadowRadius = 7
+            b.idleGlow = 0.85
+        }
         return b
     }
 
-    private func refreshCtrl() {
-        guard let b = ctrlButton, var cfg = b.configuration else { return }
-        // Armed = solid cyan fill + dark glyph; idle = neon outline like the rest.
-        cfg.baseForegroundColor = ctrlArmed ? UIColor(hex: 0x05080D) : Neon.blueBright
-        b.configuration = cfg
-        b.pressedFill = ctrlArmed ? Neon.blueBright : Neon.pressed
-        b.idleFill = ctrlArmed ? Neon.blue : Neon.card      // applies the fill
-        b.idleGlow = ctrlArmed ? 0.9 : 0.5
+    /// once = solid cyan fill + dark glyph; locked = the dark card with a bright glyph,
+    /// full-strength outline, a stronger halo and the neon light; off = like the rest.
+    private func refreshModifiers() {
+        for (kind, b) in modifierCaps {
+            guard var cfg = b.configuration else { continue }
+            let mode = modes[kind] ?? .off
+            cfg.baseForegroundColor = mode == .once ? UIColor(hex: 0x05080D) : Neon.blueBright
+            cfg.background.strokeColor = Neon.blue.withAlphaComponent(mode == .locked ? 1 : 0.55)
+            b.configuration = cfg
+            b.pressedFill = mode == .once ? Neon.blueBright : Neon.pressed
+            b.idleFill = mode == .once ? Neon.blue : Neon.card      // applies the fill
+            b.idleGlow = mode == .off ? 0.5 : mode == .once ? 0.9 : 1
+            b.layer.shadowRadius = mode == .locked ? 8 : 5
+            b.led?.isHidden = mode != .locked
+            b.accessibilityValue = mode == .once ? "on" : mode == .locked ? "locked" : nil
+        }
     }
 
     /// One generator, kept warm: creating one per press costs the first tap its latency.
@@ -374,6 +449,9 @@ final class KeyCapButton: UIButton {
     /// The bar's column width. The cap is at least this wide — through its intrinsic
     /// size, so its required hugging holds instead of fighting a width constraint.
     var minWidth: CGFloat = 0 { didSet { if minWidth != oldValue { invalidateIntrinsicContentSize() } } }
+    /// A modifier cap's locked light, and the send cap's inner ring; nil on other caps.
+    var led: UIView?
+    var ring: UIView?
     /// The width the cap's content wants, ignoring `minWidth` — never narrower than the
     /// 36pt cap is tall, so a lone arrow or ^C stays at least square.
     var naturalWidth: CGFloat { max(super.intrinsicContentSize.width, 36) }
@@ -439,7 +517,10 @@ struct ShortcutEditor: View {
                 }
                 .onChange(of: fontSize) { v in TerminalPrefs.fontSize = CGFloat(v) }
                 Section("Active (drag to reorder, swipe to remove)") {
-                    ForEach(keys) { k in Text(k.label).font(.body.monospaced()) }
+                    ForEach(keys) { k in
+                        Text(k.label).font(.body.monospaced())
+                            .deleteDisabled(k.id == Shortcuts.sendID)   // send is mandatory
+                    }
                         .onMove { keys.move(fromOffsets: $0, toOffset: $1); persist() }
                         .onDelete { keys.remove(atOffsets: $0); persist() }
                 }

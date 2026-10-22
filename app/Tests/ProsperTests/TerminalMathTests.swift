@@ -251,4 +251,75 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(TerminalMath.trimTrailingBlankLines("\n \n"), "")
         XCTAssertEqual(TerminalMath.trimTrailingBlankLines(""), "")
     }
+
+    // MARK: modified — the shortcut bar's sticky modifiers
+
+    private typealias M = TerminalMath.Modifiers
+    private func mod(_ b: [UInt8], _ m: M, bar: Bool = false) -> [UInt8]? {
+        TerminalMath.modified(b, by: m, fromBar: bar)
+    }
+
+    /// A single typed ASCII byte: ctrl → control char, alt → ESC prefix, shift → upper
+    /// case / back-tab / meta-enter newline; combos stack.
+    func testSingleByteTakesEveryModifier() {
+        XCTAssertEqual(mod([0x6b], .ctrl), [0x0b])                          // ^K
+        XCTAssertEqual(mod([0x44], .ctrl), [0x04])                          // ctrl+D (upper)
+        XCTAssertEqual(mod([0x7e], .ctrl), [0x1e])                          // ctrl+~
+        XCTAssertEqual(mod([0x1b], .ctrl), [0x1b], "a lone Esc with ctrl goes out unchanged")
+        XCTAssertEqual(mod([0x62], .alt), [0x1b, 0x62])                     // meta-b
+        XCTAssertEqual(mod([0x61], .shift), [0x41])
+        XCTAssertEqual(mod([0x7a], .shift), [0x5a])
+        XCTAssertEqual(mod([0x09], .shift), [0x1b, 0x5b, 0x5a], "shift+tab is back-tab")
+        XCTAssertEqual(mod([0x0d], .shift), TerminalKeyboard.newlineBytes, "shift+enter is the newline")
+        XCTAssertEqual(mod([0x31], .shift), [0x31], "shift leaves a non-letter alone")
+        XCTAssertEqual(mod([0x41], .shift), [0x41])
+        XCTAssertEqual(mod([0x62], [.alt, .ctrl]), [0x1b, 0x02], "alt+ctrl = ESC + control char")
+        XCTAssertEqual(mod([0x61], [.shift, .ctrl]), [0x01], "shift+ctrl on a letter = control char")
+        XCTAssertEqual(mod([0x61], [.shift, .alt]), [0x1b, 0x41])
+    }
+
+    /// The bar's single-byte keys follow the typed-byte rule.
+    func testSingleByteBarKeyFollowsTheTypedRule() {
+        XCTAssertEqual(mod([0x09], .shift, bar: true), [0x1b, 0x5b, 0x5a])
+        XCTAssertEqual(mod([0x0d], .shift, bar: true), [0x1b, 0x0d])
+        XCTAssertEqual(mod([0x2f], .ctrl, bar: true), [0x0f])
+        XCTAssertEqual(mod([0x1b], .alt, bar: true), [0x1b, 0x1b])
+        XCTAssertEqual(mod([0x03], .shift, bar: true), [0x03])
+    }
+
+    /// Nothing lit, an ESC-led frame, multi-byte text or a lone DEL: nil, so the caller
+    /// sends it whole and spends nothing (#315, #320, #326).
+    func testFramesThatDontTakeModifiersAreNil() {
+        let all: M = [.shift, .alt, .ctrl]
+        XCTAssertNil(mod([0x61], []), "no modifier lit is not a chord")
+        XCTAssertNil(mod([0x1b, 0x5b, 0x41], all), "a typed arrow passes through")
+        XCTAssertNil(mod(TerminalKeyboard.newlineBytes, all), "the keyboard's ESC CR passes through")
+        XCTAssertNil(mod(Array("\u{1b}]11;rgb:1e1e/1e1e/1e1e\u{1b}\\".utf8), all), "a terminal reply passes through")
+        XCTAssertNil(mod(Array("é".utf8), all))
+        XCTAssertNil(mod(Array("hi".utf8), all))
+        XCTAssertNil(mod([0x7f], all), "a lone DEL is not a chord")
+        XCTAssertNil(mod([0x1b, 0x5b, 0x5a], all, bar: true), "the back-tab key passes unchanged")
+        XCTAssertNil(mod([0x1b, 0x0d], all, bar: true), "the newline key passes unchanged")
+        XCTAssertNil(mod([0x1b, 0x5b, 0x33, 0x7e], .ctrl, bar: true), "only 5~ and 6~ take a parameter")
+        XCTAssertNil(mod([0x1b, 0x5b, 0x41], [], bar: true))
+    }
+
+    /// A bar CSI key takes xterm's parameter m = 1 + shift 1 + alt 2 + ctrl 4.
+    func testBarCursorKeysTakeTheXtermParameter() {
+        func csi(_ s: String) -> [UInt8] { Array("\u{1b}[\(s)".utf8) }
+        XCTAssertEqual(mod(csi("D"), .ctrl, bar: true), csi("1;5D"))
+        XCTAssertEqual(mod(csi("A"), .shift, bar: true), csi("1;2A"))
+        XCTAssertEqual(mod(csi("B"), .alt, bar: true), csi("1;3B"))
+        XCTAssertEqual(mod(csi("C"), [.shift, .ctrl], bar: true), csi("1;6C"))
+        XCTAssertEqual(mod(csi("H"), [.alt, .ctrl], bar: true), csi("1;7H"))
+        XCTAssertEqual(mod(csi("F"), [.shift, .alt, .ctrl], bar: true), csi("1;8F"))
+        XCTAssertEqual(mod(csi("5~"), .ctrl, bar: true), csi("5;5~"))
+        XCTAssertEqual(mod(csi("6~"), .shift, bar: true), csi("6;2~"))
+    }
+
+    func testControlByte() {
+        XCTAssertEqual(TerminalMath.controlByte(0x61), 0x01)
+        XCTAssertEqual(TerminalMath.controlByte(0x5a), 0x1a)
+        XCTAssertEqual(TerminalMath.controlByte(0x40), 0x00)
+    }
 }

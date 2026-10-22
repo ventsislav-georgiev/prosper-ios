@@ -137,7 +137,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var lastRemoteScrollSend: CFTimeInterval = 0
     private var kbOverlap: CGFloat = 0   // keyboard cover height while shown (for live re-lift)
     private var kbFrame: CGRect?         // last keyboard frame (screen coords), re-applied after rotation
-    private var ctrlArmed = false   // sticky Ctrl from the shortcut bar
+    /// Sticky ctrl / alt / shift from the shortcut bar: off, once, or locked (double tap).
+    private var modifiers: [ShortcutKey.Kind: ShiftState] = [:]
     /// Non-nil while a scroll burst is being assembled: SwiftTerm's output lands here
     /// instead of the socket, so N wheel events cost one write. See `emitScroll`.
     private var coalescing: [UInt8]?
@@ -397,14 +398,17 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// A shortcut-bar key was tapped.
     private func handleKey(_ key: ShortcutKey) {
         switch key.kind {
-        case .ctrl:
-            ctrlArmed.toggle()
-            shortcutBar?.ctrlArmed = ctrlArmed
-            // ctrl only modifies the next TYPED letter, so arming it with the keyboard
-            // down leads nowhere — raise it. Every other key acts on its own: the bar is
-            // always visible, and only the nav-bar button or a terminal tap moves the
-            // keyboard.
-            if ctrlArmed, !tv.isFirstResponder { _ = tv.becomeFirstResponder() }
+        case .ctrl, .alt, .shift:
+            modifiers[key.kind, default: ShiftState()].tap(at: CACurrentMediaTime())
+            shortcutBar?.modes = modifiers.mapValues(\.mode)
+            // ctrl and alt pair with a TYPED letter, so arming one with the keyboard down
+            // leads nowhere — raise it. shift doesn't: the keyboard has its own, so the
+            // bar's is for bar keys, and raising the keyboard would cover the output.
+            // Every other key acts on its own: the bar is always visible, and only the
+            // nav-bar button or a terminal tap moves the keyboard.
+            if key.kind != .shift, modifiers[key.kind]?.mode != .off, !tv.isFirstResponder {
+                _ = tv.becomeFirstResponder()
+            }
         case .pasteText:
             if let s = UIPasteboard.general.string, !s.isEmpty { sendText(s) }
         case .insertText:
@@ -413,7 +417,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         case .pasteImage:
             pasteImage(then: key.bytes)
         case .bytes:
-            conn.send(ArraySlice(key.bytes))
+            sendModified(key.bytes, fromBar: true)
         case .redraw:
             forceRedraw()
         }
@@ -464,10 +468,19 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         return pb.image?.pngData()
     }
 
-    /// Map a byte to its control-char form (a–z/A–Z → ^A–^Z, others via `& 0x1f`).
-    private func controlByte(_ b: UInt8) -> UInt8 {
-        let upper = (b >= 0x61 && b <= 0x7a) ? b - 0x20 : b
-        return upper & 0x1f
+    /// Send a key with the bar's lit modifiers applied (`TerminalMath.modified`). A key
+    /// that takes them spends every once modifier; locked ones stay. One that doesn't
+    /// goes out as it is and leaves them all lit.
+    private func sendModified(_ bytes: [UInt8], fromBar: Bool) {
+        var lit: TerminalMath.Modifiers = []
+        for (kind, flag) in [(ShortcutKey.Kind.shift, TerminalMath.Modifiers.shift), (.alt, .alt), (.ctrl, .ctrl)]
+        where (modifiers[kind]?.mode ?? .off) != .off { lit.insert(flag) }
+        guard let out = TerminalMath.modified(bytes, by: lit, fromBar: fromBar) else {
+            return conn.send(ArraySlice(bytes))
+        }
+        for kind in modifiers.keys { modifiers[kind]?.typedLetter() }
+        shortcutBar?.modes = modifiers.mapValues(\.mode)
+        conn.send(ArraySlice(out))
     }
 
     // MARK: - Scroll by swipe → terminal input
@@ -717,17 +730,15 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         MainActor.assumeIsolated {
             if coalescing != nil {
                 coalescing?.append(contentsOf: data)   // scroll burst — one write, see emitScroll
-            } else if ctrlArmed, data.count == 1, let b = data.first, b < 0x7f {
-                // Only a single typed ASCII key takes the armed ctrl: an ESC-led frame is a
-                // terminal reply (OSC/DCS/APC, kitty flags) or a key sequence (arrows,
-                // alt+key), multi-byte text (é, emoji) is not a ctrl chord, and neither is a
-                // lone DEL (0x7f: backspace, or one per character autocorrect replaces — it
-                // would go out as ^_ and eat the arm); all pass through whole, leaving ctrl
-                // armed (#315, #320, #326). A lone Esc is a typed key: it goes
-                // out unchanged (controlByte(0x1b) == 0x1b) and disarms.
-                ctrlArmed = false
-                shortcutBar?.ctrlArmed = false
-                conn.send(ArraySlice([controlByte(b)]))
+            } else if data.count == 1 {
+                // Only a single typed ASCII key takes the bar's modifiers: an ESC-led frame
+                // is a terminal reply (OSC/DCS/APC, kitty flags) or a key sequence (arrows,
+                // alt+key, return's ESC CR), multi-byte text (é, emoji) is not a chord, and
+                // neither is a lone DEL (0x7f: backspace, or one per character autocorrect
+                // replaces — it would go out as ^_ and eat the arm); all pass through whole,
+                // leaving the modifiers lit (#315, #320, #326). A lone Esc is a typed key:
+                // with ctrl it goes out unchanged (controlByte(0x1b) == 0x1b) and disarms.
+                sendModified(Array(data), fromBar: false)
             } else {
                 conn.send(data)
             }

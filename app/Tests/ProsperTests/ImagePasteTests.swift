@@ -211,6 +211,91 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertFalse(bar.ctrlArmed, "the typed key must disarm ctrl")
     }
 
+    // MARK: sticky ctrl / alt / shift (#450)
+
+    private func barAndTerminal(_ vc: TerminalHostVC) throws -> (ShortcutBar, TerminalView) {
+        (try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? ShortcutBar }.first),
+         try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first))
+    }
+    private func catalogKey(_ id: String) throws -> ShortcutKey {
+        try XCTUnwrap(Shortcuts.catalog.first { $0.id == id })
+    }
+
+    /// A double tap locks ctrl: ctrl+k then ctrl+d without re-arming, and it stays lit
+    /// until a third tap turns it off.
+    func testDoubleTappedCtrlStaysLockedAcrossKeys() async throws {
+        let (vc, spy) = try await makeVC()
+        let (bar, tv) = try barAndTerminal(vc)
+        let ctrl = try catalogKey("ctrl")
+        bar.onKey?(ctrl)
+        XCTAssertEqual(bar.modes[.ctrl], .once)
+        bar.onKey?(ctrl)
+        XCTAssertEqual(bar.modes[.ctrl], .locked, "a quick second tap must lock ctrl")
+
+        vc.send(source: tv, data: [0x6b][...])
+        XCTAssertEqual(spy.sent.last, [0x0b])
+        vc.send(source: tv, data: [0x64][...])
+        XCTAssertEqual(spy.sent.last, [0x04], "a locked ctrl must apply to the second key too")
+        XCTAssertEqual(bar.modes[.ctrl], .locked, "a key spent a locked ctrl")
+
+        bar.onKey?(ctrl)
+        XCTAssertEqual(bar.modes[.ctrl], .off, "a tap on a locked ctrl turns it off")
+        vc.send(source: tv, data: [0x6b][...])
+        XCTAssertEqual(spy.sent.last, [0x6b])
+    }
+
+    /// Once modifiers apply to the bar's own keys and are spent by them: ctrl+← is xterm's
+    /// ESC[1;5D, shift+tab back-tab, shift+enter the newline; alt+typed b is meta-b.
+    func testOnceModifiersApplyToBarKeysAndTypedKeys() async throws {
+        let (vc, spy) = try await makeVC()
+        let (bar, tv) = try barAndTerminal(vc)
+
+        bar.onKey?(try catalogKey("left"))
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[D".utf8), "an unmodified bar key goes out as is")
+
+        bar.onKey?(try catalogKey("ctrl"))
+        bar.onKey?(try catalogKey("left"))
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[1;5D".utf8))
+        XCTAssertFalse(bar.ctrlArmed, "the bar key must spend a once ctrl")
+
+        bar.onKey?(try catalogKey("shift"))
+        XCTAssertEqual(bar.modes[.shift], .once)
+        bar.onKey?(try catalogKey("tab"))
+        XCTAssertEqual(spy.sent.last, [0x1b, 0x5b, 0x5a], "shift+tab must be back-tab")
+        XCTAssertEqual(bar.modes[.shift], .off)
+
+        bar.onKey?(try catalogKey("shift"))
+        bar.onKey?(try catalogKey("enter"))
+        XCTAssertEqual(spy.sent.last, TerminalKeyboard.newlineBytes, "shift+enter must be the newline")
+        XCTAssertEqual(bar.modes[.shift], .off)
+
+        bar.onKey?(try catalogKey("alt"))
+        XCTAssertEqual(bar.modes[.alt], .once)
+        vc.send(source: tv, data: [0x62][...])
+        XCTAssertEqual(spy.sent.last, [0x1b, 0x62], "alt+b must be meta-b")
+        XCTAssertEqual(bar.modes[.alt], .off)
+    }
+
+    /// paste and paste img never take the modifiers and never spend them.
+    func testPasteKeysDontSpendModifiers() async throws {
+        let (vc, spy) = try await makeVC()
+        let (bar, tv) = try barAndTerminal(vc)
+        bar.onKey?(try catalogKey("ctrl"))
+        bar.onKey?(try catalogKey("alt"))
+
+        UIPasteboard.general.string = "x"
+        bar.onKey?(try catalogKey("paste"))
+        XCTAssertEqual(spy.sent.last, [0x78], "the paste was modified")
+        UIPasteboard.general.items = []
+        bar.onKey?(try catalogKey("pasteImg"))
+        XCTAssertEqual(spy.sent.last, [0x16], "the image paste keystroke was modified")
+        XCTAssertEqual(bar.modes[.ctrl], .once, "a paste key spent ctrl")
+        XCTAssertEqual(bar.modes[.alt], .once, "a paste key spent alt")
+
+        vc.send(source: tv, data: [0x63][...])
+        XCTAssertEqual(spy.sent.last, [0x1b, 0x03], "alt+ctrl must still apply to the next key")
+    }
+
     /// #270 QA #81: a clipboard keyboard, dictation or predictive text inserts through
     /// `insertText`, which SwiftTerm sent raw — an embedded ESC sequence coloured the
     /// line and the CR ran it. Text carrying a control byte now leaves as a sanitized
@@ -410,7 +495,8 @@ final class ImagePasteTests: XCTestCase {
 
         let loaded = Shortcuts.load()
 
-        XCTAssertEqual(loaded.map(\.id), ["pasteImg", "esc"], "the user's set and order must survive")
+        XCTAssertEqual(loaded.map(\.id), ["pasteImg", "esc", "enter"],
+                       "the user's set and order must survive, the send key added at the end")
         XCTAssertEqual(loaded.first?.kind, .pasteImage, "stale kind kept the image paste broken")
     }
 }

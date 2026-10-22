@@ -42,7 +42,8 @@ final class ShortcutCapTests: XCTestCase {
     /// Every default resolves to a real catalog entry, and ids are unique — a typo here
     /// silently drops a key off the bar.
     func testDefaultsResolveAndIdsAreUnique() {
-        XCTAssertEqual(Shortcuts.defaults.map(\.id), ["paste", "pasteImg", "up", "down", "stab", "snl", "enter", "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"])
+        XCTAssertEqual(Shortcuts.defaults.map(\.id), ["paste", "pasteImg", "up", "down", "tab", "shift", "home", "insert",
+                                                       "esc", "ctrl", "left", "right", "pgup", "pgdn", "end", "enter"])
         XCTAssertEqual(Set(Shortcuts.catalog.map(\.id)).count, Shortcuts.catalog.count)
     }
 
@@ -86,8 +87,9 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(ShortcutBar.columnWidths(top: [], bottom: []), [])
     }
 
-    /// The user's build-69 set at phone width: every column's two caps share an edge
-    /// and a width, and a one-row set keeps natural widths.
+    /// The default set at iPhone 17 width (402 pt; at 393 its grid is 1 pt too wide and
+    /// scrolls): every column's two caps share an edge and a width, and a one-row set
+    /// keeps natural widths.
     @MainActor
     func testTwoRowBarColumnsLineUp() throws {
         let saved = UserDefaults.standard.string(forKey: Shortcuts.storageKey)
@@ -95,12 +97,11 @@ final class ShortcutCapTests: XCTestCase {
             if let saved { UserDefaults.standard.set(saved, forKey: Shortcuts.storageKey) }
             else { UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey) }
         }
-        let ids = ["paste", "pasteImg", "up", "down", "stab", "snl", "enter",
-                   "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"]
+        let ids = Shortcuts.defaults.map(\.id)
         Shortcuts.save(try ids.map(key))
 
         let bar = ShortcutBar()
-        bar.frame = CGRect(x: 0, y: 0, width: 393, height: 86)
+        bar.frame = CGRect(x: 0, y: 0, width: 402, height: 86)
         bar.layoutIfNeeded()
         XCTAssertEqual(bar.rowCount, 2)
         func rows(_ v: UIView) -> [UIStackView] {
@@ -207,6 +208,131 @@ final class ShortcutCapTests: XCTestCase {
         let enter = Shortcuts.catalog.first { $0.id == "enter" }
         XCTAssertEqual(enter?.bytes, [0x0d])
         XCTAssertTrue(Shortcuts.defaults.contains { $0.id == "enter" })
+    }
+
+    // MARK: sticky modifiers, the send key, the default bar (#450)
+
+    private static func caps(_ v: UIView) -> [KeyCapButton] {
+        v.subviews.flatMap { ($0 as? KeyCapButton).map { [$0] } ?? caps($0) }
+    }
+    /// A bar holding `ids`, laid out at `width`; the stored bar is restored afterwards.
+    @MainActor
+    private func makeBar(_ ids: [String], width: CGFloat = 402) throws -> ShortcutBar {
+        let saved = UserDefaults.standard.string(forKey: Shortcuts.storageKey)
+        addTeardownBlock {
+            if let saved { UserDefaults.standard.set(saved, forKey: Shortcuts.storageKey) }
+            else { UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey) }
+        }
+        Shortcuts.save(try ids.map(key))
+        let bar = ShortcutBar()
+        bar.frame = CGRect(x: 0, y: 0, width: width, height: 86)
+        bar.layoutIfNeeded()
+        return bar
+    }
+
+    func testAltAndShiftAreModifiersBesideCtrl() throws {
+        XCTAssertEqual(try key("alt").kind, .alt)
+        XCTAssertEqual(try key("alt").label, "alt")
+        XCTAssertEqual(try key("shift").kind, .shift)
+        XCTAssertEqual(try key("shift").label, "shift")
+        XCTAssertEqual(ShortcutKey.Kind(rawValue: "ctrl"), .ctrl, "saved bars encode ctrl as \"ctrl\"")
+    }
+
+    /// once = solid fill, read as "on"; locked = the neon light under the label, read as
+    /// "locked"; off = no light, no value.
+    @MainActor
+    func testLockedModifierShowsItsLight() throws {
+        let bar = try makeBar(["ctrl", "alt", "shift"])
+        let byLabel = Dictionary(uniqueKeysWithValues: Self.caps(bar).map { ($0.accessibilityLabel ?? "", $0) })
+        let ctrl = try XCTUnwrap(byLabel["ctrl"]), alt = try XCTUnwrap(byLabel["alt"]), shift = try XCTUnwrap(byLabel["shift"])
+        let idleFill = ctrl.configuration?.background.backgroundColor
+
+        bar.modes = [.ctrl: .once, .alt: .locked]
+        bar.layoutIfNeeded()
+
+        let ctrlLED = try XCTUnwrap(ctrl.led), altLED = try XCTUnwrap(alt.led), shiftLED = try XCTUnwrap(shift.led)
+        XCTAssertTrue(ctrlLED.isHidden, "once shows no light")
+        XCTAssertTrue(shiftLED.isHidden, "off shows no light")
+        XCTAssertFalse(altLED.isHidden, "locked shows the light")
+        XCTAssertEqual(ctrl.accessibilityValue, "on")
+        XCTAssertEqual(alt.accessibilityValue, "locked")
+        XCTAssertNil(shift.accessibilityValue)
+        XCTAssertNotEqual(ctrl.configuration?.background.backgroundColor, idleFill, "once fills the cap")
+        XCTAssertEqual(alt.configuration?.background.backgroundColor, idleFill, "locked keeps the dark card")
+        XCTAssertGreaterThan(alt.layer.shadowOpacity, ctrl.layer.shadowOpacity - 0.01, "locked glows at least as hard")
+
+        // The light: a short bar centered under the label, inside the cap.
+        let led = altLED.frame
+        XCTAssertEqual(led.width, 15, accuracy: 1)
+        XCTAssertEqual(led.height, 2.5, accuracy: 0.34)   // one pixel at 3x
+        XCTAssertEqual(led.midX, alt.bounds.midX, accuracy: 0.5)
+        XCTAssertTrue(alt.bounds.contains(led), "the light sits inside the cap")
+        let title = try XCTUnwrap(alt.titleLabel)
+        XCTAssertGreaterThanOrEqual(led.minY, title.convert(title.bounds, to: alt).maxY - 1, "the light sits under the label")
+
+        bar.modes = [:]
+        XCTAssertTrue(altLED.isHidden, "off again hides the light")
+        XCTAssertNil(alt.accessibilityValue)
+    }
+
+    /// The send key: Slack's paper plane, labelled "send", with a doubled border.
+    @MainActor
+    func testSendCapIsAPaperPlaneWithADoubleBorder() throws {
+        let send = try key("enter")
+        XCTAssertEqual(send.label, "send")
+        XCTAssertEqual(send.systemImage, "paperplane.fill")
+        XCTAssertNotNil(UIImage(systemName: "paperplane.fill"))
+
+        let bar = try makeBar(["esc", "enter"])
+        let caps = Self.caps(bar)
+        let cap = try XCTUnwrap(caps.first { $0.accessibilityLabel == "send" })
+        let esc = try XCTUnwrap(caps.first { $0.accessibilityLabel == "esc" })
+        XCTAssertNotNil(cap.configuration?.image, "the send cap shows the paper plane")
+        let ring = try XCTUnwrap(cap.ring, "no inner ring")
+        XCTAssertNil(esc.ring)
+        XCTAssertGreaterThan(ring.layer.borderWidth, 0)
+        XCTAssertEqual(ring.frame.minX, 2.5, accuracy: 0.34, "the inner ring sits 2-3 pt inside the outer stroke")
+        XCTAssertEqual(cap.bounds.maxY - ring.frame.maxY, 2.5, accuracy: 0.34)
+        XCTAssertGreaterThan(cap.configuration?.background.strokeWidth ?? 0, esc.configuration?.background.strokeWidth ?? 0,
+                             "the outer stroke is stronger than the other caps'")
+        XCTAssertGreaterThan(cap.layer.shadowOpacity, esc.layer.shadowOpacity, "and so is the halo")
+    }
+
+    /// The default bar on an iPhone 17 (402 pt): 8 over 8, columns paired as in the
+    /// operator's screenshot — paste/esc … insert/send.
+    @MainActor
+    func testDefaultBarSplitsEightByEightOnIPhone17() throws {
+        let bar = try makeBar(Shortcuts.defaults.map(\.id), width: 402)
+        let caps = Self.caps(bar)
+        XCTAssertEqual(caps.count, 16)
+        let widths = caps.map(\.naturalWidth)
+        print("450-split natural=\(widths)")
+        XCTAssertEqual(ShortcutBar.rowSplit(widths: widths, spacing: 6, available: 402 - 16), 8)
+        XCTAssertEqual(bar.rowCount, 2)
+        let top = caps.filter { $0.superview === caps[0].superview }
+        XCTAssertEqual(top.compactMap(\.accessibilityLabel), Shortcuts.defaults.prefix(8).map(\.label))
+    }
+
+    /// A saved bar that is exactly the old default was never customized: it loads as the
+    /// new default. Any other keeps its set and order and gains the send key if missing.
+    func testOldDefaultBarMigratesAndSendIsAlwaysThere() throws {
+        let saved = UserDefaults.standard.string(forKey: Shortcuts.storageKey)
+        defer {
+            if let saved { UserDefaults.standard.set(saved, forKey: Shortcuts.storageKey) }
+            else { UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey) }
+        }
+        Shortcuts.save(try ["paste", "pasteImg", "up", "down", "stab", "snl", "enter",
+                            "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"].map(key))
+        XCTAssertEqual(Shortcuts.load().map(\.id), Shortcuts.defaults.map(\.id))
+
+        Shortcuts.save(try ["paste", "stab", "snl", "esc", "ctlc"].map(key))
+        XCTAssertEqual(Shortcuts.load().map(\.id), ["paste", "stab", "snl", "esc", "ctlc", "enter"])
+
+        Shortcuts.save(try ["enter", "esc"].map(key))
+        XCTAssertEqual(Shortcuts.load().map(\.id), ["enter", "esc"], "a bar with send keeps its order")
+
+        UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey)
+        XCTAssertEqual(Shortcuts.load().map(\.id), Shortcuts.defaults.map(\.id))
     }
 
     func testPasteImageGlyphIsPortrait() throws {

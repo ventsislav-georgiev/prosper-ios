@@ -3,6 +3,8 @@ import UIKit
 
 /// The shift key: a tap uppercases the next letter only, a quick second tap locks caps,
 /// and a tap on either lit state turns it off. Pure, so the timing rules are testable.
+/// The shortcut bar's sticky ctrl, alt and shift run on it too: once is spent by the
+/// next key that takes it (`typedLetter`), locked stays.
 struct ShiftState: Equatable {
     enum Mode: Equatable { case off, once, locked }
     static let doubleTapWindow: TimeInterval = 0.3

@@ -63,6 +63,57 @@ enum TerminalMath {
         return Array("\u{1b}[200~".utf8) + text + Array("\u{1b}[201~".utf8) + (thenEnter ? [0x0d] : [])
     }
 
+    /// The shortcut bar's sticky modifiers that are lit (once or locked). The raw value is
+    /// xterm's modifier bits, so a CSI key's parameter is `1 + rawValue`.
+    struct Modifiers: OptionSet {
+        let rawValue: UInt8
+        static let shift = Modifiers(rawValue: 1)
+        static let alt   = Modifiers(rawValue: 2)
+        static let ctrl  = Modifiers(rawValue: 4)
+    }
+
+    /// Map a byte to its control-char form (a–z/A–Z → ^A–^Z, others via `& 0x1f`).
+    static func controlByte(_ b: UInt8) -> UInt8 {
+        let upper = (b >= 0x61 && b <= 0x7a) ? b - 0x20 : b
+        return upper & 0x1f
+    }
+
+    /// `bytes` with the lit modifiers applied, or nil when the frame doesn't take them —
+    /// the caller then sends it as it is and every modifier stays lit.
+    ///
+    /// Only a single ASCII byte below DEL takes modifiers, typed or from the bar: ESC-led
+    /// frames (terminal replies, arrows, the keyboard's ESC CR), multi-byte text and a
+    /// lone DEL are not chords (#315, #320, #326). shift uppercases a letter, turns TAB
+    /// into back-tab and CR into the meta-enter newline; ctrl is `controlByte`; alt puts
+    /// ESC in front (meta). A bar key (`fromBar`) also takes them on a CSI cursor/edit key,
+    /// xterm style: ESC [ A → ESC [ 1 ; m A, ESC [ 5 ~ → ESC [ 5 ; m ~. Any other
+    /// multi-byte bar key (back-tab, the newline key) goes out unchanged.
+    static func modified(_ bytes: [UInt8], by mods: Modifiers, fromBar: Bool = false) -> [UInt8]? {
+        guard !mods.isEmpty else { return nil }
+        if bytes.count == 1, let b = bytes.first, b < 0x7f {
+            var out: [UInt8]
+            switch b {
+            case 0x09 where mods.contains(.shift): out = [0x1b, 0x5b, 0x5a]
+            case 0x0d where mods.contains(.shift): out = TerminalKeyboard.newlineBytes
+            default:
+                var c = mods.contains(.shift) && b >= 0x61 && b <= 0x7a ? b - 0x20 : b
+                if mods.contains(.ctrl) { c = controlByte(c) }
+                out = [c]
+            }
+            return mods.contains(.alt) ? [0x1b] + out : out
+        }
+        guard fromBar, bytes.count >= 3, bytes[0] == 0x1b, bytes[1] == 0x5b else { return nil }
+        let m = Array(String(1 + Int(mods.rawValue)).utf8)
+        switch Array(bytes[2...]) {
+        case [0x41], [0x42], [0x43], [0x44], [0x48], [0x46]:     // A B C D H F
+            return [0x1b, 0x5b, 0x31, 0x3b] + m + [bytes[2]]
+        case [0x35, 0x7e], [0x36, 0x7e]:                         // 5~ 6~
+            return [0x1b, 0x5b, bytes[2], 0x3b] + m + [0x7e]
+        default:
+            return nil
+        }
+    }
+
     /// Jog-wheel scrolling: how many whole lines to scroll during `elapsed` seconds
     /// with the pill held `offset` points off center (`travel` = points available in
     /// each direction). Negative = up. The fractional part carries in `remainder`, so
