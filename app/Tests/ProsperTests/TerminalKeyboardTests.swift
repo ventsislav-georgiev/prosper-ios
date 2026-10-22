@@ -113,7 +113,7 @@ final class TerminalKeyboardTests: XCTestCase {
     }
 
     func testBottomRowClearsTheCornersAndSpaceStaysWide() throws {
-        for width in [393, 402] as [CGFloat] {
+        for width in [375, 393, 402, 440] as [CGFloat] {
             let (kb, _) = laidOut(width: width)
             for page in [TerminalKeyboard.Page.letters, .numbers, .symbols] {
                 kb.press(.page(page))
