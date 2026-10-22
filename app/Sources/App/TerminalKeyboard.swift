@@ -1,4 +1,5 @@
 import GameController
+import SwiftTerm
 import UIKit
 
 /// The shift key: a tap uppercases the next letter only, a quick second tap locks caps,
@@ -127,7 +128,8 @@ struct KeyTouchTracker {
 /// Touches are handled by this view, not per key: each finger goes to the nearest key
 /// (no dead zones in the gaps or margins) and `KeyTouchTracker` decides what it types,
 /// so fast repeats, rolled typing and system-cancelled taps aren't dropped (while a
-/// cancelled swipe, like the home gesture, types nothing).
+/// cancelled swipe, like the home gesture, types nothing). A touch between two letters
+/// goes to the one that continues the word being typed (`corrected`).
 ///
 /// Output goes through the terminal's own `UIKeyInput` (`insertText` / `deleteBackward`),
 /// so the host's sticky ctrl behaves exactly as it does for the system keyboard. Return
@@ -206,6 +208,19 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     var sendBytes: (([UInt8]) -> Void)?
     private(set) var page: Page = .letters
     private(set) var shift = ShiftState()
+    /// The letters typed since the last non-letter, lowercase: the prefix touch correction
+    /// continues. Backspace drops one, shift keeps it, any other key clears it. Keys from
+    /// the shortcut bar bypass this keyboard, so the host calls `resetWord` for them.
+    private(set) var word = ""
+    /// The words on the terminal now (`screenWords(in:)`), for touch correction: names no
+    /// dictionary knows, like hosts, services and branches. Read only for an ambiguous
+    /// touch, and held only until the next one begins.
+    var screenWords: (() -> Set<String>)?
+    /// What correction looked up for the current touch, so a finger sliding over an
+    /// ambiguous spot doesn't repeat the lookups or the screen read: one is a few ms.
+    /// Cleared when a touch begins.
+    private var knownCache: [String: Bool] = [:]
+    private var screenCache: Set<String>?
 
     private var caps: [[Cap]] = []
     private let keysArea = UILayoutGuide()
@@ -232,6 +247,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             height,
         ])
         build()
+        _ = Self.checker   // loads the lexicon now, not on the first ambiguous touch
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
@@ -239,6 +255,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// What a key does. The touch tracker's presses land here; so do the tests'.
     func press(_ key: Key) {
+        switch key {
+        case .char(let c) where c.first?.isLetter == true: word += c.lowercased()
+        case .backspace: _ = word.popLast()
+        case .shift: break
+        default: word = ""
+        }
         switch key {
         case .char(let c):
             let letter = c.first?.isLetter == true
@@ -313,6 +335,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     func track(_ phase: UITouch.Phase, id: Int, at point: CGPoint) {
         switch phase {
         case .began:
+            knownCache = [:]; screenCache = nil
             feedback()
             let before = page
             let bottomRow = caps.last?.map(\.frame.maxY).max() ?? .infinity
@@ -333,12 +356,30 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     /// The key nearest `point`, so the gaps, margins and the strip under the bottom row
-    /// all belong to a key.
-    private func key(at point: CGPoint) -> Key {
-        func distance(_ r: CGRect) -> CGFloat {
-            hypot(max(r.minX - point.x, 0, point.x - r.maxX), max(r.minY - point.y, 0, point.y - r.maxY))
+    /// all belong to a key, unless `corrected` moves it to a neighbor that continues the
+    /// word. Began, moved and the preview all ask here, so they agree.
+    func key(at point: CGPoint) -> Key {
+        let keys = caps.joined().map { ($0.key, $0.frame) }
+        guard let nearest = keys.min(by: { Self.distance(point, $0.1) < Self.distance(point, $1.1) })?.0
+        else { return .space }
+        return Self.corrected(nearest, at: point, keys: keys, prefix: word) { s in
+            if let known = knownCache[s] { return known }
+            var known = Self.dictionaryKnows(s) || ShellWords.all.contains { $0.hasPrefix(s) }
+            if !known {   // the screen last, and only if the dictionaries don't settle it
+                if screenCache == nil { screenCache = screenWords?() ?? [] }
+                known = screenCache!.contains { $0.hasPrefix(s) }
+            }
+            knownCache[s] = known
+            return known
         }
-        return caps.joined().min { distance($0.frame) < distance($1.frame) }?.key ?? .space
+    }
+
+    /// Start the next word afresh: a key went to the terminal some other way.
+    func resetWord() { word = "" }
+
+    /// 0 inside `r`.
+    static func distance(_ p: CGPoint, _ r: CGRect) -> CGFloat {
+        hypot(max(r.minX - p.x, 0, p.x - r.maxX), max(r.minY - p.y, 0, p.y - r.maxY))
     }
 
     private func perform(_ effects: [KeyTouchTracker.Effect]) {
@@ -504,6 +545,88 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
         guard edged, let first = keys.first, let last = keys.last else { return mids }
         return [(0, w(first))] + mids + [(width - w(last), w(last))]
+    }
+}
+
+// MARK: - Touch correction
+
+extension TerminalKeyboard {
+    /// What a touch types once the word typed so far is taken into account. With a
+    /// `prefix`, a touch off the center of a letter that starts no `known` word after it
+    /// goes to the closest letter within half a key width that does: "tes" and a touch
+    /// on r's right edge types t. A centered hit, an empty prefix, a known continuation
+    /// or no known neighbor keeps `nearest`, so only an already ambiguous touch ever
+    /// moves. Only letters are corrected: digits and symbols never, nor the numbers page,
+    /// where the prefix is empty anyway. Lowercase in and out; `press` applies shift.
+    ///
+    /// The center is checked first, so `known` (and the screen it may read) is asked only
+    /// for an ambiguous touch.
+    ///
+    /// ponytail: a password typed at a prompt is corrected too, at a key's edge, like the
+    /// system keyboard's own dynamic hit areas. A secure-entry signal could switch it off.
+    static func corrected(_ nearest: Key, at point: CGPoint, keys: [(Key, CGRect)],
+                          prefix: String, known: (String) -> Bool) -> Key {
+        func letter(_ k: Key) -> String? {
+            if case .char(let c) = k, c.first?.isLetter == true { return c }
+            return nil
+        }
+        guard !prefix.isEmpty, let c = letter(nearest),
+              let frame = keys.first(where: { $0.0 == nearest })?.1 else { return nearest }
+        let center = frame.insetBy(dx: frame.width / 4, dy: frame.height / 4)
+        if center.contains(point) || known(prefix + c) { return nearest }
+        let reach = frame.width / 2
+        let candidates = keys
+            .filter { $0.0 != nearest && letter($0.0) != nil && distance(point, $0.1) <= reach }
+            .sorted { distance(point, $0.1) < distance(point, $1.1) }
+        return candidates.first { known(prefix + letter($0.0)!) }?.0 ?? nearest
+    }
+
+    private static let language: String? = {
+        let all = UITextChecker.availableLanguages
+        return all.contains("en_US") ? "en_US" : all.first { $0.hasPrefix("en") }
+    }()
+    /// One checker for every keyboard, warmed by its first lookups here; `init` touches
+    /// it, so the lexicon loads with the keyboard, not on the first ambiguous touch.
+    ///
+    /// ponytail: that load is ~130 ms on the main thread, once per process, paid when the
+    /// session screen builds the keyboard (UITextChecker is main-actor only). Warm it
+    /// after the screen settles if that open ever feels slow.
+    fileprivate static let checker: UITextChecker = {
+        let c = UITextChecker()
+        if let language {
+            let r = NSRange(location: 0, length: 2)
+            _ = c.completions(forPartialWordRange: r, in: "te", language: language)
+            _ = c.rangeOfMisspelledWord(in: "te", range: r, startingAt: 0, wrap: false, language: language)
+        }
+        return c
+    }()
+
+    /// `s` is an English word or the start of one.
+    ///
+    /// ponytail: English only, and the dictionary sees a shell token as a misspelling;
+    /// `ShellWords` and the screen cover those. Another language means a second checker.
+    static func dictionaryKnows(_ s: String) -> Bool {
+        guard let language else { return false }
+        let range = NSRange(location: 0, length: (s as NSString).length)
+        if !(checker.completions(forPartialWordRange: range, in: s, language: language) ?? []).isEmpty { return true }
+        return checker.rangeOfMisspelledWord(in: s, range: range, startingAt: 0, wrap: false,
+                                             language: language).location == NSNotFound
+    }
+
+    /// The lowercase runs of three or more letters in the visible rows and up to
+    /// `scrollback` lines above them: what the host hands `screenWords`.
+    static func screenWords(in term: Terminal, scrollback: Int = 200) -> Set<String> {
+        let first = term.buffer.totalLinesTrimmed
+        let top = first + term.buffer.yDisp
+        var out = Set<String>()
+        for row in max(first, top - scrollback) ..< top + term.rows {
+            guard let line = term.getScrollInvariantLine(row: row) else { continue }
+            let text = line.translateToString(trimRight: true).lowercased()
+            for run in text.utf8.split(whereSeparator: { $0 < 0x61 || $0 > 0x7A }) where run.count >= 3 {
+                out.insert(String(decoding: run, as: UTF8.self))
+            }
+        }
+        return out
     }
 }
 

@@ -400,6 +400,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// A shortcut-bar key was tapped.
     private func handleKey(_ key: ShortcutKey) {
+        // The compact keyboard's word ends here: an arrow or tab moved on from it.
+        (keyboardInputView as? TerminalKeyboard)?.resetWord()
         switch key.kind {
         case .ctrl, .alt, .shift:
             modifiers[key.kind, default: ShiftState()].tap(at: CACurrentMediaTime())
@@ -1106,6 +1108,7 @@ private final class DchTerminalView: TerminalView {
         let kb = TerminalKeyboard()
         kb.target = self
         kb.sendBytes = { [weak self] in self?.send($0) }   // through the host's send, like any key
+        kb.screenWords = { [weak self] in self.map { TerminalKeyboard.screenWords(in: $0.getTerminal()) } ?? [] }
         return kb
     }()
 
