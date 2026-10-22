@@ -9,14 +9,19 @@ import UIKit
 final class KeyboardExtensionTests: XCTestCase {
 
     /// A host text field as the extension sees it: the text before the cursor, and the
-    /// field's autocapitalization.
-    private final class FakeProxy: NSObject, UITextDocumentProxy {
+    /// field's traits. SuggestionsTests uses it too.
+    final class FakeProxy: NSObject, UITextDocumentProxy {
         var text = ""
         var calls: [String] = []
         var autocapitalizationType: UITextAutocapitalizationType = .sentences
         var keyboardType: UIKeyboardType = .default
+        var autocorrectionType: UITextAutocorrectionType = .default
+        var spellCheckingType: UITextSpellCheckingType = .default
+        var textContentType: UITextContentType! = nil
+        var isSecureTextEntry = false
         var documentContextBeforeInput: String? { text }
-        var documentContextAfterInput: String? { nil }
+        var after: String?
+        var documentContextAfterInput: String? { after }
         var selectedText: String? { nil }
         var documentInputMode: UITextInputMode? { nil }
         var documentIdentifier: UUID { UUID() }

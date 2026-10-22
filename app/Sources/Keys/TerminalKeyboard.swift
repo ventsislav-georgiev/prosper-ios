@@ -255,14 +255,21 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// A second space after a word types ". " (`periodReplacesSpace`), like the system
     /// keyboard. The extension sets it; the terminal never wants it.
     var doubleSpacePeriod = false
+    /// The extension's suggestions (`SuggestionBar.attach`): asked before every key, it
+    /// can autocorrect the word a separator ends, or take the key itself (true: backspace
+    /// undoing an autocorrect) and the keyboard types nothing. Nil in the app.
+    var willPress: ((Key) -> Bool)?
+    /// After every key, shift included: the extension's bar recomputes. Nil in the app.
+    var didPress: (() -> Void)?
     private(set) var shift = ShiftState()
     /// The letters typed since the last non-letter, lowercase: the prefix touch correction
     /// continues. Backspace drops one, shift keeps it, any other key clears it. Keys from
     /// the shortcut bar bypass this keyboard, so the host calls `resetWord` for them.
     private(set) var word = ""
     /// The words on the terminal now (`screenWords(in:)`), for touch correction: names no
-    /// dictionary knows, like hosts, services and branches. Read only for an ambiguous
-    /// touch, and held only until the next one begins.
+    /// dictionary knows, like hosts, services and branches. In the extension, the user's
+    /// learned words and contact names instead (`Suggestions.personalWords`). Read only
+    /// for an ambiguous touch, and held only until the next one begins.
     var screenWords: (() -> Set<String>)?
     /// What correction looked up for the current touch, so a finger sliding over an
     /// ambiguous spot doesn't repeat the lookups or the screen read: one is a few ms.
@@ -308,6 +315,14 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// What a key does. The touch tracker's presses land here; so do the tests'.
     func press(_ key: Key) {
+        defer { didPress?() }
+        if willPress?(key) == true {
+            // ponytail: the text is no longer what the keys typed (an undone autocorrect),
+            // so touch correction starts afresh rather than guess the word back.
+            word = ""
+            autoCapitalize()
+            return
+        }
         switch key {
         case .char(let c) where c.first?.isLetter == true: word += c.lowercased()
         case .backspace: _ = word.popLast()
@@ -376,13 +391,19 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// ends in a letter or digit and exactly one space. Never in a field where a period
     /// would break the value: URLs, email, web search, number and phone pads.
     static func periodReplacesSpace(before text: String?, keyboardType: UIKeyboardType) -> Bool {
-        switch keyboardType {
-        case .URL, .emailAddress, .webSearch, .numberPad, .asciiCapableNumberPad, .decimalPad,
-             .phonePad, .namePhonePad: return false
-        default: break
-        }
+        if isValueField(keyboardType) { return false }
         let tail = Array((text ?? "").suffix(2))
         return tail.count == 2 && tail[1] == " " && (tail[0].isLetter || tail[0].isNumber)
+    }
+
+    /// A field whose value isn't prose, so nothing may rewrite what's typed (no period for
+    /// a double space, no autocorrect): URLs, email, web search, number and phone pads.
+    static func isValueField(_ type: UIKeyboardType) -> Bool {
+        switch type {
+        case .URL, .emailAddress, .webSearch, .numberPad, .asciiCapableNumberPad, .decimalPad,
+             .phonePad, .namePhonePad: return true
+        default: return false
+        }
     }
 
     /// Return's title for a host field's return key type; nil keeps the arrow.
@@ -403,11 +424,14 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     // MARK: - Caps
 
-    private enum Style {
+    /// Shared with the extension's `SuggestionBar`, so the bar matches the keys.
+    enum Style {
         static let key = UIColor(white: 0.42, alpha: 1)          // ~#6B6B6B
         static let keyPressed = UIColor(white: 0.58, alpha: 1)
         static let special = UIColor(white: 0.27, alpha: 1)      // ~#454545
         static let specialPressed = UIColor(white: 0.42, alpha: 1)
+        /// Behind the extension's bar and keys (`SuggestionBar.host`): dark in light apps too.
+        static let backdrop = UIColor(white: 0.13, alpha: 1)
         static let hint = UIColor(white: 1, alpha: 0.6)           // secondary label
         static let hintFont = UIFont.systemFont(ofSize: 10)
         static let letterFont = UIFont.systemFont(ofSize: 22)
@@ -764,7 +788,8 @@ extension TerminalKeyboard {
         return candidates.first { known(prefix + letter($0.0)!) }?.0 ?? nearest
     }
 
-    private static let language: String? = {
+    /// Also the extension's suggestions' (`Suggestions`): one checker per process.
+    static let language: String? = {
         let all = UITextChecker.availableLanguages
         return all.contains("en_US") ? "en_US" : all.first { $0.hasPrefix("en") }
     }()
@@ -774,7 +799,7 @@ extension TerminalKeyboard {
     /// ponytail: that load is ~130 ms on the main thread, once per process, paid when the
     /// session screen builds the keyboard (UITextChecker is main-actor only). Warm it
     /// after the screen settles if that open ever feels slow.
-    fileprivate static let checker: UITextChecker = {
+    static let checker: UITextChecker = {
         let c = UITextChecker()
         if let language {
             let r = NSRange(location: 0, length: 2)

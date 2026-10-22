@@ -1,0 +1,540 @@
+import UIKit
+
+/// What the Prosper keyboard suggests in other apps, and the autocorrect, undo and
+/// learning behind it: a stand-in for iOS's QuickType bar, which a custom keyboard
+/// doesn't get. `SuggestionBar` draws it and wires it into the keyboard; the terminal
+/// never has one, so none of this runs in the app.
+///
+/// The text before the cursor (`documentContextBeforeInput`) is the source of truth,
+/// not the keyboard's tracked word: the host can move the cursor or change the text.
+///
+/// - Slots, best in the middle like iOS. While a word is typed: the typed word in
+///   quotes when it's a word (or no word's start), then completions, then guesses. A
+///   pending correction: “typed”, the correction (highlighted: space applies it), the
+///   next completion or guess. At a word start: next-word predictions (`TypingMemory`).
+/// - Autocorrect: a separator (space, return, `. , ? ! : ;`) after a word with a
+///   pending correction (`correction(for:in:)`) replaces the word first.
+/// - Undo: backspace as the very next key puts the typed word back, and it isn't
+///   corrected again while this keyboard lives.
+/// - Learning: tapping the quoted word keeps it and learns it; committed words feed the
+///   next-word counts. Neither happens where autocorrect is off (`autocorrects`).
+///
+/// ponytail: English only, the one `TerminalKeyboard.checker`; another language means
+/// a checker per `PrimaryLanguage`.
+@MainActor
+final class Suggestions {
+    struct Slot: Equatable {
+        /// What a tap types (and space, when `highlighted`).
+        var word: String
+        /// The typed word, kept as typed, drawn in quotes: a tap learns it.
+        var quoted = false
+        /// What space will put in place of the typed word.
+        var highlighted = false
+    }
+
+    enum State: Equatable {
+        /// Three slots, left to right; nil is blank.
+        case slots([Slot?])
+        /// A login field: one key button to Apple's keyboard, for AutoFill and SMS codes.
+        case autofill
+    }
+
+    /// Punctuation that ends a word, so autocorrect runs first. Space and return too.
+    static let separators: Set<String> = [".", ",", "?", "!", ":", ";"]
+
+    let memory: TypingMemory
+    /// Contact names from the supplementary lexicon: lowercase → as written.
+    private(set) var names: [String: String] = [:]
+    /// Text replacements from the supplementary lexicon: lowercase shortcut → phrase.
+    private(set) var replacements: [String: String] = [:]
+    /// Words whose autocorrect the user undid, lowercase: left alone from then on.
+    private var rejected: Set<String> = []
+    /// The last autocorrect while backspace can still undo it: the typed word, and what
+    /// replaced it plus its separator.
+    private var undo: (typed: String, inserted: String)?
+
+    init(memory: TypingMemory = TypingMemory()) { self.memory = memory }
+
+    /// The supplementary lexicon (`UILexicon.entries`). Both sides equal: a name from
+    /// Contacts. Different: a text replacement, shortcut → phrase. Entries that aren't one
+    /// word of letters (multi-word names, "@@" shortcuts) never match a typed word: skipped.
+    func load(_ entries: [(userInput: String, documentText: String)]) {
+        for e in entries where Self.isWord(e.userInput) {
+            if e.userInput == e.documentText {
+                names[e.userInput.lowercased()] = e.documentText
+            } else {
+                replacements[e.userInput.lowercased()] = e.documentText
+            }
+        }
+    }
+
+    /// Lowercase words touch correction should treat as known: learned ones and names.
+    var personalWords: Set<String> { memory.known.union(names.keys) }
+
+    // MARK: - The bar
+
+    func state(_ doc: UITextDocumentProxy, shift: ShiftState.Mode) -> State {
+        if Self.isLoginField(doc) { return .autofill }
+        let before = doc.documentContextBeforeInput ?? ""
+        let word = Self.currentWord(before)
+        if word.isEmpty {
+            let words = memory.predict(after: Self.previousWord(before)).map { w -> String in
+                let w = display(w)
+                switch shift {
+                case .off: return w
+                case .once: return w.prefix(1).uppercased() + w.dropFirst()
+                case .locked: return w.uppercased()
+                }
+            }
+            return .slots(Self.centered(words.map { Slot(word: $0) }))
+        }
+        let lower = word.lowercased()
+        let fix = correction(for: word, in: doc)
+        let known = knows(word)
+        // Completions while the word can still become one, then the dictionary's guesses.
+        // A prefix with a pending correction ("hel") shows the correction highlighted all
+        // the same: the highlight is always what space will do.
+        let completions = personal(prefix: lower) + Self.completions(lower)
+        var seen: Set<String> = [lower, fix?.lowercased() ?? ""]
+        let others = (completions + (completions.count < 3 ? Self.guesses(lower) : []))
+            .map { shift == .locked ? $0.uppercased() : Self.matchCase($0, to: word) }
+            .filter { seen.insert($0.lowercased()).inserted }
+            .map { Slot(word: $0) }
+        let typed = Slot(word: word, quoted: true)
+        if let fix { return .slots([typed, Slot(word: fix, highlighted: true), others.first]) }
+        if known || completions.isEmpty { return .slots([typed, others.first, others.dropFirst().first]) }
+        return .slots(Self.centered(others))
+    }
+
+    /// Best in the middle, like iOS: second, first, third.
+    static func centered(_ s: [Slot]) -> [Slot?] {
+        [s.count > 1 ? s[1] : nil, s.first, s.count > 2 ? s[2] : nil]
+    }
+
+    /// A slot tapped: the word before the cursor becomes the slot's, then a space, like
+    /// iOS. The quoted typed word stays as typed and is learned.
+    func tap(_ slot: Slot, in doc: UITextDocumentProxy) {
+        undo = nil
+        let before = doc.documentContextBeforeInput ?? ""
+        let word = Self.currentWord(before)
+        if slot.quoted {
+            if !word.isEmpty, !knows(word) { memory.learn(word) }
+            doc.insertText(" ")
+        } else {
+            for _ in 0..<word.count { doc.deleteBackward() }
+            doc.insertText(slot.word + " ")
+        }
+        commit(slot.quoted ? word : slot.word, after: String(before.dropLast(word.count)), in: doc)
+    }
+
+    // MARK: - Typing
+
+    /// The keyboard's hook before each key (`TerminalKeyboard.willPress`). A separator
+    /// autocorrects the word it ends and records it; backspace right after an autocorrect
+    /// undoes it and returns true: the keyboard then types nothing itself.
+    func willPress(_ key: TerminalKeyboard.Key, in doc: UITextDocumentProxy) -> Bool {
+        let separator: String
+        switch key {
+        case .shift, .globe: return false
+        case .backspace: return revert(doc)
+        case .space: separator = " "
+        case .ret: separator = "\n"
+        case .char(let c) where Self.separators.contains(c): separator = c
+        case .char: return false   // breaks the undo's suffix (`revert`)
+        }
+        undo = nil
+        let before = doc.documentContextBeforeInput ?? ""
+        let word = Self.currentWord(before)
+        guard !word.isEmpty else { return false }
+        var committed = word
+        if let fix = correction(for: word, in: doc) {
+            for _ in 0..<word.count { doc.deleteBackward() }
+            doc.insertText(fix)
+            undo = (word, fix + separator)
+            committed = fix
+        }
+        commit(committed, after: String(before.dropLast(word.count)), in: doc)
+        return false
+    }
+
+    /// Backspace right after an autocorrect: the correction and its separator give way to
+    /// the typed word, cursor after it. Only while the text still ends with them, so any
+    /// key typed since (or the host, or a cursor move) ends the chance.
+    private func revert(_ doc: UITextDocumentProxy) -> Bool {
+        guard let u = undo else { return false }
+        undo = nil
+        guard (doc.documentContextBeforeInput ?? "").hasSuffix(u.inserted) else { return false }
+        for _ in 0..<u.inserted.count { doc.deleteBackward() }
+        doc.insertText(u.typed)
+        rejected.insert(u.typed.lowercased())
+        return true
+    }
+
+    /// A word went in: count it after the word before it, where learning is allowed.
+    private func commit(_ word: String, after before: String, in doc: UITextDocumentProxy) {
+        guard Self.autocorrects(doc), Self.isWord(word) else { return }
+        memory.record(Self.previousWord(before), word)
+    }
+
+    // MARK: - Correction
+
+    /// What a separator typed now puts in place of `word`; nil leaves it. Only where the
+    /// field autocorrects, and never mid-word (letters after the cursor). A reverted word
+    /// stays; a text replacement shortcut gives its phrase; otherwise the dictionary's
+    /// first guess, if `confident`, for a word nothing knows (`knows`). Anything less sure
+    /// stays as typed, though the bar still offers the guesses.
+    func correction(for word: String, in doc: UITextDocumentProxy) -> String? {
+        guard !word.isEmpty, Self.autocorrects(doc),
+              doc.documentContextAfterInput?.first?.isLetter != true else { return nil }
+        let lower = word.lowercased()
+        if rejected.contains(lower) { return nil }
+        if let phrase = replacements[lower] { return phrase }
+        guard !knows(word), let guess = Self.guesses(lower).first,
+              Self.confident(word, guess: guess) else { return nil }
+        return Self.matchCase(guess, to: word)
+    }
+
+    /// The confidence rule, kept conservative: at least 2 letters, letters and apostrophes
+    /// only, not camelCase ("iPhone" is deliberate), and the guess at most 2 edits away
+    /// (1 for a word of 3 letters or fewer, where 2 edits make another word: "cat"/"dog").
+    ///
+    /// ponytail: no keyboard-distance or frequency weighting; the checker's guess order
+    /// is the only ranking. Weight by key adjacency if corrections feel random.
+    static func confident(_ word: String, guess: String) -> Bool {
+        guard isWord(word), word.filter(\.isLetter).count >= 2,
+              !zip(word, word.dropFirst()).contains(where: { $0.isLowercase && $1.isUppercase }) else { return false }
+        return editDistance(word.lowercased(), guess.lowercased()) <= (word.count <= 3 ? 1 : 2)
+    }
+
+    /// The word is one the user would mind changing: the dictionary has it (as typed or
+    /// lowercase), or it's a `ShellWords` word, a learned word or a contact name.
+    func knows(_ word: String) -> Bool {
+        let lower = word.lowercased()
+        return memory.known.contains(lower) || names[lower] != nil || ShellWords.all.contains(lower)
+            || Self.spelled(lower) || Self.spelled(word)
+    }
+
+    /// Edits from `a` to `b`: insert, delete, substitute, and swapping two neighbors
+    /// counts one ("teh" → "the", the commonest typo). Optimal string alignment, the
+    /// restricted Damerau-Levenshtein.
+    static func editDistance(_ a: String, _ b: String) -> Int {
+        let a = Array(a), b = Array(b)
+        guard !a.isEmpty, !b.isEmpty else { return max(a.count, b.count) }
+        var d = (0...a.count).map { i in (0...b.count).map { j in i == 0 ? j : j == 0 ? i : 0 } }
+        for i in 1...a.count {
+            for j in 1...b.count {
+                d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+                if i > 1, j > 1, a[i - 1] == b[j - 2], a[i - 2] == b[j - 1] {
+                    d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+                }
+            }
+        }
+        return d[a.count][b.count]
+    }
+
+    // MARK: - Fields
+
+    /// A login field iOS hands a custom keyboard (secure ones it swaps for its own):
+    /// username, one-time code, or a non-secure password. The bar offers Apple's keyboard
+    /// for AutoFill instead of suggestions; nothing is corrected or learned.
+    static func isLoginField(_ doc: UITextDocumentProxy) -> Bool {
+        if doc.isSecureTextEntry == true { return true }
+        guard let type = doc.textContentType ?? nil else { return false }
+        return [.username, .oneTimeCode, .password, .newPassword].contains(type)
+    }
+
+    /// Whether the field lets the keyboard rewrite and learn what's typed: it doesn't turn
+    /// off autocorrection or spell checking (`.default` counts as on), it isn't a login
+    /// field, and its value isn't prose (`TerminalKeyboard.isValueField`).
+    static func autocorrects(_ doc: UITextDocumentProxy) -> Bool {
+        !isLoginField(doc) && doc.autocorrectionType != .no && doc.spellCheckingType != .no
+            && !TerminalKeyboard.isValueField(doc.keyboardType ?? .default)
+    }
+
+    // MARK: - Words
+
+    /// The word the cursor ends: the trailing letters and apostrophes, less any leading
+    /// apostrophe (an opening quote). "" after a space, a digit or punctuation.
+    static func currentWord(_ text: String?) -> String {
+        let run = (text ?? "").reversed().prefix { $0.isLetter || $0 == "'" || $0 == "’" }
+        return String(String(run.reversed()).drop { $0 == "'" || $0 == "’" })
+    }
+
+    /// The word before the spaces that end `text`, lowercase; "" when the field, a line or
+    /// punctuation comes first, so a sentence's first word follows "", the start.
+    static func previousWord(_ text: String) -> String {
+        currentWord(String(text.reversed().drop { $0 == " " }.reversed())).lowercased()
+    }
+
+    static func isWord(_ s: String) -> Bool {
+        !s.isEmpty && s.allSatisfy { $0.isLetter || $0 == "'" || $0 == "’" }
+    }
+
+    /// `suggestion` in the typed word's case: all caps (2+ letters) → all caps, a capital
+    /// first letter → capitalized, else as the dictionary has it ("I", names).
+    static func matchCase(_ suggestion: String, to typed: String) -> String {
+        if typed.filter(\.isLetter).count > 1, typed == typed.uppercased() { return suggestion.uppercased() }
+        if typed.first?.isUppercase == true { return suggestion.prefix(1).uppercased() + suggestion.dropFirst() }
+        return suggestion
+    }
+
+    /// A recorded word (lowercase) as it's written: a contact's name as in Contacts, "I"
+    /// and its contractions capitalized.
+    private func display(_ w: String) -> String {
+        if let name = names[w] { return name }
+        return w == "i" || w.hasPrefix("i'") ? "I" + w.dropFirst() : w
+    }
+
+    /// One learned word or contact name that continues `prefix`, the shortest, to lead the
+    /// dictionary's completions: the user's own words beat the dictionary's first guess.
+    private func personal(prefix: String) -> [String] {
+        let words = memory.known.filter { $0.hasPrefix(prefix) && $0 != prefix }.map { $0 }
+            + names.filter { $0.key.hasPrefix(prefix) && $0.key != prefix }.map(\.value)
+        return words.min { ($0.count, $0) < ($1.count, $1) }.map { [$0] } ?? []
+    }
+
+    // MARK: - Dictionary
+
+    /// The dictionary has `s` as a word.
+    static func spelled(_ s: String) -> Bool {
+        guard let language = TerminalKeyboard.language else { return false }
+        let range = NSRange(location: 0, length: (s as NSString).length)
+        return TerminalKeyboard.checker.rangeOfMisspelledWord(in: s, range: range, startingAt: 0, wrap: false,
+                                                              language: language).location == NSNotFound
+    }
+
+    /// Words that continue `prefix`, most likely first. Shell words never: they're known
+    /// (never corrected), but prose doesn't want them offered.
+    static func completions(_ prefix: String) -> [String] {
+        guard let language = TerminalKeyboard.language else { return [] }
+        let range = NSRange(location: 0, length: (prefix as NSString).length)
+        return (TerminalKeyboard.checker.completions(forPartialWordRange: range, in: prefix, language: language) ?? [])
+            .filter(isWord)
+    }
+
+    /// The dictionary's corrections for a misspelled `word`, best first: single words only.
+    static func guesses(_ word: String) -> [String] {
+        guard let language = TerminalKeyboard.language else { return [] }
+        let range = NSRange(location: 0, length: (word as NSString).length)
+        return (TerminalKeyboard.checker.guesses(forWordRange: range, in: word, language: language) ?? [])
+            .filter { isWord($0) && $0.lowercased() != word.lowercased() }
+    }
+}
+
+/// What the keyboard learns from its user, in the extension's own `UserDefaults` (no App
+/// Group: the app never reads it): words kept as typed, and how often one word followed
+/// another, for next-word predictions. Lowercase throughout; never written where the
+/// field turns autocorrect off (`Suggestions.autocorrects`), so not from password-like
+/// fields.
+///
+/// ponytail: iOS's own language model isn't available to a custom keyboard, so the
+/// predictions come only from what the user typed with this keyboard: blank on day one,
+/// never seeded from anything else. Caps: `wordCap` learned words (the oldest go) and
+/// `pairCap` pairs (the rarest go, down to 90% so the sort runs once per few hundred
+/// new pairs). Each change rewrites its whole key, ~100 KB at the cap: fine at typing
+/// speed; batch the writes if it ever shows.
+final class TypingMemory {
+    static let wordsKey = "suggestions.learnedWords"
+    static let pairsKey = "suggestions.wordPairs"
+
+    let defaults: UserDefaults
+    let wordCap: Int, pairCap: Int
+    /// Learned words, oldest first, and the same as a set.
+    private(set) var words: [String]
+    private(set) var known: Set<String>
+    /// "previous word" → times typed. Previous "" is the start of a field or sentence.
+    private(set) var pairs: [String: Int]
+
+    init(defaults: UserDefaults = .standard, wordCap: Int = 2000, pairCap: Int = 5000) {
+        self.defaults = defaults
+        self.wordCap = wordCap
+        self.pairCap = pairCap
+        words = defaults.stringArray(forKey: Self.wordsKey) ?? []
+        known = Set(words)
+        pairs = defaults.dictionary(forKey: Self.pairsKey) as? [String: Int] ?? [:]
+    }
+
+    func learn(_ word: String) {
+        let w = word.lowercased()
+        guard known.insert(w).inserted else { return }
+        words.append(w)
+        if words.count > wordCap {
+            known.subtract(words.prefix(words.count - wordCap))
+            words.removeFirst(words.count - wordCap)
+        }
+        defaults.set(words, forKey: Self.wordsKey)
+    }
+
+    func record(_ previous: String, _ word: String) {
+        let key = previous.lowercased() + " " + word.lowercased()
+        pairs[key, default: 0] += 1
+        if pairs.count > pairCap {
+            let drop = pairs.count - pairCap * 9 / 10
+            let rarest = pairs.filter { $0.key != key }.sorted { ($0.value, $0.key) < ($1.value, $1.key) }
+            for (k, _) in rarest.prefix(drop) { pairs[k] = nil }
+        }
+        defaults.set(pairs, forKey: Self.pairsKey)
+    }
+
+    /// The three words most often typed after `previous`, topped up with the most often
+    /// typed words overall when it has fewer followers. Lowercase.
+    func predict(after previous: String) -> [String] {
+        var after: [String: Int] = [:], all: [String: Int] = [:]
+        let lead = previous.lowercased() + " "
+        for (key, n) in pairs {
+            guard let space = key.firstIndex(of: " ") else { continue }
+            let w = String(key[key.index(after: space)...])
+            all[w, default: 0] += n
+            if key.hasPrefix(lead) { after[w, default: 0] += n }
+        }
+        func top(_ counts: [String: Int], _ n: Int, not taken: [String]) -> [String] {
+            counts.filter { !taken.contains($0.key) }
+                .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+                .prefix(n).map(\.key)
+        }
+        let first = top(after, 3, not: [])
+        return first + top(all, 3 - first.count, not: first)
+    }
+}
+
+/// The bar above the extension's keys: three slots split by hairlines, like iOS's
+/// QuickType, or in a login field one key button to Apple's keyboard (AutoFill, SMS
+/// codes). `attach` also wires `Suggestions` into the keyboard. Extension-only: the
+/// terminal keeps its shortcut bar.
+///
+/// 44 pt, and never under 42: a top-row press bubble rises 48 pt above a key whose top
+/// is 6 pt below the keyboard's, and a custom keyboard can't draw above its own view, so
+/// the bar is the bubbles' headroom too. A plain view on the extension's dark backdrop
+/// (`host`), not a UIInputView: one of those slips its own `_UIInputViewContent` halves
+/// over its subviews, and they took the right slot's touches.
+final class SuggestionBar: UIView {
+    static let height: CGFloat = 44
+    let suggestions: Suggestions
+    /// The key button's action: the controller's `advanceToNextInputMode`.
+    var nextKeyboard: (() -> Void)?
+    private(set) var state: Suggestions.State = .slots([nil, nil, nil])
+    private weak var keyboard: TerminalKeyboard?
+    private(set) var slotButtons: [UIButton] = []
+    private var hairlines: [UIView] = []
+    let autofillButton = UIButton(configuration: .plain())
+
+    /// Nil: a fresh one on the extension's own defaults. (Not a default argument: those
+    /// are evaluated off the main actor.)
+    init(suggestions: Suggestions? = nil) {
+        self.suggestions = suggestions ?? Suggestions()
+        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.height))
+        overrideUserInterfaceStyle = .dark
+        for i in 0..<3 {
+            let b = UIButton(type: .custom)
+            b.setTitleColor(.white, for: .normal)
+            b.titleLabel?.font = .systemFont(ofSize: 17)
+            b.titleLabel?.lineBreakMode = .byTruncatingMiddle
+            b.layer.cornerRadius = 6
+            b.addAction(UIAction { [weak self] _ in self?.tap(i) }, for: .touchUpInside)
+            slotButtons.append(b)
+            addSubview(b)
+        }
+        for _ in 0..<2 {
+            let line = UIView()
+            line.backgroundColor = TerminalKeyboard.Style.key
+            hairlines.append(line)
+            addSubview(line)
+        }
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "key.fill")
+        config.title = "AutoFill"
+        config.imagePadding = 6
+        config.baseForegroundColor = .white
+        autofillButton.configuration = config
+        autofillButton.addAction(UIAction { [weak self] _ in self?.nextKeyboard?() }, for: .touchUpInside)
+        addSubview(autofillButton)
+        show(state)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Suggest for `keyboard`'s target: its keys go through `Suggestions.willPress` and
+    /// refresh the bar; learned words and names join its touch correction.
+    func attach(_ keyboard: TerminalKeyboard) {
+        self.keyboard = keyboard
+        keyboard.willPress = { [weak self, weak keyboard] key in
+            guard let self, let doc = keyboard?.target as? UITextDocumentProxy else { return false }
+            return self.suggestions.willPress(key, in: doc)
+        }
+        keyboard.didPress = { [weak self] in self?.refresh() }
+        keyboard.screenWords = { [weak self] in self?.suggestions.personalWords ?? [] }
+        refresh()
+    }
+
+    /// Stacks the bar over `keyboard` in the extension's `view`, which is then the bar's
+    /// 44 pt plus the keyboard's own height: the digit row's bubbles rise into the bar.
+    /// The view gets an opaque dark fill: the keys are fixed dark grays, and a light
+    /// app's backdrop behind them would read as a light keyboard with dark keys.
+    func host(_ keyboard: TerminalKeyboard, in view: UIView) {
+        view.backgroundColor = TerminalKeyboard.Style.backdrop
+        for v in [self, keyboard] as [UIView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            topAnchor.constraint(equalTo: view.topAnchor),
+            leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            heightAnchor.constraint(equalToConstant: Self.height),
+            keyboard.topAnchor.constraint(equalTo: bottomAnchor),
+            keyboard.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            keyboard.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            keyboard.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+    }
+
+    /// Recompute from the text: after each key, and when the host changes the text or
+    /// the selection.
+    func refresh() {
+        guard let doc = keyboard?.target as? UITextDocumentProxy else { return }
+        show(suggestions.state(doc, shift: keyboard?.shift.mode ?? .off))
+    }
+
+    private func tap(_ i: Int) {
+        guard case .slots(let slots) = state, let slot = slots[i],
+              let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
+        UIDevice.current.playInputClick()
+        suggestions.tap(slot, in: doc)
+        keyboard.resetWord()
+        keyboard.autoCapitalize()
+        refresh()
+    }
+
+    private func show(_ new: Suggestions.State) {
+        state = new
+        let slots: [Suggestions.Slot?]
+        if case .slots(let s) = new { slots = s } else { slots = [nil, nil, nil] }
+        let login = new == .autofill
+        autofillButton.isHidden = !login
+        for (b, slot) in zip(slotButtons, slots) {
+            b.isHidden = login
+            b.isEnabled = slot != nil
+            b.setTitle(slot.map { $0.quoted ? "“\($0.word)”" : $0.word }, for: .normal)
+            b.accessibilityLabel = slot?.word
+            b.backgroundColor = slot?.highlighted == true ? TerminalKeyboard.Style.key : nil
+        }
+        // Like iOS, no hairline beside the highlighted slot.
+        for (i, line) in hairlines.enumerated() {
+            line.isHidden = login || slots[i]?.highlighted == true || slots[i + 1]?.highlighted == true
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let area = bounds.inset(by: UIEdgeInsets(top: 4, left: safeAreaInsets.left + 3, bottom: 4,
+                                                 right: safeAreaInsets.right + 3))
+        let w = area.width / 3
+        for (i, b) in slotButtons.enumerated() {
+            b.frame = CGRect(x: area.minX + CGFloat(i) * w, y: area.minY, width: w, height: area.height).insetBy(dx: 2, dy: 0)
+        }
+        let px = 1 / max(traitCollection.displayScale, 1)
+        for (i, line) in hairlines.enumerated() {
+            line.frame = CGRect(x: area.minX + CGFloat(i + 1) * w - px / 2, y: area.midY - 12, width: px, height: 24)
+        }
+        autofillButton.frame = area
+    }
+}

@@ -4,10 +4,14 @@ import UIKit
 /// (`TerminalKeyboard`, Sources/Keys) typing into the host field through
 /// `textDocumentProxy`. No `sendBytes`, so return types "\n".
 ///
-/// Launched by the system under a tight memory cap: one view, no network, no pasteboard,
-/// nothing held beyond the keyboard itself.
+/// Above the keys, `SuggestionBar`: suggestions, autocorrect and learning as iOS's own
+/// keyboard has them, which a custom keyboard doesn't get (Sources/Keys/Suggestions.swift).
+///
+/// Launched by the system under a tight memory cap: two views, no network, no pasteboard,
+/// nothing held beyond the keyboard, the shared spell checker and what it learned.
 final class KeyboardViewController: UIInputViewController {
     private let keyboard = TerminalKeyboard()
+    private let bar = SuggestionBar()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -16,15 +20,14 @@ final class KeyboardViewController: UIInputViewController {
         // iPhones), so the app's home-gesture pad would only add an empty band.
         keyboard.bottomInset = 6
         keyboard.doubleSpacePeriod = true
-        keyboard.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(keyboard)
-        NSLayoutConstraint.activate([
-            // The top is where a bar above the keys would attach.
-            keyboard.topAnchor.constraint(equalTo: view.topAnchor),
-            keyboard.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            keyboard.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            keyboard.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
+        bar.nextKeyboard = { [weak self] in self?.advanceToNextInputMode() }
+        bar.attach(keyboard)
+        bar.host(keyboard, in: view)
+        // Contact names and text replacements; needs no Full Access. Once per controller.
+        requestSupplementaryLexicon { [weak self] lexicon in
+            self?.bar.suggestions.load(lexicon.entries.map { ($0.userInput, $0.documentText) })
+            self?.bar.refresh()
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -41,11 +44,17 @@ final class KeyboardViewController: UIInputViewController {
     override func selectionDidChange(_ textInput: UITextInput?) {
         super.selectionDidChange(textInput)
         keyboard.autoCapitalize()
+        bar.refresh()
     }
 
+    /// ponytail: Safari reports the previous field's traits (return key, capitalization,
+    /// and so textContentType, which picks the login key button) for up to ~500 ms after
+    /// `textDidChange` on a field switch; this reads them once. A re-sync after a short
+    /// delay would catch up if a stale bar ever shows on device.
     private func sync() {
         keyboard.showsGlobe = needsInputModeSwitchKey
         keyboard.returnTitle = TerminalKeyboard.returnTitle(for: textDocumentProxy.returnKeyType ?? .default)
         keyboard.autoCapitalize()
+        bar.refresh()
     }
 }
