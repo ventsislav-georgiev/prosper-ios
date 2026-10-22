@@ -238,8 +238,8 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(ShortcutKey.Kind(rawValue: "ctrl"), .ctrl, "saved bars encode ctrl as \"ctrl\"")
     }
 
-    /// once = solid fill, read as "on"; locked = the neon light under the label, read as
-    /// "locked"; off = no light, no value.
+    /// once = solid fill, read as "on"; locked = the same fill plus a dark bar under the
+    /// label, read as "locked"; off = no fill, no bar, no value.
     @MainActor
     func testLockedModifierShowsItsLight() throws {
         let bar = try makeBar(["ctrl", "alt", "shift"])
@@ -258,21 +258,30 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(alt.accessibilityValue, "locked")
         XCTAssertNil(shift.accessibilityValue)
         XCTAssertNotEqual(ctrl.configuration?.background.backgroundColor, idleFill, "once fills the cap")
-        XCTAssertEqual(alt.configuration?.background.backgroundColor, idleFill, "locked keeps the dark card")
+        XCTAssertEqual(alt.configuration?.background.backgroundColor, ctrl.configuration?.background.backgroundColor,
+                       "locked fills the cap like once")
+        XCTAssertEqual(shift.configuration?.background.backgroundColor, idleFill, "off keeps the dark card")
+        XCTAssertEqual(altLED.backgroundColor, ctrl.configuration?.baseForegroundColor, "the bar is the dark glyph colour")
+        XCTAssertEqual(alt.configuration?.baseForegroundColor, ctrl.configuration?.baseForegroundColor, "locked glyph is the once glyph")
         XCTAssertGreaterThan(alt.layer.shadowOpacity, ctrl.layer.shadowOpacity - 0.01, "locked glows at least as hard")
 
-        // The light: a short bar centered under the label, inside the cap.
+        // The bar: short, centered under the label, inside the cap.
         let led = altLED.frame
-        XCTAssertEqual(led.width, 15, accuracy: 1)
-        XCTAssertEqual(led.height, 2.5, accuracy: 0.34)   // one pixel at 3x
+        XCTAssertEqual(led.width, 16, accuracy: 1)
+        XCTAssertEqual(led.height, 2, accuracy: 0.34)   // one pixel at 3x
         XCTAssertEqual(led.midX, alt.bounds.midX, accuracy: 0.5)
         XCTAssertTrue(alt.bounds.contains(led), "the light sits inside the cap")
         let title = try XCTUnwrap(alt.titleLabel)
-        XCTAssertGreaterThanOrEqual(led.minY, title.convert(title.bounds, to: alt).maxY - 1, "the light sits under the label")
+        let baseline = title.convert(CGPoint(x: 0, y: title.bounds.midY + title.font.lineHeight / 2 + title.font.descender), to: alt).y
+        XCTAssertGreaterThanOrEqual(led.minY - baseline, 4, "the bar sits just under the label")
+        XCTAssertLessThanOrEqual(led.minY - baseline, 7, "the bar hugs the label, not the cap's edge")
 
         bar.modes = [:]
         XCTAssertTrue(altLED.isHidden, "off again hides the light")
         XCTAssertNil(alt.accessibilityValue)
+        bar.modes = [.alt: .locked]
+        bar.layoutIfNeeded()
+        XCTAssertEqual(altLED.frame, led, "the bar keeps its place through mode changes")
     }
 
     /// The send key: Slack's paper plane, labelled "send", with a doubled border.

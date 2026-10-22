@@ -373,23 +373,20 @@ final class ShortcutBar: UIView {
         b.setContentCompressionResistancePriority(.required, for: .horizontal)
         b.addAction(UIAction { [weak self] _ in self?.onKey?(key) }, for: .touchUpInside)
         if [.ctrl, .alt, .shift].contains(key.kind) {
-            // Locked's neon light: a short glowing bar under the label, inside the cap.
+            // Locked's bar: a short dark bar (the once glyph colour) under the label, inside
+            // the filled cap — "stays on past the next key".
             let led = UIView()
             led.isUserInteractionEnabled = false
-            led.backgroundColor = Neon.blueBright
-            led.layer.cornerRadius = 1.25
-            led.layer.shadowColor = Neon.blue.cgColor
-            led.layer.shadowOpacity = 1
-            led.layer.shadowRadius = 3
-            led.layer.shadowOffset = .zero
+            led.backgroundColor = UIColor(hex: 0x05080D)
+            led.layer.cornerRadius = 1
             led.isHidden = true
             led.translatesAutoresizingMaskIntoConstraints = false
             b.addSubview(led)
             NSLayoutConstraint.activate([
-                led.widthAnchor.constraint(equalToConstant: 15),
-                led.heightAnchor.constraint(equalToConstant: 2.5),
+                led.widthAnchor.constraint(equalToConstant: 16),
+                led.heightAnchor.constraint(equalToConstant: 2),
                 led.centerXAnchor.constraint(equalTo: b.centerXAnchor),
-                led.bottomAnchor.constraint(equalTo: b.bottomAnchor, constant: -3.5),
+                led.topAnchor.constraint(equalTo: b.titleLabel!.lastBaselineAnchor, constant: 5),
             ])
             b.led = led
         }
@@ -416,19 +413,20 @@ final class ShortcutBar: UIView {
         return b
     }
 
-    /// once = solid cyan fill + dark glyph; locked = the dark card with a bright glyph,
-    /// full-strength outline, a stronger halo and the neon light; off = like the rest.
+    /// once = solid cyan fill + dark glyph; locked = the once look plus the dark bar under
+    /// the label and a slightly stronger halo; off = like the rest.
     private func refreshModifiers() {
         for (kind, b) in modifierCaps {
             guard var cfg = b.configuration else { continue }
             let mode = modes[kind] ?? .off
-            cfg.baseForegroundColor = mode == .once ? UIColor(hex: 0x05080D) : Neon.blueBright
-            cfg.background.strokeColor = Neon.blue.withAlphaComponent(mode == .locked ? 1 : 0.55)
+            let on = mode != .off
+            cfg.baseForegroundColor = on ? UIColor(hex: 0x05080D) : Neon.blueBright
+            cfg.background.strokeColor = Neon.blue.withAlphaComponent(on ? 1 : 0.55)
             b.configuration = cfg
-            b.pressedFill = mode == .once ? Neon.blueBright : Neon.pressed
-            b.idleFill = mode == .once ? Neon.blue : Neon.card      // applies the fill
+            b.pressedFill = on ? Neon.blueBright : Neon.pressed
+            b.idleFill = on ? Neon.blue : Neon.card      // applies the fill
             b.idleGlow = mode == .off ? 0.5 : mode == .once ? 0.9 : 1
-            b.layer.shadowRadius = mode == .locked ? 8 : 5
+            b.layer.shadowRadius = mode == .locked ? 6 : 5
             b.led?.isHidden = mode != .locked
             b.accessibilityValue = mode == .once ? "on" : mode == .locked ? "locked" : nil
         }
