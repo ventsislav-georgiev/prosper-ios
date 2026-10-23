@@ -13,7 +13,8 @@ import UIKit
 ///   pending correction: “typed”, the correction (highlighted: space applies it), the
 ///   next completion or guess. At a word start: next-word predictions (`TypingMemory`).
 /// - Autocorrect: a separator (space, return, `. , ? ! : ;`) after a word with a
-///   pending correction (`correction(for:in:)`) replaces the word first.
+///   pending correction (`correction(for:after:in:)`) replaces the word first; "." waits
+///   for the space after it, as "jane.doe" or "example.com" go on past it.
 /// - Undo: backspace as the very next key puts the typed word back, and it isn't
 ///   corrected again while this keyboard lives.
 /// - Learning: tapping the quoted word keeps it and learns it; committed words feed the
@@ -49,9 +50,10 @@ final class Suggestions {
     private(set) var replacements: [String: String] = [:]
     /// Words whose autocorrect the user undid, lowercase: left alone from then on.
     private var rejected: Set<String> = []
-    /// The last autocorrect while backspace can still undo it: the typed word, and what
-    /// replaced it plus its separator.
-    private var undo: (typed: String, inserted: String)?
+    /// The last autocorrect while backspace can still undo it: the typed word, what stays
+    /// after it ("." for a correction deferred to the space), and what replaced the two plus
+    /// the separator.
+    private var undo: (typed: String, kept: String, inserted: String)?
 
     init(memory: TypingMemory = TypingMemory()) { self.memory = memory }
 
@@ -89,7 +91,7 @@ final class Suggestions {
             return .slots(Self.centered(words.map { Slot(word: $0) }))
         }
         let lower = word.lowercased()
-        let fix = correction(for: word, in: doc)
+        let fix = correction(for: word, after: String(before.dropLast(word.count)), in: doc)
         let known = knows(word)
         // Completions while the word can still become one, then the dictionary's guesses.
         // A prefix with a pending correction ("hel") shows the correction highlighted all
@@ -112,13 +114,13 @@ final class Suggestions {
     }
 
     /// A slot tapped: the word before the cursor becomes the slot's, then a space, like
-    /// iOS. The quoted typed word stays as typed and is learned.
+    /// iOS. The quoted typed word stays as typed and is learned, where learning is allowed.
     func tap(_ slot: Slot, in doc: UITextDocumentProxy) {
         undo = nil
         let before = doc.documentContextBeforeInput ?? ""
         let word = Self.currentWord(before)
         if slot.quoted {
-            if !word.isEmpty, !knows(word) { memory.learn(word) }
+            if !word.isEmpty, Self.autocorrects(doc), !knows(word) { memory.learn(word) }
             doc.insertText(" ")
         } else {
             for _ in 0..<word.count { doc.deleteBackward() }
@@ -143,17 +145,24 @@ final class Suggestions {
         case .char: return false   // breaks the undo's suffix (`revert`)
         }
         undo = nil
+        // "." waits: a space after "word." corrects the word and keeps the ".".
+        if separator == "." { return false }
         let before = doc.documentContextBeforeInput ?? ""
-        let word = Self.currentWord(before)
+        var word = Self.currentWord(before), kept = ""
+        if word.isEmpty, separator == " ", before.last == "." {
+            kept = "."
+            word = Self.currentWord(String(before.dropLast()))
+        }
         guard !word.isEmpty else { return false }
+        let prefix = String(before.dropLast(word.count + kept.count))
         var committed = word
-        if let fix = correction(for: word, in: doc) {
-            for _ in 0..<word.count { doc.deleteBackward() }
-            doc.insertText(fix)
-            undo = (word, fix + separator)
+        if let fix = correction(for: word, after: prefix, in: doc) {
+            for _ in 0..<(word.count + kept.count) { doc.deleteBackward() }
+            doc.insertText(fix + kept)
+            undo = (word, kept, fix + kept + separator)
             committed = fix
         }
-        commit(committed, after: String(before.dropLast(word.count)), in: doc)
+        commit(committed, after: prefix, in: doc)
         return false
     }
 
@@ -165,7 +174,7 @@ final class Suggestions {
         undo = nil
         guard (doc.documentContextBeforeInput ?? "").hasSuffix(u.inserted) else { return false }
         for _ in 0..<u.inserted.count { doc.deleteBackward() }
-        doc.insertText(u.typed)
+        doc.insertText(u.typed + u.kept)
         rejected.insert(u.typed.lowercased())
         return true
     }
@@ -178,16 +187,21 @@ final class Suggestions {
 
     // MARK: - Correction
 
-    /// What a separator typed now puts in place of `word`; nil leaves it. Only where the
-    /// field autocorrects, and never mid-word (letters after the cursor). A reverted word
-    /// stays; a text replacement shortcut gives its phrase; otherwise the dictionary's
-    /// first guess, if `confident`, for a word nothing knows (`knows`). Anything less sure
-    /// stays as typed, though the bar still offers the guesses.
-    func correction(for word: String, in doc: UITextDocumentProxy) -> String? {
-        guard !word.isEmpty, Self.autocorrects(doc),
+    /// What a separator typed now puts in place of `word`, which follows `prefix`; nil
+    /// leaves it. Only where the field autocorrects, and never mid-word (letters after the
+    /// cursor) or glued to what's before it (`glued`). A reverted word stays; "i" and its
+    /// contractions get their capital; a text replacement shortcut gives its phrase;
+    /// otherwise the dictionary's first guess, if `confident`, for a word nothing knows
+    /// (`knows`). Anything less sure stays as typed, though the bar still offers the guesses.
+    func correction(for word: String, after prefix: String, in doc: UITextDocumentProxy) -> String? {
+        guard !word.isEmpty, Self.autocorrects(doc), !Self.glued(prefix),
               doc.documentContextAfterInput?.first?.isLetter != true else { return nil }
         let lower = word.lowercased()
         if rejected.contains(lower) { return nil }
+        // The checker spells "i" fine (case-only guesses are dropped): iOS capitalizes it.
+        if word.first == "i", ["i", "i'm", "i'll", "i've", "i'd"].contains(lower.replacingOccurrences(of: "’", with: "'")) {
+            return "I" + word.dropFirst()
+        }
         if let phrase = replacements[lower] { return phrase }
         guard !knows(word), let guess = Self.guesses(lower).first,
               Self.confident(word, guess: guess) else { return nil }
@@ -252,6 +266,14 @@ final class Suggestions {
     }
 
     // MARK: - Words
+
+    /// A letter run glued to a digit or to `@ # _ / .` ("2nd", "@handle", "jane.doe",
+    /// "example.com/path") is part of a token, not a word: never corrected. Safari's stale
+    /// traits after a field switch make this the only guard in email and URL fields there.
+    static func glued(_ prefix: String) -> Bool {
+        guard let c = prefix.last else { return false }
+        return c.isNumber || "@#_/.".contains(c)
+    }
 
     /// The word the cursor ends: the trailing letters and apostrophes, less any leading
     /// apostrophe (an opening quote). "" after a space, a digit or punctuation.

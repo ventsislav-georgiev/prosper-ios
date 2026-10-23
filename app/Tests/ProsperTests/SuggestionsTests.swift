@@ -195,6 +195,47 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(doc2.text, "the", "only the very next key undoes")
     }
 
+    /// "." waits for a space: "jane.doe" and "example.com" go on past it.
+    func testAPeriodDefersTheCorrectionToTheSpace() {
+        let (kb, bar, doc) = rig()
+        typing(kb, "teh.")
+        XCTAssertEqual(doc.text, "teh.", "not corrected by the period")
+        typing(kb, " ")
+        XCTAssertEqual(doc.text, "the. ", "the space corrects it, the period kept")
+        typing(kb, "⌫")
+        XCTAssertEqual(doc.text, "teh.", "undone, period and all")
+        typing(kb, " ")
+        XCTAssertEqual(doc.text, "teh. ", "not corrected again")
+        XCTAssertEqual(bar.suggestions.memory.pairs[" the"], 1, "the correction counted, at the space")
+    }
+
+    /// A letter run after a digit or `@ # _ / .` is part of a token: space leaves it and
+    /// the bar highlights nothing for it.
+    func testGluedRunsAreNeverCorrected() {
+        for text in ["2nd ", "1st ", "@jdoe ", "#teh ", "x_teh ", "jane.doe@example.com ",
+                     "www.example.com/path ", "e.g. "] {
+            let (kb, bar, doc) = rig()
+            typing(kb, String(text.dropLast()))
+            XCTAssertFalse(slots(bar).contains { $0?.highlighted == true }, text)
+            typing(kb, " ")
+            XCTAssertEqual(doc.text, text)
+        }
+    }
+
+    func testAStandaloneIIsCapitalized() {
+        let (kb, bar, doc) = rig()
+        typing(kb, "so i")
+        XCTAssertEqual(slots(bar)[1], Slot(word: "I", highlighted: true))
+        typing(kb, " i'm i’ll ")
+        XCTAssertEqual(doc.text, "so I I'm I’ll ")
+        typing(kb, "i ⌫")
+        XCTAssertEqual(doc.text, "so I I'm I’ll i", "undoable")
+
+        let (kb2, bar2, doc2) = rig { $0.autocorrectionType = .no }
+        withExtendedLifetime(bar2) { typing(kb2, "so i ") }
+        XCTAssertEqual(doc2.text, "so i ", "only where autocorrect applies")
+    }
+
     // MARK: Taps
 
     func testTappingACompletionReplacesTheWordAndAddsASpace() throws {
@@ -306,6 +347,15 @@ final class SuggestionsTests: XCTestCase {
         typing(kb, "teh ")
         XCTAssertEqual(doc.text, "teh teh ", "never corrected again")
         XCTAssertTrue(Suggestions(memory: TypingMemory(defaults: defaults)).knows("teh"), "a later session too")
+    }
+
+    func testTappingTheQuotedWordLearnsNothingWhereAutocorrectIsOff() throws {
+        let (kb, bar, doc) = rig { $0.autocorrectionType = .no }
+        typing(kb, "qzxv")
+        let i = try XCTUnwrap(slots(bar).firstIndex { $0?.quoted == true })
+        bar.slotButtons[i].sendActions(for: .touchUpInside)
+        XCTAssertEqual(doc.text, "qzxv ", "still typed")
+        XCTAssertNil(defaults.stringArray(forKey: TypingMemory.wordsKey), "not learned")
     }
 
     func testLearnedWordsAreCapped() {
