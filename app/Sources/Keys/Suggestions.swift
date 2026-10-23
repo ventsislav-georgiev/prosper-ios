@@ -188,6 +188,13 @@ final class Suggestions {
 
     // MARK: - Typing
 
+    /// The keyboard's trackpad moved the caret: what's before it now isn't what this
+    /// keyboard typed, and backspace no longer undoes the last autocorrect.
+    func caretMoved() {
+        undo = nil
+        typed = ""
+    }
+
     /// The keyboard's hook before each key (`TerminalKeyboard.willPress`). A separator
     /// autocorrects the word it ends and records it; backspace right after an autocorrect
     /// undoes it and returns true: the keyboard then types nothing itself.
@@ -603,7 +610,8 @@ final class SuggestionBar: UIView {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     /// Suggest for `keyboard`'s target: its keys go through `Suggestions.willPress` and
-    /// refresh the bar; learned words and names join its touch correction.
+    /// refresh the bar, as its trackpad's caret moves do (`caretMoved`); learned words and
+    /// names join its touch correction.
     func attach(_ keyboard: TerminalKeyboard) {
         self.keyboard = keyboard
         keyboard.willPress = { [weak self, weak keyboard] key in
@@ -611,6 +619,10 @@ final class SuggestionBar: UIView {
             return self.suggestions.willPress(key, in: doc)
         }
         keyboard.didPress = { [weak self] in self?.refresh() }
+        keyboard.didMoveCaret = { [weak self] in
+            self?.suggestions.caretMoved()
+            self?.refresh()
+        }
         keyboard.screenWords = { [weak self] in self?.suggestions.personalWords ?? [] }
         refresh()
     }

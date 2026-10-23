@@ -309,6 +309,94 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(doc.text, "wrld ", "half pasted")
     }
 
+    // MARK: Trackpad
+
+    /// The rig's keys laid out, by title or accessibility label.
+    private func caps(_ kb: TerminalKeyboard) -> [String: UIButton] {
+        kb.frame = CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.height)
+        kb.layoutIfNeeded()
+        var caps: [String: UIButton] = [:]
+        for case let b as UIButton in kb.subviews {
+            caps[b.title(for: .normal) ?? b.accessibilityLabel ?? ""] = b
+        }
+        return caps
+    }
+
+    /// Holds space and drags it by each of `offsets` caret steps in turn, then lifts.
+    private func drag(_ kb: TerminalKeyboard, _ offsets: [CGFloat]) throws {
+        let space = try XCTUnwrap(caps(kb)["space"]).frame
+        var p = CGPoint(x: space.midX, y: space.midY)
+        kb.track(.began, id: 1, at: p)
+        kb.fireHold()
+        for o in offsets {
+            p.x += o * KeyTouchTracker.caretStep
+            kb.track(.moved, id: 1, at: p)
+        }
+        kb.track(.ended, id: 1, at: p)
+    }
+
+    /// The trackpad moves the field's caret through the proxy and changes no text. The
+    /// autocorrect just before it is no longer backspace's to undo: undoing it there would
+    /// also reject "teh" for good, and the next "teh " would stay.
+    func testTrackpadMovesTheCaretAndEndsTheUndo() throws {
+        let (kb, bar, doc) = rig()
+        typing(kb, "teh ")
+        XCTAssertEqual(doc.text, "the ")
+        try drag(kb, [-1.5, 1.7])
+        XCTAssertEqual(doc.moves, [-1, 1])
+        XCTAssertEqual(doc.text + (doc.after ?? ""), "the ", "the text is unchanged")
+        typing(kb, "⌫")
+        XCTAssertEqual(doc.text, "the", "a plain delete, not the undo")
+        typing(kb, " teh ")
+        XCTAssertEqual(doc.text, "the the ", "teh is still corrected")
+        XCTAssertTrue(slots(bar).allSatisfy { $0?.highlighted != true })
+    }
+
+    /// A word typed after a caret move doesn't continue the one before it: "tes", the
+    /// caret to the start, then a touch on r's right edge types r (after "tes" it would
+    /// be corrected to t); and letters typed onto a word the keyboard didn't type there
+    /// ("te" + "h") aren't autocorrected as if typed whole.
+    func testAWordAfterACaretMoveStartsAfresh() throws {
+        var (kb, bar, doc) = rig()
+        typing(kb, "tes")
+        try drag(kb, [-3.5])
+        XCTAssertEqual(doc.moves, [-3])
+        XCTAssertEqual(doc.text, "")
+        XCTAssertEqual(kb.word, "")
+        let r = try XCTUnwrap(caps(kb)["r"]).frame, edge = CGPoint(x: r.maxX - 1, y: r.midY)
+        kb.track(.began, id: 2, at: edge)
+        kb.track(.ended, id: 2, at: edge)
+        XCTAssertEqual(doc.text + (doc.after ?? ""), "rtes", "the touch is r, not t")
+
+        (kb, bar, doc) = rig()
+        doc.text = "te "   // the host's text, not typed here
+        bar.refresh()
+        typing(kb, "te")
+        try drag(kb, [-3.5])
+        XCTAssertEqual(doc.text, "te")
+        typing(kb, "h ")
+        XCTAssertEqual(doc.text + (doc.after ?? ""), "teh  te", "not corrected: half the host's")
+        XCTAssertTrue(slots(bar).allSatisfy { $0?.highlighted != true })
+    }
+
+    /// Quick taps on the space bar still type spaces, and the second one after a word
+    /// still makes ". "; no hold timer is left to fire.
+    func testSpaceTapsAndTheDoubleSpacePeriodAreUnchanged() throws {
+        let (kb, _, doc) = rig()
+        let space = try XCTUnwrap(caps(kb)["space"]).frame, p = CGPoint(x: space.midX, y: space.midY)
+        typing(kb, "hi")
+        for id in 1...2 {
+            kb.track(.began, id: id, at: p)
+            kb.track(.ended, id: id, at: p)
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(KeyTouchTracker.holdDelay + 0.1))
+        XCTAssertEqual(doc.text, "hi. ")
+        kb.track(.began, id: 3, at: p)
+        kb.track(.ended, id: 3, at: p)
+        XCTAssertEqual(doc.text, "hi.  ")
+        XCTAssertEqual(doc.moves, [])
+    }
+
     // MARK: Taps
 
     func testTappingACompletionReplacesTheWordAndAddsASpace() throws {

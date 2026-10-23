@@ -28,7 +28,14 @@ final class KeyboardExtensionTests: XCTestCase {
         var hasText: Bool { !text.isEmpty }
         func insertText(_ s: String) { text += s; calls.append(s) }
         func deleteBackward() { _ = text.popLast(); calls.append("⌫") }
-        func adjustTextPosition(byCharacterOffset offset: Int) {}
+        /// Every caret move, as asked; the caret moves within `text` + `after`.
+        var moves: [Int] = []
+        func adjustTextPosition(byCharacterOffset offset: Int) {
+            moves.append(offset)
+            let all = text + (after ?? ""), at = min(max(text.count + offset, 0), all.count)
+            text = String(all.prefix(at))
+            after = String(all.dropFirst(at))
+        }
         func setMarkedText(_ markedText: String, selectedRange: NSRange) {}
         func unmarkText() {}
     }

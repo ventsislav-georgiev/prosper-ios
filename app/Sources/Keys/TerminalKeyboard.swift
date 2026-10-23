@@ -52,17 +52,28 @@ struct ShiftState: Equatable {
 /// - A cancelled touch that began below the bottom row's keys types nothing however
 ///   little it traveled: that strip is where the home gesture starts, and the system
 ///   cancels it inside `tapSlop`. One there that lifts normally still types.
+/// - A space touch still waiting after `holdDelay` (`startTrackpad`) is a trackpad, as on
+///   Apple's keyboard: every `caretStep` its finger travels sideways moves the caret one
+///   character, and lifting it types nothing. Other fingers are ignored until it lifts.
+///   Never one begun under the keys: that strip is the home gesture's.
 ///
 /// Points are in the view's coordinates; the defaults suit callers that don't care
 /// about travel.
 struct KeyTouchTracker {
     typealias Key = TerminalKeyboard.Key
-    enum Effect: Equatable { case press(Key), startRepeat, stopRepeat }
+    /// `caret`: trackpad steps, negative left.
+    enum Effect: Equatable { case press(Key), startRepeat, stopRepeat, caret(Int) }
 
     /// How far a finger may travel and still count as a tap if it's cancelled.
     static let tapSlop: CGFloat = 10
     /// How long a character touch stays down before it types its symbol instead.
     static let holdDelay: TimeInterval = 0.35
+    /// How far a trackpad finger travels sideways per character the caret moves.
+    ///
+    /// ponytail: a fixed step, no acceleration, and sideways only: the host field's proxy
+    /// has no line geometry and the terminal's up/down is shell history. Tune it on device;
+    /// add a speed curve if long moves feel slow.
+    static let caretStep: CGFloat = 9
 
     private struct Touch {
         let id: Int; var key: Key; var done: Bool
@@ -70,11 +81,15 @@ struct KeyTouchTracker {
         var belowKeys = false
         /// Set by a hold: what the touch types instead of `key`.
         var symbol: String?
+        /// Set by a space hold: trackpad mode, the x its caret steps count from.
+        var anchor: CGFloat?
         var output: Key { symbol.map(Key.char) ?? key }
         mutating func reach(_ p: CGPoint) { travel = max(travel, hypot(p.x - start.x, p.y - start.y)) }
     }
     private var touches: [Touch] = []
 
+    /// A space hold is moving the caret: the keyboard blanks its labels until it lifts.
+    var isTrackpad: Bool { touches.contains { $0.anchor != nil } }
     /// Keys under a finger right now, for the pressed look.
     var held: [Key] { touches.map(\.key) }
     /// The key of the touch still waiting to type a character: it gets the preview.
@@ -89,6 +104,7 @@ struct KeyTouchTracker {
 
     /// `belowKeys`: the touch began in the strip under the bottom row.
     mutating func began(_ id: Int, _ key: Key, at point: CGPoint = .zero, belowKeys: Bool = false) -> [Effect] {
+        if isTrackpad { return [] }   // a second finger on the trackpad: never tracked
         var out: [Effect] = []
         for i in touches.indices where !touches[i].done {
             out.append(.press(touches[i].output))
@@ -104,12 +120,32 @@ struct KeyTouchTracker {
     }
 
     /// Shift and backspace stay what they were; a lift key follows the finger to any
-    /// other lift key.
-    mutating func moved(_ id: Int, _ key: Key, at point: CGPoint? = nil) {
-        guard let i = touches.firstIndex(where: { $0.id == id }) else { return }
+    /// other lift key. A trackpad touch steps the caret instead, whatever key it's over.
+    @discardableResult
+    mutating func moved(_ id: Int, _ key: Key, at point: CGPoint? = nil) -> [Effect] {
+        guard let i = touches.firstIndex(where: { $0.id == id }) else { return [] }
         if let point { touches[i].reach(point) }
-        guard !touches[i].done, touches[i].symbol == nil, !Self.actsOnDown(key) else { return }
+        if let anchor = touches[i].anchor {
+            guard let point else { return [] }
+            let steps = Int((point.x - anchor) / Self.caretStep)
+            if steps == 0 { return [] }
+            touches[i].anchor = anchor + CGFloat(steps) * Self.caretStep
+            return [.caret(steps)]
+        }
+        guard !touches[i].done, touches[i].symbol == nil, !Self.actsOnDown(key) else { return [] }
         touches[i].key = key
+        return []
+    }
+
+    /// The touch has stayed down `holdDelay`, now at `x`: a space touch becomes a trackpad
+    /// until it lifts, and lifting types nothing (Apple's types no space either). True if
+    /// it did.
+    mutating func startTrackpad(_ id: Int, at x: CGFloat) -> Bool {
+        guard let i = touches.firstIndex(where: { $0.id == id }), !touches[i].done,
+              touches[i].key == .space, !touches[i].belowKeys else { return false }
+        touches[i].done = true
+        touches[i].anchor = x
+        return true
     }
 
     /// The touch has stayed down `holdDelay`, now over `key`: the nearest key, uncorrected,
@@ -161,6 +197,10 @@ struct KeyTouchTracker {
 /// so fast repeats, rolled typing and system-cancelled taps aren't dropped (while a
 /// cancelled swipe, like the home gesture, types nothing). A touch between two letters
 /// goes to the one that continues the word being typed (`corrected`).
+///
+/// Holding space turns the keys into a trackpad, as on Apple's keyboard: the labels blank
+/// out and a sideways drag moves the caret (`caret`), through `moveCaret` in the app (arrow
+/// keys) and the field's document proxy in the extension.
 ///
 /// Output goes through the terminal's own `UIKeyInput` (`insertText` / `deleteBackward`),
 /// so the host's sticky ctrl behaves exactly as it does for the system keyboard. Return
@@ -353,6 +393,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     var willPress: ((Key) -> Bool)?
     /// After every key, shift included: the extension's bar recomputes. Nil in the app.
     var didPress: (() -> Void)?
+    /// Where trackpad steps go, negative left: the app sends arrow keys. Nil moves the
+    /// host field's caret through its document proxy (the extension).
+    var moveCaret: ((Int) -> Void)?
+    /// After each trackpad step: the extension's suggestions forget the word they were
+    /// following, and the bar recomputes. Nil in the app.
+    var didMoveCaret: (() -> Void)?
     private(set) var shift = ShiftState()
     /// The letters typed since the last non-letter, lowercase: the prefix touch correction
     /// continues. Backspace drops one, shift keeps it, any other key clears it. Keys from
@@ -381,6 +427,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// can still be waiting (a new one types the others), so one timer is enough.
     private var holdTimer: Timer?
     private var holdTouch: (id: Int, at: CGPoint)?
+    /// The labels are blank: a trackpad touch is down (`refreshLabels`).
+    private var blanked = false
     private var heightConstraint: NSLayoutConstraint!
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
@@ -471,6 +519,19 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .globe: return   // its cap acts on its own; the tracker never yields it (`nearest`)
         }
         autoCapitalize()
+    }
+
+    /// A trackpad step of `offset` characters, negative left. The word touch correction
+    /// continues ends here, as it does at an arrow key (`resetWord`).
+    func caret(_ offset: Int) {
+        if let moveCaret {
+            moveCaret(offset)
+        } else {
+            (target as? UITextDocumentProxy)?.adjustTextPosition(byCharacterOffset: offset)
+        }
+        word = ""
+        autoCapitalize()
+        didMoveCaret?()
     }
 
     /// Shift on at a sentence start, off elsewhere, when the target is a host app's text
@@ -635,17 +696,18 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     func track(_ phase: UITouch.Phase, id: Int, at point: CGPoint) {
         switch phase {
         case .began:
+            if tracker.isTrackpad { return }   // a second finger on the trackpad: ignored
             knownCache = [:]; screenCache = nil
             feedback()
             let bottomRow = caps.last?.map(\.frame.maxY).max() ?? .infinity
             perform(tracker.began(id, key(at: point), at: point, belowKeys: point.y > bottomRow))
             stopHold()
-            if tracker.previewKey != nil { startHold(id, at: point) }
+            if tracker.previewKey != nil || tracker.held.last == .space { startHold(id, at: point) }
         case .moved:
-            tracker.moved(id, key(at: point), at: point)
+            perform(tracker.moved(id, key(at: point), at: point))
             if holdTouch?.id == id { holdTouch?.at = point }
         case .ended:
-            tracker.moved(id, key(at: point), at: point)
+            perform(tracker.moved(id, key(at: point), at: point))
             perform(tracker.ended(id))
             if holdTouch?.id == id { stopHold() }
         case .cancelled:
@@ -654,7 +716,23 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         default:
             return
         }
+        if blanked, !tracker.isTrackpad { trackpadEnded() }
         refreshPressed()
+    }
+
+    /// The trackpad finger lifted: the labels come back as they were, shift's included.
+    /// The extension's bar and shift read the moved caret's text again a moment later.
+    ///
+    /// ponytail: a proxy may still report the text around the old caret right after
+    /// `adjustTextPosition`, and Safari sends no `selectionDidChange`; one re-read 0.1 s
+    /// on is a guess at the host's lag. Re-read on the next `textDidChange` if it lags more.
+    private func trackpadEnded() {
+        refreshLabels()
+        guard target is UITextDocumentProxy else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.autoCapitalize()
+            self?.didPress?()
+        }
     }
 
     /// The key nearest `point`, so the gaps, margins and the strip under the bottom row
@@ -696,6 +774,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             case .press(let k): press(k)
             case .startRepeat: startRepeat()
             case .stopRepeat: stopRepeat()
+            case .caret(let n): caret(n)
             }
         }
     }
@@ -708,7 +787,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if let cap { showPreview(cap, tracker.previewSymbol) } else { hidePreview() }
     }
 
+    /// What every cap shows: blank while a trackpad touch is down, as on Apple's keyboard.
     private func refreshLabels() {
+        blanked = tracker.isTrackpad
         for cap in caps.joined() {
             var title: String?, image: String?, label: String
             switch cap.key {
@@ -728,6 +809,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                 if let returnTitle { title = returnTitle; label = returnTitle } else { image = "return.left"; label = "new line" }
             case .globe: image = "globe"; label = "next keyboard"
             }
+            if blanked { title = nil; image = nil }
+            cap.hint.isHidden = blanked
             cap.titleLabel?.font = title?.count == 1 ? Style.letterFont : Style.wordFont
             cap.setTitle(title, for: .normal)
             let img = image.flatMap { UIImage(systemName: $0, withConfiguration: Style.symbol) }
@@ -767,7 +850,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         haptics.prepare()
     }
 
-    // Hold: a character touch still waiting after `holdDelay` types its symbol on lift.
+    // Hold: a character touch still waiting after `holdDelay` types its symbol on lift;
+    // a space touch becomes the trackpad.
     private func startHold(_ id: Int, at point: CGPoint) {
         holdTouch = (id, point)
         let t = Timer(timeInterval: KeyTouchTracker.holdDelay, repeats: false) { [weak self] _ in self?.fireHold() }
@@ -781,11 +865,19 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         holdTouch = nil
     }
 
-    /// The hold timer's end; tests call it in place of waiting. Converts on the key under
-    /// the finger now, without correction: a hold is deliberate.
+    /// The hold timer's end; tests call it in place of waiting. Space becomes the trackpad;
+    /// any other key converts on the key under the finger now, without correction: a hold
+    /// is deliberate.
     func fireHold() {
         guard let h = holdTouch else { return }
         stopHold()
+        if tracker.startTrackpad(h.id, at: h.at.x) {
+            haptics.impactOccurred()
+            haptics.prepare()
+            refreshLabels()
+            refreshPressed()
+            return
+        }
         guard tracker.hold(h.id, over: nearest(at: h.at), symbols: layout.holdSymbol) else { return }
         haptics.impactOccurred()
         haptics.prepare()
@@ -815,7 +907,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { stopRepeat(); stopHold(); tracker.reset(); refreshPressed() }   // dismissed mid-hold
+        if window == nil {   // dismissed mid-hold
+            stopRepeat(); stopHold(); tracker.reset(); refreshPressed()
+            if blanked { refreshLabels() }
+        }
     }
 
     // MARK: - Layout

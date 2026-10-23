@@ -478,6 +478,83 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(KeyTouchTracker.holdDelay, 0.35)
     }
 
+    // MARK: Trackpad
+
+    /// A space hold is a trackpad: one caret step per `caretStep` sideways, signed, the
+    /// remainder carried; up and down move nothing; lifting types nothing; other fingers
+    /// are ignored while it's down. A tap still types space.
+    func testTrackerSpaceHoldMovesTheCaret() {
+        var t = KeyTouchTracker()
+        let step = KeyTouchTracker.caretStep, y: CGFloat = 200
+        _ = t.began(1, .space, at: CGPoint(x: 200, y: y))
+        XCTAssertTrue(t.startTrackpad(1, at: 200))
+        XCTAssertTrue(t.isTrackpad)
+        XCTAssertEqual(t.moved(1, .space, at: CGPoint(x: 200 + 2.5 * step, y: y)), [.caret(2)])
+        XCTAssertEqual(t.moved(1, .space, at: CGPoint(x: 200 + 2.9 * step, y: y - 40)), [],
+                       "under a step from the last one, and vertical travel moves nothing")
+        XCTAssertEqual(t.moved(1, .char("q"), at: CGPoint(x: 200 - 1.2 * step, y: 20)), [.caret(-3)],
+                       "back from 2 steps right to past 1 left, over any key")
+        XCTAssertEqual(t.began(2, .char("a")), [], "a second finger types nothing")
+        XCTAssertEqual(t.moved(2, .char("a"), at: CGPoint(x: 0, y: 0)), [])
+        XCTAssertEqual(t.ended(2), [])
+        XCTAssertEqual(t.held, [.space], "and isn't tracked")
+        XCTAssertEqual(t.ended(1), [], "lifting types no space")
+        XCTAssertFalse(t.isTrackpad)
+
+        _ = t.began(3, .space, at: CGPoint(x: 200, y: y))
+        XCTAssertTrue(t.startTrackpad(3, at: 200))
+        XCTAssertEqual(t.ended(3), [], "a hold and lift with no drag types nothing")
+        _ = t.began(4, .space, at: CGPoint(x: 200, y: y))
+        XCTAssertTrue(t.startTrackpad(4, at: 200))
+        XCTAssertEqual(t.cancelled(4, at: CGPoint(x: 200, y: y)), [], "nor does a cancel")
+
+        XCTAssertEqual(t.began(5, .space), [])
+        XCTAssertEqual(t.ended(5), [.press(.space)], "a tap is space")
+        XCTAssertFalse(t.startTrackpad(5, at: 0), "a hold after the lift does nothing")
+        _ = t.began(6, .char("s"))
+        XCTAssertFalse(t.startTrackpad(6, at: 0), "only space")
+        _ = t.ended(6)
+        _ = t.began(7, .space, at: CGPoint(x: 200, y: 215), belowKeys: true)
+        XCTAssertFalse(t.startTrackpad(7, at: 200), "never from the home gesture's strip")
+        XCTAssertEqual(t.ended(7), [.press(.space)])
+    }
+
+    /// Text a cap shows: its title, image or hint.
+    private func shown(_ cap: UIButton) -> [String] {
+        [cap.title(for: .normal), cap.image(for: .normal).map { _ in "image" }].compactMap { $0 }
+            + cap.subviews.compactMap { v in
+                guard let l = v as? UILabel, l !== cap.titleLabel, !l.isHidden else { return nil }
+                return l.text
+            }
+    }
+
+    /// Through the view: the hold blanks every cap with a haptic, a drag on it moves the
+    /// caret through `moveCaret`, and the lift types nothing and brings the labels back
+    /// with the one-shot shift still showing.
+    func testSpaceHoldBlanksTheKeysAndMovesTheCaret() throws {
+        let (kb, caps) = laidOut()
+        let spy = SpyInput()
+        kb.target = spy
+        var steps: [Int] = []
+        kb.moveCaret = { steps.append($0) }
+        kb.press(.shift)
+        let before = caps.mapValues(shown)
+        XCTAssertEqual(before["q"], ["Q", "`"], "precondition: shifted letters with hints")
+        let space = try XCTUnwrap(caps["space"]).frame, p = CGPoint(x: space.midX, y: space.midY)
+        kb.track(.began, id: 1, at: p)
+        RunLoop.main.run(until: Date().addingTimeInterval(KeyTouchTracker.holdDelay + 0.15))
+        for (name, cap) in caps { XCTAssertEqual(shown(cap), [], "\(name) blanks") }
+        kb.track(.began, id: 2, at: try XCTUnwrap(caps["q"]).center)   // ignored
+        kb.track(.ended, id: 2, at: try XCTUnwrap(caps["q"]).center)
+        kb.track(.moved, id: 1, at: CGPoint(x: p.x - 3.5 * KeyTouchTracker.caretStep, y: p.y))
+        kb.track(.moved, id: 1, at: CGPoint(x: p.x - 1.9 * KeyTouchTracker.caretStep, y: p.y - 30))
+        kb.track(.ended, id: 1, at: CGPoint(x: p.x - 1.9 * KeyTouchTracker.caretStep, y: p.y - 30))
+        XCTAssertEqual(steps, [-3, 1])
+        XCTAssertEqual(spy.calls, [], "no space, and the second finger typed nothing")
+        XCTAssertEqual(caps.mapValues(shown), before, "every label back, shift's included")
+        XCTAssertEqual(kb.shift.mode, .once)
+    }
+
     // MARK: Press preview
 
     private func laidOut(width: CGFloat = 402) -> (TerminalKeyboard, [String: UIButton]) {

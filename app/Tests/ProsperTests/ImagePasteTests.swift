@@ -165,6 +165,31 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertEqual(Array(spy.sent[before...]), [[0x1b, 0x0d]])
     }
 
+    /// The compact keyboard's space-bar trackpad: each step is a left or right arrow, in
+    /// the cursor-key mode the program set, never up or down; the word ends there.
+    func testCompactKeyboardTrackpadSendsLeftAndRightArrows() async throws {
+        let saved = TerminalKeyboard.hardwareKeyboardConnected
+        TerminalKeyboard.hardwareKeyboardConnected = { false }
+        defer { TerminalKeyboard.hardwareKeyboardConnected = saved }
+        try XCTSkipUnless(TerminalKeyboard.appliesHere, "iPhone only")
+        let (vc, spy) = try await makeVC()
+        let kb = try XCTUnwrap(vc.keyboardInputView as? TerminalKeyboard)
+        kb.press(.char("g"))
+        XCTAssertEqual(kb.word, "g")
+        var before = spy.sent.count
+        kb.caret(-2)
+        kb.caret(1)
+        XCTAssertEqual(Array(spy.sent[before...]), [[0x1b, 0x5b, 0x44, 0x1b, 0x5b, 0x44], [0x1b, 0x5b, 0x43]])
+        XCTAssertEqual(kb.word, "", "a caret move ends the word, as an arrow does")
+
+        spy.emit("\u{1b}[?1h")   // DECCKM: application cursor keys (vim, less)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        before = spy.sent.count
+        kb.caret(-1)
+        kb.caret(1)
+        XCTAssertEqual(Array(spy.sent[before...]), [[0x1b, 0x4f, 0x44], [0x1b, 0x4f, 0x43]])
+    }
+
     /// #320 QA #126: only a single typed ASCII byte takes the armed ctrl. Multi-byte text
     /// (é was sent as 0x03 = ^C) passes through whole and keeps the arm; a lone Esc goes
     /// out unchanged and disarms.

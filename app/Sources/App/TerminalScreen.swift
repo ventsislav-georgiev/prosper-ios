@@ -1127,6 +1127,11 @@ private final class DchTerminalView: TerminalView {
         kb.inputHost = self   // its height then reaches the input host (`inputHost`)
         kb.sendBytes = { [weak self] in self?.send($0) }   // through the host's send, like any key
         kb.screenWords = { [weak self] in self.map { TerminalKeyboard.screenWords(in: $0.getTerminal()) } ?? [] }
+        kb.moveCaret = { [weak self] in   // the space-bar trackpad: arrow keys, like the bar's
+            guard let self else { return }
+            self.send(TerminalKeyboard.arrowBytes($0,
+                                                  applicationCursor: self.getTerminal().applicationCursor))
+        }
         return kb
     }()
 
@@ -1185,5 +1190,15 @@ extension TerminalKeyboard {
             }
         }
         return out
+    }
+
+    /// A trackpad step of `offset` characters as arrow keys: left for negative, right for
+    /// positive, in the cursor-key mode the program asked for (DECCKM). Never up or down:
+    /// in a shell that's history.
+    static func arrowBytes(_ offset: Int, applicationCursor: Bool) -> [UInt8] {
+        let key = offset < 0
+            ? (applicationCursor ? EscapeSequences.moveLeftApp : EscapeSequences.moveLeftNormal)
+            : (applicationCursor ? EscapeSequences.moveRightApp : EscapeSequences.moveRightNormal)
+        return Array(repeating: key, count: abs(offset)).flatMap { $0 }
     }
 }
