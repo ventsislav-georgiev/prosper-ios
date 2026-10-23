@@ -14,7 +14,8 @@ import UIKit
 ///   next completion or guess. At a word start: next-word predictions (`TypingMemory`).
 /// - Autocorrect: a separator (space, return, `. , ? ! : ;`) after a word with a
 ///   pending correction (`correction(for:after:in:)`) replaces the word first; "." waits
-///   for the space after it, as "jane.doe" or "example.com" go on past it.
+///   for the space after it, as "jane.doe" or "example.com" go on past it. Only a word
+///   this keyboard typed whole (`typed`): never a paste, nor text the cursor was put after.
 /// - Undo: backspace as the very next key puts the typed word back, and it isn't
 ///   corrected again while this keyboard lives.
 /// - Learning: tapping the quoted word keeps it and learns it; committed words feed the
@@ -57,6 +58,13 @@ final class Suggestions {
     /// after it ("." for a correction deferred to the space), and what replaced the two plus
     /// the separator.
     private var undo: (typed: String, kept: String, inserted: String)?
+    /// What this keyboard typed since the last paste or slot tap, lowercase, as `willPress`
+    /// saw each key: the end of the text before the cursor, while nothing else changed it.
+    /// Compared with that text, not trusted: hosts don't reliably report a cursor move.
+    ///
+    /// ponytail: the last 64 characters only, and the double-space period isn't mirrored
+    /// (backspacing into the word before it ends its correction): neither is worth more.
+    private var typed = ""
 
     /// The pasteboard to offer, nil without Full Access: a custom keyboard reads it only
     /// with Full Access. The controller's, or a named one in tests.
@@ -125,6 +133,7 @@ final class Suggestions {
     /// iOS. The quoted typed word stays as typed and is learned, where learning is allowed.
     func tap(_ slot: Slot, in doc: UITextDocumentProxy) {
         undo = nil
+        typed = ""
         let before = doc.documentContextBeforeInput ?? ""
         let word = Self.currentWord(before)
         if slot.quoted {
@@ -139,15 +148,17 @@ final class Suggestions {
 
     // MARK: - Paste
 
-    /// A word start, and a clip with text the keyboard hasn't pasted or seen dismissed
-    /// (`TypingMemory.retiredClip`). `hasStrings` and `changeCount` don't read the clip,
-    /// so they raise no Allow Paste prompt. Just "Paste": iOS gives a keyboard no source
-    /// app to name. Image-only clips never show: `insertText` takes only text.
+    /// A word start (an empty field, or after a space or newline: not "abc1", "mail@" or
+    /// "alex.", where the next key would retire it unseen), and a clip with text the
+    /// keyboard hasn't pasted or seen dismissed (`TypingMemory.retiredClip`). `hasStrings`
+    /// and `changeCount` don't read the clip, so they raise no Allow Paste prompt. Just
+    /// "Paste": iOS gives a keyboard no source app to name. Image-only clips never show:
+    /// `insertText` takes only text.
     ///
     /// ponytail: no preview of the clip, since one means reading it unasked; add one only
     /// if a device shows no Allow Paste prompt for a Full Access keyboard.
     func offersPaste(_ doc: UITextDocumentProxy) -> Bool {
-        guard let pb = pasteboard(), Self.currentWord(doc.documentContextBeforeInput).isEmpty,
+        guard let pb = pasteboard(), doc.documentContextBeforeInput?.last?.isWhitespace ?? true,
               pb.hasStrings else { return false }
         return pb.changeCount != memory.retiredClip
     }
@@ -156,6 +167,7 @@ final class Suggestions {
     /// a newline), and won't be offered again. The only read of its contents.
     func paste(in doc: UITextDocumentProxy) {
         undo = nil
+        typed = ""
         guard let pb = pasteboard() else { return }
         if let s = pb.string { doc.insertText(s) }
         memory.retiredClip = pb.changeCount
@@ -170,16 +182,21 @@ final class Suggestions {
         let separator: String
         switch key {
         case .shift, .globe: return false
-        case .backspace: return revert(doc)
+        case .backspace:
+            if revert(doc) { return true }
+            _ = typed.popLast()
+            return false
         case .space: separator = " "
         case .ret: separator = "\n"
         case .char(let c) where Self.separators.contains(c): separator = c
-        case .char:
+        case .char(let c):
             // Typing over the Paste button dismisses that clip for good.
             if offersPaste(doc) { memory.retiredClip = pasteboard()?.changeCount }
+            type(c)
             return false   // breaks the undo's suffix (`revert`)
         }
         undo = nil
+        defer { type(separator) }
         // "." waits: a space after "word." corrects the word and keeps the ".".
         if separator == "." { return false }
         let before = doc.documentContextBeforeInput ?? ""
@@ -195,6 +212,7 @@ final class Suggestions {
             for _ in 0..<(word.count + kept.count) { doc.deleteBackward() }
             doc.insertText(fix + kept)
             undo = (word, kept, fix + kept + separator)
+            typed = String(typed.dropLast(word.count + kept.count)) + (fix + kept).lowercased()
             committed = fix
         }
         commit(committed, after: prefix, in: doc)
@@ -210,8 +228,15 @@ final class Suggestions {
         guard (doc.documentContextBeforeInput ?? "").hasSuffix(u.inserted) else { return false }
         for _ in 0..<u.inserted.count { doc.deleteBackward() }
         doc.insertText(u.typed + u.kept)
+        typed = String(typed.dropLast(u.inserted.count)) + (u.typed + u.kept).lowercased()
         rejected.insert(u.typed.lowercased())
         return true
+    }
+
+    /// A key's text joins `typed`.
+    private func type(_ s: String) {
+        typed += s.lowercased()
+        if typed.count > 64 { typed.removeFirst(typed.count - 64) }
     }
 
     /// A word went in: count it after the word before it, where learning is allowed.
@@ -223,13 +248,15 @@ final class Suggestions {
     // MARK: - Correction
 
     /// What a separator typed now puts in place of `word`, which follows `prefix`; nil
-    /// leaves it. Only where the field autocorrects, and never mid-word (letters after the
-    /// cursor) or glued to what's before it (`glued`). A reverted word stays; "i" and its
+    /// leaves it. Only where the field autocorrects, for a word this keyboard typed whole
+    /// (all after `prefix` ends `typed`), and never mid-word (letters after the cursor) or
+    /// glued to what's before it (`glued`). A reverted word stays; "i" and its
     /// contractions get their capital; a text replacement shortcut gives its phrase;
     /// otherwise the dictionary's first guess, if `confident`, for a word nothing knows
     /// (`knows`). Anything less sure stays as typed, though the bar still offers the guesses.
     func correction(for word: String, after prefix: String, in doc: UITextDocumentProxy) -> String? {
         guard !word.isEmpty, Self.autocorrects(doc), !Self.glued(prefix),
+              typed.hasSuffix((doc.documentContextBeforeInput ?? "").dropFirst(prefix.count).lowercased()),
               doc.documentContextAfterInput?.first?.isLetter != true else { return nil }
         let lower = word.lowercased()
         if rejected.contains(lower) { return nil }

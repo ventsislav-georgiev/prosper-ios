@@ -236,6 +236,40 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(doc2.text, "so i ", "only where autocorrect applies")
     }
 
+    /// Text this keyboard didn't type, or didn't type whole, is left as it is: the bar
+    /// highlights nothing for it and space doesn't change it. Typed words still correct.
+    func testOnlyWordsTypedWholeAreCorrected() throws {
+        let pb = try clipboard()
+        pb.string = "hello wrld"
+        var (kb, bar, doc) = pasteRig(pb)
+        bar.pasteButton.sendActions(for: .touchUpInside)
+        XCTAssertFalse(slots(bar).contains { $0?.highlighted == true }, "a pasted tail")
+        typing(kb, " ")
+        XCTAssertEqual(doc.text, "hello wrld ", "a paste")
+
+        (kb, bar, doc) = rig()
+        typing(kb, "ok ")
+        doc.text = "hello wrld"   // as a cursor moved after it leaves the text, unannounced
+        bar.refresh()
+        XCTAssertFalse(slots(bar).contains { $0?.highlighted == true }, "text already there")
+        typing(kb, " ")
+        XCTAssertEqual(doc.text, "hello wrld ", "text already there")
+
+        pb.string = "foo "
+        (kb, bar, doc) = pasteRig(pb)
+        bar.pasteButton.sendActions(for: .touchUpInside)
+        typing(kb, "teh ")
+        XCTAssertEqual(doc.text, "foo the ", "typed after a paste")
+
+        pb.string = "wr"
+        (kb, bar, doc) = pasteRig(pb)
+        bar.pasteButton.sendActions(for: .touchUpInside)
+        typing(kb, "ld")
+        XCTAssertFalse(slots(bar).contains { $0?.highlighted == true }, "half pasted")
+        typing(kb, " ")
+        XCTAssertEqual(doc.text, "wrld ", "half pasted")
+    }
+
     // MARK: Taps
 
     func testTappingACompletionReplacesTheWordAndAddsASpace() throws {
@@ -551,6 +585,44 @@ final class SuggestionsTests: XCTestCase {
         pb.string = "copied again"
         bar.refresh()
         XCTAssertEqual(bar.state, .paste, "a new copy")
+    }
+
+    /// After a paste ending a sentence or a line, shift is on for the next one.
+    func testPasteAutoCapitalizesAfterIt() throws {
+        let pb = try clipboard()
+        for clip in ["Done.\n", "ok. "] {
+            pb.string = clip
+            let (kb, bar, doc) = pasteRig(pb) { $0.autocapitalizationType = .sentences; $0.text = "say " }
+            XCTAssertEqual(kb.shift.mode, .off, clip)
+            bar.pasteButton.sendActions(for: .touchUpInside)
+            XCTAssertEqual(doc.text, "say " + clip)
+            XCTAssertEqual(kb.shift.mode, .once, clip)
+        }
+    }
+
+    /// Only a letter types over the clip: space, return and backspace at a word start
+    /// leave it offered.
+    func testSpaceReturnAndBackspaceKeepPasteShowing() throws {
+        let pb = try clipboard()
+        pb.string = "copied"
+        let (kb, bar, doc) = pasteRig(pb)
+        for (key, name) in [(TerminalKeyboard.Key.space, "space"), (.ret, "return"), (.backspace, "backspace")] {
+            kb.press(key)
+            XCTAssertEqual(bar.state, .paste, name)
+        }
+        XCTAssertEqual(doc.text, " ")
+        XCTAssertNotEqual(bar.suggestions.memory.retiredClip, pb.changeCount)
+    }
+
+    /// Paste only where a word would start: not glued to a token.
+    func testPasteOnlyAfterWhitespaceOrAtTheStart() throws {
+        let pb = try clipboard()
+        pb.string = "copied"
+        for (text, offered) in [("", true), ("hi ", true), ("hi\n", true),
+                                ("abc1", false), ("mail@", false), ("alex.", false)] {
+            let (_, bar, _) = pasteRig(pb) { $0.text = text }
+            XCTAssertEqual(bar.state == .paste, offered, text)
+        }
     }
 
     func testLoginFieldsKeepAutoFillOverPaste() throws {
