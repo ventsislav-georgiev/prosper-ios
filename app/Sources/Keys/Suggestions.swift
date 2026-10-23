@@ -19,6 +19,7 @@ import UIKit
 ///   corrected again while this keyboard lives.
 /// - Learning: tapping the quoted word keeps it and learns it; committed words feed the
 ///   next-word counts. Neither happens where autocorrect is off (`autocorrects`).
+/// - Paste: at a word start, a fresh text clip replaces the slots (`offersPaste`).
 ///
 /// ponytail: English only, the one `TerminalKeyboard.checker`; another language means
 /// a checker per `PrimaryLanguage`.
@@ -38,6 +39,8 @@ final class Suggestions {
         case slots([Slot?])
         /// A login field: one key button to Apple's keyboard, for AutoFill and SMS codes.
         case autofill
+        /// A word start with a fresh text clip: one Paste button.
+        case paste
     }
 
     /// Punctuation that ends a word, so autocorrect runs first. Space and return too.
@@ -54,6 +57,10 @@ final class Suggestions {
     /// after it ("." for a correction deferred to the space), and what replaced the two plus
     /// the separator.
     private var undo: (typed: String, kept: String, inserted: String)?
+
+    /// The pasteboard to offer, nil without Full Access: a custom keyboard reads it only
+    /// with Full Access. The controller's, or a named one in tests.
+    var pasteboard: () -> UIPasteboard? = { nil }
 
     init(memory: TypingMemory = TypingMemory()) { self.memory = memory }
 
@@ -77,6 +84,7 @@ final class Suggestions {
 
     func state(_ doc: UITextDocumentProxy, shift: ShiftState.Mode) -> State {
         if Self.isLoginField(doc) { return .autofill }
+        if offersPaste(doc) { return .paste }
         let before = doc.documentContextBeforeInput ?? ""
         let word = Self.currentWord(before)
         if word.isEmpty {
@@ -129,6 +137,30 @@ final class Suggestions {
         commit(slot.quoted ? word : slot.word, after: String(before.dropLast(word.count)), in: doc)
     }
 
+    // MARK: - Paste
+
+    /// A word start, and a clip with text the keyboard hasn't pasted or seen dismissed
+    /// (`TypingMemory.retiredClip`). `hasStrings` and `changeCount` don't read the clip,
+    /// so they raise no Allow Paste prompt. Just "Paste": iOS gives a keyboard no source
+    /// app to name. Image-only clips never show: `insertText` takes only text.
+    ///
+    /// ponytail: no preview of the clip, since one means reading it unasked; add one only
+    /// if a device shows no Allow Paste prompt for a Full Access keyboard.
+    func offersPaste(_ doc: UITextDocumentProxy) -> Bool {
+        guard let pb = pasteboard(), Self.currentWord(doc.documentContextBeforeInput).isEmpty,
+              pb.hasStrings else { return false }
+        return pb.changeCount != memory.retiredClip
+    }
+
+    /// The Paste button: the clip goes in as is, no space after (it may end mid-word or in
+    /// a newline), and won't be offered again. The only read of its contents.
+    func paste(in doc: UITextDocumentProxy) {
+        undo = nil
+        guard let pb = pasteboard() else { return }
+        if let s = pb.string { doc.insertText(s) }
+        memory.retiredClip = pb.changeCount
+    }
+
     // MARK: - Typing
 
     /// The keyboard's hook before each key (`TerminalKeyboard.willPress`). A separator
@@ -142,7 +174,10 @@ final class Suggestions {
         case .space: separator = " "
         case .ret: separator = "\n"
         case .char(let c) where Self.separators.contains(c): separator = c
-        case .char: return false   // breaks the undo's suffix (`revert`)
+        case .char:
+            // Typing over the Paste button dismisses that clip for good.
+            if offersPaste(doc) { memory.retiredClip = pasteboard()?.changeCount }
+            return false   // breaks the undo's suffix (`revert`)
         }
         undo = nil
         // "." waits: a space after "word." corrects the word and keeps the ".".
@@ -358,6 +393,7 @@ final class Suggestions {
 final class TypingMemory {
     static let wordsKey = "suggestions.learnedWords"
     static let pairsKey = "suggestions.wordPairs"
+    static let clipKey = "suggestions.retiredClip"
 
     let defaults: UserDefaults
     let wordCap: Int, pairCap: Int
@@ -374,6 +410,14 @@ final class TypingMemory {
         words = defaults.stringArray(forKey: Self.wordsKey) ?? []
         known = Set(words)
         pairs = defaults.dictionary(forKey: Self.pairsKey) as? [String: Int] ?? [:]
+    }
+
+    /// The pasteboard `changeCount` last pasted or typed over: that clip isn't offered
+    /// again, even after the extension relaunches. A reboot resets the count, so a clip
+    /// copied then may stay hidden till the next copy: rare and harmless.
+    var retiredClip: Int? {
+        get { defaults.object(forKey: Self.clipKey) as? Int }
+        set { defaults.set(newValue, forKey: Self.clipKey) }
     }
 
     func learn(_ word: String) {
@@ -421,8 +465,8 @@ final class TypingMemory {
 
 /// The bar above the extension's keys: three slots split by hairlines, like iOS's
 /// QuickType, or in a login field one key button to Apple's keyboard (AutoFill, SMS
-/// codes). `attach` also wires `Suggestions` into the keyboard. Extension-only: the
-/// terminal keeps its shortcut bar.
+/// codes), or at a word start with a fresh clip one Paste button. `attach` also wires
+/// `Suggestions` into the keyboard. Extension-only: the terminal keeps its shortcut bar.
 ///
 /// 44 pt, and never under 42: a top-row press bubble rises 48 pt above a key whose top
 /// is 6 pt below the keyboard's, and a custom keyboard can't draw above its own view, so
@@ -443,6 +487,7 @@ final class SuggestionBar: UIView {
     private var heightConstraint: NSLayoutConstraint?
     private var hairlines: [UIView] = []
     let autofillButton = UIButton(configuration: .plain())
+    let pasteButton = UIButton(configuration: .plain())
 
     /// Nil: a fresh one on the extension's own defaults. (Not a default argument: those
     /// are evaluated off the main actor.)
@@ -474,6 +519,11 @@ final class SuggestionBar: UIView {
         autofillButton.configuration = config
         autofillButton.addAction(UIAction { [weak self] _ in self?.nextKeyboard?() }, for: .touchUpInside)
         addSubview(autofillButton)
+        config.image = UIImage(systemName: "doc.on.clipboard")
+        config.title = "Paste"
+        pasteButton.configuration = config
+        pasteButton.addAction(UIAction { [weak self] _ in self?.paste() }, for: .touchUpInside)
+        addSubview(pasteButton)
         show(state)
     }
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -538,14 +588,24 @@ final class SuggestionBar: UIView {
         refresh()
     }
 
+    private func paste() {
+        guard state == .paste, let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
+        UIDevice.current.playInputClick()
+        suggestions.paste(in: doc)
+        keyboard.resetWord()
+        keyboard.autoCapitalize()
+        refresh()
+    }
+
     private func show(_ new: Suggestions.State) {
         state = new
         let slots: [Suggestions.Slot?]
         if case .slots(let s) = new { slots = s } else { slots = [nil, nil, nil] }
-        let login = new == .autofill
-        autofillButton.isHidden = !login
+        let single = new == .autofill || new == .paste   // one full-width button
+        autofillButton.isHidden = new != .autofill
+        pasteButton.isHidden = new != .paste
         for (b, slot) in zip(slotButtons, slots) {
-            b.isHidden = login
+            b.isHidden = single
             b.isEnabled = slot != nil
             b.setTitle(slot.map { $0.quoted ? "“\($0.word)”" : $0.word }, for: .normal)
             b.accessibilityLabel = slot?.word
@@ -553,7 +613,7 @@ final class SuggestionBar: UIView {
         }
         // Like iOS, no hairline beside the highlighted slot.
         for (i, line) in hairlines.enumerated() {
-            line.isHidden = login || slots[i]?.highlighted == true || slots[i + 1]?.highlighted == true
+            line.isHidden = single || slots[i]?.highlighted == true || slots[i + 1]?.highlighted == true
         }
     }
 
@@ -570,5 +630,6 @@ final class SuggestionBar: UIView {
             line.frame = CGRect(x: area.minX + CGFloat(i + 1) * w - px / 2, y: area.midY - 12, width: px, height: 24)
         }
         autofillButton.frame = area
+        pasteButton.frame = area
     }
 }

@@ -7,8 +7,9 @@ import UIKit
 /// Above the keys, `SuggestionBar`: suggestions, autocorrect and learning as iOS's own
 /// keyboard has them, which a custom keyboard doesn't get (Sources/Keys/Suggestions.swift).
 ///
-/// Launched by the system under a tight memory cap: two views, no network, no pasteboard,
-/// nothing held beyond the keyboard, the shared spell checker and what it learned.
+/// Launched by the system under a tight memory cap: two views, no network, the pasteboard
+/// only with Full Access (the bar's Paste), nothing held beyond the keyboard, the shared
+/// spell checker and what it learned.
 final class KeyboardViewController: UIInputViewController {
     private let keyboard = TerminalKeyboard()
     private let bar = SuggestionBar()
@@ -21,6 +22,7 @@ final class KeyboardViewController: UIInputViewController {
         keyboard.bottomInset = 6
         keyboard.doubleSpacePeriod = true
         bar.nextKeyboard = { [weak self] in self?.advanceToNextInputMode() }
+        bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
         bar.attach(keyboard)
         bar.host(keyboard, in: view)
         // Contact names and text replacements; needs no Full Access. Once per controller.

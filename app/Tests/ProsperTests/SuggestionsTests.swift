@@ -487,4 +487,77 @@ final class SuggestionsTests: XCTestCase {
         typing(bare, "teh ")
         XCTAssertEqual(doc.text, "teh ", "a proxy without the bar: still nothing")
     }
+
+    // MARK: Paste
+
+    /// `rig` on a throwaway named pasteboard, offered while `fullAccess` is on.
+    private func pasteRig(_ pb: UIPasteboard, fullAccess: @escaping () -> Bool = { true },
+                          _ configure: (Proxy) -> Void = { _ in }) -> (TerminalKeyboard, SuggestionBar, Proxy) {
+        let (kb, bar, doc) = rig(configure)
+        bar.suggestions.pasteboard = { fullAccess() ? pb : nil }
+        bar.refresh()
+        return (kb, bar, doc)
+    }
+
+    private func clipboard() throws -> UIPasteboard {
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+        return pb
+    }
+
+    func testPasteShowsAtAWordStartWithAFreshTextClip() throws {
+        let pb = try clipboard()
+        let (_, empty, _) = pasteRig(pb)
+        XCTAssertNotEqual(empty.state, .paste, "an empty pasteboard")
+        pb.image = UIImage(systemName: "star")
+        let (_, image, _) = pasteRig(pb)
+        XCTAssertNotEqual(image.state, .paste, "image-only: insertText takes only text")
+        pb.string = "copied text"
+        var access = false
+        let (kb, bar, doc) = pasteRig(pb, fullAccess: { access })
+        XCTAssertNotEqual(bar.state, .paste, "no Full Access")
+        access = true
+        withExtendedLifetime((kb, doc)) { bar.refresh() }
+        XCTAssertEqual(bar.state, .paste)
+        XCTAssertFalse(bar.pasteButton.isHidden)
+        XCTAssertTrue(bar.autofillButton.isHidden)
+        XCTAssertTrue(bar.slotButtons.allSatisfy(\.isHidden))
+        let (_, mid, _) = pasteRig(pb) { $0.text = "hel" }
+        XCTAssertNotEqual(mid.state, .paste, "mid-word")
+    }
+
+    func testTappingPasteInsertsTheClipAsIsAndRetiresIt() throws {
+        let pb = try clipboard()
+        pb.string = "one two\n"
+        let (_, bar, doc) = pasteRig(pb) { $0.text = "say " }
+        bar.pasteButton.sendActions(for: .touchUpInside)
+        XCTAssertEqual(doc.text, "say one two\n", "exactly the clip, no space")
+        XCTAssertNotEqual(bar.state, .paste)
+        let (_, fresh, _) = pasteRig(pb)
+        XCTAssertNotEqual(fresh.state, .paste, "retired across launches: the same defaults")
+        XCTAssertEqual(fresh.suggestions.memory.retiredClip, pb.changeCount)
+    }
+
+    func testTypingRetiresTheClipAndANewCopyBringsItBack() throws {
+        let pb = try clipboard()
+        pb.string = "copied"
+        let (kb, bar, doc) = pasteRig(pb)
+        defer { withExtendedLifetime(doc) {} }
+        XCTAssertEqual(bar.state, .paste)
+        typing(kb, "h")
+        XCTAssertNotEqual(bar.state, .paste)
+        typing(kb, "⌫")
+        XCTAssertNotEqual(bar.state, .paste, "deleting back to a word start doesn't bring it back")
+        pb.string = "copied again"
+        bar.refresh()
+        XCTAssertEqual(bar.state, .paste, "a new copy")
+    }
+
+    func testLoginFieldsKeepAutoFillOverPaste() throws {
+        let pb = try clipboard()
+        pb.string = "copied"
+        let (_, bar, _) = pasteRig(pb) { $0.textContentType = .username }
+        XCTAssertEqual(bar.state, .autofill)
+        XCTAssertTrue(bar.pasteButton.isHidden)
+    }
 }
