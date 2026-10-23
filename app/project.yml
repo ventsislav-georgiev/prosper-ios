@@ -69,6 +69,7 @@ targets:
         # com.apple.security.network.client (in Prosper.entitlements) lets the
         # Catalyst sandbox reach the Mac (dch over Tailscale) and the account server
         # (auth + remote wake). iOS doesn't sandbox, but the key is harmless there.
+        # Also the App Group the keyboards read the Keyboard settings from (KeyboardSettings).
         CODE_SIGN_ENTITLEMENTS: Sources/Prosper.entitlements
         SUPPORTS_MACCATALYST: YES
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -130,6 +131,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.keyboard
+        # The app's App Group, for the Keyboard settings (KeyboardSettings).
+        CODE_SIGN_ENTITLEMENTS: Keyboard/Keyboard.entitlements
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES
@@ -167,6 +170,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.keyboard-bg
+        # As in ProsperKeyboard.
+        CODE_SIGN_ENTITLEMENTS: Keyboard/Keyboard.entitlements
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES

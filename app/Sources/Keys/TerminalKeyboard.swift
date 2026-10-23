@@ -13,10 +13,11 @@ struct ShiftState: Equatable {
 
     var uppercase: Bool { mode != .off }
 
-    mutating func tap(at time: TimeInterval) {
+    /// `locks` false: a quick second tap turns it off like a slow one (Enable Caps Lock off).
+    mutating func tap(at time: TimeInterval, locks: Bool = true) {
         switch mode {
         case .off: mode = .once
-        case .once: mode = time - lastTap <= Self.doubleTapWindow ? .locked : .off
+        case .once: mode = locks && time - lastTap <= Self.doubleTapWindow ? .locked : .off
         case .locked: mode = .off
         }
         lastTap = time
@@ -31,6 +32,57 @@ struct ShiftState: Equatable {
     /// ponytail: off also clears a one-shot the user tapped, so shift then a digit then
     /// a letter types it lowercase. Track who set it if that ever matters.
     mutating func autoShift(_ on: Bool) { if mode != .locked { mode = on ? .once : .off } }
+}
+
+/// The Keyboard section of the app's Settings: Apple's Settings › General › Keyboard
+/// switches, for the features this keyboard has. iOS tells a custom keyboard none of its
+/// own. The app writes them to the App Group's defaults (`store`); the extensions read
+/// them each time they appear, the app's keyboard each time it rises.
+struct KeyboardSettings: Equatable {
+    static let suiteName = "group.eu.illegible.prosperios"
+    /// The shared defaults, nil if unavailable. Settable for tests.
+    static var store: () -> UserDefaults? = { UserDefaults(suiteName: suiteName) }
+
+    enum Key {
+        static let autoCapitalization = "keyboard.autoCapitalization"
+        static let autoCorrection = "keyboard.autoCorrection"
+        static let capsLock = "keyboard.capsLock"
+        static let predictiveText = "keyboard.predictiveText"
+        static let characterPreview = "keyboard.characterPreview"
+        static let periodShortcut = "keyboard.periodShortcut"
+    }
+
+    /// Shift on at a sentence start (`TerminalKeyboard.autoCapitalize`). Off by default.
+    var autoCapitalization = false
+    /// A separator replaces a misspelled word (`Suggestions.correction`).
+    var autoCorrection = true
+    /// A quick second shift tap locks caps (`ShiftState.tap`).
+    var capsLock = true
+    /// The bar's words; Paste and AutoFill stay (`Suggestions.state`).
+    var predictiveText = true
+    /// The bubble over a pressed key; a hold's symbol still shows (`refreshPressed`).
+    var characterPreview = true
+    /// A double space types ". " (`TerminalKeyboard.doubleSpacePeriod`).
+    var periodShortcut = true
+
+    init() {}
+    /// What `defaults` holds, the default for anything it doesn't; nil is all defaults.
+    init(_ defaults: UserDefaults?) {
+        func read(_ key: String, _ value: inout Bool) {
+            if let v = defaults?.object(forKey: key) as? Bool { value = v }
+        }
+        read(Key.autoCapitalization, &autoCapitalization)
+        read(Key.autoCorrection, &autoCorrection)
+        read(Key.capsLock, &capsLock)
+        read(Key.predictiveText, &predictiveText)
+        read(Key.characterPreview, &characterPreview)
+        read(Key.periodShortcut, &periodShortcut)
+    }
+
+    /// The shared values. Without Full Access an extension can't reach the group: defaults.
+    static func current(fullAccess: Bool = true) -> KeyboardSettings {
+        KeyboardSettings(fullAccess ? store() : nil)
+    }
 }
 
 /// Every finger on the compact keyboard, in press order, and what each one types. Pure,
@@ -385,8 +437,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// own under the keyboard). The app never shows it.
     var showsGlobe = false { didSet { if showsGlobe != oldValue { build() } } }
     /// A second space after a word types ". " (`periodReplacesSpace`), like the system
-    /// keyboard. The extension sets it; the terminal never wants it.
+    /// keyboard, while `settings` allow it. The extension sets it; the terminal never
+    /// wants it.
     var doubleSpacePeriod = false
+    /// The app's Keyboard settings: the extension's controller sets them when it appears,
+    /// the terminal when it takes focus.
+    var settings = KeyboardSettings()
     /// The extension's suggestions (`SuggestionBar.attach`): asked before every key, it
     /// can autocorrect the word a separator ends, or take the key itself (true: backspace
     /// undoing an autocorrect) and the keyboard types nothing. Nil in the app.
@@ -503,7 +559,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             target?.insertText(shifted(c))
             if letter, shift.mode == .once { shift.typedLetter(); refreshLabels() }
         case .space:
-            if doubleSpacePeriod, let doc = target as? UITextDocumentProxy,
+            if doubleSpacePeriod, settings.periodShortcut, let doc = target as? UITextDocumentProxy,
                Self.periodReplacesSpace(before: doc.documentContextBeforeInput, keyboardType: doc.keyboardType ?? .default) {
                 doc.deleteBackward()
                 doc.insertText(". ")
@@ -513,7 +569,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .ret: if let sendBytes { sendBytes(Self.newlineBytes) } else { target?.insertText("\n") }
         case .backspace: target?.deleteBackward()
         case .shift:
-            shift.tap(at: CACurrentMediaTime())
+            shift.tap(at: CACurrentMediaTime(), locks: settings.capsLock)
             refreshLabels()
             return   // the user's shift: auto-capitalization doesn't undo it
         case .globe: return   // its cap acts on its own; the tracker never yields it (`nearest`)
@@ -535,13 +591,14 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     /// Shift on at a sentence start, off elsewhere, when the target is a host app's text
-    /// field that asks for it: the extension's. The app's target, the terminal, isn't a
-    /// document proxy, so it never auto-capitalizes. `press` calls it after every key;
-    /// the extension's controller also does when the field or the selection changes.
+    /// field that asks for it, and only with Auto-Capitalization on: the extension's. The
+    /// app's target, the terminal, isn't a document proxy, so it never auto-capitalizes.
+    /// `press` calls it after every key; the extension's controller also does when the
+    /// field or the selection changes.
     func autoCapitalize() {
         guard let doc = target as? UITextDocumentProxy else { return }
-        let on = Self.shouldCapitalize(before: doc.documentContextBeforeInput,
-                                       type: doc.autocapitalizationType ?? .none)
+        let on = settings.autoCapitalization
+            && Self.shouldCapitalize(before: doc.documentContextBeforeInput, type: doc.autocapitalizationType ?? .none)
         let before = shift
         shift.autoShift(on)
         if shift != before { refreshLabels() }
@@ -784,7 +841,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         let held = tracker.held
         for cap in caps.joined() { cap.isHighlighted = held.contains(cap.key) }
         let cap = tracker.previewKey.flatMap { k in caps.joined().first { $0.key == k } }
-        if let cap { showPreview(cap, tracker.previewSymbol.map(shifted)) } else { hidePreview() }
+        let symbol = tracker.previewSymbol.map(shifted)
+        // Character Preview off still shows a hold's symbol, as Apple's still shows its accents.
+        if let cap, settings.characterPreview || symbol != nil { showPreview(cap, symbol) } else { hidePreview() }
     }
 
     /// `c` as shift types it: a letter uppercased, anything else as is.

@@ -243,6 +243,7 @@ final class KeyboardExtensionTests: XCTestCase {
         let kb = TerminalKeyboard()
         let doc = FakeProxy()
         kb.target = doc
+        kb.settings.autoCapitalization = true
         kb.autoCapitalize()
         XCTAssertEqual(kb.shift.mode, .once, "empty field")
         for k in ["h", "i", ".", " ", "y", "o"] { kb.press(k == " " ? .space : .char(k)) }
@@ -259,6 +260,7 @@ final class KeyboardExtensionTests: XCTestCase {
         let none = TerminalKeyboard(), plain = FakeProxy()
         plain.autocapitalizationType = .none
         none.target = plain
+        none.settings.autoCapitalization = true
         none.autoCapitalize()
         none.press(.char("x"))
         XCTAssertEqual(plain.text, "x")
@@ -268,6 +270,90 @@ final class KeyboardExtensionTests: XCTestCase {
         app.autoCapitalize()
         app.press(.char("x"))
         XCTAssertEqual(spy.calls, ["x"], "the terminal never auto-capitalizes")
+    }
+
+    /// Auto-Capitalization: off (the default), a sentences field types lowercase.
+    func testAutoCapitalizationSwitch() {
+        for on in [true, false] {
+            let kb = TerminalKeyboard(), doc = FakeProxy()
+            kb.target = doc
+            kb.settings.autoCapitalization = on
+            kb.autoCapitalize()
+            XCTAssertEqual(kb.shift.mode, on ? .once : .off, "empty field")
+            for k in ["h", "i", ".", " ", "y"] { kb.press(k == " " ? .space : .char(k)) }
+            XCTAssertEqual(doc.text, on ? "Hi. Y" : "hi. y")
+        }
+        XCTAssertFalse(TerminalKeyboard().settings.autoCapitalization, "off by default")
+    }
+
+    /// Enable Caps Lock off: a quick second shift tap turns shift off, as a slow one does.
+    func testCapsLockSwitch() {
+        for on in [true, false] {
+            let kb = TerminalKeyboard()
+            kb.settings.capsLock = on
+            kb.press(.shift); kb.press(.shift)
+            XCTAssertEqual(kb.shift.mode, on ? .locked : .off)
+        }
+        var s = ShiftState()
+        s.tap(at: 0, locks: false); s.tap(at: 0.1, locks: false)
+        XCTAssertEqual(s.mode, .off)
+        s.tap(at: 1); s.tap(at: 1.1)
+        XCTAssertEqual(s.mode, .locked, "the shortcut bar's modifiers still lock")
+    }
+
+    // MARK: Keyboard settings
+
+    func testKeyboardSettingsDefaults() {
+        let d = KeyboardSettings()
+        XCTAssertFalse(d.autoCapitalization)
+        XCTAssertTrue(d.autoCorrection)
+        XCTAssertTrue(d.capsLock)
+        XCTAssertTrue(d.predictiveText)
+        XCTAssertTrue(d.characterPreview)
+        XCTAssertTrue(d.periodShortcut)
+        XCTAssertEqual(KeyboardSettings(nil), d)
+        XCTAssertEqual(TerminalKeyboard().settings, d)
+        XCTAssertEqual(Suggestions().settings, d)
+        XCTAssertEqual(KeyboardSettings.suiteName, "group.eu.illegible.prosperios", "the entitlements' App Group")
+    }
+
+    /// What the app wrote is read back; a key it never wrote keeps its default.
+    func testKeyboardSettingsReadWhatTheAppWrote() throws {
+        let suite = "KeyboardSettings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(KeyboardSettings(defaults), KeyboardSettings(), "nothing written")
+        typealias K = KeyboardSettings.Key
+        for key in [K.autoCapitalization, K.autoCorrection, K.capsLock, K.predictiveText,
+                    K.characterPreview, K.periodShortcut] {
+            defaults.set(key == K.autoCapitalization, forKey: key)   // each flipped
+        }
+        var flipped = KeyboardSettings()
+        flipped.autoCapitalization = true
+        flipped.autoCorrection = false
+        flipped.capsLock = false
+        flipped.predictiveText = false
+        flipped.characterPreview = false
+        flipped.periodShortcut = false
+        XCTAssertEqual(KeyboardSettings(defaults), flipped)
+        defaults.removeObject(forKey: K.capsLock)
+        XCTAssertTrue(KeyboardSettings(defaults).capsLock, "unwritten: the default")
+    }
+
+    /// No Full Access, or no suite: the defaults, whatever the app wrote.
+    func testKeyboardSettingsFallBackToTheDefaults() throws {
+        let saved = KeyboardSettings.store
+        defer { KeyboardSettings.store = saved }
+        let suite = "KeyboardSettings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: KeyboardSettings.Key.autoCapitalization)
+        KeyboardSettings.store = { defaults }
+        XCTAssertTrue(KeyboardSettings.current().autoCapitalization, "the app's value")
+        XCTAssertTrue(KeyboardSettings.current(fullAccess: true).autoCapitalization)
+        XCTAssertEqual(KeyboardSettings.current(fullAccess: false), KeyboardSettings(), "no Full Access")
+        KeyboardSettings.store = { nil }
+        XCTAssertEqual(KeyboardSettings.current(), KeyboardSettings(), "no suite")
     }
 
     // MARK: Double-space period
@@ -296,6 +382,7 @@ final class KeyboardExtensionTests: XCTestCase {
         let doc = FakeProxy()
         kb.target = doc
         kb.doubleSpacePeriod = true
+        kb.settings.autoCapitalization = true
         for k in ["o", "k"] { kb.press(.char(k)) }
         kb.press(.space); kb.press(.space)
         kb.press(.char("s"))
@@ -310,5 +397,17 @@ final class KeyboardExtensionTests: XCTestCase {
         plain.text = "ok "
         off.press(.space)
         XCTAssertEqual(plain.text, "ok  ", "the flag is off by default")
+    }
+
+    /// "." Shortcut off: the extension's keyboard types two spaces too.
+    func testPeriodShortcutSwitch() {
+        for on in [true, false] {
+            let kb = TerminalKeyboard(), doc = FakeProxy()
+            kb.target = doc
+            kb.doubleSpacePeriod = true
+            kb.settings.periodShortcut = on
+            kb.press(.char("o")); kb.press(.space); kb.press(.space)
+            XCTAssertEqual(doc.text, on ? "o. " : "o  ")
+        }
     }
 }

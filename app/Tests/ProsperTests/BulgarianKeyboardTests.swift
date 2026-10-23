@@ -42,6 +42,7 @@ final class BulgarianKeyboardTests: XCTestCase {
         let kb = TerminalKeyboard(layout: .bulgarian)
         kb.target = doc
         kb.doubleSpacePeriod = true
+        kb.settings.autoCapitalization = true   // the field's type decides
         let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: defaults), layout: .bulgarian))
         bar.attach(kb)
         kb.autoCapitalize()

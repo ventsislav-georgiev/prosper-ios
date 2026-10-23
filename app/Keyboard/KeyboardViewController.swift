@@ -36,8 +36,13 @@ final class KeyboardViewController: UIInputViewController {
         }
     }
 
+    /// The app's Keyboard settings are read here, so a change there applies the next time
+    /// the keyboard shows. Without Full Access the group is out of reach: the defaults.
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        let settings = KeyboardSettings.current(fullAccess: hasFullAccess)
+        keyboard.settings = settings
+        bar.suggestions.settings = settings
         sync()
     }
 

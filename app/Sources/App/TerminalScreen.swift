@@ -1146,6 +1146,7 @@ private final class DchTerminalView: TerminalView {
 
     override func becomeFirstResponder() -> Bool {
         refreshInputView()
+        (inputView as? TerminalKeyboard)?.settings = .current()   // the app's Keyboard settings
         return super.becomeFirstResponder()
     }
 

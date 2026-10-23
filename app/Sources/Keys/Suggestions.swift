@@ -75,6 +75,9 @@ final class Suggestions {
     /// secure control draws blank and takes no taps under about 36 pt, so landscape keeps its
     /// slots (OQ-43). A letter typed there doesn't retire the clip: Paste never showed.
     var pasteFits = true
+    /// The app's Keyboard settings (Auto-Correction, Predictive Text): the extension's
+    /// controller sets them when it appears.
+    var settings = KeyboardSettings()
 
     let layout: TerminalKeyboard.Layout
     /// The layout's checker language, read once (`TerminalKeyboard.Layout.language`).
@@ -107,6 +110,7 @@ final class Suggestions {
     func state(_ doc: UITextDocumentProxy, shift: ShiftState.Mode) -> State {
         if Self.isLoginField(doc) { return .autofill }
         if offersPaste(doc) { return .paste }
+        if !settings.predictiveText { return .slots([nil, nil, nil]) }
         let before = doc.documentContextBeforeInput ?? ""
         let word = Self.currentWord(before)
         if word.isEmpty {
@@ -270,14 +274,14 @@ final class Suggestions {
     // MARK: - Correction
 
     /// What a separator typed now puts in place of `word`, which follows `prefix`; nil
-    /// leaves it. Only where the field autocorrects, for a word this keyboard typed whole
-    /// (all after `prefix` ends `typed`), and never mid-word (letters after the cursor) or
-    /// glued to what's before it (`glued`). A reverted word stays; "i" and its
+    /// leaves it. Only with Auto-Correction on, where the field autocorrects, for a word
+    /// this keyboard typed whole (all after `prefix` ends `typed`), and never mid-word
+    /// (letters after the cursor) or glued to what's before it (`glued`). A reverted word stays; "i" and its
     /// contractions get their capital; a text replacement shortcut gives its phrase;
     /// otherwise the dictionary's first guess, if `confident`, for a word nothing knows
     /// (`knows`). Anything less sure stays as typed, though the bar still offers the guesses.
     func correction(for word: String, after prefix: String, in doc: UITextDocumentProxy) -> String? {
-        guard !word.isEmpty, Self.autocorrects(doc), !Self.glued(prefix),
+        guard settings.autoCorrection, !word.isEmpty, Self.autocorrects(doc), !Self.glued(prefix),
               typed.hasSuffix((doc.documentContextBeforeInput ?? "").dropFirst(prefix.count).lowercased()),
               doc.documentContextAfterInput?.first?.isLetter != true else { return nil }
         let lower = word.lowercased()

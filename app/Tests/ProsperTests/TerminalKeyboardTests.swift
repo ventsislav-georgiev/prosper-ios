@@ -555,6 +555,27 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(kb.shift.mode, .once)
     }
 
+    /// Character Preview off: a press shows no bubble, a hold still shows its symbol.
+    func testCharacterPreviewSwitch() throws {
+        for on in [true, false] {
+            let (kb, caps) = laidOut()
+            let spy = SpyInput()
+            kb.target = spy
+            kb.settings.characterPreview = on
+            let s = try XCTUnwrap(caps["s"]).frame, p = CGPoint(x: s.midX, y: s.midY)
+            kb.track(.began, id: 1, at: p)
+            XCTAssertEqual(kb.previewText, on ? "s" : nil)
+            kb.fireHold()
+            XCTAssertEqual(kb.previewText, "#", "the hold's symbol either way")
+            kb.track(.ended, id: 1, at: p)
+            XCTAssertNil(kb.previewText)
+            kb.track(.began, id: 2, at: p)
+            XCTAssertEqual(kb.previewText, on ? "s" : nil)
+            kb.track(.ended, id: 2, at: p)
+            XCTAssertEqual(spy.calls, ["#", "s"])
+        }
+    }
+
     // MARK: Press preview
 
     private func laidOut(width: CGFloat = 402) -> (TerminalKeyboard, [String: UIButton]) {

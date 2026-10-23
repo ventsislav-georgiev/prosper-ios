@@ -2,13 +2,27 @@ import SwiftUI
 
 /// Account settings (PLAN §3 / §6.3): sign in/out and the mandatory in-app Delete
 /// Account (Apple 5.1.1(v)). Reachable from Home. Signing in is only needed for
-/// Remote Wake — everything else works signed-out.
+/// Remote Wake — everything else works signed-out. Below them, the Prosper keyboard's
+/// switches (`KeyboardSettings`).
 struct SettingsView: View {
     @ObservedObject var account: AccountStore
     @State private var showLogin = false
     @State private var confirmDelete = false
     @State private var busy = false
     @State private var error: String?
+    // Keyboard, in the App Group the keyboards read (`KeyboardSettings`).
+    @AppStorage(KeyboardSettings.Key.autoCapitalization, store: KeyboardSettings.store())
+    private var autoCapitalization = KeyboardSettings().autoCapitalization
+    @AppStorage(KeyboardSettings.Key.autoCorrection, store: KeyboardSettings.store())
+    private var autoCorrection = KeyboardSettings().autoCorrection
+    @AppStorage(KeyboardSettings.Key.capsLock, store: KeyboardSettings.store())
+    private var capsLock = KeyboardSettings().capsLock
+    @AppStorage(KeyboardSettings.Key.predictiveText, store: KeyboardSettings.store())
+    private var predictiveText = KeyboardSettings().predictiveText
+    @AppStorage(KeyboardSettings.Key.characterPreview, store: KeyboardSettings.store())
+    private var characterPreview = KeyboardSettings().characterPreview
+    @AppStorage(KeyboardSettings.Key.periodShortcut, store: KeyboardSettings.store())
+    private var periodShortcut = KeyboardSettings().periodShortcut
 
     var body: some View {
         List {
@@ -33,6 +47,20 @@ struct SettingsView: View {
                 } footer: {
                     Text("Permanently deletes your account and remote-wake settings from the server. This can't be undone.")
                 }
+            }
+
+            // Apple's Settings › General › Keyboard, in its order, for what Prosper's has.
+            Section {
+                Toggle("Auto-Capitalization", isOn: $autoCapitalization)
+                Toggle("Auto-Correction", isOn: $autoCorrection)
+                Toggle("Enable Caps Lock", isOn: $capsLock)
+                Toggle("Predictive Text", isOn: $predictiveText)
+                Toggle("Character Preview", isOn: $characterPreview)
+                Toggle("\u{201C}.\u{201D} Shortcut", isOn: $periodShortcut)
+            } header: {
+                Text("Keyboard")
+            } footer: {
+                Text("The Prosper keyboard follows these in the terminal, and in other apps once it has Full Access; without it, Auto-Capitalization is off and the rest on. Double tapping the space bar will insert a period followed by a space.")
             }
 
             if let error { Section { Text(error).foregroundStyle(.red).font(.callout) } }

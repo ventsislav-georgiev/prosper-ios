@@ -26,8 +26,9 @@ final class SuggestionsTests: XCTestCase {
     }
 
     /// A keyboard typing into a fake field with the bar attached. No auto-capitalization
-    /// unless `configure` asks for it. Keep the proxy and the bar: the keyboard holds both
-    /// weakly, as the extension's controller owns them.
+    /// unless `configure` asks for it (the setting is on, the field's type decides). Keep
+    /// the proxy and the bar: the keyboard holds both weakly, as the extension's controller
+    /// owns them.
     private func rig(_ configure: (Proxy) -> Void = { _ in }) -> (TerminalKeyboard, SuggestionBar, Proxy) {
         let doc = Proxy()
         doc.autocapitalizationType = .none
@@ -35,6 +36,7 @@ final class SuggestionsTests: XCTestCase {
         let kb = TerminalKeyboard()
         kb.target = doc
         kb.doubleSpacePeriod = true
+        kb.settings.autoCapitalization = true
         let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: defaults)))
         bar.attach(kb)
         kb.autoCapitalize()
@@ -114,6 +116,47 @@ final class SuggestionsTests: XCTestCase {
     }
 
     // MARK: Autocorrect
+
+    /// Auto-Correction off: the bar still offers the guesses, but none is highlighted and a
+    /// separator leaves the word as typed, "i" included.
+    func testAutoCorrectionSwitch() {
+        let (kb, bar, doc) = rig()
+        bar.suggestions.settings.autoCorrection = false
+        typing(kb, "teh")
+        let s = slots(bar)
+        XCTAssertEqual(s[0], Slot(word: "teh", quoted: true))
+        XCTAssertFalse(s.contains { $0?.highlighted == true }, "nothing for space to apply")
+        XCTAssertTrue(s.contains { $0?.word == "the" }, "still a suggestion")
+        typing(kb, " i ")
+        XCTAssertEqual(doc.text, "teh i ")
+        bar.suggestions.settings.autoCorrection = true
+        typing(kb, "teh ")
+        XCTAssertEqual(doc.text, "teh i the ", "on again")
+    }
+
+    /// Predictive Text off: no words in the slots, typing or at a word start, while
+    /// autocorrect still runs and Paste still shows.
+    func testPredictiveTextSwitch() throws {
+        let (kb, bar, doc) = rig()
+        bar.suggestions.memory.record("", "hello")
+        bar.refresh()
+        XCTAssertEqual(slots(bar)[1]?.word, "hello", "on: a prediction")
+        bar.suggestions.settings.predictiveText = false
+        bar.refresh()
+        XCTAssertEqual(slots(bar), [nil, nil, nil], "no prediction")
+        typing(kb, "teh")
+        XCTAssertEqual(slots(bar), [nil, nil, nil], "no completions or guesses")
+        XCTAssertTrue(bar.slotButtons.allSatisfy { $0.title(for: .normal) == nil })
+        typing(kb, " ")
+        XCTAssertEqual(doc.text, "the ", "Auto-Correction is its own switch")
+
+        let pb = try clipboard()
+        pb.string = "copied text"
+        let (pkb, paste, pdoc) = pasteRig(pb)
+        paste.suggestions.settings.predictiveText = false
+        withExtendedLifetime((pkb, pdoc)) { paste.refresh() }
+        XCTAssertEqual(paste.state, .paste, "Paste stays")
+    }
 
     func testMisspellingShowsTheCorrectionAndSpaceAppliesIt() throws {
         let (kb, bar, doc) = rig()
