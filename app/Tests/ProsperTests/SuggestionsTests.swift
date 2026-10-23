@@ -209,19 +209,28 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(bar.suggestions.memory.pairs[" the"], 1, "the correction counted, at the space")
     }
 
-    /// The native keyboard practically never changes a word's first letter: a guess that
-    /// does ("iphone" → "phone", "gello" → "hello") leaves the word as typed.
-    func testTheFirstLetterIsNeverCorrected() {
-        XCTAssertEqual(Suggestions.guesses("gello").first, "hello", "the checker would change it")
-        XCTAssertFalse(Suggestions.confident("gello", guess: "hello"))
-        XCTAssertTrue(Suggestions.confident("Gelo", guess: "gel"), "case doesn't count")
-        for word in ["iphone", "gello"] {
+    /// The first letter changes only for a slip onto a neighboring key with the length kept
+    /// ("rhe" → "the"); a guess that drops or adds one ("iphone" → "phone") leaves it as typed.
+    func testTheFirstLetterChangesOnlyForANeighboringKey() {
+        for (word, fix) in [("rhe", "the"), ("tou", "you")] {
+            XCTAssertEqual(Suggestions.guesses(word).first, fix, "the checker's first guess")
+            let (kb, bar, doc) = rig()
+            withExtendedLifetime(bar) { typing(kb, word + " ") }
+            XCTAssertEqual(doc.text, fix + " ")
+        }
+        for word in ["iphone", "ipad"] {
             let (kb, bar, doc) = rig()
             typing(kb, word)
             XCTAssertFalse(slots(bar).contains { $0?.highlighted == true }, word)
             typing(kb, " ")
             XCTAssertEqual(doc.text, word + " ")
         }
+        let ok = Suggestions.confident
+        XCTAssertTrue(ok("gello", "hello"), "g and h are neighbors")
+        XCTAssertFalse(ok("pello", "hello"), "p and h aren't")
+        XCTAssertFalse(ok("ghat", "hat"), "a neighbor, but a letter dropped")
+        XCTAssertTrue(ok("Gelo", "gel"), "case doesn't count")
+        XCTAssertTrue(ok("Rhe", "the"), "case doesn't count")
     }
 
     /// What `typed` mirrors, key by key: backspace pops it, a correction and its revert
@@ -488,6 +497,14 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(doc2.text, "omw.", "undone, period and all")
         typing(kb2, " teh ")
         XCTAssertEqual(doc2.text, "omw. the ", "typed still in step")
+
+        // A fresh keyboard each, for the same reason.
+        for (input, phrase) in [("addr", "12 Main St."), ("elp", "Wait…")] {
+            let (kb, bar, doc) = rig()
+            bar.suggestions.load([(userInput: input, documentText: phrase)])
+            withExtendedLifetime(bar) { typing(kb, input + ". ") }
+            XCTAssertEqual(doc.text, phrase + " ", "no second sentence end after \(phrase)")
+        }
     }
 
     // MARK: Fields
