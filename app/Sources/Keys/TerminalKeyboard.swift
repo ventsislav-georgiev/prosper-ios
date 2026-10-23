@@ -113,11 +113,12 @@ struct KeyTouchTracker {
     }
 
     /// The touch has stayed down `holdDelay`, now over `key`: the nearest key, uncorrected,
-    /// since a hold is deliberate. True if it now types that key's symbol.
-    mutating func hold(_ id: Int, over key: Key) -> Bool {
+    /// since a hold is deliberate. True if it now types that key's symbol in `symbols`.
+    mutating func hold(_ id: Int, over key: Key,
+                       symbols: [String: String] = TerminalKeyboard.holdSymbol) -> Bool {
         guard let i = touches.firstIndex(where: { $0.id == id }), !touches[i].done,
               touches[i].symbol == nil, case .char(let c) = key,
-              let symbol = TerminalKeyboard.holdSymbol[c] else { return false }
+              let symbol = symbols[c] else { return false }
         touches[i].key = key
         touches[i].symbol = symbol
         return true
@@ -173,7 +174,8 @@ struct KeyTouchTracker {
 /// types a real "\n", titled by the field's return key (`returnTitle`); the globe key
 /// shows when iOS asks for one (`showsGlobe`), shift follows the field's
 /// auto-capitalization (`autoCapitalize`) and a second space after a word types ". "
-/// (`doubleSpacePeriod`).
+/// (`doubleSpacePeriod`). The Bulgarian extension's has Bulgarian letters (`Layout`); the
+/// app's is always English.
 final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     enum Key: Hashable {
         case char(String), shift, backspace, space, ret
@@ -254,6 +256,70 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         "z": "_", "x": "$", "c": "\"", "v": "'", "b": ":", "n": ";", "m": "/",
     ]
 
+    /// Apple's "Bulgarian – QWERTY" (phonetic) letters, 11 / 11 / 8, between the same
+    /// digits and bottom row.
+    static let bulgarianRows: [[Key]] = [
+        rows[0],
+        chars("явертъуиопю"),
+        chars("асдфгхйклшщ"),
+        [.shift] + chars("зьцжбнмч") + [.backspace],
+        rows[4],
+    ]
+
+    /// English's holds on the same physical keys, so all 32 ASCII symbols stay where they
+    /// were, except that и holds ѝ, as Apple's does, and its > moves to ю. ш, щ and ч
+    /// have none.
+    static let bulgarianHoldSymbol: [String: String] = [
+        "1": "!", "2": "@", "3": "#", "4": "$", "5": "%", "6": "^", "7": "&", "8": "*", "9": "(", "0": ")",
+        "я": "`", "в": "\\", "е": "~", "р": "|", "т": "[", "ъ": "]", "у": "<", "и": "ѝ", "о": "{", "п": "}",
+        "ю": ">",
+        "а": "@", "с": "#", "д": "&", "ф": "*", "г": "-", "х": "+", "й": "=", "к": "(", "л": ")",
+        "з": "_", "ь": "$", "ц": "\"", "ж": "'", "б": ":", "н": ";", "м": "/",
+    ]
+
+    /// A keyboard's letters and their dictionary, picked once at init: English for the
+    /// app's terminal and the Prosper extension, Bulgarian for the Bulgarian extension
+    /// (`init(extension:)`).
+    ///
+    /// ponytail: two hand-written layouts. A third language means a table per layout
+    /// (rows, holds, checker language) rather than another case in each switch.
+    enum Layout: Equatable {
+        case english, bulgarian
+
+        /// An extension's `PrimaryLanguage` ("bg-BG"); anything else is English.
+        init(primaryLanguage: String?) {
+            self = primaryLanguage?.hasPrefix("bg") == true ? .bulgarian : .english
+        }
+        /// The one a keyboard extension's Info.plist names (`NSExtensionAttributes`).
+        init(extension bundle: Bundle) {
+            let ext = bundle.infoDictionary?["NSExtension"] as? [String: Any]
+            let attributes = ext?["NSExtensionAttributes"] as? [String: Any]
+            self.init(primaryLanguage: attributes?["PrimaryLanguage"] as? String)
+        }
+
+        var rows: [[Key]] { self == .english ? TerminalKeyboard.rows : TerminalKeyboard.bulgarianRows }
+        var holdSymbol: [String: String] {
+            self == .english ? TerminalKeyboard.holdSymbol : TerminalKeyboard.bulgarianHoldSymbol
+        }
+        /// The three letter rows, for `Suggestions.neighbors`.
+        var letterRows: [[Character]] {
+            rows[1...3].map { row in
+                row.compactMap { if case .char(let c) = $0 { return Character(c) } else { return nil } }
+            }
+        }
+        /// The longest letter row: `place` sizes the shift row's keys to match it.
+        var columns: Int { rows[1].count }
+
+        /// The checker language for what this layout types. Nil is no dictionary: no
+        /// completions, guesses or autocorrect, and never English's in its place.
+        var language: String? {
+            switch self {
+            case .english: return TerminalKeyboard.language
+            case .bulgarian: return TerminalKeyboard.bulgarianSpells ? "bg_BG" : nil
+            }
+        }
+    }
+
     weak var target: UIKeyInput?
     /// The responder this view is the `inputView` of: the app's terminal. Its input host
     /// pins a required height of its own, measured once at install, unless this view's
@@ -319,7 +385,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
 
-    init() {
+    let layout: Layout
+
+    init(layout: Layout = .english) {
+        self.layout = layout
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.height), inputViewStyle: .keyboard)
         allowsSelfSizing = true
         isMultipleTouchEnabled = true
@@ -337,7 +406,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         ])
         fitHeight()
         build()
-        _ = Self.checker   // loads the lexicon now, not on the first ambiguous touch
+        _ = Self.dictionaryKnows("te", language: layout.language)   // loads the lexicon now
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
@@ -493,7 +562,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private func build() {
         hidePreview()
         caps.joined().forEach { $0.removeFromSuperview() }
-        var rows = Self.rows
+        var rows = layout.rows
         if showsGlobe { rows[rows.count - 1].insert(.globe, at: 0) }
         caps = rows.map { $0.map(makeCap) }
         refreshLabels()
@@ -523,7 +592,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         } else {
             cap.activate = { [weak self] in self?.press(key) }
         }
-        if case .char(let c) = key, let symbol = Self.holdSymbol[c] {
+        if case .char(let c) = key, let symbol = layout.holdSymbol[c] {
             cap.hint.text = symbol
             cap.hint.font = Style.hintFont
             cap.hint.textColor = Style.hint
@@ -595,7 +664,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         let keys = caps.joined().map { ($0.key, $0.frame) }
         return Self.corrected(nearest(at: point), at: point, keys: keys, prefix: word) { s in
             if let known = knownCache[s] { return known }
-            var known = Self.dictionaryKnows(s) || ShellWords.all.contains { $0.hasPrefix(s) }
+            var known = Self.dictionaryKnows(s, language: layout.language)
+                || ShellWords.all.contains { $0.hasPrefix(s) }
             if !known {   // the screen last, and only if the dictionaries don't settle it
                 if screenCache == nil { screenCache = screenWords?() ?? [] }
                 known = screenCache!.contains { $0.hasPrefix(s) }
@@ -653,7 +723,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                 }
                 cap.fill = shift.uppercase ? Style.key : Style.special
             case .backspace: image = "delete.left"; label = "delete"
-            case .space: title = "space"; label = "space"
+            case .space: title = layout == .english ? "space" : "БГ"; label = "space"
             case .ret:
                 if let returnTitle { title = returnTitle; label = returnTitle } else { image = "return.left"; label = "new line" }
             case .globe: image = "globe"; label = "next keyboard"
@@ -716,7 +786,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     func fireHold() {
         guard let h = holdTouch else { return }
         stopHold()
-        guard tracker.hold(h.id, over: nearest(at: h.at)) else { return }
+        guard tracker.hold(h.id, over: nearest(at: h.at), symbols: layout.holdSymbol) else { return }
         haptics.impactOccurred()
         haptics.prepare()
         refreshPressed()
@@ -759,19 +829,21 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             // The bottom row clears the screen's rounded corners (a no-op in landscape).
             let pull = r == caps.count - 1 ? max(0, Self.bottomRowInset - area.minX) : 0
             let rowArea = area.insetBy(dx: pull, dy: 0)
-            for (cap, f) in zip(row, Self.place(row.map(\.key), width: rowArea.width)) {
+            // Shift's row keeps its letters as wide as the longest row's (Bulgarian's 11).
+            let columns = row.first?.key == .shift ? layout.columns : 10
+            for (cap, f) in zip(row, Self.place(row.map(\.key), width: rowArea.width, columns: columns)) {
                 cap.frame = CGRect(x: rowArea.minX + f.x, y: y, width: f.w, height: m.row)
             }
         }
     }
 
-    /// Horizontal slots for one row, in a row `width` wide. A letter is one unit (ten
-    /// units and nine gaps fill the width). A row of nine or more characters stretches
-    /// them to fill it. A row with space gives space the rest; a row led by a special key
-    /// (shift) pins it and the last key to the edges and centers the letters between;
-    /// anything else is centered.
-    static func place(_ keys: [Key], width: CGFloat) -> [(x: CGFloat, w: CGFloat)] {
-        let g = keyGap, u = (width - 9 * g) / 10
+    /// Horizontal slots for one row, in a row `width` wide. A letter is one unit
+    /// (`columns` units and their gaps fill the width). A row of nine or more characters
+    /// stretches them to fill it. A row with space gives space the rest; a row led by a
+    /// special key (shift) pins it and the last key to the edges and centers the letters
+    /// between; anything else is centered.
+    static func place(_ keys: [Key], width: CGFloat, columns: Int = 10) -> [(x: CGFloat, w: CGFloat)] {
+        let g = keyGap, u = (width - CGFloat(columns - 1) * g) / CGFloat(columns)
         let n = keys.prefix { if case .char = $0 { return true } else { return false } }.count
         if n >= 9, n == keys.count {
             let kw = (width - g * CGFloat(n - 1)) / CGFloat(n)
@@ -841,32 +913,36 @@ extension TerminalKeyboard {
         return candidates.first { known(prefix + letter($0.0)!) }?.0 ?? nearest
     }
 
-    /// Also the extension's suggestions' (`Suggestions`): one checker per process.
+    /// English's checker language. Also the extension's suggestions' (`Suggestions`).
     static let language: String? = {
         let all = UITextChecker.availableLanguages
         return all.contains("en_US") ? "en_US" : all.first { $0.hasPrefix("en") }
     }()
-    /// One checker for every keyboard, warmed by its first lookups here; `init` touches
-    /// it, so the lexicon loads with the keyboard, not on the first ambiguous touch.
+    /// One checker for every keyboard and language (each lookup names its language).
+    /// `init` makes a lookup in its layout's language, so that lexicon loads with the
+    /// keyboard, not on the first ambiguous touch.
     ///
     /// ponytail: that load is ~130 ms on the main thread, once per process, paid when the
     /// session screen builds the keyboard (UITextChecker is main-actor only). Warm it
     /// after the screen settles if that open ever feels slow.
-    static let checker: UITextChecker = {
-        let c = UITextChecker()
-        if let language {
-            let r = NSRange(location: 0, length: 2)
-            _ = c.completions(forPartialWordRange: r, in: "te", language: language)
-            _ = c.rangeOfMisspelledWord(in: "te", range: r, startingAt: 0, wrap: false, language: language)
-        }
-        return c
+    static let checker = UITextChecker()
+
+    /// Whether the checker really spells Bulgarian. Listed isn't enough: the simulator
+    /// lists bg_BG with no lexicon behind it, where every word passes and nothing is
+    /// guessed. So a typo it neither flags nor fixes means none. Settable for tests.
+    static var bulgarianSpells: Bool = {
+        let typo = "къша", range = NSRange(location: 0, length: 4)
+        guard UITextChecker.availableLanguages.contains("bg_BG"),
+              checker.rangeOfMisspelledWord(in: typo, range: range, startingAt: 0, wrap: false,
+                                            language: "bg_BG").location != NSNotFound else { return false }
+        return !(checker.guesses(forWordRange: range, in: typo, language: "bg_BG") ?? []).isEmpty
     }()
 
-    /// `s` is an English word or the start of one.
+    /// `s` is a word in `language` (English by default) or the start of one.
     ///
-    /// ponytail: English only, and the dictionary sees a shell token as a misspelling;
-    /// `ShellWords` and the screen cover those. Another language means a second checker.
-    static func dictionaryKnows(_ s: String) -> Bool {
+    /// ponytail: the dictionary sees a shell token as a misspelling; `ShellWords` and the
+    /// screen cover those.
+    static func dictionaryKnows(_ s: String, language: String? = language) -> Bool {
         guard let language else { return false }
         let range = NSRange(location: 0, length: (s as NSString).length)
         if !(checker.completions(forPartialWordRange: range, in: s, language: language) ?? []).isEmpty { return true }

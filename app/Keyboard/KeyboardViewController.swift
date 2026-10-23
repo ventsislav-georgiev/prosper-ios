@@ -10,9 +10,13 @@ import UIKit
 /// Launched by the system under a tight memory cap: two views, no network, the pasteboard
 /// only with Full Access (the bar's Paste), nothing held beyond the keyboard, the shared
 /// spell checker and what it learned.
+///
+/// Two extensions run this controller, both "Prosper", English and Bulgarian: each takes
+/// its letters and dictionary from its own Info.plist's `PrimaryLanguage`.
 final class KeyboardViewController: UIInputViewController {
-    private let keyboard = TerminalKeyboard()
-    private let bar = SuggestionBar()
+    private static let layout = TerminalKeyboard.Layout(extension: .main)
+    private let keyboard = TerminalKeyboard(layout: KeyboardViewController.layout)
+    private let bar = SuggestionBar(suggestions: Suggestions(layout: KeyboardViewController.layout))
 
     override func viewDidLoad() {
         super.viewDidLoad()

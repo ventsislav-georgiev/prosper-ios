@@ -46,6 +46,10 @@ targets:
       - target: ProsperKeyboard
         embed: true
         platformFilter: iOS
+      # The same keyboard with Bulgarian letters, a second entry in Settings › Keyboards.
+      - target: ProsperKeyboardBulgarian
+        embed: true
+        platformFilter: iOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios
@@ -119,13 +123,50 @@ targets:
             IsASCIICapable: true
             PrefersRightToLeft: false
             PrimaryLanguage: en-US
-            # Only so the user can opt in to key clicks and haptics, which iOS withholds
-            # from a keyboard without full access. The keyboard never touches the network
-            # or the pasteboard.
+            # So the user can opt in to key clicks, haptics and the bar's Paste, which iOS
+            # withholds from a keyboard without full access. The keyboard never touches the
+            # network, and the pasteboard only through Paste.
             RequestsOpenAccess: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.keyboard
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        CODE_SIGNING_ALLOWED: NO
+  # ProsperKeyboard again, with Apple's "Bulgarian – QWERTY" letters: its own extension so
+  # Settings lists it beside the English one and the globe cycles them. The controller
+  # picks the layout from PrimaryLanguage (TerminalKeyboard.Layout).
+  ProsperKeyboardBulgarian:
+    type: app-extension
+    platform: iOS
+    # The controller alone: Keyboard/ also holds the English Info.plist, which would land
+    # here as a resource.
+    sources:
+      - path: Keyboard/KeyboardViewController.swift
+      - path: Sources/Keys
+    info:
+      path: KeyboardBulgarian/Info.plist
+      properties:
+        # As the English one: Settings and the globe's list show the name with the
+        # language under it ("Prosper / Bulgarian"); another name gets "— Prosper" added.
+        CFBundleDisplayName: Prosper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
+          NSExtensionAttributes:
+            # No Latin letters, like Apple's Bulgarian: an ASCII-only field (email, URL)
+            # gets the next ASCII-capable keyboard instead.
+            IsASCIICapable: false
+            PrefersRightToLeft: false
+            PrimaryLanguage: bg-BG
+            # As in ProsperKeyboard.
+            RequestsOpenAccess: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.keyboard-bg
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES

@@ -23,8 +23,9 @@ import UniformTypeIdentifiers
 ///   next-word counts. Neither happens where autocorrect is off (`autocorrects`).
 /// - Paste: at a word start, a fresh text clip replaces the slots (`offersPaste`).
 ///
-/// ponytail: English only, the one `TerminalKeyboard.checker`; another language means
-/// a checker per `PrimaryLanguage`.
+/// The dictionary and the neighboring keys are the keyboard's `layout`'s: English, or
+/// Bulgarian in the Bulgarian extension, where a checker without Bulgarian leaves only the
+/// typed word, learned words, names and text replacements.
 @MainActor
 final class Suggestions {
     struct Slot: Equatable {
@@ -71,7 +72,15 @@ final class Suggestions {
     /// with Full Access. The controller's, or a named one in tests.
     var pasteboard: () -> UIPasteboard? = { nil }
 
-    init(memory: TypingMemory = TypingMemory()) { self.memory = memory }
+    let layout: TerminalKeyboard.Layout
+    /// The layout's checker language, read once (`TerminalKeyboard.Layout.language`).
+    let language: String?
+
+    init(memory: TypingMemory = TypingMemory(), layout: TerminalKeyboard.Layout = .english) {
+        self.memory = memory
+        self.layout = layout
+        language = layout.language
+    }
 
     /// The supplementary lexicon (`UILexicon.entries`). Both sides equal: a name from
     /// Contacts. Different: a text replacement, shortcut → phrase. Entries that aren't one
@@ -113,9 +122,9 @@ final class Suggestions {
         // Completions while the word can still become one, then the dictionary's guesses.
         // A prefix with a pending correction ("hel") shows the correction highlighted all
         // the same: the highlight is always what space will do.
-        let completions = personal(prefix: lower) + Self.completions(lower)
+        let completions = personal(prefix: lower) + Self.completions(lower, language: language)
         var seen: Set<String> = [lower, fix?.lowercased() ?? ""]
-        let others = (completions + (completions.count < 3 ? Self.guesses(lower) : []))
+        let others = (completions + (completions.count < 3 ? Self.guesses(lower, language: language) : []))
             .map { shift == .locked ? $0.uppercased() : Self.matchCase($0, to: word) }
             .filter { seen.insert($0.lowercased()).inserted }
             .map { Slot(word: $0) }
@@ -267,8 +276,8 @@ final class Suggestions {
             return "I" + word.dropFirst()
         }
         if let phrase = replacements[lower] { return phrase }
-        guard !knows(word), let guess = Self.guesses(lower).first,
-              Self.confident(word, guess: guess) else { return nil }
+        guard !knows(word), let guess = Self.guesses(lower, language: language).first,
+              Self.isConfident(word, guess: guess, rows: layout.letterRows) else { return nil }
         return Self.matchCase(guess, to: word)
     }
 
@@ -282,20 +291,25 @@ final class Suggestions {
     /// or frequency weighting; the checker's guess order is the only ranking. Weight every
     /// edit by adjacency if corrections feel random.
     static func confident(_ word: String, guess: String) -> Bool {
+        isConfident(word, guess: guess, rows: TerminalKeyboard.Layout.english.letterRows)
+    }
+
+    /// `confident` on a layout's `letterRows`. Named apart: an overload would make the
+    /// unapplied `Suggestions.confident` ambiguous.
+    static func isConfident(_ word: String, guess: String, rows: [[Character]]) -> Bool {
         guard isWord(word), word.filter(\.isLetter).count >= 2,
               !zip(word, word.dropFirst()).contains(where: { $0.isLowercase && $1.isUppercase }),
               let a = word.lowercased().first, let b = guess.lowercased().first,
-              a == b || (word.count == guess.count && neighbors(a, b)) else { return false }
+              a == b || (word.count == guess.count && neighbors(a, b, rows: rows)) else { return false }
         return editDistance(word.lowercased(), guess.lowercased()) <= (word.count <= 3 ? 1 : 2)
     }
 
-    private static let letterRows = ["qwertyuiop", "asdfghjkl", "zxcvbnm"].map(Array.init)
-
     /// Two letter keys at most one row and one place in their row apart (rows unstaggered).
-    static func neighbors(_ a: Character, _ b: Character) -> Bool {
+    static func neighbors(_ a: Character, _ b: Character,
+                          rows: [[Character]] = TerminalKeyboard.Layout.english.letterRows) -> Bool {
         func spot(_ c: Character) -> (row: Int, col: Int)? {
-            guard let r = letterRows.firstIndex(where: { $0.contains(c) }) else { return nil }
-            return (r, letterRows[r].firstIndex(of: c)!)
+            guard let r = rows.firstIndex(where: { $0.contains(c) }) else { return nil }
+            return (r, rows[r].firstIndex(of: c)!)
         }
         guard let p = spot(a), let q = spot(b) else { return false }
         return abs(p.row - q.row) <= 1 && abs(p.col - q.col) <= 1
@@ -306,7 +320,7 @@ final class Suggestions {
     func knows(_ word: String) -> Bool {
         let lower = word.lowercased()
         return memory.known.contains(lower) || names[lower] != nil || ShellWords.all.contains(lower)
-            || Self.spelled(lower) || Self.spelled(word)
+            || Self.spelled(lower, language: language) || Self.spelled(word, language: language)
     }
 
     /// Edits from `a` to `b`: insert, delete, substitute, and swapping two neighbors
@@ -398,9 +412,9 @@ final class Suggestions {
 
     // MARK: - Dictionary
 
-    /// The dictionary has `s` as a word.
-    static func spelled(_ s: String) -> Bool {
-        guard let language = TerminalKeyboard.language else { return false }
+    /// The dictionary in `language` (English by default) has `s` as a word.
+    static func spelled(_ s: String, language: String? = TerminalKeyboard.language) -> Bool {
+        guard let language else { return false }
         let range = NSRange(location: 0, length: (s as NSString).length)
         return TerminalKeyboard.checker.rangeOfMisspelledWord(in: s, range: range, startingAt: 0, wrap: false,
                                                               language: language).location == NSNotFound
@@ -408,16 +422,16 @@ final class Suggestions {
 
     /// Words that continue `prefix`, most likely first. Shell words never: they're known
     /// (never corrected), but prose doesn't want them offered.
-    static func completions(_ prefix: String) -> [String] {
-        guard let language = TerminalKeyboard.language else { return [] }
+    static func completions(_ prefix: String, language: String? = TerminalKeyboard.language) -> [String] {
+        guard let language else { return [] }
         let range = NSRange(location: 0, length: (prefix as NSString).length)
         return (TerminalKeyboard.checker.completions(forPartialWordRange: range, in: prefix, language: language) ?? [])
             .filter(isWord)
     }
 
     /// The dictionary's corrections for a misspelled `word`, best first: single words only.
-    static func guesses(_ word: String) -> [String] {
-        guard let language = TerminalKeyboard.language else { return [] }
+    static func guesses(_ word: String, language: String? = TerminalKeyboard.language) -> [String] {
+        guard let language else { return [] }
         let range = NSRange(location: 0, length: (word as NSString).length)
         return (TerminalKeyboard.checker.guesses(forWordRange: range, in: word, language: language) ?? [])
             .filter { isWord($0) && $0.lowercased() != word.lowercased() }
