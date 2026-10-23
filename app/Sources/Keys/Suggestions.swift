@@ -40,7 +40,7 @@ final class Suggestions {
     enum State: Equatable {
         /// Three slots, left to right; nil is blank.
         case slots([Slot?])
-        /// A login field: one key button to Apple's keyboard, for AutoFill and SMS codes.
+        /// A login field: one key button toward Apple's keyboard, for AutoFill and SMS codes.
         case autofill
         /// A word start with a fresh text clip: one Paste button.
         case paste
@@ -539,9 +539,10 @@ final class TypingMemory {
 }
 
 /// The bar above the extension's keys: three slots split by hairlines, like iOS's
-/// QuickType, or in a login field one key button to Apple's keyboard (AutoFill, SMS
-/// codes), or at a word start with a fresh clip one Paste button. `attach` also wires
-/// `Suggestions` into the keyboard. Extension-only: the terminal keeps its shortcut bar.
+/// QuickType, or in a login field one key button toward Apple's keyboard (AutoFill, SMS
+/// codes: a tap hops past the sibling Prosper keyboard, a hold lists the keyboards), or
+/// at a word start with a fresh clip one Paste button. `attach` also wires `Suggestions`
+/// into the keyboard. Extension-only: the terminal keeps its shortcut bar.
 ///
 /// 44 pt, and never under 42: a top-row press bubble rises 48 pt above a key whose top
 /// is 6 pt below the keyboard's, and a custom keyboard can't draw above its own view, so
@@ -554,8 +555,14 @@ final class SuggestionBar: UIView {
     static let height: CGFloat = 44
     static func height(compact: Bool) -> CGFloat { compact ? 32 : height }
     let suggestions: Suggestions
-    /// The key button's action: the controller's `advanceToNextInputMode`.
-    var nextKeyboard: (() -> Void)?
+    /// The key button's every touch: the controller's `handleInputModeList`, so a tap
+    /// advances and a hold lists the keyboards.
+    var inputModeList: ((UIView, UIEvent) -> Void)?
+    /// When the key button went down. Its lift marks the hop (`KeyboardSettings.markHop`)
+    /// only after a tap: a hold showed the list, and its pick must not hop.
+    var pressedAt: Date?
+    /// A longer press is a hold.
+    static let tapLimit: TimeInterval = 0.5
     private(set) var state: Suggestions.State = .slots([nil, nil, nil])
     private weak var keyboard: TerminalKeyboard?
     private(set) var slotButtons: [UIButton] = []
@@ -604,7 +611,11 @@ final class SuggestionBar: UIView {
         config.imagePadding = 6
         config.baseForegroundColor = .white
         autofillButton.configuration = config
-        autofillButton.addAction(UIAction { [weak self] _ in self?.nextKeyboard?() }, for: .touchUpInside)
+        let key = autofillButton
+        key.addAction(UIAction { [weak self] _ in self?.pressedAt = Date() }, for: .touchDown)
+        // Marked before the list's own touch-up does the advance.
+        key.addAction(UIAction { [weak self] _ in self?.autofillLift() }, for: .touchUpInside)
+        key.addTarget(self, action: #selector(modeListTouch(_:event:)), for: .allTouchEvents)
         addSubview(autofillButton)
         pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.plainText.identifier])
         pasteControl.target = self
@@ -612,6 +623,16 @@ final class SuggestionBar: UIView {
         show(state)
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    private func autofillLift() {
+        defer { pressedAt = nil }
+        guard let down = pressedAt, Date().timeIntervalSince(down) < Self.tapLimit else { return }
+        KeyboardSettings.markHop(from: Bundle.main.bundleIdentifier ?? "")
+    }
+
+    @objc private func modeListTouch(_ sender: UIView, event: UIEvent?) {
+        if let event { inputModeList?(sender, event) }
+    }
 
     /// Suggest for `keyboard`'s target: its keys go through `Suggestions.willPress` and
     /// refresh the bar, as its trackpad's caret moves do (`caretMoved`); learned words and

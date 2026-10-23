@@ -650,10 +650,6 @@ final class SuggestionsTests: XCTestCase {
             XCTAssertEqual(bar.state, .autofill, type.rawValue)
             XCTAssertFalse(bar.autofillButton.isHidden)
             XCTAssertTrue(bar.slotButtons.allSatisfy(\.isHidden))
-            var switched = 0
-            bar.nextKeyboard = { switched += 1 }
-            bar.autofillButton.sendActions(for: .touchUpInside)
-            XCTAssertEqual(switched, 1, "the key button goes to the next keyboard")
             typing(kb, "teh good ")
             XCTAssertEqual(doc.text, "teh good ", "no autocorrect")
             XCTAssertTrue(bar.suggestions.memory.pairs.isEmpty, "nothing learned")
@@ -663,6 +659,46 @@ final class SuggestionsTests: XCTestCase {
         let (_, plain, _) = rig { $0.textContentType = .name }
         XCTAssertTrue(plain.autofillButton.isHidden)
         XCTAssertFalse(plain.slotButtons[1].isHidden)
+    }
+
+    /// The key button's touches all go to the input-mode list, which advances on a tap and
+    /// lists the keyboards on a hold. A tap's lift marks the hop; a hold's doesn't.
+    func testTheKeyButtonMarksATapAndHandsEveryTouchToTheList() throws {
+        let saved = KeyboardSettings.store
+        defer { KeyboardSettings.store = saved }
+        let suite = "Hop.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        KeyboardSettings.store = { defaults }
+        let (_, bar, _) = rig { $0.textContentType = .username }
+        let key = bar.autofillButton
+        var touches = 0
+        bar.inputModeList = { view, _ in XCTAssertTrue(view === key); touches += 1 }
+        // As UIKit sends them: with the touches' event, which sendActions(for:) leaves nil.
+        func send(_ e: UIControl.Event) {
+            key.sendActions(for: e)
+            for name in key.actions(forTarget: bar, forControlEvent: e) ?? [] {
+                key.sendAction(Selector(name), to: bar, for: UIEvent())
+            }
+        }
+        send(.touchDown)
+        send(.touchUpInside)
+        XCTAssertEqual(touches, 2, "down and up")
+        let mark = try XCTUnwrap(KeyboardSettings.takeHop(), "a tap marks the hop")
+        XCTAssertEqual(mark.from, Bundle.main.bundleIdentifier)
+        XCTAssertLessThan(Date().timeIntervalSince(mark.at), 1)
+        for e in [UIControl.Event.touchDragInside, .touchDragExit, .touchUpOutside, .touchCancel] {
+            send(e)
+        }
+        XCTAssertEqual(touches, 6, "every touch")
+        XCTAssertNil(KeyboardSettings.takeHop(), "only a lift inside marks")
+
+        send(.touchDown)
+        bar.pressedAt = Date() - 1.5   // held: the list showed, and the lift picks from it
+        send(.touchUpInside)
+        XCTAssertNil(KeyboardSettings.takeHop(), "a hold's pick doesn't hop")
+        send(.touchUpInside)
+        XCTAssertNil(KeyboardSettings.takeHop(), "a lift with no press doesn't either")
     }
 
     func testNoAutocorrectOrLearningWhereTheFieldTurnsItOff() {

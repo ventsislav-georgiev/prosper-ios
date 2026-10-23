@@ -356,6 +356,45 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(KeyboardSettings.current(), KeyboardSettings(), "no suite")
     }
 
+    // MARK: AutoFill hop
+
+    /// The sibling hops on a fresh mark from the other Prosper keyboard, in a login field.
+    func testHopsOnlyOnAFreshMarkFromTheSibling() {
+        let en = "eu.illegible.prosperios.keyboard", bg = "eu.illegible.prosperios.keyboard-bg"
+        let now = Date()
+        func hops(_ from: String?, ago: TimeInterval = 0.06, login: Bool = true) -> Bool {
+            KeyboardSettings.hops(from.map { ($0, now - ago) }, own: bg, now: now, login: login)
+        }
+        XCTAssertTrue(hops(en), "the sibling's fresh tap")
+        XCTAssertTrue(hops(en, ago: 0.45))
+        XCTAssertFalse(hops(bg), "its own mark")
+        XCTAssertFalse(hops(en, ago: 0.5), "stale")
+        XCTAssertFalse(hops(en, ago: 3))
+        XCTAssertFalse(hops(en, ago: -1), "from the future")
+        XCTAssertFalse(hops(en, login: false), "not a login field")
+        XCTAssertFalse(hops(nil), "no mark")
+    }
+
+    /// The mark reads back once: reading removes it, so a hop can't loop.
+    func testHopMarkIsTakenOnce() throws {
+        let saved = KeyboardSettings.store
+        defer { KeyboardSettings.store = saved }
+        let suite = "KeyboardSettings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        KeyboardSettings.store = { defaults }
+        XCTAssertNil(KeyboardSettings.takeHop(), "nothing marked")
+        let at = Date(timeIntervalSince1970: 1_000)
+        KeyboardSettings.markHop(from: "a", at: at)
+        let mark = try XCTUnwrap(KeyboardSettings.takeHop())
+        XCTAssertEqual(mark.from, "a")
+        XCTAssertEqual(mark.at, at)
+        XCTAssertNil(KeyboardSettings.takeHop(), "cleared on read")
+        KeyboardSettings.store = { nil }
+        KeyboardSettings.markHop(from: "a")
+        XCTAssertNil(KeyboardSettings.takeHop(), "no suite: nothing")
+    }
+
     // MARK: Double-space period
 
     func testPeriodReplacesSpace() {

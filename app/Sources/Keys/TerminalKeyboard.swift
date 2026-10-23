@@ -83,6 +83,41 @@ struct KeyboardSettings: Equatable {
     static func current(fullAccess: Bool = true) -> KeyboardSettings {
         KeyboardSettings(fullAccess ? store() : nil)
     }
+
+    // MARK: AutoFill hop
+
+    /// The globe's advance toggles between the two most recent keyboards, so with both
+    /// Prosper keyboards there it never reaches Apple's. AutoFill marks the tap here; the
+    /// sibling, appearing, advances once more (`hops`), to the next keyboard in Settings
+    /// order. Not gated on Full Access: without it the group isn't shared and the mark
+    /// expires unread.
+    static let hopKey = "keyboard.autofillHop"
+    /// How long a mark stays fresh: the sibling appears 50–60 ms after the tap.
+    static let hopWindow: TimeInterval = 0.5
+
+    static func markHop(from bundle: String, at date: Date = Date()) {
+        store()?.set(["from": bundle, "at": date.timeIntervalSince1970], forKey: hopKey)
+    }
+
+    /// The mark, removed as it's read, so a hop never repeats.
+    static func takeHop() -> (from: String, at: Date)? {
+        guard let defaults = store(), let mark = defaults.dictionary(forKey: hopKey) else {
+            return nil
+        }
+        defaults.removeObject(forKey: hopKey)
+        guard let from = mark["from"] as? String, let at = mark["at"] as? TimeInterval else {
+            return nil
+        }
+        return (from, Date(timeIntervalSince1970: at))
+    }
+
+    /// Hop on: a fresh mark from the other Prosper keyboard, in a login field.
+    static func hops(_ mark: (from: String, at: Date)?, own: String, now: Date,
+                     login: Bool) -> Bool {
+        guard let mark, login, mark.from != own else { return false }
+        let age = now.timeIntervalSince(mark.at)
+        return age >= 0 && age < hopWindow
+    }
 }
 
 /// Every finger on the compact keyboard, in press order, and what each one types. Pure,

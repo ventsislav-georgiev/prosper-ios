@@ -25,7 +25,7 @@ final class KeyboardViewController: UIInputViewController {
         // iPhones), so the app's home-gesture pad would only add an empty band.
         keyboard.bottomInset = 6
         keyboard.doubleSpacePeriod = true
-        bar.nextKeyboard = { [weak self] in self?.advanceToNextInputMode() }
+        bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
         bar.attach(keyboard)
         bar.host(keyboard, in: view)
@@ -44,6 +44,18 @@ final class KeyboardViewController: UIInputViewController {
         keyboard.settings = settings
         bar.suggestions.settings = settings
         sync()
+    }
+
+    /// AutoFill on the sibling Prosper keyboard just advanced here: advance once more, past
+    /// it, toward Apple's keyboard (`KeyboardSettings.hops`).
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        let mark = KeyboardSettings.takeHop()
+        let login = Suggestions.isLoginField(textDocumentProxy)
+        let own = Bundle.main.bundleIdentifier ?? ""
+        if KeyboardSettings.hops(mark, own: own, now: Date(), login: login) {
+            advanceToNextInputMode()
+        }
     }
 
     /// The host moved to another field, or changed its text itself.
