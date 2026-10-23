@@ -306,13 +306,14 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(doc.text, "!)", "the held symbols typed")
     }
 
-    /// The same in landscape: a 36 pt bar, the keys' 174 pt and its height constraint
+    /// The same in landscape: a 32 pt bar, the keys' 149 pt and its height constraint
     /// following, the digits' shorter bubbles still inside, and the bar back to 44 pt.
     func testTopRowBubblesFitInTheExtensionsViewInLandscape() throws {
         guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
         let (kb, bar, _) = rig()
         kb.bottomInset = 6
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 874, height: 36 + 174 + 6))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 874, height: SuggestionBar.height(compact: true)
+                                            + TerminalKeyboard.keysHeight(compact: true) + 6))
         window.traitOverrides.verticalSizeClass = .compact
         let view = UIView(frame: window.bounds)
         window.addSubview(view)
@@ -321,9 +322,9 @@ final class SuggestionsTests: XCTestCase {
         defer { window.isHidden = true }
         window.layoutIfNeeded()
         let height = try XCTUnwrap(kb.constraints.first { $0.firstItem === kb && $0.firstAttribute == .height })
-        XCTAssertEqual(height.constant, 174 + 6)
-        XCTAssertEqual(bar.frame, CGRect(x: 0, y: 0, width: 874, height: 36))
-        XCTAssertEqual(kb.frame.minY, 36)
+        XCTAssertEqual(height.constant, TerminalKeyboard.keysHeight(compact: true) + 6)
+        XCTAssertEqual(bar.frame, CGRect(x: 0, y: 0, width: 874, height: 32))
+        XCTAssertEqual(kb.frame.minY, SuggestionBar.height(compact: true))
         for label in ["1", "0"] {
             let cap = try XCTUnwrap(kb.subviews.compactMap { $0 as? UIButton }.first { $0.accessibilityLabel == label })
             let p = CGPoint(x: cap.frame.midX, y: cap.frame.midY)

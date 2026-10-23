@@ -427,13 +427,13 @@ final class TypingMemory {
 /// 44 pt, and never under 42: a top-row press bubble rises 48 pt above a key whose top
 /// is 6 pt below the keyboard's, and a custom keyboard can't draw above its own view, so
 /// the bar is the bubbles' headroom too. In a compact vertical size class (landscape)
-/// 36 pt, over a 4 pt top pad and a 40 pt rise (`TerminalKeyboard.metrics(compact:)`).
+/// 32 pt, over a 3 pt top pad and a 35 pt rise (`TerminalKeyboard.metrics(compact:)`).
 /// A plain view on the extension's dark backdrop (`host`), not a UIInputView: one of
 /// those slips its own `_UIInputViewContent` halves over its subviews, and they took the
 /// right slot's touches.
 final class SuggestionBar: UIView {
     static let height: CGFloat = 44
-    static func height(compact: Bool) -> CGFloat { compact ? 36 : height }
+    static func height(compact: Bool) -> CGFloat { compact ? 32 : height }
     let suggestions: Suggestions
     /// The key button's action: the controller's `advanceToNextInputMode`.
     var nextKeyboard: (() -> Void)?

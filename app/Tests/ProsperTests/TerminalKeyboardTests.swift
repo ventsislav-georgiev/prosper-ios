@@ -114,9 +114,9 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(caps.map(\.frame.maxY).max(), TerminalKeyboard.keysHeight)
     }
 
-    /// Landscape (a compact vertical size class): 174 pt of keys in five 30 pt rows that
+    /// Landscape (a compact vertical size class): 149 pt of keys in five 26 pt rows that
     /// don't overlap, the height following the traits both ways, hints still top-right,
-    /// touches still on the key drawn there, and a top-row bubble rising 40 pt.
+    /// touches still on the key drawn there, and a top-row bubble rising 35 pt.
     func testLandscapeRowsAreShorterAndFollowTheTraits() throws {
         guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 874, height: 402))
@@ -128,15 +128,15 @@ final class TerminalKeyboardTests: XCTestCase {
         defer { window.isHidden = true }
         window.layoutIfNeeded()
         let height = try XCTUnwrap(kb.constraints.first { $0.firstItem === kb && $0.firstAttribute == .height })
-        XCTAssertEqual(TerminalKeyboard.keysHeight(compact: true), 174)
-        XCTAssertEqual(height.constant, 174 + TerminalKeyboard.bottomPadding)
+        XCTAssertEqual(TerminalKeyboard.keysHeight(compact: true), 149)
+        XCTAssertEqual(height.constant, TerminalKeyboard.keysHeight(compact: true) + TerminalKeyboard.bottomPadding)
         var caps: [String: UIButton] = [:]
         for case let b as UIButton in kb.subviews { caps[b.accessibilityLabel ?? ""] = b }
         let tops = Set(caps.values.map(\.frame.minY)).sorted()
         XCTAssertEqual(tops.count, 5)
-        XCTAssertTrue(caps.values.allSatisfy { $0.frame.height == 30 })
-        for (a, b) in zip(tops, tops.dropFirst()) { XCTAssertLessThan(a + 30, b, "rows overlap") }
-        XCTAssertEqual(caps.values.map(\.frame.maxY).max(), 174)
+        XCTAssertTrue(caps.values.allSatisfy { $0.frame.height == 26 })
+        for (a, b) in zip(tops, tops.dropFirst()) { XCTAssertLessThan(a + 26, b, "rows overlap") }
+        XCTAssertEqual(caps.values.map(\.frame.maxY).max(), TerminalKeyboard.keysHeight(compact: true))
         let g = try XCTUnwrap(caps["g"])
         g.layoutIfNeeded()
         let hint = try XCTUnwrap(g.subviews.compactMap { $0 as? UILabel }.first { $0.text == "-" })
@@ -150,7 +150,7 @@ final class TerminalKeyboardTests: XCTestCase {
         }
         let one = try XCTUnwrap(caps["1"]).frame
         kb.track(.began, id: 1, at: CGPoint(x: one.midX, y: one.midY))
-        XCTAssertEqual(try XCTUnwrap(kb.previewFrame).minY, one.minY - 40)
+        XCTAssertEqual(try XCTUnwrap(kb.previewFrame).minY, one.minY - 35)
         kb.track(.cancelled, id: 1, at: CGPoint(x: one.midX, y: one.midY))
 
         window.traitOverrides.verticalSizeClass = .regular

@@ -189,11 +189,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static let keysHeight = keysHeight(compact: false)
     /// Rows, gaps and the top pad: the above, or in a compact vertical size class (iPhone
     /// landscape) shorter ones. The portrait keys on a 402 pt tall landscape screen took
-    /// 63% of it and hid the focused field; these come to 174 pt, about the system
-    /// keyboard's share. The top pad still leaves the extension's 36 pt bar + 4 ≥ the
-    /// bubble's compact rise (`KeyPreview.rise(compact:)`).
+    /// 63% of it and hid the focused field; these come to 149 pt, so the extension
+    /// (32 pt bar + 149 + 6) is about the Apple keyboard's landscape height (QA measured
+    /// the old 36 + 174 + 6 ~30 pt taller). The bar + the 3 pt top pad is the bubble's
+    /// compact rise (`KeyPreview.rise(compact:)`).
     static func metrics(compact: Bool) -> (row: CGFloat, gap: CGFloat, top: CGFloat) {
-        compact ? (30, 5, 4) : (rowHeight, rowGap, topPadding)
+        compact ? (26, 4, 3) : (rowHeight, rowGap, topPadding)
     }
     static func keysHeight(compact: Bool) -> CGFloat {
         let m = metrics(compact: compact)
@@ -881,8 +882,8 @@ extension TerminalKeyboard {
     fileprivate final class KeyPreview: UIView {
         static let extra: CGFloat = 10    // bubble overhang past each side of the key
         static let rise: CGFloat = 48     // bubble height above the key's top
-        /// Landscape's shorter bar and top pad leave the extension 40 pt over the digits.
-        static func rise(compact: Bool) -> CGFloat { compact ? 40 : rise }
+        /// Landscape's shorter bar and top pad leave the extension 35 pt over the digits.
+        static func rise(compact: Bool) -> CGFloat { compact ? 35 : rise }
         let label = UILabel()
         private let shape = CAShapeLayer()
 
