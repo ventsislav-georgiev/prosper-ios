@@ -1,4 +1,5 @@
 import UIKit
+import UniformTypeIdentifiers
 
 /// What the Prosper keyboard suggests in other apps, and the autocorrect, undo and
 /// learning behind it: a stand-in for iOS's QuickType bar, which a custom keyboard
@@ -163,14 +164,13 @@ final class Suggestions {
         return pb.changeCount != memory.retiredClip
     }
 
-    /// The Paste button: the clip goes in as is, no space after (it may end mid-word or in
-    /// a newline), and won't be offered again. The only read of its contents.
-    func paste(in doc: UITextDocumentProxy) {
+    /// The Paste control delivered `clip`: it goes in as is, no space after (it may end
+    /// mid-word or in a newline), and won't be offered again. The keyboard never reads it.
+    func paste(_ clip: String, in doc: UITextDocumentProxy) {
         undo = nil
         typed = ""
-        guard let pb = pasteboard() else { return }
-        if let s = pb.string { doc.insertText(s) }
-        memory.retiredClip = pb.changeCount
+        doc.insertText(clip)
+        memory.retiredClip = pasteboard()?.changeCount
     }
 
     // MARK: - Typing
@@ -533,7 +533,16 @@ final class SuggestionBar: UIView {
     private var heightConstraint: NSLayoutConstraint?
     private var hairlines: [UIView] = []
     let autofillButton = UIButton(configuration: .plain())
-    let pasteButton = UIButton(configuration: .plain())
+    /// The system's secure Paste (it draws its own icon and "Paste"): a tap hands the clip
+    /// to `paste(itemProviders:)` with no Allow Paste prompt, where reading
+    /// `UIPasteboard.string` raises one on every tap.
+    let pasteControl: UIPasteControl = {
+        let config = UIPasteControl.Configuration()
+        config.displayMode = .iconAndLabel
+        config.baseForegroundColor = .white
+        config.baseBackgroundColor = TerminalKeyboard.Style.backdrop   // .clear draws black
+        return UIPasteControl(configuration: config)
+    }()
 
     /// Nil: a fresh one on the extension's own defaults. (Not a default argument: those
     /// are evaluated off the main actor.)
@@ -565,11 +574,9 @@ final class SuggestionBar: UIView {
         autofillButton.configuration = config
         autofillButton.addAction(UIAction { [weak self] _ in self?.nextKeyboard?() }, for: .touchUpInside)
         addSubview(autofillButton)
-        config.image = UIImage(systemName: "doc.on.clipboard")
-        config.title = "Paste"
-        pasteButton.configuration = config
-        pasteButton.addAction(UIAction { [weak self] _ in self?.paste() }, for: .touchUpInside)
-        addSubview(pasteButton)
+        pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.plainText.identifier])
+        pasteControl.target = self
+        addSubview(pasteControl)
         show(state)
     }
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -634,10 +641,20 @@ final class SuggestionBar: UIView {
         refresh()
     }
 
-    private func paste() {
+    /// The Paste control's tap (`pasteControl`, whose target is the bar). The clip loads
+    /// off the main thread; it goes in on it, while Paste still shows.
+    override func paste(itemProviders: [NSItemProvider]) {
+        guard let provider = itemProviders.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return }
+        _ = provider.loadObject(ofClass: NSString.self) { [weak self] clip, _ in
+            guard let clip = clip as? String else { return }
+            DispatchQueue.main.async { self?.insert(clip) }
+        }
+    }
+
+    private func insert(_ clip: String) {
         guard state == .paste, let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         UIDevice.current.playInputClick()
-        suggestions.paste(in: doc)
+        suggestions.paste(clip, in: doc)
         keyboard.resetWord()
         keyboard.autoCapitalize()
         refresh()
@@ -649,7 +666,7 @@ final class SuggestionBar: UIView {
         if case .slots(let s) = new { slots = s } else { slots = [nil, nil, nil] }
         let single = new == .autofill || new == .paste   // one full-width button
         autofillButton.isHidden = new != .autofill
-        pasteButton.isHidden = new != .paste
+        pasteControl.isHidden = new != .paste
         for (b, slot) in zip(slotButtons, slots) {
             b.isHidden = single
             b.isEnabled = slot != nil
@@ -676,6 +693,6 @@ final class SuggestionBar: UIView {
             line.frame = CGRect(x: area.minX + CGFloat(i + 1) * w - px / 2, y: area.midY - 12, width: px, height: 24)
         }
         autofillButton.frame = area
-        pasteButton.frame = area
+        pasteControl.frame = area
     }
 }

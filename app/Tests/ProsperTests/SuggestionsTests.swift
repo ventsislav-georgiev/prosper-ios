@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import UniformTypeIdentifiers
 @testable import Prosper
 
 /// The extension's suggestions bar, autocorrect, undo and learning (`Suggestions`,
@@ -280,7 +281,7 @@ final class SuggestionsTests: XCTestCase {
         let pb = try clipboard()
         pb.string = "hello wrld"
         var (kb, bar, doc) = pasteRig(pb)
-        bar.pasteButton.sendActions(for: .touchUpInside)
+        paste(bar, doc)
         XCTAssertFalse(slots(bar).contains { $0?.highlighted == true }, "a pasted tail")
         typing(kb, " ")
         XCTAssertEqual(doc.text, "hello wrld ", "a paste")
@@ -295,13 +296,13 @@ final class SuggestionsTests: XCTestCase {
 
         pb.string = "foo "
         (kb, bar, doc) = pasteRig(pb)
-        bar.pasteButton.sendActions(for: .touchUpInside)
+        paste(bar, doc)
         typing(kb, "teh ")
         XCTAssertEqual(doc.text, "foo the ", "typed after a paste")
 
         pb.string = "wr"
         (kb, bar, doc) = pasteRig(pb)
-        bar.pasteButton.sendActions(for: .touchUpInside)
+        paste(bar, doc)
         typing(kb, "ld")
         XCTAssertFalse(slots(bar).contains { $0?.highlighted == true }, "half pasted")
         typing(kb, " ")
@@ -595,10 +596,21 @@ final class SuggestionsTests: XCTestCase {
         return pb
     }
 
+    /// A tap on the Paste control, as iOS delivers it: the clip as an item provider (the
+    /// pasteboard's own string), loaded off the main thread. Waits for it to go in.
+    private func paste(_ bar: SuggestionBar, _ doc: Proxy) {
+        let clip = bar.suggestions.pasteboard()?.string ?? ""
+        let before = doc.text
+        bar.paste(itemProviders: [NSItemProvider(object: clip as NSString)])
+        let deadline = Date() + 2
+        while doc.text == before, Date() < deadline { RunLoop.main.run(until: Date() + 0.01) }
+    }
+
     func testPasteShowsAtAWordStartWithAFreshTextClip() throws {
         let pb = try clipboard()
         let (_, empty, _) = pasteRig(pb)
         XCTAssertNotEqual(empty.state, .paste, "an empty pasteboard")
+        XCTAssertTrue(empty.pasteControl.isHidden)
         pb.image = UIImage(systemName: "star")
         let (_, image, _) = pasteRig(pb)
         XCTAssertNotEqual(image.state, .paste, "image-only: insertText takes only text")
@@ -606,26 +618,33 @@ final class SuggestionsTests: XCTestCase {
         var access = false
         let (kb, bar, doc) = pasteRig(pb, fullAccess: { access })
         XCTAssertNotEqual(bar.state, .paste, "no Full Access")
+        XCTAssertTrue(bar.pasteControl.isHidden, "no Full Access")
         access = true
         withExtendedLifetime((kb, doc)) { bar.refresh() }
         XCTAssertEqual(bar.state, .paste)
-        XCTAssertFalse(bar.pasteButton.isHidden)
+        XCTAssertFalse(bar.pasteControl.isHidden)
         XCTAssertTrue(bar.autofillButton.isHidden)
         XCTAssertTrue(bar.slotButtons.allSatisfy(\.isHidden))
+        XCTAssertTrue(bar.pasteControl.target === bar, "the control pastes into the bar")
+        XCTAssertEqual(bar.pasteConfiguration?.acceptableTypeIdentifiers, [UTType.plainText.identifier])
         let (_, mid, _) = pasteRig(pb) { $0.text = "hel" }
         XCTAssertNotEqual(mid.state, .paste, "mid-word")
+        XCTAssertTrue(mid.pasteControl.isHidden, "mid-word")
     }
 
     func testTappingPasteInsertsTheClipAsIsAndRetiresIt() throws {
         let pb = try clipboard()
         pb.string = "one two\n"
         let (_, bar, doc) = pasteRig(pb) { $0.text = "say " }
-        bar.pasteButton.sendActions(for: .touchUpInside)
+        paste(bar, doc)
         XCTAssertEqual(doc.text, "say one two\n", "exactly the clip, no space")
         XCTAssertNotEqual(bar.state, .paste)
         let (_, fresh, _) = pasteRig(pb)
         XCTAssertNotEqual(fresh.state, .paste, "retired across launches: the same defaults")
         XCTAssertEqual(fresh.suggestions.memory.retiredClip, pb.changeCount)
+        bar.paste(itemProviders: [NSItemProvider(object: "again" as NSString)])
+        RunLoop.main.run(until: Date() + 0.2)
+        XCTAssertEqual(doc.text, "say one two\n", "a paste (or a drop) once Paste is gone")
     }
 
     func testTypingRetiresTheClipAndANewCopyBringsItBack() throws {
@@ -650,7 +669,7 @@ final class SuggestionsTests: XCTestCase {
             pb.string = clip
             let (kb, bar, doc) = pasteRig(pb) { $0.autocapitalizationType = .sentences; $0.text = "say " }
             XCTAssertEqual(kb.shift.mode, .off, clip)
-            bar.pasteButton.sendActions(for: .touchUpInside)
+            paste(bar, doc)
             XCTAssertEqual(doc.text, "say " + clip)
             XCTAssertEqual(kb.shift.mode, .once, clip)
         }
@@ -686,6 +705,6 @@ final class SuggestionsTests: XCTestCase {
         pb.string = "copied"
         let (_, bar, _) = pasteRig(pb) { $0.textContentType = .username }
         XCTAssertEqual(bar.state, .autofill)
-        XCTAssertTrue(bar.pasteButton.isHidden)
+        XCTAssertTrue(bar.pasteControl.isHidden)
     }
 }
