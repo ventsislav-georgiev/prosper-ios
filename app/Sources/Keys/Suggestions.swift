@@ -71,6 +71,10 @@ final class Suggestions {
     /// The pasteboard to offer, nil without Full Access: a custom keyboard reads it only
     /// with Full Access. The controller's, or a named one in tests.
     var pasteboard: () -> UIPasteboard? = { nil }
+    /// False in a compact vertical size class, set by the bar (`SuggestionBar.refresh`): the
+    /// secure control draws blank and takes no taps under about 36 pt, so landscape keeps its
+    /// slots (OQ-43). A letter typed there doesn't retire the clip: Paste never showed.
+    var pasteFits = true
 
     let layout: TerminalKeyboard.Layout
     /// The layout's checker language, read once (`TerminalKeyboard.Layout.language`).
@@ -168,8 +172,8 @@ final class Suggestions {
     /// ponytail: no preview of the clip, since one means reading it unasked; add one only
     /// if a device shows no Allow Paste prompt for a Full Access keyboard.
     func offersPaste(_ doc: UITextDocumentProxy) -> Bool {
-        guard let pb = pasteboard(), doc.documentContextBeforeInput?.last?.isWhitespace ?? true,
-              pb.hasStrings else { return false }
+        guard pasteFits, let pb = pasteboard(),
+              doc.documentContextBeforeInput?.last?.isWhitespace ?? true, pb.hasStrings else { return false }
         return pb.changeCount != memory.retiredClip
     }
 
@@ -555,7 +559,10 @@ final class SuggestionBar: UIView {
         config.displayMode = .iconAndLabel
         config.baseForegroundColor = .white
         config.baseBackgroundColor = TerminalKeyboard.Style.backdrop   // .clear draws black
-        return UIPasteControl(configuration: config)
+        let control = UIPasteControl(configuration: config)
+        // Above Large the control outgrows its 36 pt and draws blank, taking no taps.
+        control.maximumContentSizeCategory = .large
+        return control
     }()
 
     /// Nil: a fresh one on the extension's own defaults. (Not a default argument: those
@@ -632,15 +639,17 @@ final class SuggestionBar: UIView {
         ])
     }
 
-    /// The height follows the size class, like the keyboard's (rotation).
+    /// The height follows the size class, like the keyboard's (rotation), and so does Paste.
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
         heightConstraint?.constant = Self.height(compact: traitCollection.verticalSizeClass == .compact)
+        refresh()
     }
 
     /// Recompute from the text: after each key, and when the host changes the text or
     /// the selection.
     func refresh() {
+        suggestions.pasteFits = traitCollection.verticalSizeClass != .compact
         guard let doc = keyboard?.target as? UITextDocumentProxy else { return }
         show(suggestions.state(doc, shift: keyboard?.shift.mode ?? .off))
     }
@@ -656,8 +665,10 @@ final class SuggestionBar: UIView {
     }
 
     /// The Paste control's tap (`pasteControl`, whose target is the bar). The clip loads
-    /// off the main thread; it goes in on it, while Paste still shows.
+    /// off the main thread; it goes in on it, while Paste still shows. A late tap (a double
+    /// tap's second) loads nothing: loading raises Allow Paste once Paste is gone.
     override func paste(itemProviders: [NSItemProvider]) {
+        guard state == .paste else { return }
         guard let provider = itemProviders.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return }
         _ = provider.loadObject(ofClass: NSString.self) { [weak self] clip, _ in
             guard let clip = clip as? String else { return }

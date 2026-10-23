@@ -626,6 +626,11 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertTrue(bar.autofillButton.isHidden)
         XCTAssertTrue(bar.slotButtons.allSatisfy(\.isHidden))
         XCTAssertTrue(bar.pasteControl.target === bar, "the control pastes into the bar")
+        XCTAssertTrue(bar.pasteControl.superview === bar)
+        bar.layoutIfNeeded()
+        XCTAssertEqual(bar.pasteControl.frame, bar.bounds.insetBy(dx: 3, dy: 4), "the bar's area")
+        XCTAssertGreaterThanOrEqual(bar.pasteControl.frame.height, 36, "shorter draws blank")
+        XCTAssertEqual(bar.pasteControl.maximumContentSizeCategory, .large, "larger draws blank")
         XCTAssertEqual(bar.pasteConfiguration?.acceptableTypeIdentifiers, [UTType.plainText.identifier])
         let (_, mid, _) = pasteRig(pb) { $0.text = "hel" }
         XCTAssertNotEqual(mid.state, .paste, "mid-word")
@@ -645,6 +650,62 @@ final class SuggestionsTests: XCTestCase {
         bar.paste(itemProviders: [NSItemProvider(object: "again" as NSString)])
         RunLoop.main.run(until: Date() + 0.2)
         XCTAssertEqual(doc.text, "say one two\n", "a paste (or a drop) once Paste is gone")
+    }
+
+    /// A double tap's second tap arrives once Paste is gone: its provider is never loaded,
+    /// since loading it raises Allow Paste.
+    func testALateTapLoadsNothing() throws {
+        let pb = try clipboard()
+        pb.string = "copied"
+        let (_, bar, doc) = pasteRig(pb) { $0.text = "say h" }   // mid-word: no Paste
+        XCTAssertNotEqual(bar.state, .paste)
+        var loaded = false
+        let provider = NSItemProvider()
+        provider.registerObject(ofClass: NSString.self, visibility: .all) { done in
+            loaded = true
+            done("copied" as NSString, nil)
+            return nil
+        }
+        bar.paste(itemProviders: [provider])
+        RunLoop.main.run(until: Date() + 0.2)
+        XCTAssertFalse(loaded, "loading the clip after Paste is gone raises Allow Paste")
+        XCTAssertEqual(doc.text, "say h")
+    }
+
+    /// No Paste in landscape (OQ-43): the control draws blank and dead in the 32 pt bar.
+    /// Slots show instead, a letter typed there leaves the clip fresh, and rotating to
+    /// portrait brings Paste back, then rotating again takes it away.
+    func testLandscapeShowsSlotsOverPasteAndPortraitBringsItBack() throws {
+        guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
+        let pb = try clipboard()
+        pb.string = "copied"
+        let (kb, bar, doc) = pasteRig(pb)
+        defer { withExtendedLifetime(doc) {} }
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 874, height: SuggestionBar.height(compact: true)
+                                            + TerminalKeyboard.keysHeight(compact: true) + 6))
+        window.traitOverrides.verticalSizeClass = .compact
+        let view = UIView(frame: window.bounds)
+        window.addSubview(view)
+        bar.host(kb, in: view)
+        window.isHidden = false
+        defer { window.isHidden = true }
+        window.layoutIfNeeded()
+        XCTAssertNotEqual(bar.state, .paste, "landscape")
+        XCTAssertTrue(bar.pasteControl.isHidden)
+        XCTAssertFalse(bar.slotButtons.contains(where: \.isHidden), "slots")
+        typing(kb, "h⌫")
+        XCTAssertNotEqual(bar.suggestions.memory.retiredClip, pb.changeCount, "Paste never showed")
+        window.traitOverrides.verticalSizeClass = .regular
+        window.layoutIfNeeded()
+        XCTAssertEqual(bar.state, .paste, "portrait")
+        XCTAssertFalse(bar.pasteControl.isHidden)
+        window.traitOverrides.verticalSizeClass = .compact
+        window.layoutIfNeeded()
+        XCTAssertNotEqual(bar.state, .paste, "landscape again")
+        XCTAssertTrue(bar.pasteControl.isHidden)
+        window.traitOverrides.verticalSizeClass = .regular
+        window.layoutIfNeeded()
+        XCTAssertEqual(bar.state, .paste, "the clip still fresh")
     }
 
     func testTypingRetiresTheClipAndANewCopyBringsItBack() throws {
