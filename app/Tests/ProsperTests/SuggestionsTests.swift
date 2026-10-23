@@ -228,6 +228,9 @@ final class SuggestionsTests: XCTestCase {
         let ok = Suggestions.confident
         XCTAssertTrue(ok("gello", "hello"), "g and h are neighbors")
         XCTAssertFalse(ok("pello", "hello"), "p and h aren't")
+        XCTAssertTrue(ok("qnd", "and"), "a row apart")
+        XCTAssertFalse(ok("ehat", "that"), "two keys apart in a row")
+        XCTAssertFalse(ok("zuick", "quick"), "two rows apart")
         XCTAssertFalse(ok("ghat", "hat"), "a neighbor, but a letter dropped")
         XCTAssertTrue(ok("Gelo", "gel"), "case doesn't count")
         XCTAssertTrue(ok("Rhe", "the"), "case doesn't count")
