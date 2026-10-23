@@ -50,6 +50,8 @@ struct SettingsView: View {
             }
 
             // Apple's Settings › General › Keyboard, in its order, for what Prosper's has.
+            // Not on the Mac: no Prosper keyboard there to read them.
+            #if !targetEnvironment(macCatalyst)
             Section {
                 Toggle("Auto-Capitalization", isOn: $autoCapitalization)
                 Toggle("Auto-Correction", isOn: $autoCorrection)
@@ -60,8 +62,9 @@ struct SettingsView: View {
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in the terminal, and in other apps once it has Full Access; without it, Auto-Capitalization is off and the rest on. Double tapping the space bar will insert a period followed by a space.")
+                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off and the rest on. In the terminal, Enable Caps Lock and Character Preview apply. Double tapping the space bar will insert a period followed by a space.")
             }
+            #endif
 
             if let error { Section { Text(error).foregroundStyle(.red).font(.callout) } }
         }
