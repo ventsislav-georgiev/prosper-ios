@@ -712,8 +712,14 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     // MARK: - Keyboard avoidance
 
     @objc private func kbChange(_ n: Notification) {
-        guard let end = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+        guard var end = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
         else { return }
+        // Rotation posts the compact keyboard's bottom edge right but its height stale
+        // (278 for the 202 pt landscape keyboard, 334 for the 276 pt portrait one), and
+        // after the transition: its view has the real height.
+        if let kb = keyboardInputView as? TerminalKeyboard, kb.window != nil {
+            end = CGRect(x: end.minX, y: end.maxY - kb.bounds.height, width: end.width, height: kb.bounds.height)
+        }
         kbFrame = end
         applyKeyboard(end, notification: n)
     }
@@ -1118,6 +1124,7 @@ private final class DchTerminalView: TerminalView {
     private lazy var compactKeyboard: TerminalKeyboard = {
         let kb = TerminalKeyboard()
         kb.target = self
+        kb.inputHost = self   // its height then reaches the input host (`inputHost`)
         kb.sendBytes = { [weak self] in self?.send($0) }   // through the host's send, like any key
         kb.screenWords = { [weak self] in self.map { TerminalKeyboard.screenWords(in: $0.getTerminal()) } ?? [] }
         return kb

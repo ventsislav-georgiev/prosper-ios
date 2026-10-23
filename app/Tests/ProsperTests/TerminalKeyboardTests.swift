@@ -718,4 +718,63 @@ final class TerminalKeyboardTests: XCTestCase {
         vc.toggleKeyboard()   // dismiss
         XCTAssertTrue(vc.keyboardInputView is TerminalKeyboard)
     }
+
+    /// The input host takes the keyboard's height once, at install, unless that height is
+    /// required, and rotation's frame notifications carry a height taken mid-transition:
+    /// the view, and the shortcut bar on top of it, must still follow. A pad change while
+    /// it's up, rotating there and back, and the keyboard first rising in landscape.
+    func testHostedKeyboardFollowsItsHeight() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone only")
+        guard #available(iOS 16, *) else { throw XCTSkip("requestGeometryUpdate is iOS 16") }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let vc = TerminalHostVC(conn: SessionConnection(transport: SpyTransport(),
+                                                       session: DchSession(name: "t", alias: nil)),
+                                handle: TermHandle())
+        window.rootViewController = vc
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let kb = try XCTUnwrap(vc.keyboardInputView as? TerminalKeyboard)
+        let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar })
+        let screen = scene.screen.coordinateSpace
+        func spin(_ s: TimeInterval) { RunLoop.main.run(until: Date().addingTimeInterval(s)) }
+        func rotate(_ o: UIInterfaceOrientationMask) {
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: o)) { XCTFail("rotation: \($0)") }
+            spin(1.5)
+        }
+        /// Waits for the keyboard to settle at `height`, then checks it and the bar on it.
+        func expect(_ height: CGFloat, _ what: String, line: UInt = #line) {
+            func top() -> CGFloat { kb.convert(kb.bounds, to: screen).minY }
+            func barBottom() -> CGFloat { bar.convert(bar.bounds, to: screen).maxY }
+            let settled = Date().addingTimeInterval(2)
+            while kb.frame.height != height || abs(barBottom() - top()) > 0.5, Date() < settled { spin(0.05) }
+            XCTAssertEqual(kb.frame.height, height, "\(what): the keyboard", line: line)
+            XCTAssertEqual(barBottom(), top(), accuracy: 0.5, "\(what): the bar on the keyboard", line: line)
+            XCTAssertEqual(kb.convert(kb.bounds, to: screen).maxY, screen.bounds.maxY, accuracy: 0.5,
+                           "\(what): the keyboard at the bottom", line: line)
+        }
+        let portrait = TerminalKeyboard.height
+        let landscape = TerminalKeyboard.keysHeight(compact: true) + TerminalKeyboard.bottomPadding
+        defer { rotate(.portrait) }
+
+        vc.toggleKeyboard()
+        expect(portrait, "shown")
+        spin(0.5)   // a reload while the keyboard still rises is dropped
+        kb.bottomInset = 6
+        expect(TerminalKeyboard.keysHeight + 6, "pad change")
+        kb.bottomInset = TerminalKeyboard.bottomPadding
+        expect(portrait, "pad back")
+        rotate(.landscapeRight)
+        expect(landscape, "to landscape")
+        rotate(.portrait)
+        expect(portrait, "back to portrait")
+
+        vc.toggleKeyboard()   // dismiss, turn, and rise in landscape
+        rotate(.landscapeRight)
+        vc.toggleKeyboard()
+        expect(landscape, "first shown in landscape")
+        vc.toggleKeyboard()
+        spin(0.5)
+    }
+
 }

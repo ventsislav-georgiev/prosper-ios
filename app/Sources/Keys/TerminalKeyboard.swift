@@ -254,6 +254,19 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     ]
 
     weak var target: UIKeyInput?
+    /// The responder this view is the `inputView` of: the app's terminal. Its input host
+    /// pins a required height of its own, measured once at install, unless this view's
+    /// height is required; and it posts the new frame (the shortcut bar rides that) only
+    /// on `reloadInputViews`. So with a host the height is required and a change reloads.
+    /// Nil in the extension, where the keys sit under the bar in the controller's view
+    /// and `.required - 1` gives way to the system's transient sizes without a conflict.
+    weak var inputHost: UIResponder? {
+        didSet {
+            heightConstraint.isActive = false   // required ⇄ not can't change while active
+            heightConstraint.priority = inputHost == nil ? .required - 1 : .required
+            heightConstraint.isActive = true
+        }
+    }
     /// Raw bytes to the terminal, past `insertText` (which makes multi-byte control text
     /// a paste). Nil in the extension: return then types "\n".
     var sendBytes: (([UInt8]) -> Void)?
@@ -338,7 +351,16 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private func fitHeight() {
         keysHeightConstraint.constant = Self.keysHeight(compact: compact)
-        heightConstraint.constant = keysHeightConstraint.constant + bottomInset
+        let height = keysHeightConstraint.constant + bottomInset
+        guard height != heightConstraint.constant else { return }
+        heightConstraint.constant = height
+        // Deferred, out of the layout pass that changed the traits.
+        // ponytail: the host drops a reload while the keyboard still animates (rising,
+        // rotating). Rotation is covered by the app's `kbChange`; a pad change mid-rise
+        // isn't, and nothing makes one today. Reload again after the animation if it does.
+        if inputHost?.isFirstResponder == true {
+            DispatchQueue.main.async { [weak self] in self?.inputHost?.reloadInputViews() }
+        }
     }
 
     /// What a key does. The touch tracker's presses land here; so do the tests'.
