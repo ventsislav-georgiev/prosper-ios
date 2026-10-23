@@ -157,8 +157,8 @@ targets:
           NSExtensionPointIdentifier: com.apple.keyboard-service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
           NSExtensionAttributes:
-            # No Latin letters, like Apple's Bulgarian: an ASCII-only field (email, URL)
-            # gets the next ASCII-capable keyboard instead.
+            # No Latin letters, like Apple's Bulgarian. iOS still offers it in email and
+            # URL fields, as it does Apple's.
             IsASCIICapable: false
             PrefersRightToLeft: false
             PrimaryLanguage: bg-BG

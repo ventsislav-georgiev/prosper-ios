@@ -500,7 +500,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         switch key {
         case .char(let c):
             let letter = c.first?.isLetter == true
-            target?.insertText(letter && shift.uppercase ? c.uppercased() : c)
+            target?.insertText(shifted(c))
             if letter, shift.mode == .once { shift.typedLetter(); refreshLabels() }
         case .space:
             if doubleSpacePeriod, let doc = target as? UITextDocumentProxy,
@@ -784,7 +784,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         let held = tracker.held
         for cap in caps.joined() { cap.isHighlighted = held.contains(cap.key) }
         let cap = tracker.previewKey.flatMap { k in caps.joined().first { $0.key == k } }
-        if let cap { showPreview(cap, tracker.previewSymbol) } else { hidePreview() }
+        if let cap { showPreview(cap, tracker.previewSymbol.map(shifted)) } else { hidePreview() }
+    }
+
+    /// `c` as shift types it: a letter uppercased, anything else as is.
+    private func shifted(_ c: String) -> String {
+        c.first?.isLetter == true && shift.uppercase ? c.uppercased() : c
     }
 
     /// What every cap shows: blank while a trackpad touch is down, as on Apple's keyboard.
@@ -794,7 +799,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             var title: String?, image: String?, label: String
             switch cap.key {
             case .char(let c):
-                let s = c.first?.isLetter == true && shift.uppercase ? c.uppercased() : c
+                let s = shifted(c)
                 title = s; label = s
             case .shift:
                 switch shift.mode {
@@ -1027,11 +1032,18 @@ extension TerminalKeyboard {
     /// guessed. So a typo it neither flags nor fixes means none. Settable for tests.
     static var bulgarianSpells: Bool = {
         let typo = "къша", range = NSRange(location: 0, length: 4)
-        guard UITextChecker.availableLanguages.contains("bg_BG"),
-              checker.rangeOfMisspelledWord(in: typo, range: range, startingAt: 0, wrap: false,
-                                            language: "bg_BG").location != NSNotFound else { return false }
-        return !(checker.guesses(forWordRange: range, in: typo, language: "bg_BG") ?? []).isEmpty
+        return spells(
+            listed: UITextChecker.availableLanguages.contains("bg_BG"),
+            flags: { checker.rangeOfMisspelledWord(in: typo, range: range, startingAt: 0, wrap: false,
+                                                   language: "bg_BG").location != NSNotFound },
+            guesses: { checker.guesses(forWordRange: range, in: typo, language: "bg_BG") ?? [] })
     }()
+
+    /// The probe's verdict from the checker's answers on a typo: listed, the typo flagged,
+    /// and something guessed for it. The checker is asked only as far as it has to be.
+    static func spells(listed: Bool, flags: () -> Bool, guesses: () -> [String]) -> Bool {
+        listed && flags() && !guesses().isEmpty
+    }
 
     /// `s` is a word in `language` (English by default) or the start of one.
     ///

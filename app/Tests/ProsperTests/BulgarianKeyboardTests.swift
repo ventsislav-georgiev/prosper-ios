@@ -153,14 +153,17 @@ final class BulgarianKeyboardTests: XCTestCase {
         XCTAssertEqual(symbols.subtracting(taps + bg.holdSymbol.values).sorted(), [], "unreachable")
     }
 
-    /// Through the view: holding и types ѝ (shifted Ѝ), ю types >, ш has nothing to hold.
+    /// Through the view: holding и types ѝ (shifted Ѝ, and its bubble shows Ѝ too), ю types
+    /// >, ш has nothing to hold.
     func testHoldsThroughTheKeyboard() throws {
         let (kb, bar, doc) = rig()
         let caps = laidOut(kb)
+        var previews: [String?] = []
         func hold(_ label: String, id: Int) throws {
             let f = try XCTUnwrap(caps[label], label).frame, p = CGPoint(x: f.midX, y: f.midY)
             kb.track(.began, id: id, at: p)
             kb.fireHold()
+            previews.append(kb.previewText)
             kb.track(.ended, id: id, at: p)
         }
         try withExtendedLifetime(bar) {
@@ -170,6 +173,7 @@ final class BulgarianKeyboardTests: XCTestCase {
             kb.press(.shift)
             try hold("и", id: 4)
         }
+        XCTAssertEqual(previews, ["ѝ", ">", "ш", "Ѝ"], "the bubble shows what the lift types")
         XCTAssertEqual(doc.text, "ѝ>шЍ")
         XCTAssertEqual(caps["и"]?.subviews.compactMap { ($0 as? UILabel)?.text }.contains("ѝ"), true, "its hint")
     }
@@ -294,6 +298,17 @@ final class BulgarianKeyboardTests: XCTestCase {
         bar.refresh()
         guard case .slots(let slots) = bar.state else { return XCTFail("\(bar.state)") }
         XCTAssertTrue(slots.contains { $0?.word == "ябълка" }, "the learned word completes")
+    }
+
+    /// The probe spells Bulgarian only when the typo is listed, flagged and guessed for.
+    func testSpellsNeedsAFlaggedTypoWithGuesses() {
+        func spells(_ listed: Bool, _ flags: Bool, _ guesses: [String]) -> Bool {
+            TerminalKeyboard.spells(listed: listed, flags: { flags }, guesses: { guesses })
+        }
+        XCTAssertFalse(spells(false, true, ["кърша"]), "not listed")
+        XCTAssertFalse(spells(true, false, ["кърша"]), "listed, every word passes")
+        XCTAssertFalse(spells(true, true, []), "flagged, nothing guessed")
+        XCTAssertTrue(spells(true, true, ["кърша"]))
     }
 
     /// With a Bulgarian dictionary the checker is asked in Bulgarian; English keeps its own.
