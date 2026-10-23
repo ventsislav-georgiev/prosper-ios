@@ -699,6 +699,23 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertNil(KeyboardSettings.takeHop(), "a hold's pick doesn't hop")
         send(.touchUpInside)
         XCTAssertNil(KeyboardSettings.takeHop(), "a lift with no press doesn't either")
+
+        // The list shows from about a 0.22 s press: a slower tap is a hold.
+        send(.touchDown)
+        bar.pressedAt = Date() - 0.15
+        send(.touchUpInside)
+        XCTAssertNotNil(KeyboardSettings.takeHop(), "a 0.15 s tap marks")
+        send(.touchDown)
+        bar.pressedAt = Date() - 0.25
+        send(.touchUpInside)
+        XCTAssertNil(KeyboardSettings.takeHop(), "a 0.25 s press showed the list")
+
+        // A lift spends its press: a second lift with no new press marks nothing.
+        send(.touchDown)
+        send(.touchUpInside)
+        XCTAssertNotNil(KeyboardSettings.takeHop())
+        send(.touchUpInside)
+        XCTAssertNil(KeyboardSettings.takeHop(), "the press was spent")
     }
 
     func testNoAutocorrectOrLearningWhereTheFieldTurnsItOff() {

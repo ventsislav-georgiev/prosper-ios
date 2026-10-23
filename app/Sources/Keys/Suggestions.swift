@@ -561,8 +561,9 @@ final class SuggestionBar: UIView {
     /// When the key button went down. Its lift marks the hop (`KeyboardSettings.markHop`)
     /// only after a tap: a hold showed the list, and its pick must not hop.
     var pressedAt: Date?
-    /// A longer press is a hold.
-    static let tapLimit: TimeInterval = 0.5
+    /// A longer press is a hold: the system lists the keyboards from about a 0.22 s press,
+    /// and a lift from the list's bottom row still counts as inside the key.
+    static let tapLimit: TimeInterval = 0.2
     private(set) var state: Suggestions.State = .slots([nil, nil, nil])
     private weak var keyboard: TerminalKeyboard?
     private(set) var slotButtons: [UIButton] = []
