@@ -209,6 +209,32 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(bar.suggestions.memory.pairs[" the"], 1, "the correction counted, at the space")
     }
 
+    /// The native keyboard practically never changes a word's first letter: a guess that
+    /// does ("iphone" → "phone", "gello" → "hello") leaves the word as typed.
+    func testTheFirstLetterIsNeverCorrected() {
+        XCTAssertEqual(Suggestions.guesses("gello").first, "hello", "the checker would change it")
+        XCTAssertFalse(Suggestions.confident("gello", guess: "hello"))
+        XCTAssertTrue(Suggestions.confident("Gelo", guess: "gel"), "case doesn't count")
+        for word in ["iphone", "gello"] {
+            let (kb, bar, doc) = rig()
+            typing(kb, word)
+            XCTAssertFalse(slots(bar).contains { $0?.highlighted == true }, word)
+            typing(kb, " ")
+            XCTAssertEqual(doc.text, word + " ")
+        }
+    }
+
+    /// What `typed` mirrors, key by key: backspace pops it, a correction and its revert
+    /// replace their word in it, and it holds more than a short word.
+    func testTheTypedMirrorFollowsEveryEdit() {
+        for (keys, text) in [("tehx⌫ ", "the "), ("becuase ", "because "),
+                             ("teh x⌫⌫rr ", "there "), ("wrld ⌫d ", "wild ")] {
+            let (kb, bar, doc) = rig()
+            withExtendedLifetime(bar) { typing(kb, keys) }
+            XCTAssertEqual(doc.text, text, keys)
+        }
+    }
+
     /// A letter run after a digit or `@ # _ / .` is part of a token: space leaves it and
     /// the bar highlights nothing for it.
     func testGluedRunsAreNeverCorrected() {
@@ -452,6 +478,16 @@ final class SuggestionsTests: XCTestCase {
         typing(kb, " an")
         XCTAssertEqual(slots(bar)[1]?.word, "Ann", "a contact name leads the completions")
         XCTAssertNil(bar.suggestions.names["ann lee"], "one word only")
+
+        // A fresh keyboard: the undo above leaves "omw" alone from then on.
+        let (kb2, bar2, doc2) = rig()
+        bar2.suggestions.load([(userInput: "omw", documentText: "On my way!")])
+        typing(kb2, "omw. ")
+        XCTAssertEqual(doc2.text, "On my way! ", "its own \"!\" ends the sentence: no \".\" after it")
+        typing(kb2, "⌫")
+        XCTAssertEqual(doc2.text, "omw.", "undone, period and all")
+        typing(kb2, " teh ")
+        XCTAssertEqual(doc2.text, "omw. the ", "typed still in step")
     }
 
     // MARK: Fields

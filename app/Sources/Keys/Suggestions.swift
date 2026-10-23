@@ -54,7 +54,7 @@ final class Suggestions {
     private(set) var replacements: [String: String] = [:]
     /// Words whose autocorrect the user undid, lowercase: left alone from then on.
     private var rejected: Set<String> = []
-    /// The last autocorrect while backspace can still undo it: the typed word, what stays
+    /// The last autocorrect while backspace can still undo it: the typed word, what stayed
     /// after it ("." for a correction deferred to the space), and what replaced the two plus
     /// the separator.
     private var undo: (typed: String, kept: String, inserted: String)?
@@ -197,7 +197,8 @@ final class Suggestions {
         }
         undo = nil
         defer { type(separator) }
-        // "." waits: a space after "word." corrects the word and keeps the ".".
+        // "." waits: a space after "word." corrects the word and keeps the ".", unless the
+        // fix ends a sentence itself ("omw." → "On my way!").
         if separator == "." { return false }
         let before = doc.documentContextBeforeInput ?? ""
         var word = Self.currentWord(before), kept = ""
@@ -209,10 +210,11 @@ final class Suggestions {
         let prefix = String(before.dropLast(word.count + kept.count))
         var committed = word
         if let fix = correction(for: word, after: prefix, in: doc) {
+            let tail = fix.last.map { ".!?".contains($0) } == true ? "" : kept
             for _ in 0..<(word.count + kept.count) { doc.deleteBackward() }
-            doc.insertText(fix + kept)
-            undo = (word, kept, fix + kept + separator)
-            typed = String(typed.dropLast(word.count + kept.count)) + (fix + kept).lowercased()
+            doc.insertText(fix + tail)
+            undo = (word, kept, fix + tail + separator)
+            typed = String(typed.dropLast(word.count + kept.count)) + (fix + tail).lowercased()
             committed = fix
         }
         commit(committed, after: prefix, in: doc)
@@ -271,14 +273,16 @@ final class Suggestions {
     }
 
     /// The confidence rule, kept conservative: at least 2 letters, letters and apostrophes
-    /// only, not camelCase ("iPhone" is deliberate), and the guess at most 2 edits away
-    /// (1 for a word of 3 letters or fewer, where 2 edits make another word: "cat"/"dog").
+    /// only, not camelCase ("iPhone" is deliberate), the same first letter (iOS hardly ever
+    /// changes it: "iphone" isn't "phone"), and the guess at most 2 edits away (1 for a
+    /// word of 3 letters or fewer, where 2 edits make another word: "cat"/"dog").
     ///
     /// ponytail: no keyboard-distance or frequency weighting; the checker's guess order
     /// is the only ranking. Weight by key adjacency if corrections feel random.
     static func confident(_ word: String, guess: String) -> Bool {
         guard isWord(word), word.filter(\.isLetter).count >= 2,
-              !zip(word, word.dropFirst()).contains(where: { $0.isLowercase && $1.isUppercase }) else { return false }
+              !zip(word, word.dropFirst()).contains(where: { $0.isLowercase && $1.isUppercase }),
+              word.first?.lowercased() == guess.first?.lowercased() else { return false }
         return editDistance(word.lowercased(), guess.lowercased()) <= (word.count <= 3 ? 1 : 2)
     }
 
