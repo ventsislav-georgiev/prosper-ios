@@ -317,6 +317,33 @@ final class LiveStatusTests: XCTestCase {
         }
     }
 
+    /// Several sessions blocked at once arrive as one alert: it opens the Mac's list.
+    func testAggregateAlertTargetsTheMacsList() {
+        let t = LiveTarget(userInfo: ["mac_id": "aa11", "session": "fix", "more": 2])
+        XCTAssertEqual(t.machine(in: machines)?.name, "Studio")
+        XCTAssertNil(t.session)
+    }
+
+    /// `more: 0`, or a `more` that isn't a positive integer, is a single alert as before.
+    func testSingleAlertKeepsItsSession() {
+        for more: Any? in [0, nil, "2", -1, 1.5] {
+            var info: [AnyHashable: Any] = ["mac_id": "aa11", "session": "fix"]
+            info["more"] = more
+            XCTAssertEqual(LiveTarget(userInfo: info).session, "fix", "\(String(describing: more))")
+        }
+    }
+
+    /// In front, inside the named session: its single alert is quiet, an aggregate still
+    /// banners, and anything else banners.
+    func testForegroundBannerDecision() {
+        let onScreen = LiveTarget(macId: "aa11", session: "fix")
+        XCTAssertFalse(LiveTarget(userInfo: ["mac_id": "aa11", "session": "fix", "more": 0]).banners(over: onScreen))
+        XCTAssertTrue(LiveTarget(userInfo: ["mac_id": "aa11", "session": "fix", "more": 3]).banners(over: onScreen))
+        XCTAssertTrue(LiveTarget(userInfo: ["mac_id": "aa11", "session": "other", "more": 0]).banners(over: onScreen))
+        XCTAssertTrue(LiveTarget(userInfo: ["mac_id": "bb22", "session": "fix"]).banners(over: onScreen))
+        XCTAssertTrue(LiveTarget(userInfo: ["mac_id": "aa11", "session": "fix"]).banners(over: nil))
+    }
+
     func testCardURLRoundTrips() {
         let url = LiveTarget.url(macId: "aa11")
         XCTAssertEqual(url.absoluteString, "prosper://sessions?mac=aa11")

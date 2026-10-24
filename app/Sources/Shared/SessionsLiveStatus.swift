@@ -136,10 +136,20 @@ struct LiveTarget: Equatable {
     var macId: String?
     var session: String?
 
-    /// The alert push's `userInfo {mac_id, session}`. Anything else is home.
+    /// The alert push's `userInfo {mac_id, session, more}`. No Mac is home. `more > 0` is
+    /// one alert for several blocked sessions ("a and 2 more need you"): it targets the
+    /// Mac's session list, not its first session. A missing or non-integer `more` counts
+    /// as a single alert.
     init(userInfo: [AnyHashable: Any]) {
         macId = (userInfo["mac_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-        session = macId == nil ? nil : (userInfo["session"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let aggregate = ((userInfo["more"] as? Int) ?? 0) > 0
+        session = macId == nil || aggregate ? nil : (userInfo["session"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// Whether this alert banners with Prosper in front: always, unless it is about the
+    /// one session on screen (an aggregate names no session, so it always banners).
+    func banners(over attached: LiveTarget?) -> Bool {
+        session == nil || self != attached
     }
 
     init(macId: String?, session: String? = nil) {

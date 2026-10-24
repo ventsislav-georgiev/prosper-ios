@@ -371,7 +371,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         -> UNNotificationPresentationOptions {
         let target = LiveTarget(userInfo: notification.request.content.userInfo)
         let onScreen = await MainActor.run { LiveStatus.shared.attached }
-        return target.session != nil && target == onScreen ? [] : [.banner, .list, .sound]
+        return target.banners(over: onScreen) ? [.banner, .list, .sound] : []
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
