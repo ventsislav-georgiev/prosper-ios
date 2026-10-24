@@ -370,6 +370,9 @@ struct CaretWalk {
             } else if !s.plain, !settled {
                 return 0   // UIKit's guess, maybe: a line break crossed in Characters
             } else if s.blind {
+                // Past a line's end a blind unit lands after its break: any other context is the
+                // host's answer to a move before it, in a new window.
+                if crossing, s.dir > 0, b.last?.isNewline != true { return 0 }
                 // A known UIKit host's extra lands exactly its units on: the Character's landing
                 // instead is its guess. One that neither explains crossed out of sight.
                 if utf16 == true, !(s.dir < 0 ? s.before : s.after).isEmpty {
@@ -389,6 +392,15 @@ struct CaretWalk {
                 } else if fit.units > fit.chars {
                     utf16 = true
                 }
+                // A leg that took all of one side lands, in UIKit's guess, in the window it was
+                // sized in, that side empty: no line's end or start where UIKit cut the window
+                // there (after a sentence's space, before at a break). Believed once the host
+                // shows another window, or at the poll limit. ponytail: a line that does end in a
+                // space waits out the poll limit; a cut elsewhere (a sentence's start before the
+                // caret) still reads as the line's start.
+                if lines != 0 || landing != nil, fit.units == 2, !s.late,
+                   s.dir > 0 ? a.isEmpty && s.after.last?.isWhitespace == true
+                             : b.isEmpty && s.before.first?.isNewline == true { return 0 }
             }
             sent = nil
             believed = (b, a)
