@@ -298,4 +298,43 @@ enum TerminalMath {
         return (min(max(0, Int(point.y / cellH)), max(rows - 1, 0)),
                 min(max(0, Int(point.x / cellW)), max(cols - 1, 0)))
     }
+
+    /// The cells a double tap selects: the run of word cells around `col` in one row,
+    /// one entry per cell, nil for the second half of a wide (CJK) char, which goes with
+    /// its first half. Word cells are SwiftTerm's — letters, digits, `.`, `_`, `-` — plus
+    /// `/`, so a path or a URL's path comes whole. Anything else, whitespace and the
+    /// never-written cells past a line's end included, selects nothing.
+    static func wordRange(_ cells: [Character?], at col: Int) -> Range<Int>? {
+        func word(_ i: Int) -> Bool {
+            guard let c = cells[i] ?? (i > 0 ? cells[i - 1] : nil) else { return false }
+            return c.isLetter || c.isNumber || "._-/".contains(c)
+        }
+        guard cells.indices.contains(col), word(col) else { return nil }
+        var lo = col, hi = col + 1
+        while lo > 0, word(lo - 1) { lo -= 1 }
+        while hi < cells.count, word(hi) { hi += 1 }
+        return lo..<hi
+    }
+
+    /// The cell boundary a selection handle dragged to `point` lands on: the line under
+    /// it, clamped to `lines`, and the nearest gap between columns, 0...cols. `point`
+    /// is in content space, where buffer line i spans i × cell height.
+    static func handleCell(point: CGPoint, cell: CGSize, lines: ClosedRange<Int>, cols: Int)
+        -> (row: Int, col: Int) {
+        let row = Int((point.y / max(1, cell.height)).rounded(.down))
+        let col = Int((point.x / max(1, cell.width)).rounded())
+        return (min(max(row, lines.lowerBound), lines.upperBound), min(max(col, 0), cols))
+    }
+
+    /// Move one end of a selection (`end` exclusive, both (row, col)) to `to`. Dragged
+    /// past the other end, the two swap and the finger carries on as the other handle.
+    /// Onto the other end it stays put: a selection never shrinks to nothing.
+    static func dragSelection(start: (row: Int, col: Int), end: (row: Int, col: Int),
+                              movingStart: Bool, to p: (row: Int, col: Int))
+        -> (start: (row: Int, col: Int), end: (row: Int, col: Int), movingStart: Bool) {
+        let fixed = movingStart ? end : start
+        if p.row == fixed.row && p.col == fixed.col { return (start, end, movingStart) }
+        if (p.row, p.col) < (fixed.row, fixed.col) { return (start: p, end: fixed, movingStart: true) }
+        return (start: fixed, end: p, movingStart: false)
+    }
 }
