@@ -169,10 +169,11 @@ struct SettingsView: View {
                 Toggle("Predictive Text", isOn: $predictiveText)
                 Toggle("Character Preview", isOn: $characterPreview)
                 Toggle("\u{201C}.\u{201D} Shortcut", isOn: $periodShortcut)
+                NavigationLink("Keys Beside Space") { BottomRowSettings() }
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off and the rest on. In the terminal, Enable Caps Lock and Character Preview apply. Double tapping the space bar will insert a period followed by a space.")
+                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off and the rest on. In the terminal, Enable Caps Lock, Character Preview and Keys Beside Space apply. Double tapping the space bar will insert a period followed by a space.")
             }
             #endif
 
@@ -191,6 +192,43 @@ struct SettingsView: View {
         defer { busy = false }
         do { try await account.deleteAccount(); error = nil }
         catch { self.error = error.localizedDescription }
+    }
+}
+
+/// The bottom row's keys beside space: drag to reorder, around space too, switch one off
+/// to hide it. Both keyboards read them (`KeyboardSettings.bottomRow`).
+struct BottomRowSettings: View {
+    @AppStorage(KeyboardSettings.Key.bottomOrder, store: KeyboardSettings.store())
+    private var order = KeyboardSettings().bottomOrder
+    @AppStorage(KeyboardSettings.Key.bottomHidden, store: KeyboardSettings.store())
+    private var hidden = KeyboardSettings().bottomHidden
+
+    var body: some View {
+        let keys = KeyboardSettings.order(order)
+        List {
+            Section {
+                ForEach(keys, id: \.self) { k in
+                    if k == " " {
+                        Text("Space").foregroundStyle(.secondary)
+                    } else {
+                        Toggle(String(k), isOn: Binding(
+                            get: { !hidden.contains(k) },
+                            set: { on in hidden = hidden.filter { $0 != k } + (on ? "" : String(k)) }))
+                        .font(.body.monospaced())
+                    }
+                }
+                .onMove { from, to in
+                    var moved = keys
+                    moved.move(fromOffsets: from, toOffset: to)
+                    order = String(moved)
+                }
+            } footer: {
+                Text("Space widens to take a hidden key's place. Only / is also a hold (on m), so hiding another key takes its character off the keyboard.")
+            }
+        }
+        .environment(\.editMode, .constant(.active))   // keep .onMove handles visible
+        .navigationTitle("Keys Beside Space")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

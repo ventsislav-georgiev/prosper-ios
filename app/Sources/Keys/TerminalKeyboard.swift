@@ -50,6 +50,8 @@ struct KeyboardSettings: Equatable {
         static let predictiveText = "keyboard.predictiveText"
         static let characterPreview = "keyboard.characterPreview"
         static let periodShortcut = "keyboard.periodShortcut"
+        static let bottomOrder = "keyboard.bottomOrder"
+        static let bottomHidden = "keyboard.bottomHidden"
     }
 
     /// Shift on at a sentence start (`TerminalKeyboard.autoCapitalize`). Off by default.
@@ -64,6 +66,11 @@ struct KeyboardSettings: Equatable {
     var characterPreview = true
     /// A double space types ". " (`TerminalKeyboard.doubleSpacePeriod`).
     var periodShortcut = true
+    /// The keys beside space, space itself as " ", in the bottom row's order (`bottomRow`).
+    var bottomOrder = KeyboardSettings.bottomKeys
+    /// Those of them that don't show; space always does, and takes their room (`place`).
+    var bottomHidden = ""
+    static let bottomKeys = ".,/ ?"
 
     init() {}
     /// What `defaults` holds, the default for anything it doesn't; nil is all defaults.
@@ -77,6 +84,21 @@ struct KeyboardSettings: Equatable {
         read(Key.predictiveText, &predictiveText)
         read(Key.characterPreview, &characterPreview)
         read(Key.periodShortcut, &periodShortcut)
+        bottomOrder = defaults?.string(forKey: Key.bottomOrder) ?? bottomOrder
+        bottomHidden = defaults?.string(forKey: Key.bottomHidden) ?? bottomHidden
+    }
+
+    /// Every key of `bottomKeys` once, in `stored`'s order: unknown ones dropped, missing
+    /// ones (a key added since) at the end.
+    static func order(_ stored: String) -> [Character] {
+        var seen = Set<Character>()
+        return (stored + bottomKeys).filter { bottomKeys.contains($0) && seen.insert($0).inserted }
+    }
+
+    /// Both keyboards' bottom row, before the extension's globe: the shown keys, then return.
+    var bottomRow: [TerminalKeyboard.Key] {
+        Self.order(bottomOrder).filter { $0 == " " || !bottomHidden.contains($0) }
+            .map { $0 == " " ? .space : .char(String($0)) } + [.ret]
     }
 
     /// The shared values. Without Full Access an extension can't reach the group: defaults.
@@ -738,7 +760,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private static func chars(_ s: String) -> [Key] { s.map { .char(String($0)) } }
 
     /// Digits lead (shift doesn't change them), then qwerty, then `. , / ?` beside space
-    /// for prose and paths. Every other symbol is a hold (`holdSymbol`).
+    /// for prose and paths, as Settings arranges them (`KeyboardSettings.bottomRow`). Every
+    /// other symbol is a hold (`holdSymbol`).
     static let rows: [[Key]] = [
         chars("1234567890"),
         chars("qwertyuiop"),
@@ -851,8 +874,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// wants it.
     var doubleSpacePeriod = false
     /// The app's Keyboard settings: the extension's controller sets them when it appears,
-    /// the terminal when it takes focus.
-    var settings = KeyboardSettings()
+    /// the terminal when it takes focus. A new bottom row rebuilds the caps.
+    var settings = KeyboardSettings() {
+        didSet { if settings.bottomRow != oldValue.bottomRow { build() } }
+    }
     /// The extension's suggestions (`SuggestionBar.attach`): asked before every key, it
     /// can autocorrect the word a separator ends, or take the key itself (true: backspace
     /// undoing an autocorrect) and the keyboard types nothing. Nil in the app.
@@ -1156,6 +1181,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         hidePreview()
         caps.joined().forEach { $0.removeFromSuperview() }
         var rows = layout.rows
+        rows[rows.count - 1] = settings.bottomRow
         if showsGlobe { rows[rows.count - 1].insert(.globe, at: 0) }
         caps = rows.map { $0.map(makeCap) }
         refreshLabels()
@@ -1453,6 +1479,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if window == nil {   // dismissed mid-hold
             stopRepeat(); stopHold(); tracker.reset(); refreshPressed()
             if blanked { refreshLabels() }
+        } else {
+            Self.undelayEdges(window)   // the app's keyboard window; the extension's again on appear
         }
     }
 

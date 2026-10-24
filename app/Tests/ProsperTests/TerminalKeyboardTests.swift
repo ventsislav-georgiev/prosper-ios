@@ -906,5 +906,8 @@ final class TerminalKeyboardTests: XCTestCase {
         TerminalKeyboard.undelayEdges(window)
         XCTAssertFalse(gate.delaysTouchesBegan)
         XCTAssertTrue(gate.delaysTouchesEnded)
+        gate.delaysTouchesBegan = true
+        window.addSubview(TerminalKeyboard())
+        XCTAssertFalse(gate.delaysTouchesBegan, "the app's keyboard does it on joining a window")
     }
 }

@@ -424,6 +424,59 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(KeyboardSettings.current(), KeyboardSettings(), "no suite")
     }
 
+    // MARK: Keys beside space
+
+    /// Settings' order and hidden keys make the bottom row: every key once, unknown ones
+    /// dropped, missing ones at the end, space never hidden, return last.
+    func testBottomRowFromTheSetting() {
+        var s = KeyboardSettings()
+        XCTAssertEqual(s.bottomRow, TerminalKeyboard.rows.last!, "the default")
+        s.bottomOrder = ".,? /"
+        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .char("?"), .space, .char("/"), .ret], "/ and ? swapped")
+        s.bottomHidden = "?/ "
+        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .space, .ret], "space stays")
+        s.bottomOrder = "x??"
+        s.bottomHidden = ""
+        XCTAssertEqual(s.bottomRow, [.char("?"), .char("."), .char(","), .char("/"), .space, .ret])
+        XCTAssertEqual(KeyboardSettings.order(""), Array(KeyboardSettings.bottomKeys))
+    }
+
+    func testBottomRowReadsWhatTheAppWrote() throws {
+        let suite = "KeyboardSettings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("/ ?.,", forKey: KeyboardSettings.Key.bottomOrder)
+        defaults.set(",", forKey: KeyboardSettings.Key.bottomHidden)
+        XCTAssertEqual(KeyboardSettings(defaults).bottomRow, [.char("/"), .space, .char("?"), .char("."), .ret])
+    }
+
+    /// Both layouts, globe or not, lay the row out from the setting, rebuilt when it
+    /// changes, and space takes a hidden key's room.
+    func testHiddenKeysWidenSpace() throws {
+        for layout in [TerminalKeyboard.Layout.english, .bulgarian] {
+            for globe in [false, true] {
+                let kb = TerminalKeyboard(layout: layout)
+                kb.showsGlobe = globe
+                let wide = try XCTUnwrap(laidOut(kb)["space"]).frame
+                var s = KeyboardSettings()
+                s.bottomOrder = "?/ .,"
+                s.bottomHidden = ".,"
+                kb.settings = s
+                let caps = laidOut(kb)
+                let space = try XCTUnwrap(caps["space"]).frame
+                let row = kb.subviews.compactMap { $0 as? UIButton }
+                    .filter { $0.frame.midY == space.midY }.sorted { $0.frame.minX < $1.frame.minX }
+                XCTAssertEqual(row.map { $0.accessibilityLabel ?? "" },
+                               (globe ? ["next keyboard"] : []) + ["?", "/", "space", "new line"], "\(layout) \(globe)")
+                XCTAssertNil(caps["."])
+                XCTAssertEqual(space.width - wide.width, 2 * (caps["?"]!.frame.width + TerminalKeyboard.keyGap),
+                               accuracy: 0.001, "two keys' room, gaps included")
+                kb.settings = KeyboardSettings()
+                XCTAssertEqual(laidOut(kb)["space"]?.frame, wide, "back to the default")
+            }
+        }
+    }
+
     // MARK: AutoFill hop
 
     /// The sibling hops on a fresh mark from the other Prosper keyboard, in a login field.
