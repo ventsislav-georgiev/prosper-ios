@@ -158,11 +158,33 @@ final class WordSelectionTests: XCTestCase {
         let edge = vc.view.bounds.maxX - 6
         XCTAssertTrue(vc.view.hitTest(CGPoint(x: edge, y: strip.frame.minY + 20), with: nil)?.isDescendant(of: tv) == true,
                       "hidden: a tap on the last column reaches the terminal")
-        XCTAssertTrue(vc.view.hitTest(CGPoint(x: edge, y: strip.frame.midY), with: nil) === strip,
-                      "the pill's own band still grabs")
+        XCTAssertTrue(vc.view.hitTest(CGPoint(x: edge, y: strip.frame.midY), with: nil)?.isDescendant(of: tv) == true,
+                      "and in the pill's own band: a double tap there selects")
         vc.tap(at: point(tv, row: 5, col: 1))   // a tap shows the pill
-        XCTAssertTrue(vc.view.hitTest(CGPoint(x: edge, y: strip.frame.minY + 20), with: nil) === strip,
-                      "shown: the whole strip, as before")
+        XCTAssertTrue(vc.view.hitTest(CGPoint(x: edge, y: strip.frame.minY + 20), with: nil)?.isDescendant(of: tv) == true,
+                      "shown too: the pill a tap flashes swallows no double tap")
+    }
+
+    func testADragThatComesDownOnTheStripScrollsShownOrHidden() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let scroll = try XCTUnwrap(vc.scrollPan), pan = try XCTUnwrap(vc.selectPan), lp = try XCTUnwrap(vc.longPress)
+        XCTAssertTrue(scroll.view === tv, "the strip's drag lives on the terminal")
+        let edge = tv.convert(CGPoint(x: vc.view.bounds.maxX - 6, y: 0), from: vc.view).x
+        for y in [point(tv, row: 2, col: 0).y, point(tv, row: tv.getTerminal().rows / 2, col: 0).y] {
+            vc.touchDown = CGPoint(x: edge, y: y)
+            XCTAssertTrue(vc.gestureRecognizerShouldBegin(scroll), "pill hidden, in its band or not, scrolls")
+            XCTAssertFalse(vc.gestureRecognizerShouldBegin(pan), "never copy mode from the strip")
+            XCTAssertFalse(vc.gestureRecognizerShouldBegin(lp), "a hold there, then a drag, still scrolls")
+        }
+        vc.touchDown = point(tv, row: 2, col: 3)
+        XCTAssertFalse(vc.gestureRecognizerShouldBegin(scroll))
+        XCTAssertTrue(vc.gestureRecognizerShouldBegin(pan), "off the strip a drag is copy mode, as before")
+
+        let before = tv.gestureRecognizers ?? []
+        feed(vc, "\u{1b}[?1000h\u{1b}[2J\u{1b}[Hpick me\r\n")
+        let mouse = try XCTUnwrap(tv.gestureRecognizers?.first { g in !before.contains { $0 === g } })
+        XCTAssertTrue(vc.gestureRecognizer(scroll, shouldBeRequiredToFailBy: mouse), "a strip drag sends no mouse bytes")
+        XCTAssertFalse(vc.gestureRecognizer(mouse, shouldBeRequiredToFailBy: scroll))
     }
 
     func testADoubleTapInMouseModeSelectsLocallyAndSendsNothing() async throws {
@@ -203,6 +225,34 @@ final class WordSelectionTests: XCTestCase {
             vc.selectWord(at: point(tv, row: row, col: col))
             XCTAssertTrue(vc.selection.map { $0.start == (0, 0) && $0.end == (1, 6) } == true, "\(row),\(col)")
         }
+    }
+
+    /// Claude Code breaks a long URL at the edge with a real line break. A double tap on
+    /// either row takes what a tap opens, and Copy gives that URL, scheme first, no break.
+    func testADoubleTapOnAHardWrappedURLCopiesTheURLATapOpens() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let name = UIPasteboard.Name("word-selection-hard-wrap")
+        let pb = try XCTUnwrap(UIPasteboard(name: name, create: true))
+        defer { UIPasteboard.remove(withName: name) }
+        vc.pasteboard = pb
+        let head = "https://example.com/hw/" + String(repeating: "h", count: tv.getTerminal().cols - 25)
+        let url = head + "/installations/new?x=1"
+        feed(vc, "\u{1b}[2J\u{1b}[H  " + head + "\r\n  /installations/new?x=1\r\n")
+        XCTAssertFalse(tv.getTerminal().getLine(row: 1)?.isWrapped ?? true, "precondition: a hard wrap")
+        XCTAssertEqual(vc.link(at: point(tv, row: 0, col: 4))?.absoluteString, url, "precondition: a tap opens it whole")
+        for (row, col) in [(0, 4), (0, 12), (1, 5), (1, 23)] {
+            pb.string = nil
+            vc.selectWord(at: point(tv, row: row, col: col))
+            XCTAssertTrue(vc.selection.map { $0.start == (0, 2) && $0.end == (1, 24) } == true, "\(row),\(col)")
+            vc.copySelection()
+            XCTAssertEqual(pb.string, url, "\(row),\(col)")
+        }
+        // A short hard wrap doesn't join (#510): the first row is its own URL, never `//…`.
+        feed(vc, "\u{1b}[2J\u{1b}[Hhttps://example.com/sh/abc\r\nrest/new\r\n")
+        vc.selectWord(at: point(tv, row: 0, col: 12))
+        XCTAssertEqual(selected(vc, tv), "https://example.com/sh/abc")
+        vc.selectWord(at: point(tv, row: 1, col: 2))
+        XCTAssertEqual(selected(vc, tv), "rest/new")
     }
 
     func testADoubleTapOnAURLEndingInAWideCharSelectsTheWholeGlyph() async throws {
@@ -298,6 +348,42 @@ final class WordSelectionTests: XCTestCase {
         feed(vc, "\u{1b}[2J\u{1b}[Hsome selection here\r\n")
         vc.selectWord(at: point(tv, row: 0, col: 6))
         return (vc, tv)
+    }
+
+    func testAOneCellNudgeMovesTheHandleAndIsNoTap() async throws {
+        let (vc, tv, spy, _) = try await makeVC()
+        let before = tv.gestureRecognizers ?? []
+        feed(vc, "\u{1b}[?1000h\u{1b}[2J\u{1b}[Hsome selection here\r\n\u{1b}[12;1H")
+        let mouse = try XCTUnwrap(tv.gestureRecognizers?.first { g in !before.contains { $0 === g } })
+        vc.selectWord(at: point(tv, row: 0, col: 6))   // "selection", cols 5..<14
+        let press = try XCTUnwrap(vc.handlePress), single = try XCTUnwrap(vc.singleTap)
+        XCTAssertEqual(press.minimumPressDuration, 0, "grabbed at the touch-down: no pan start distance to cross")
+        XCTAssertTrue(vc.gestureRecognizer(single, shouldRequireFailureOf: press), "a touch on a handle is no tap")
+        XCTAssertFalse(vc.gestureRecognizer(try XCTUnwrap(vc.doubleTap), shouldRequireFailureOf: press))
+        XCTAssertTrue(vc.gestureRecognizer(press, shouldBeRequiredToFailBy: mouse), "and no mouse drag")
+        let sent = spy.sent.count
+
+        let w = tv.caretFrame.width
+        for (down, way) in [(point(tv, row: 0, col: 14, dx: 0), CGFloat(1)), (point(tv, row: 0, col: 5, dx: 0), -1)] {
+            vc.touchDown = down
+            XCTAssertTrue(vc.gestureRecognizerShouldBegin(press))
+            XCTAssertTrue(vc.dragHandle(.began, at: down))
+            XCTAssertTrue(vc.dragHandle(.changed, at: CGPoint(x: down.x + way * w, y: down.y)))
+            XCTAssertTrue(vc.dragHandle(.ended, at: CGPoint(x: down.x + way * w, y: down.y)))
+        }
+        XCTAssertEqual(selected(vc, tv), " selection ", "one cell each way")
+        XCTAssertEqual(spy.sent.count, sent, "no bytes reach the app")
+
+        // A grab 18 pt beside the end handle moves it by the nudge, not under the finger.
+        let end = point(tv, row: 0, col: 15, dx: 0)
+        vc.touchDown = CGPoint(x: end.x + 18, y: end.y)
+        XCTAssertTrue(vc.dragHandle(.began, at: vc.touchDown!))
+        XCTAssertEqual(selected(vc, tv), " selection ", "a press alone moves nothing")
+        _ = vc.dragHandle(.changed, at: CGPoint(x: end.x + 18 + w, y: end.y))
+        _ = vc.dragHandle(.ended, at: CGPoint(x: end.x + 18 + w, y: end.y))
+        XCTAssertEqual(selected(vc, tv), " selection h")
+        vc.touchDown = point(tv, row: 0, col: 9)
+        XCTAssertFalse(vc.gestureRecognizerShouldBegin(press), "off the handles the press fails at once")
     }
 
     func testTheGrabRadiusIs22PointsEachWay() async throws {

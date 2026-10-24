@@ -11,3 +11,4 @@ What's new:
 • The session bell is gone: it could only ping you while Prosper was open.
 • Typing is more reliable on weak connections: keystrokes are queued and delivered after a drop.
 • Smoother terminal scrolling.
+• A drag along the right edge of the terminal scrolls even while the scroll wheel is hidden.

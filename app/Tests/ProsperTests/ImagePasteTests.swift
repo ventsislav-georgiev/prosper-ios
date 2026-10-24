@@ -673,7 +673,7 @@ final class ImagePasteTests: XCTestCase {
         let (vc, _) = try await makeVC()
         let (_, tv) = try barAndTerminal(vc)
         let all = tv.gestureRecognizers ?? []
-        let holds = all.filter { $0 is UILongPressGestureRecognizer }
+        let holds = all.filter { $0 is UILongPressGestureRecognizer && $0 !== vc.handlePress }   // the handle grab is ours
         XCTAssertEqual(holds.count, 1, "SwiftTerm's own long-press must stay stripped")
         let hold = try XCTUnwrap(holds.first)
         let tap = try XCTUnwrap(all.first { $0 is UITapGestureRecognizer && $0.delegate === vc })
