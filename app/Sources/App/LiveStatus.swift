@@ -308,9 +308,9 @@ final class LiveStatus: ObservableObject {
     /// Sign-out, while the Bearer still works: tokens first, then the cards. Asks again
     /// on the next sign-in if it was on.
     func signOut(session: String, email: String) async {
-        await PushTokens(session: session, deviceId: InstallID.get(email: email)).delete()
         if enabled { asked = false }
         enabled = false
+        await PushTokens(session: session, deviceId: InstallID.get(email: email)).delete()
         await stop()
     }
 

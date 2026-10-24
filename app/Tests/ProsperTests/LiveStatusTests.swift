@@ -45,7 +45,7 @@ final class LiveStatusTests: XCTestCase {
 
     /// A wrong type reads as missing instead of failing the push: the card keeps updating.
     func testWrongTypesReadAsMissing() throws {
-        let s = try decode(#"{"v":"1","online":"yes","counts":{"blocked":"2","working":1},"sessions":[{"name":"e","alias":7,"state":3,"agents":"2"}],"more":null}"#)
+        let s = try decode(#"{"v":"1","online":"yes","counts":{"blocked":"2","working":1},"sessions":[{"name":"e","alias":7,"state":3,"agents":"2"}],"more":"2"}"#)
         XCTAssertEqual(s, SessionsStatus(counts: .init(working: 1),
                                          sessions: [.init(name: "e", alias: nil, state: .idle, agents: nil)]))
         XCTAssertEqual(try decode(#"{"counts":{"idle":1},"sessions":[{"state":"idle"}]}"#).sessions, [], "no name, no rows")

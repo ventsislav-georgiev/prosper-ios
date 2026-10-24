@@ -405,7 +405,12 @@ struct SessionListView: View {
                     .onAppear {
                         LiveStatus.shared.attached = LiveTarget(macId: liveMachine?.serverDeviceId, session: open.name)
                     }
-                    .onDisappear { LiveStatus.shared.attached = nil }
+                    .onDisappear {
+                        // Only our own: after a switch the next terminal's onAppear can run first.
+                        if LiveStatus.shared.attached == LiveTarget(macId: liveMachine?.serverDeviceId, session: open.name) {
+                            LiveStatus.shared.attached = nil
+                        }
+                    }
             }
         }
         .alert("Rename session", isPresented: Binding(get: { renaming != nil },
