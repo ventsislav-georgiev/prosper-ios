@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// How a dch agent state reads on screen. Shared by the session list, the notification
-/// text, the Live Activity and the Dynamic Island so the four can't drift apart.
+/// How a dch agent state reads on screen. Shared by the session list and the notification
+/// text so the two can't drift apart.
 ///
 /// `blocked` and `done` are the two worth interrupting someone over: the agent is either
 /// waiting on the user or finished. `working`/`idle` only ever update in place.
@@ -57,32 +57,3 @@ enum SessionStateStyle: String, CaseIterable {
         }
     }
 }
-
-/// What one watched session's Live Activity shows. Lives outside the ActivityKit guard
-/// so the planner can compare it (and CI can test that) without ActivityKit.
-///
-/// `state` stays the raw string: the widget resolves it through `SessionStateStyle`, so
-/// a state a newer Mac invents renders as plain text instead of failing to decode.
-/// `title` and `agents` are optional so an activity started by an older build still
-/// decodes after an update.
-struct SessionActivityDisplay: Codable, Hashable {
-    var state: String
-    /// The label the session list shows — alias, else the Claude Code session name.
-    var title: String? = nil
-    /// Live subagents on the session's Claude Code agent panel.
-    var agents: Int? = nil
-}
-
-#if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
-import ActivityKit
-
-/// Live Activity payload for one watched session — the Dynamic Island / lock-screen
-/// mirror of its agent state. `session` is the real dch name, the activity's identity;
-/// what's displayed (including the label) is content, so a rename updates in place.
-struct SessionActivityAttributes: ActivityAttributes {
-    typealias ContentState = SessionActivityDisplay
-
-    var machine: String
-    var session: String
-}
-#endif

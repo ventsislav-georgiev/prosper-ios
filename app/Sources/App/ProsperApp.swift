@@ -381,7 +381,7 @@ struct SessionListView: View {
             }
             Button("Later", role: .cancel) {}
         } message: {
-            Text("The Dynamic Island still tracks the session, but Prosper can't ping you until notifications are allowed.")
+            Text("Prosper can't ping you about this session until notifications are allowed.")
         }
     }
 
@@ -404,8 +404,7 @@ struct SessionListView: View {
         }
     }
 
-    /// Per-session bell: ping me when this agent needs input or finishes, and put its
-    /// state in the Dynamic Island while it runs.
+    /// Per-session bell: ping me when this agent needs input or finishes.
     @ViewBuilder private func alertToggle(_ s: DchSession) -> some View {
         let on = alerts.isOn(machine: machine?.id, session: s.name)
         Button {
@@ -414,7 +413,6 @@ struct SessionListView: View {
                 // Ask for the banner permission only when someone actually wants one, and
                 // say so if it's denied — a bell that can never ring is worse than no bell.
                 if turnedOn, await !SessionPings.authorize() { pingsDenied = true }
-                await syncActivities(sessions)
             }
         } label: {
             Image(systemName: on ? "bell.fill" : "bell")
@@ -425,7 +423,7 @@ struct SessionListView: View {
     }
 
     /// Poll the sessions' states while the app is in front, ping on the two transitions
-    /// worth interrupting for, and keep the Live Activities in step.
+    /// worth interrupting for.
     ///
     /// Polls whether or not anything is watched: the row's working/idle/blocked label is
     /// the reason to open the list at all, and gating the poll on the bells left it frozen
@@ -460,13 +458,7 @@ struct SessionListView: View {
                                      attached: open?.name) {
                 SessionPings.fire(alert, machine: title)
             }
-            await syncActivities(list)
         }
-    }
-
-    private func syncActivities(_ list: [DchSession]) async {
-        await SessionLiveActivities.shared.sync(machine: title, sessions: list,
-                                                watched: alerts.names(machine: machine?.id, in: list))
     }
 
     private func commitRename(_ alias: String) {

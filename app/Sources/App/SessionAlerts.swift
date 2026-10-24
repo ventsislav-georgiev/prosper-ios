@@ -37,11 +37,6 @@ final class SessionAlerts: ObservableObject {
         return on
     }
 
-    /// Names watched on this machine, for the poller and the Live Activities.
-    func names(machine: UUID?, in sessions: [DchSession]) -> Set<String> {
-        Set(sessions.map(\.name).filter { isOn(machine: machine, session: $0) })
-    }
-
     /// Drop switches for sessions this machine no longer has. Two reasons: a name reused
     /// weeks later shouldn't come back mysteriously pre-watched, and the store shouldn't
     /// collect one dead key per session ever created. Only ever called with a list that
@@ -136,8 +131,7 @@ final class SessionAlertEngine {
 /// is running (foreground, or the few seconds iOS grants after a background switch).
 /// Waking a suspended app needs APNs from the Mac, which is a separate piece of plumbing.
 enum SessionPings {
-    /// Ask once, when the user turns their first switch on. Returns false if denied —
-    /// the Live Activity still works, it's a different permission.
+    /// Ask once, when the user turns their first switch on. Returns false if denied.
     @discardableResult
     static func authorize() async -> Bool {
         (try? await UNUserNotificationCenter.current()

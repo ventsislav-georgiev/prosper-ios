@@ -189,19 +189,6 @@ final class SessionAlertsTests: XCTestCase {
         defaults.removePersistentDomain(forName: "SessionAlertsTests")
     }
 
-    @MainActor
-    func testNamesFiltersToWatchedSessionsPresentInTheList() throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "SessionAlertsTests2"))
-        defaults.removePersistentDomain(forName: "SessionAlertsTests2")
-        let m = UUID()
-        let alerts = SessionAlerts(defaults: defaults)
-        alerts.toggle(machine: m, session: "here")
-        alerts.toggle(machine: m, session: "gone")
-        XCTAssertEqual(alerts.names(machine: m, in: list([("here", "working"), ("other", "idle")])),
-                       ["here"])
-        defaults.removePersistentDomain(forName: "SessionAlertsTests2")
-    }
-
     /// A killed session's switch is forgotten, so recreating that name later doesn't come
     /// back pre-watched — and the store doesn't collect a dead key per session ever made.
     /// Other machines' switches are none of this machine's business.
@@ -253,8 +240,8 @@ final class SessionAlertsTests: XCTestCase {
         XCTAssertNil(SessionStateStyle.idle.ping(session: "api"))
     }
 
-    /// The state mapping is shared with the Dynamic Island, so an unknown value has to
-    /// come back nil (the island draws a neutral dot) rather than a wrong badge.
+    /// An unknown state has to come back nil (the row shows no label) rather than a
+    /// wrong badge.
     func testStateStyleParsing() {
         XCTAssertEqual(SessionStateStyle("blocked"), .blocked)
         XCTAssertEqual(SessionStateStyle("done"), .done)

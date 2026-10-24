@@ -3,7 +3,7 @@ options:
   bundleIdPrefix: eu.illegible
   deploymentTarget:
     iOS: "16.0"
-# Project-wide so the app and the widget always carry the same version: App Store
+# Project-wide so the app and the keyboards always carry the same version: App Store
 # validation rejects an extension whose version drifts from its container.
 settings:
   base:
@@ -34,15 +34,9 @@ targets:
         excludes: ["**/.omc/**"]
     dependencies:
       - package: SwiftTerm
-      # Live Activities need a widget extension to draw them (Dynamic Island +
-      # lock screen). Catalyst has no Live Activities, so the extension compiles
-      # to a stub there (see Widgets/ProsperWidgets.swift).
-      # platformFilter: Catalyst refuses to embed an iOS .appex ("built for iOS, which
-      # is not allowed"), so the extension is an iPhone-only dependency.
-      - target: ProsperWidgets
-        embed: true
-        platformFilter: iOS
-      # The compact keyboard as a system keyboard for every app. iOS-only like the widget.
+      # The compact keyboard as a system keyboard for every app. iOS-only:
+      # platformFilter because Catalyst refuses to embed an iOS .appex ("built for iOS,
+      # which is not allowed").
       - target: ProsperKeyboard
         embed: true
         platformFilter: iOS
@@ -53,7 +47,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios
-        INFOPLIST_KEY_NSSupportsLiveActivities: YES
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Prosper
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -76,32 +69,6 @@ targets:
         # ponytail: local dev builds run unsigned (no team needed). CI signs for
         # TestFlight via the App Store Connect API key (see .github/workflows).
         CODE_SIGNING_ALLOWED: NO
-  # Draws the watched-session Live Activity. Shares only Sources/Shared with the app —
-  # the extension must stay tiny (it's launched by the system, not by us).
-  ProsperWidgets:
-    type: app-extension
-    platform: iOS
-    deploymentTarget: "16.2"
-    sources:
-      - path: Widgets
-      - path: Sources/Shared
-    # NSExtension has to be a real plist dict — INFOPLIST_KEY_NSExtensionPointIdentifier
-    # is silently dropped by the generated plist, and an appex without it never loads.
-    info:
-      path: Widgets/Info.plist
-      properties:
-        CFBundleDisplayName: Prosper
-        CFBundleShortVersionString: $(MARKETING_VERSION)
-        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.widgetkit-extension
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.widgets
-        SWIFT_VERSION: "5.9"
-        TARGETED_DEVICE_FAMILY: "1,2"
-        SKIP_INSTALL: YES
-        CODE_SIGNING_ALLOWED: NO
   # The compact keyboard as an iOS custom keyboard. Shares only Sources/Keys with the app
   # and must not link SwiftTerm: the system launches it under a ~50-70 MB memory cap.
   ProsperKeyboard:
@@ -110,7 +77,8 @@ targets:
     sources:
       - path: Keyboard
       - path: Sources/Keys
-    # A real NSExtension dict, for the reason in ProsperWidgets above.
+    # NSExtension has to be a real plist dict — INFOPLIST_KEY_NSExtensionPointIdentifier
+    # is silently dropped by the generated plist, and an appex without it never loads.
     info:
       path: Keyboard/Info.plist
       properties:
