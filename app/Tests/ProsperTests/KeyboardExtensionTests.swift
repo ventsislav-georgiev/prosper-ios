@@ -11,7 +11,7 @@ final class KeyboardExtensionTests: XCTestCase {
     /// A host text field as the extension sees it: the text before the cursor, and the
     /// field's traits. SuggestionsTests uses it too.
     final class FakeProxy: NSObject, UITextDocumentProxy {
-        var text = ""
+        var text = "" { didSet { units = nil } }
         var calls: [String] = []
         var autocapitalizationType: UITextAutocapitalizationType = .sentences
         var keyboardType: UIKeyboardType = .default
@@ -19,22 +19,77 @@ final class KeyboardExtensionTests: XCTestCase {
         var spellCheckingType: UITextSpellCheckingType = .default
         var textContentType: UITextContentType! = nil
         var isSecureTextEntry = false
-        var documentContextBeforeInput: String? { text }
-        var after: String?
-        var documentContextAfterInput: String? { after }
+        /// Both contexts are nil, as some hosts' fields show none.
+        var hidesContext = false
+        var documentContextBeforeInput: String? {
+            if hidesContext { return nil }
+            var u = Array(((guess ?? shown)?.before ?? text).utf16)
+            if lineBefore, let i = u.lastIndex(of: 0x0A) { u = i == u.count - 1 ? [0x0A] : Array(u[(i + 1)...]) }
+            return String(decoding: u.suffix(window ?? u.count), as: UTF16.self)
+        }
+        /// The before-context is the caret's line, and only its LF at a line's start, as a
+        /// UITextView's is.
+        var lineBefore = false
+        /// Each context is this many units either side of the caret, sliding with it, as
+        /// Safari's is.
+        var window: Int?
+        var after: String? { didSet { units = nil } }
+        var documentContextAfterInput: String? {
+            if hidesContext { return nil }
+            let a = (guess ?? shown).map(\.after) ?? after
+            let cut = stopsAtLineEnd ? a.map { String($0.utf16.prefix { $0 != 0x0A && $0 != 0x0D }) ?? "" } : a
+            return window.flatMap { w in cut.map { String(decoding: Array($0.utf16.prefix(w)), as: UTF16.self) } } ?? cut
+        }
+        /// The after-context stops at the caret line's end, as a host's does.
+        var stopsAtLineEnd = false
         var selectedText: String? { nil }
         var documentInputMode: UITextInputMode? { nil }
-        var documentIdentifier: UUID { UUID() }
+        let documentIdentifier = UUID()
         var hasText: Bool { !text.isEmpty }
         func insertText(_ s: String) { text += s; calls.append(s) }
         func deleteBackward() { _ = text.popLast(); calls.append("⌫") }
         /// Every caret move, as asked; the caret moves within `text` + `after`.
         var moves: [Int] = []
+        /// Where each move left the caret, in UTF-16 units from the start.
+        var stops: [Int] = []
+        /// Moves count UTF-16 units, as UIKit hosts do, not Characters, as WebKit does: they
+        /// can stop inside a Character, whose halves then show as U+FFFD.
+        var countsUTF16 = false
+        /// The context shows each move only after `catchUp()`, or the next after
+        /// `showNext()`, as a host's lags.
+        var lags = false
+        /// The context before each move not shown yet.
+        private var unshown: [(before: String, after: String?)] = []
+        private var shown: (before: String, after: String?)? { unshown.first }
+        /// The text and the caret in units, which a split context can't keep.
+        private var units: (all: [UInt16], at: Int)?
+        /// Right after each move the context shows it taken as Characters until `answer()`
+        /// or `catchUp()`, as UIKit's proxy guesses before the host answers.
+        var guesses = false
+        private var guess: (before: String, after: String?)?
+        func answer() { guess = nil }
+        func catchUp() { unshown = []; guess = nil }
+        func showNext() { if !unshown.isEmpty { unshown.removeFirst() } }
         func adjustTextPosition(byCharacterOffset offset: Int) {
             moves.append(offset)
-            let all = text + (after ?? ""), at = min(max(text.count + offset, 0), all.count)
-            text = String(all.prefix(at))
-            after = String(all.dropFirst(at))
+            if lags { unshown.append((text, after)) }
+            if guesses {
+                let all = text + (after ?? ""), at = min(max(text.count + offset, 0), all.count)
+                guess = (String(all.prefix(at)), String(all.dropFirst(at)))
+            }
+            if countsUTF16 {
+                let u = units ?? (Array((text + (after ?? "")).utf16), text.utf16.count)
+                let at = min(max(u.at + offset, 0), u.all.count)
+                text = String(decoding: u.all[..<at], as: UTF16.self)
+                after = String(decoding: u.all[at...], as: UTF16.self)
+                units = (u.all, at)
+            } else {
+                // WebKit ignores a move past either end of its text.
+                let all = text + (after ?? ""), to = text.count + offset, at = (0...all.count).contains(to) ? to : text.count
+                text = String(all.prefix(at))
+                after = String(all.dropFirst(at))
+            }
+            stops.append(text.utf16.count)
         }
         func setMarkedText(_ markedText: String, selectedRange: NSRange) {}
         func unmarkText() {}
@@ -448,5 +503,460 @@ final class KeyboardExtensionTests: XCTestCase {
             kb.press(.char("o")); kb.press(.space); kb.press(.space)
             XCTAssertEqual(doc.text, on ? "o. " : "o  ")
         }
+    }
+
+    // MARK: Trackpad in a host field
+
+    /// Emoji, a ZWJ family, two flags, a CR LF, a combining accent, a keycap and a heart
+    /// with its variation selector, between plain letters.
+    private static let mixed = "a😀b👨‍👩‍👧c🇧🇬🇺🇸d\r\ne\u{301}1️⃣❤️f"
+    /// QA's texts: two emoji; CR LF line breaks; a family, a flag, a keycap, an accent and a
+    /// skin tone; one emoji over and over; and a line long enough for Safari's windows to slide.
+    private static let texts = [
+        mixed, "ab😀cd😀ef", "abcdef\r\nab\r\nabcdefgh", "a👨‍👩‍👧b🇧🇬c1️⃣de\u{301}f👍🏽g", "😀😀😀😀",
+        String(repeating: "ab😀cd😀ef ", count: 30),
+    ]
+
+    /// Where the caret may stop in `s`, in UTF-16 units: between two Characters.
+    private func boundaries(_ s: String) -> [Int] { s.indices.map { s[..<$0].utf16.count } + [s.utf16.count] }
+
+    /// A UITextView's proxy (`kit`): moves count units, the before-context is the caret's
+    /// line, the after-context stops at its end, and right after a move it shows its guess.
+    /// Else Safari's: moves count Characters, each context 100 units either side.
+    private func host(kit: Bool, _ before: String, _ after: String = "") -> FakeProxy {
+        let doc = FakeProxy()
+        doc.text = before; doc.after = after
+        doc.countsUTF16 = kit; doc.lineBefore = kit; doc.stopsAtLineEnd = kit; doc.guesses = kit
+        doc.window = kit ? nil : 100
+        return doc
+    }
+
+    /// Steps through `walk` as the view sends them: the host catching up after every
+    /// `perRefresh` of them (0: its context never lags), then polled until the walk is
+    /// idle, the walk settled from the third poll after a move and timing out after 15.
+    private func drive(_ walk: inout CaretWalk, _ doc: FakeProxy, _ steps: [Int], perRefresh: Int) {
+        var polls = 0
+        func step(_ n: Int) {
+            let units = walk.step(n, before: doc.documentContextBeforeInput ?? "", after: doc.documentContextAfterInput ?? "",
+                                  settled: polls >= 3)
+            if units != 0 { doc.adjustTextPosition(byCharacterOffset: units); polls = 0 }
+        }
+        doc.lags = perRefresh > 0
+        for (i, n) in steps.enumerated() {
+            step(n)
+            if perRefresh > 0, (i + 1) % perRefresh == 0 { doc.catchUp(); step(0) }
+        }
+        for _ in 0..<200 where !walk.idle {
+            doc.catchUp()
+            polls += 1
+            if polls > 15 { walk.timedOut() }
+            step(0)
+        }
+    }
+
+    func testSplitsSeesEveryWayACharacterCanBeCut() {
+        let cuts: [(String, String)] = [
+            ("ab\u{FFFD}", "\u{FFFD}cd"), ("\r", "\n"), ("\r", ""), ("e", "\u{301}"), ("❤", "\u{FE0F}"),
+            ("1", "\u{FE0F}\u{20E3}"), ("👨\u{200D}", "👩\u{200D}👧"), ("👨\u{200D}👩", "\u{200D}👧"),
+        ]
+        for (b, a) in cuts { XCTAssertTrue(CaretWalk.splits(before: b, after: a), "\(b.debugDescription) | \(a.debugDescription)") }
+        let whole: [(String, String)] = [
+            ("ab", "cd"), ("😀", "b"), ("a", "😀"), ("🇧🇬", "🇺🇸"), ("\r\n", "e"), ("d", "\r\n"), ("", "x"), ("x", ""),
+            ("👨‍👩‍👧", "c"), ("e\u{301}", "1️⃣"), ("\n", ""),
+        ]
+        for (b, a) in whole { XCTAssertFalse(CaretWalk.splits(before: b, after: a), "\(b.debugDescription) | \(a.debugDescription)") }
+    }
+
+    /// Both hosts, every lag, each of `texts`: drags past either end stop there, and one
+    /// step at a time, either way, stops on each Character boundary in turn, none skipped.
+    /// A UITextView's caret never stops inside a Character, even before the walk knows the
+    /// host, but for a moment between a CR and the LF its line-cut context hides; it's
+    /// never taken for a host counting Characters. Safari's is learned and its overshoots
+    /// come back.
+    func testTheWalkStopsOnlyBetweenCharactersInEitherHost() {
+        for text in Self.texts {
+            let ends = boundaries(text), n = ends.count - 1, u = Array(text.utf16)
+            let crlf = u.indices.dropFirst().filter { u[$0 - 1] == 0x0D && u[$0] == 0x0A }
+            for kit in [true, false] {
+                for perRefresh in [0, 1, 3, 100] {
+                    let at = "\(text.prefix(12).debugDescription) kit \(kit) lag \(perRefresh)"
+                    var docs: [FakeProxy] = [], walks: [CaretWalk] = []
+                    let doc = host(kit: kit, text)
+                    var walk = CaretWalk()
+                    drive(&walk, doc, Array(repeating: -1, count: n + 2), perRefresh: perRefresh)
+                    XCTAssertEqual(doc.text.utf16.count, 0, at)
+                    drive(&walk, doc, Array(repeating: 1, count: n + 2), perRefresh: perRefresh)
+                    XCTAssertEqual(doc.text.utf16.count, u.count, at)
+                    docs.append(doc); walks.append(walk)
+                    for dir in [1, -1] {
+                        let doc = dir > 0 ? host(kit: kit, "", text) : host(kit: kit, text)
+                        var walk = CaretWalk()
+                        for k in 1...n {
+                            drive(&walk, doc, [dir], perRefresh: perRefresh)
+                            XCTAssertEqual(doc.text.utf16.count, ends[dir > 0 ? k : n - k], "\(at) dir \(dir) step \(k)")
+                        }
+                        docs.append(doc); walks.append(walk)
+                    }
+                    for (doc, walk) in zip(docs, walks) {
+                        if kit {
+                            XCTAssertNotEqual(walk.utf16, false, at)
+                            let bad = doc.stops.filter { !ends.contains($0) && !crlf.contains($0) }
+                            XCTAssertEqual(bad, [], "\(at): stopped inside a Character")
+                        } else {
+                            XCTAssertEqual(walk.utf16, false, at)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// QA's run in 400 x's from the middle, and one of emoji: Safari's windows read the
+    /// same after every move, so the walk takes them as landed when it stops waiting, and
+    /// an emoji's units, unseen, as WebKit going that many Characters.
+    func testALongRunOfOneCharacterLosesNoSteps() {
+        for (kit, run) in [true, false].flatMap({ k in ["x", "😀"].map { (k, String(repeating: $0, count: 200)) } }) {
+            for perRefresh in [0, 1, 3, 100] {
+                let doc = host(kit: kit, run, run)
+                var walk = CaretWalk()
+                drive(&walk, doc, Array(repeating: -1, count: 5), perRefresh: perRefresh)
+                XCTAssertEqual(doc.text.count, 195, "\(run.prefix(1)) kit \(kit) lag \(perRefresh)")
+                drive(&walk, doc, Array(repeating: 1, count: 3), perRefresh: perRefresh)
+                XCTAssertEqual(doc.text.count, 198, "\(run.prefix(1)) kit \(kit) lag \(perRefresh)")
+                drive(&walk, doc, Array(repeating: -1, count: 12), perRefresh: perRefresh)
+                XCTAssertEqual(doc.text.count, 186, "\(run.prefix(1)) kit \(kit) lag \(perRefresh)")
+            }
+        }
+    }
+
+    /// Safari's overshoot at either end of the document comes back to where it was asked,
+    /// and a move it ignores, past the end, goes again in Characters (QA's test58c). In a
+    /// UITextView "right 3" over "a b 😀" lands past the emoji, never inside it (QA's
+    /// M220). Left over a CR LF from a line's start, where the context shows only the LF,
+    /// finishes the crossing (report-307's bug 2).
+    func testOvershootsAndClampsAtTheEnds() {
+        let cases: [(String, String, Int, Int, [Int], [Int])] = [
+            // before, after, steps, where it ends in units, UITextView's moves, Safari's
+            ("", "a😀b", 2, 3, [1, 2], [1, 2, -1]),
+            ("a😀b", "", -2, 1, [-1, -2], [-1, -2, 1]),
+            ("ab", "😀", 1, 4, [2], [2, 1]),
+            ("😀", "cd", -1, 0, [-2], [-2, -1]),
+            ("", "ab😀", 3, 4, [1, 1, 2], [1, 1, 2, 1]),
+            ("abcdef\r\nab\r\na", "bcdefgh", -2, 10, [-1, -1, -1], [-1, -2, 1]),
+            ("x", "😀😀😀y", 3, 7, [2, 4], [2, -1, 2]),
+            ("y😀😀😀", "x", -3, 1, [-2, -4], [-2, 1, -2]),
+            // Safari's windows slid, nothing after the overshoot: only the before side tells.
+            (String(repeating: "x", count: 120), "😀😀", 1, 122, [2], [2, -1]),
+            // QA's test58c: before the last of six "ab😀👍🏽" in a fresh field.
+            (String(String(repeating: "ab😀👍🏽", count: 6).dropLast()), "👍🏽", 1, 48, [4], [4, 1]),
+        ]
+        for (before, after, steps, end, kitMoves, webMoves) in cases {
+            for kit in [true, false] {
+                let doc = host(kit: kit, before, after)
+                var walk = CaretWalk()
+                drive(&walk, doc, Array(repeating: steps.signum(), count: abs(steps)), perRefresh: 100)
+                XCTAssertEqual(doc.text.utf16.count, end, "\(before.debugDescription) kit \(kit)")
+                XCTAssertEqual(doc.moves, kit ? kitMoves : webMoves, "\(before.debugDescription) kit \(kit)")
+            }
+        }
+        // A UITextView's line start shows only the LF before it: only the after side tells.
+        let doc = host(kit: true, "ab\n", "😀😀x")
+        var walk = CaretWalk()
+        drive(&walk, doc, [1], perRefresh: 1)
+        XCTAssertEqual(walk.utf16, true, "learned at a line's start")
+    }
+
+    /// Holds space and drags it by each of `offsets` caret steps in turn, the host never
+    /// catching up mid-drag, then lifts and (`settle`) lets the host catch up as the poll
+    /// timer does.
+    private func drag(_ kb: TerminalKeyboard, _ doc: FakeProxy, _ offsets: [CGFloat], settle: Bool = true) throws {
+        let space = try XCTUnwrap(laidOut(kb)["space"]).frame
+        var p = CGPoint(x: space.midX, y: space.midY)
+        doc.lags = true
+        kb.track(.began, id: 1, at: p)
+        kb.fireHold()
+        for o in offsets {
+            p.x += o * KeyTouchTracker.caretStep
+            kb.track(.moved, id: 1, at: p)
+        }
+        kb.track(.ended, id: 1, at: p)
+        for _ in 0..<(settle ? 20 : 0) { doc.catchUp(); kb.pollCaret() }
+    }
+
+    /// Types `key` with a tap.
+    private func tap(_ kb: TerminalKeyboard, _ key: String) throws {
+        let p = try XCTUnwrap(laidOut(kb)[key]).center
+        kb.track(.began, id: 2, at: p)
+        kb.track(.ended, id: 2, at: p)
+    }
+
+    /// QA's case through the keyboard: one step left over an emoji, a CR LF or a family,
+    /// then a letter. A UIKit host takes it in one move of its units; a WebKit host goes
+    /// that many Characters and comes back. The letter lands whole beside it either way.
+    func testATrackpadStepThenALetterNeverBreaksAnEmojiOrACRLF() throws {
+        for utf16 in [false, true] {
+            for (before, after, typed, units) in [
+                ("ab😀", "cd", "abz😀cd", -2), ("ab\r\n", "cd", "abz\r\ncd", -2), ("x👨‍👩‍👧", "", "xz👨‍👩‍👧", -8),
+            ] {
+                let back = typed.hasPrefix("x") ? -1 : 1
+                let kb = TerminalKeyboard(), doc = FakeProxy()
+                kb.target = doc
+                doc.countsUTF16 = utf16
+                doc.text = before; doc.after = after
+                try drag(kb, doc, [-1.2])
+                try tap(kb, "z")
+                XCTAssertEqual(doc.text + (doc.after ?? ""), typed, "\(utf16)")
+                XCTAssertEqual(doc.moves, utf16 ? [units] : [units, back], "\(utf16) \(typed.debugDescription)")
+            }
+        }
+        let kb = TerminalKeyboard(), doc = FakeProxy()
+        kb.target = doc
+        doc.countsUTF16 = true
+        doc.text = Self.mixed
+        try drag(kb, doc, Array(repeating: -1, count: 5))
+        XCTAssertEqual(doc.text, "a😀b👨‍👩‍👧c🇧🇬🇺🇸d", "five back, the drag never waiting for the host")
+        XCTAssertTrue(doc.stops.allSatisfy(boundaries(Self.mixed).contains), "\(doc.stops)")
+        try drag(kb, doc, [-1, -1, -1])
+        XCTAssertEqual(doc.text, "a😀b👨‍👩‍👧c", "three back")
+        try drag(kb, doc, [2])
+        XCTAssertEqual(doc.text, "a😀b👨‍👩‍👧c🇧🇬🇺🇸", "and two on")
+        XCTAssertEqual(doc.moves.suffix(3), [-1, -8, 8], "the flags in one move each way, sized in units")
+    }
+
+    /// What the walk learned in one field is forgotten in the next (QA's M217): Safari's
+    /// Characters, then a UITextView's emoji crossed at its units, never one.
+    func testANewFieldForgetsHowTheLastCounted() throws {
+        let kb = TerminalKeyboard(), web = host(kit: false, "ab", "😀cd")
+        kb.target = web
+        try drag(kb, web, [1])
+        XCTAssertEqual(web.moves, [2, -1], "learned: Safari counts Characters")
+        let kit = host(kit: true, "ab", "😀cd")
+        kb.target = kit
+        try drag(kb, kit, [1])
+        XCTAssertEqual(kit.moves, [2])
+        XCTAssertEqual(kit.stops, [4])
+    }
+
+    /// A step past the document's end never shows, so the poll limit lets the steps after
+    /// it through, in the same hold (QA's M219).
+    func testThePollLimitLetsTheNextStepsThrough() throws {
+        let kb = TerminalKeyboard(), doc = host(kit: true, "abc")
+        kb.target = doc
+        let space = try XCTUnwrap(laidOut(kb)["space"]).frame
+        var p = CGPoint(x: space.midX, y: space.midY)
+        kb.track(.began, id: 1, at: p)
+        kb.fireHold()
+        p.x += KeyTouchTracker.caretStep
+        kb.track(.moved, id: 1, at: p)
+        for _ in 0..<20 { kb.pollCaret() }
+        p.x -= KeyTouchTracker.caretStep
+        kb.track(.moved, id: 1, at: p)
+        kb.track(.ended, id: 1, at: p)
+        XCTAssertEqual(doc.moves, [1, -1])
+        XCTAssertEqual(doc.text, "ab")
+    }
+
+    /// A key touched before the poll saw a CR LF split first finishes the crossing, so the
+    /// letter goes after the line break, not inside it.
+    func testATouchFinishesACrossingBeforeTyping() throws {
+        let kb = TerminalKeyboard(), doc = host(kit: true, "ab", "\r\ncd")
+        kb.target = doc
+        try drag(kb, doc, [1], settle: false)
+        doc.catchUp()
+        try tap(kb, "z")
+        XCTAssertEqual(doc.text + (doc.after ?? ""), "ab\r\nzcd")
+    }
+
+    /// A field that shows no context even after a move gets the steps queued behind it,
+    /// and every later one in that hold, as asked, until it shows some.
+    func testAFieldThatNeverShowsContextGetsStepsAsAsked() throws {
+        var walk = CaretWalk()
+        XCTAssertEqual(walk.step(-5, before: "", after: ""), -1)
+        XCTAssertFalse(walk.idle)
+        walk.timedOut()
+        XCTAssertTrue(walk.blank)
+        XCTAssertEqual(walk.step(0, before: "", after: ""), -4)
+        XCTAssertTrue(walk.idle)
+        XCTAssertEqual(walk.step(3, before: "", after: ""), 3)
+        XCTAssertEqual(walk.step(1, before: "", after: "😀x"), 2, "context again: sized")
+        XCTAssertFalse(walk.blank)
+        let kb = TerminalKeyboard(), doc = FakeProxy()
+        kb.target = doc
+        doc.hidesContext = true
+        doc.text = "abcdef"
+        try drag(kb, doc, [-5])
+        try drag(kb, doc, [2])
+        XCTAssertEqual(doc.moves, [-1, -4, 1, 1], "each hold looks for context again")
+        XCTAssertEqual(doc.text, "abc")
+    }
+
+    /// A UITextView's caret at an empty first line shows no context, and the emoji past
+    /// the line break is never split: in one move, or two while the host lags, even
+    /// straight after a field that shows none.
+    func testAnEmptyLineBeforeAnEmojiIsNoFieldWithoutContext() throws {
+        for lagged in [false, true] {
+            let kb = TerminalKeyboard(), blank = FakeProxy()
+            kb.target = blank
+            blank.hidesContext = true
+            blank.text = "ab"
+            try drag(kb, blank, [-1])
+            XCTAssertEqual(blank.moves, [-1])
+            let doc = host(kit: true, "", "\n😀x")
+            kb.target = doc
+            doc.lags = lagged
+            if lagged { kb.caret(1); kb.caret(1) } else { kb.caret(2) }
+            for _ in 0..<20 { doc.catchUp(); kb.pollCaret() }
+            XCTAssertEqual(doc.text.utf16.count, 3, "lagged \(lagged)")
+            XCTAssertTrue(doc.stops.allSatisfy(boundaries("\n😀x").contains), "lagged \(lagged): \(doc.stops)")
+        }
+    }
+
+    /// A field taken for one showing no context is looked at again at the next hold: a
+    /// UITextView's empty document, then text typed and the caret back at its empty first
+    /// line, where a fast drag right 2 still never splits the emoji after the line break.
+    func testEachHoldLooksForContextAgain() throws {
+        let kb = TerminalKeyboard(), doc = host(kit: true, "")
+        kb.target = doc
+        try drag(kb, doc, [1])
+        doc.text = ""; doc.after = "\n😀x"
+        try drag(kb, doc, [2])
+        XCTAssertEqual(doc.text.utf16.count, 3)
+        XCTAssertTrue(doc.stops.allSatisfy(boundaries("\n😀x").contains), "\(doc.stops)")
+    }
+
+    /// A move that never shows stops the polling after 2 s, still waited on: the next step
+    /// polls again without sizing from the stale context.
+    func testAMoveThatNeverShowsStopsThePolling() {
+        let kb = TerminalKeyboard(), doc = host(kit: true, "", "ab😀x")
+        kb.target = doc
+        doc.lags = true
+        doc.guesses = false
+        kb.caret(1)
+        for _ in 0..<99 { kb.pollCaret() }
+        XCTAssertNotNil(kb.walkTimer)
+        kb.pollCaret()
+        XCTAssertNil(kb.walkTimer)
+        kb.caret(1)
+        XCTAssertNotNil(kb.walkTimer)
+        XCTAssertEqual(doc.moves, [1], "still waiting on the first")
+        for _ in 0..<5 { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(doc.moves, [1, 1])
+        XCTAssertNil(kb.walkTimer)
+    }
+
+    /// A UITextView slower than the poll limit, its context showing one move at a time:
+    /// a move that can show never counts as landed before it does, so the step behind it
+    /// is never sized from the text before it and the emoji after the run stays whole.
+    func testASlowHostNeverHasAnEmojiSplitBehindAPlainMove() {
+        let doc = host(kit: true, "", "ab😀x")
+        doc.lags = true
+        doc.guesses = false
+        var walk = CaretWalk()
+        func step(_ n: Int) {
+            let units = walk.step(n, before: doc.documentContextBeforeInput ?? "", after: doc.documentContextAfterInput ?? "")
+            if units != 0 { doc.adjustTextPosition(byCharacterOffset: units) }
+        }
+        func poll(_ times: Int) { for p in 1...times { if p > 15 { walk.timedOut() }; step(0) } }
+        step(1)
+        poll(20)
+        step(1)
+        doc.showNext()
+        poll(1)
+        step(1)
+        for _ in 0..<20 { doc.showNext(); poll(1) }
+        XCTAssertEqual(doc.text.utf16.count, 4)
+        XCTAssertTrue(doc.stops.allSatisfy(boundaries("ab😀x").contains), "\(doc.stops)")
+    }
+
+    /// QA's report-311: a UITextView whose proxy shows its guess, the move taken as
+    /// Characters, for 10 polls after each move, longer than the walk's 40 ms. Fast right
+    /// 2 from an empty first line, and fast left 3 over a skin-tone thumb, a space and a
+    /// letter, while the walk doesn't know the host: the guess reads as WebKit going too
+    /// far, and its step back would land inside the emoji. It never goes.
+    func testUIKitsGuessIsNeverTakenForWebKit() {
+        for (before, after, steps, end) in [("", "\n😀x", 2, 3), ("abcdef👍🏽 l", "", -3, 6)] {
+            let kb = TerminalKeyboard(), doc = host(kit: true, before, after)
+            kb.target = doc
+            kb.caret(steps)
+            for i in 1...60 { if i % 10 == 0 { doc.answer() }; kb.pollCaret() }
+            XCTAssertEqual(doc.text.utf16.count, end, before + after)
+            XCTAssertTrue(doc.stops.allSatisfy(boundaries(before + after).contains), "\(doc.stops)")
+        }
+    }
+
+    /// A blind unit off a line's end before a CR LF: UIKit's guess shows it past the line
+    /// break, the host between CR and LF. The view believes no context for 40 ms, so the
+    /// emoji after is sized from the host's answer, never the guess.
+    func testTheViewWaitsOutAGuessAtALineBreak() {
+        let kb = TerminalKeyboard(), doc = host(kit: true, "ab", "\r\n😀x")
+        kb.target = doc
+        kb.caret(2)
+        for i in 1...30 { if i % 2 == 0 { doc.answer() }; kb.pollCaret() }
+        XCTAssertEqual(doc.text.utf16.count, 6)
+        XCTAssertTrue(doc.stops.allSatisfy { boundaries("ab\r\n😀x").contains($0) || $0 == 3 }, "\(doc.stops)")
+    }
+
+    /// Once a host is known to count units, a context reading as the move taken in
+    /// Characters is the proxy's guess: the steps behind wait for the host's answer rather
+    /// than be sized from it.
+    func testAKnownUIKitHostsGuessSizesNothing() {
+        let doc = host(kit: true, "ab😀c😀")
+        var walk = CaretWalk()
+        walk.utf16 = true
+        func step(_ n: Int) {
+            let units = walk.step(n, before: doc.documentContextBeforeInput ?? "", after: doc.documentContextAfterInput ?? "")
+            if units != 0 { doc.adjustTextPosition(byCharacterOffset: units) }
+        }
+        step(-1)
+        step(-1)
+        XCTAssertEqual(doc.moves, [-2], "the guess shows: wait")
+        doc.answer()
+        step(0)
+        XCTAssertEqual(doc.stops, [5, 4])
+    }
+
+    /// A host wrongly taken for WebKit learns its units at the first split: one emoji is
+    /// cut for a moment, then none.
+    func testASplitTeachesUnits() {
+        let doc = host(kit: true, "", "😀😀😀")
+        var walk = CaretWalk()
+        walk.utf16 = false
+        drive(&walk, doc, [1, 1, 1], perRefresh: 1)
+        XCTAssertEqual(walk.utf16, true)
+        XCTAssertEqual(doc.stops.filter { !boundaries("😀😀😀").contains($0) }, [1])
+        XCTAssertEqual(doc.text.utf16.count, 6)
+    }
+
+    /// A host that shows nothing until it answers, slower than the poll limit, over a run
+    /// of x's whose line ends before an emoji: a move taken as landed where it reads the
+    /// same is reckoned there, and the reckoning is dropped once the host shows a move,
+    /// so no step behind is sized from where the caret was.
+    func testAReckonedMoveSizesTheNextUntilTheHostShows() {
+        for (after, first, second) in [("xxx\n😀y", 2, 3), ("xxxx\n😀y", 1, 2)] {
+            let doc = host(kit: true, "", after)
+            doc.lags = true
+            doc.guesses = false
+            var walk = CaretWalk()
+            func step(_ n: Int) {
+                let units = walk.step(n, before: doc.documentContextBeforeInput ?? "", after: doc.documentContextAfterInput ?? "")
+                if units != 0 { doc.adjustTextPosition(byCharacterOffset: units) }
+            }
+            step(first)
+            for _ in 0..<16 { walk.timedOut(); step(0) }
+            step(second)
+            if first == 1 { doc.catchUp(); step(0); step(3) }
+            for _ in 0..<20 { doc.catchUp(); step(0) }
+            XCTAssertTrue(doc.stops.allSatisfy(boundaries(after).contains), "\(after.debugDescription): \(doc.stops)")
+        }
+    }
+
+    /// A context neither landing explains (the text changed under the move) teaches the
+    /// walk nothing about the host.
+    func testAContextNeitherLandingExplainsTeachesNothing() {
+        var walk = CaretWalk()
+        XCTAssertEqual(walk.step(1, before: "", after: "😀ab"), 2)
+        XCTAssertEqual(walk.step(0, before: "q", after: "r"), 0)
+        XCTAssertNil(walk.utf16)
+        XCTAssertTrue(walk.idle)
     }
 }

@@ -265,6 +265,184 @@ struct KeyTouchTracker {
     mutating func reset() { touches.removeAll() }
 }
 
+/// Trackpad steps through a host field's document proxy, whose `adjustTextPosition` counts
+/// Characters (WebKit) or UTF-16 units (UIKit), and whose context lags each move until the
+/// host round-trips. The host isn't named, and UIKit's keyboard daemon can crash when the
+/// caret lands inside a surrogate pair, so no move is ever sized to land inside one:
+/// - One move is in flight at a time: steps queue until the context changes from the one
+///   the move left, and the next move is sized from the context then.
+/// - A Character goes at its UTF-16 length unless the host is known to count Characters
+///   (`utf16` false): UIKit lands exactly, WebKit goes further, by whole Characters.
+/// - Until the host is known, a move is no longer in units than the Characters in sight,
+///   and the context after it tells which happened (`countedUnits`): WebKit's overshoot
+///   goes back, and the host is known from then on.
+/// - Right after a move UIKit's proxy shows its own guess, the move taken as Characters,
+///   until the host answers with its units. A context after a move that isn't plain is
+///   believed only 40 ms on (`settled`), unless it splits a Character, which no guess
+///   does; a WebKit landing only once the view stops waiting (`timedOut`), and once the
+///   host is known to count units, never.
+/// - Past the end of the context (a line's or the document's) one unit goes blind, and
+///   any move that lands inside a Character (a CR LF) gets one more unit the same way.
+/// - A move that can't show (a long run of one character in WebKit's fixed windows) is
+///   taken as landed when the view stops waiting (`timedOut`).
+/// - A field whose context stays empty after a move gets every step as asked (`blank`).
+struct CaretWalk {
+    /// The host counts UTF-16 units; nil until a move shows which.
+    var utf16: Bool?
+    /// Steps asked for and not sent yet, negative left.
+    private(set) var queued = 0
+    /// The move in flight: the proxy's context it left (`seen`), the context it was sized
+    /// from, its direction, the Characters it crossed and the units it sent, and whether
+    /// they were all single units and no line break, or the move was blind, and whether
+    /// the view stopped waiting for it (`late`).
+    private var sent: (seen: (String, String), before: String, after: String,
+                       dir: Int, chars: Int, units: Int, plain: Bool, blind: Bool, late: Bool)?
+    /// The field showed no context even after a move (`timedOut`): nothing to size by or
+    /// see a split in, so steps go as asked until it shows some.
+    var blank = false
+    /// Where the walk reckons the caret is while the proxy still shows `seen`.
+    private var reckoned: (seen: (String, String), before: String, after: String)?
+    var idle: Bool { sent == nil && queued == 0 }
+
+    /// `steps` more Characters, negative left (0 checks the move in flight), given the
+    /// proxy's context now, and whether 40 ms have passed since the last move (`settled`):
+    /// the units to move it now.
+    mutating func step(_ steps: Int, before b: String, after a: String, settled: Bool = true) -> Int {
+        if !b.isEmpty || !a.isEmpty { blank = false }
+        if blank { defer { queued = 0 }; return queued + steps }
+        queued += steps
+        if let r = reckoned, !Self.same(r.seen, b, a) { reckoned = nil }
+        if let s = sent {
+            if Self.same(s.seen, b, a) {
+                // Nothing shown when the view stopped waiting: UIKit's proxy shows at least its
+                // guess, so WebKit, which ignored a move past the end of its text (again, in
+                // Characters) or went its units in Characters where its windows read the same.
+                guard s.late, utf16 == nil, s.units != s.chars else { return 0 }
+                utf16 = false
+                queued += s.dir * (s.units > (s.dir < 0 ? s.before : s.after).count ? s.chars : s.chars - s.units)
+            } else if Self.splits(before: b, after: a) {
+                utf16 = true
+                return send(s.dir, (b, a), b, a, dir: s.dir, chars: 1)
+            } else if !s.plain, !settled {
+                return 0   // UIKit's guess, maybe: a line break crossed in Characters
+            } else if utf16 != false, s.units != s.chars, let back = Self.countedUnits(
+                before: s.before, after: s.after, dir: s.dir, chars: s.chars, units: s.units,
+                nowBefore: b, nowAfter: a) {
+                if back > 0 {
+                    guard utf16 == nil, s.late else { return 0 }   // UIKit's guess, maybe
+                    utf16 = false
+                    return send(-s.dir * back, (b, a), b, a, dir: -s.dir, chars: back)
+                }
+                utf16 = true
+            }
+            sent = nil
+        }
+        guard queued != 0 else { return 0 }
+        let (before, after) = reckoned.map { ($0.before, $0.after) } ?? (b, a)
+        let d = queued.signum(), ahead = d < 0 ? Array(before.reversed()) : Array(after)
+        var units = 0, n = 0, plain = true
+        for c in ahead.prefix(abs(queued)) {
+            let w = utf16 == false ? 1 : c.utf16.count
+            if utf16 == nil, n > 0, units + w > ahead.count { break }   // WebKit's overshoot stays in sight
+            units += w
+            n += 1
+            plain = plain && c.utf16.count == 1 && !c.isNewline
+        }
+        if n == 0 { queued -= d; return send(d, (b, a), before, after, dir: d, chars: 1, blind: true) }
+        queued -= d * n
+        return send(d * units, (b, a), before, after, dir: d, chars: n, plain: plain)
+    }
+
+    /// The view stopped waiting for the move in flight to show, its context still `seen`:
+    /// - A blind move from no context at all: the field shows none (`blank`).
+    /// - Any other blind move (past the document's end): forgotten, with the steps behind.
+    ///   ponytail: a host only stalled at a line's end looks the same, and a step stacked
+    ///   on the forgotten move can split an emoji starting the next line; tell them apart
+    ///   when a device shows how.
+    /// - One over as many units as Characters whose landing reads as `seen` does, as far as
+    ///   `seen` reaches (a long run of one character): taken as landed there.
+    /// - Any other keeps waiting, now `late`: a next move sized from a context that hasn't
+    ///   shown this one could land inside a Character once the host applies both. A WebKit
+    ///   landing it shows is believed now, and so is one that shows nothing (`step`).
+    ///   ponytail: a UIKit host whose proxy still guesses, or shows nothing, after 0.3 s
+    ///   is taken for WebKit there; wait on the host's own signal if a device shows one.
+    mutating func timedOut() {
+        guard let s = sent else { return }
+        if s.blind {
+            if s.seen.0.isEmpty, s.seen.1.isEmpty { blank = true; sent = nil } else { drop() }
+            return
+        }
+        sent?.late = true
+        let n = s.chars
+        let landed = s.dir > 0 ? (s.before + s.after.prefix(n), String(s.after.dropFirst(n)))
+                               : (String(s.before.dropLast(n)), s.before.suffix(n) + s.after)
+        guard s.units == s.chars, Self.agree(Array(landed.0.utf16)[...], Array(landed.1.utf16)[...],
+                                  Array(s.seen.0.utf16), Array(s.seen.1.utf16)) else { return }
+        reckoned = (s.seen, landed.0, landed.1)
+        sent = nil
+    }
+
+    /// Forget the move in flight and the steps behind it.
+    mutating func drop() { sent = nil; reckoned = nil; queued = 0 }
+
+    private mutating func send(_ units: Int, _ seen: (String, String), _ before: String, _ after: String,
+                               dir: Int, chars: Int, plain: Bool = false, blind: Bool = false) -> Int {
+        sent = (seen, before, after, dir, chars, abs(units), plain, blind, false)
+        return units
+    }
+
+    private static func same(_ seen: (String, String), _ before: String, _ after: String) -> Bool {
+        seen.0.utf16.elementsEqual(before.utf16) && seen.1.utf16.elementsEqual(after.utf16)
+    }
+
+    /// How a host counted a move of `units` (sign `dir`) over `chars` Characters from
+    /// between `before` and `after`, by the context it shows now: 0 in UTF-16 units, n > 0
+    /// in Characters, n of them too far; nil when it can't tell. The two landings are
+    /// checked in the text the walk saw, Characters clamped to its end: each fits if both
+    /// sides agree as far as both reach (WebKit's windows slide, UIKit's stop at the
+    /// line), better if both reach exactly as far, and the better fit wins.
+    static func countedUnits(before: String, after: String, dir: Int, chars: Int, units: Int,
+                             nowBefore: String, nowAfter: String) -> Int? {
+        let head = uncut(Array(before.utf16), start: true), text = head + uncut(Array(after.utf16), start: false)
+        let at = head.count, widths = (dir < 0 ? Array(before.reversed()) : Array(after)).map(\.utf16.count)
+        let crossed = min(units, widths.count)
+        let b = uncut(Array(nowBefore.utf16), start: true), a = uncut(Array(nowAfter.utf16), start: false)
+        func fit(_ q: Int) -> Int {
+            guard text.indices.contains(q) || q == text.count else { return 0 }
+            let tb = text[..<q], ta = text[q...]
+            guard agree(tb, ta, b, a) else { return 0 }
+            return tb.count == b.count && ta.count == a.count ? 2 : 1
+        }
+        let u = fit(at + dir * units), c = fit(at + dir * widths.prefix(crossed).reduce(0, +))
+        return u == c ? nil : u > c ? 0 : crossed - chars
+    }
+
+    /// Two contexts around one caret read the same as far as both reach.
+    private static func agree(_ tb: ArraySlice<UInt16>, _ ta: ArraySlice<UInt16>, _ b: [UInt16], _ a: [UInt16]) -> Bool {
+        tb.suffix(b.count).elementsEqual(b.suffix(tb.count)) && ta.prefix(a.count).elementsEqual(a.prefix(ta.count))
+    }
+
+    /// `units` without the surrogate half (or U+FFFD) a context's window may have cut off
+    /// at its far end, its `start` for a before-context.
+    private static func uncut(_ units: [UInt16], start: Bool) -> [UInt16] {
+        guard let x = start ? units.first : units.last,
+              x == 0xFFFD || (start ? UTF16.isTrailSurrogate(x) : UTF16.isLeadSurrogate(x)) else { return units }
+        return start ? Array(units.dropFirst()) : Array(units.dropLast())
+    }
+
+    /// The caret between `before` and `after` is inside one Character: between a surrogate
+    /// pair's halves (lone, or each shown as U+FFFD), or between pieces that join into one
+    /// (CR LF, a combining mark, a ZWJ sequence, a keycap). A CR with nothing after it is
+    /// a CR LF's half too: the after-context stops at the line's end.
+    static func splits(before: String, after: String) -> Bool {
+        guard let l = before.utf16.last else { return false }
+        guard let r = after.utf16.first else { return l == 0x0D }
+        if UTF16.isLeadSurrogate(l) || l == 0xFFFD, UTF16.isTrailSurrogate(r) || r == 0xFFFD { return true }
+        guard let x = before.last, let y = after.first else { return false }
+        return (String(x) + String(y)).count == 1
+    }
+}
+
 /// Compact terminal keyboard for iPhone, installed as the terminal's `inputView`.
 ///
 /// Why it exists: on Face ID iPhones the system keyboard reserves an empty ~73 pt strip
@@ -526,6 +704,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var holdTouch: (id: Int, at: CGPoint)?
     /// The labels are blank: a trackpad touch is down (`refreshLabels`).
     private var blanked = false
+    /// The extension's trackpad moves, and the field whose way of counting `walk` learned.
+    private var walk = CaretWalk()
+    private var walkField: UUID?
+    private(set) var walkTimer: Timer?
+    private var walkPolls = 0
     private var heightConstraint: NSLayoutConstraint!
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
@@ -618,17 +801,58 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         autoCapitalize()
     }
 
-    /// A trackpad step of `offset` characters, negative left. The word touch correction
-    /// continues ends here, as it does at an arrow key (`resetWord`).
+    /// A trackpad step of `offset` characters, negative left: in a host field, through
+    /// `walk`, so it never stops inside one. The word touch correction continues ends here,
+    /// as it does at an arrow key (`resetWord`).
     func caret(_ offset: Int) {
         if let moveCaret {
             moveCaret(offset)
-        } else {
-            (target as? UITextDocumentProxy)?.adjustTextPosition(byCharacterOffset: offset)
+        } else if let doc = target as? UITextDocumentProxy {
+            if doc.documentIdentifier != walkField {
+                walkField = doc.documentIdentifier
+                walk.utf16 = nil
+                walk.blank = false
+            }
+            walkOn(offset)
         }
         word = ""
         autoCapitalize()
         didMoveCaret?()
+    }
+
+    /// `steps` more for `walk`, and what it can send now; polls the host's context until
+    /// the walk is idle, or 0.3 s pass without a move landing.
+    private func walkOn(_ steps: Int = 0) {
+        guard let doc = target as? UITextDocumentProxy else { return }
+        let units = walk.step(steps, before: doc.documentContextBeforeInput ?? "", after: doc.documentContextAfterInput ?? "",
+                              settled: walkPolls >= 3)
+        if units != 0 { doc.adjustTextPosition(byCharacterOffset: units); walkPolls = 0 }
+        if walk.idle {
+            walkTimer?.invalidate()
+            walkTimer = nil
+        } else if walkTimer == nil {
+            let t = Timer(timeInterval: 0.02, repeats: true) { [weak self] t in
+                if let self { self.pollCaret() } else { t.invalidate() }
+            }
+            RunLoop.main.add(t, forMode: .common)
+            walkTimer = t
+        }
+    }
+
+    /// The poll timer's tick; tests call it in place of waiting.
+    ///
+    /// ponytail: polling, not the controller's `textDidChange`, since Safari may send
+    /// none; 0.3 s is a guess at the slowest host. A drag past the document's end waits
+    /// that long before steps back count. A move that never shows stops the polling after
+    /// 2 s, still waited on: the next `caret` polls again, the next touch drops it.
+    func pollCaret() {
+        walkPolls += 1
+        if walkPolls > 15 { walk.timedOut() }   // the host clamped at the document's end, or never showed it
+        walkOn()
+        guard walkPolls >= 100 else { return }   // 2 s: a move that never shows waits for the next `caret`
+        walkPolls = 0
+        walkTimer?.invalidate()
+        walkTimer = nil
     }
 
     /// Shift on at a sentence start, off elsewhere, when the target is a host app's text
@@ -795,6 +1019,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         switch phase {
         case .began:
             if tracker.isTrackpad { return }   // a second finger on the trackpad: ignored
+            if !walk.idle { walkOn(); walk.drop() }   // a last look for a split before typing
+            walk.blank = false   // each hold looks for context again
             knownCache = [:]; screenCache = nil
             feedback()
             let bottomRow = caps.last?.map(\.frame.maxY).max() ?? .infinity
