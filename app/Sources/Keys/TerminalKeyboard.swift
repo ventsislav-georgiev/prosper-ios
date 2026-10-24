@@ -268,7 +268,8 @@ struct KeyTouchTracker {
 /// Trackpad steps through a host field's document proxy, whose `adjustTextPosition` counts
 /// Characters (WebKit) or UTF-16 units (UIKit), and whose context lags each move until the
 /// host round-trips. The host isn't named, and UIKit's keyboard daemon can crash when the
-/// caret lands inside a surrogate pair, so no move is ever sized to land inside one:
+/// caret lands inside a surrogate pair, so below the poll limit (`poll`) no move is sized
+/// to land inside one:
 /// - One move is in flight at a time: steps queue until the context changes from the one
 ///   the move left to one its landing explains, and the next move is sized from the
 ///   context then. Until the next move any other context is an older answer from a host
@@ -285,8 +286,9 @@ struct KeyTouchTracker {
 ///   host is known to count units, never.
 /// - Past the end of the context (a line's or the document's) one unit goes blind, and
 ///   any move that lands inside a Character (a CR LF) gets one more code point the same
-///   way, so it never stops between a surrogate pair's halves. The host counts units then,
-///   so a context reading as that code point taken as a Character is the guess.
+///   way, so below the poll limit it never stops between a surrogate pair's halves. The
+///   host counts units then, so a context reading as that code point taken as a Character
+///   is the guess.
 /// - The view stops waiting 0.3 s after the move or after the last new context the host
 ///   showed (`poll`): a host still answering older moves is working, not ignoring this one.
 /// - A move that can't show (a long run of one character in WebKit's fixed windows) is

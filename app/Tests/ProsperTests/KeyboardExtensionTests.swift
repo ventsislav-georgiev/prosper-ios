@@ -1076,6 +1076,25 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(walk.utf16, false)
     }
 
+    /// A thumb that rests on the space bar, then moves on over an emoji in a UITextView
+    /// answering 100 ms late: the poll limit counts from the move, not from the rest, so the
+    /// move waits for its answer and is never taken for WebKit's.
+    func testAMoveAfterAPauseWaitsForALaggingHost() {
+        let kb = TerminalKeyboard(), doc = host(kit: true, "ab😀c")
+        kb.target = doc
+        doc.lags = true
+        kb.caret(-1)
+        doc.catchUp()
+        kb.pollCaret()
+        for _ in 0..<20 { kb.pollCaret() }
+        kb.caret(-1)
+        for _ in 0..<5 { kb.pollCaret() }
+        doc.catchUp()
+        kb.pollCaret()
+        XCTAssertEqual(doc.moves, [-1, -2], "the emoji crossed whole, nothing sent back")
+        XCTAssertEqual(doc.stops, [4, 2])
+    }
+
     /// A UITextView wrongly taken for WebKit steps one unit into a family's last emoji: the
     /// split teaches its units, and the rest of the family follows a code point at a time,
     /// never stopping between a surrogate pair's halves. Before the host answers each, its
