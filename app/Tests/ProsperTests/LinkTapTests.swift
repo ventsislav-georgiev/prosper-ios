@@ -175,6 +175,28 @@ final class LinkTapTests: XCTestCase {
         }
     }
 
+    /// Under a row whose ink reaches the edge, the next row's first run joins as the URL's
+    /// tail only when it looks like one: it carries / ? = & # % or an inner ".", or it is
+    /// all the row's ink. The indent before it never counts, nor a sentence's last ".".
+    func testOnlyAURLTailJoinsUnderARowAtTheEdge() {
+        let head = "https://example.com/" + String(repeating: "h", count: 20)   // 40 columns, full
+        let cases: [(lower: String, url: String)] = [
+            (lower: "  /new?state=abc123", url: head + "/new?state=abc123"),
+            (lower: "x=1&y=2 then more", url: head + "x=1&y=2"),
+            (lower: "a.html and more", url: head + "a.html"),
+            (lower: "  abc123", url: head + "abc123"),
+            (lower: "Next step here", url: head),
+            (lower: "  for details.", url: head),
+            (lower: "Next. Then more", url: head),
+            (lower: "Next.", url: head),
+            (lower: "   ", url: head),
+        ]
+        for k in cases {
+            XCTAssertEqual(span([Array(head), Array(k.lower)], row: 0, col: 3)?.url, k.url, k.lower)
+        }
+        XCTAssertNil(span([Array(head), Array("Next step here")], row: 1, col: 1), "the word is no link")
+    }
+
     func testAnOSC8HyperlinkOpensItsTarget() async throws {
         let (vc, tv, _, _) = try await makeVC()
         tv.feed(text: "\u{1b}[2J\u{1b}[H\u{1b}]8;;https://example.com/osc\u{1b}\\click here\u{1b}]8;;\u{1b}\\ "

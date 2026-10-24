@@ -158,6 +158,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Where the latest touch came down (`tv` coordinates, from `shouldReceive`). A pan
     /// reports `.began` ~12 pt along the drag, so a handle grab is measured from here.
     var touchDown: CGPoint?
+    /// True once the latest touch was held still on the scroll strip for the hold's
+    /// duration (the hold asked to begin there and was refused).
+    private var heldOnStrip = false
     /// The double-tap selection, buffer lines, `end` exclusive. Prosper keeps its own
     /// copy: SwiftTerm's ends aren't public, and it drops its selection on every feed
     /// while mouse reporting is on (always, here) — `feed` puts this one back.
@@ -296,6 +299,11 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             }
         }
         tv.onSelectionEnded = { [weak self] in self?.selection = nil }
+        tv.onCopy = { [weak self] in
+            guard let self, self.selection != nil else { return false }
+            self.copySelection()
+            return true
+        }
         tv.onPaste = { [weak self] s in self?.sendText(s) }
         stateSub = conn.$state.sink { [weak self] in self?.applyInputState($0) }
     }
@@ -999,11 +1007,14 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     }
 
     // A touch that comes down on the scroll strip scrolls; there the copy-mode pan and the
-    // hold stand aside. The handle press begins only on a handle.
+    // hold stand aside, and a still hold lifted there is no tap either (no keyboard, no
+    // click). The handle press begins only on a handle.
     func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
         if g === handlePress { return handle(at: touchDown ?? g.location(in: tv)) != nil }
         if g === scrollPan { return touchOnStrip }
+        if g === longPress { heldOnStrip = touchOnStrip }
         if g === selectPan || g === longPress { return !touchOnStrip }
+        if g === singleTap { return !heldOnStrip }
         return true
     }
 
@@ -1015,6 +1026,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         touchDown = touch.location(in: tv)
+        heldOnStrip = false
         return true
     }
 
@@ -1365,8 +1377,13 @@ private final class DchTerminalView: TerminalView {
     var onPaste: (String) -> Void = { _ in }
     /// SwiftTerm's own copy and select-all (Cmd-C, Cmd-A) end the double-tap selection.
     var onSelectionEnded: () -> Void = {}
+    /// Cmd-C on the double-tap selection: true when it copied it as the menu's Copy does.
+    var onCopy: () -> Bool = { false }
 
-    override func copy(_ sender: Any?) { super.copy(sender); onSelectionEnded() }
+    override func copy(_ sender: Any?) {
+        if !onCopy() { super.copy(sender) }
+        onSelectionEnded()
+    }
     override func selectAll(_ sender: Any?) { super.selectAll(sender); onSelectionEnded() }
 
     /// SwiftTerm's paste sends the clipboard raw, through `send(source:data:)` where an

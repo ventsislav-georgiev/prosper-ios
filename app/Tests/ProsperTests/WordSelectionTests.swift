@@ -187,6 +187,21 @@ final class WordSelectionTests: XCTestCase {
         XCTAssertFalse(vc.gestureRecognizer(mouse, shouldBeRequiredToFailBy: scroll))
     }
 
+    func testAStillHoldOnTheStripIsNoTap() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let single = try XCTUnwrap(vc.singleTap), lp = try XCTUnwrap(vc.longPress)
+        let edge = tv.convert(CGPoint(x: vc.view.bounds.maxX - 6, y: 0), from: vc.view).x
+        vc.touchDown = CGPoint(x: edge, y: point(tv, row: 2, col: 0).y)
+        XCTAssertTrue(vc.gestureRecognizerShouldBegin(single), "a tap on the strip still taps")
+        XCTAssertFalse(vc.gestureRecognizerShouldBegin(lp), "held still for the hold's duration")
+        XCTAssertFalse(vc.gestureRecognizerShouldBegin(single), "then lifted: no keyboard, no click")
+        XCTAssertTrue(vc.gestureRecognizer(single, shouldReceive: UITouch()))
+        vc.touchDown = CGPoint(x: edge, y: point(tv, row: 2, col: 0).y)
+        XCTAssertTrue(vc.gestureRecognizerShouldBegin(single), "the next touch is a tap again")
+        vc.touchDown = point(tv, row: 2, col: 3)
+        XCTAssertTrue(vc.gestureRecognizerShouldBegin(lp), "off the strip a hold copies the line, as before")
+    }
+
     func testADoubleTapInMouseModeSelectsLocallyAndSendsNothing() async throws {
         let (vc, tv, spy, opened) = try await makeVC()
         feed(vc, "\u{1b}[?1000h\u{1b}[2J\u{1b}[Hrun build_all now https://example.com/x\r\n\u{1b}[12;1H")
@@ -235,17 +250,20 @@ final class WordSelectionTests: XCTestCase {
         let pb = try XCTUnwrap(UIPasteboard(name: name, create: true))
         defer { UIPasteboard.remove(withName: name) }
         vc.pasteboard = pb
-        let head = "https://example.com/hw/" + String(repeating: "h", count: tv.getTerminal().cols - 25)
-        let url = head + "/installations/new?x=1"
-        feed(vc, "\u{1b}[2J\u{1b}[H  " + head + "\r\n  /installations/new?x=1\r\n")
-        XCTAssertFalse(tv.getTerminal().getLine(row: 1)?.isWrapped ?? true, "precondition: a hard wrap")
-        XCTAssertEqual(vc.link(at: point(tv, row: 0, col: 4))?.absoluteString, url, "precondition: a tap opens it whole")
-        for (row, col) in [(0, 4), (0, 12), (1, 5), (1, 23)] {
-            pb.string = nil
-            vc.selectWord(at: point(tv, row: row, col: col))
-            XCTAssertTrue(vc.selection.map { $0.start == (0, 2) && $0.end == (1, 24) } == true, "\(row),\(col)")
-            vc.copySelection()
-            XCTAssertEqual(pb.string, url, "\(row),\(col)")
+        // Broken at the last column, or one short.
+        for short in [0, 1] {
+            let head = "https://example.com/hw/" + String(repeating: "h", count: tv.getTerminal().cols - 25 - short)
+            let url = head + "/installations/new?x=1"
+            feed(vc, "\u{1b}[2J\u{1b}[H  " + head + "\r\n  /installations/new?x=1\r\n")
+            XCTAssertFalse(tv.getTerminal().getLine(row: 1)?.isWrapped ?? true, "precondition: a hard wrap")
+            XCTAssertEqual(vc.link(at: point(tv, row: 0, col: 4))?.absoluteString, url, "precondition: a tap opens it whole")
+            for (row, col) in [(0, 4), (0, 12), (1, 5), (1, 23)] {
+                pb.string = nil
+                vc.selectWord(at: point(tv, row: row, col: col))
+                XCTAssertTrue(vc.selection.map { $0.start == (0, 2) && $0.end == (1, 24) } == true, "\(short) \(row),\(col)")
+                vc.copySelection()
+                XCTAssertEqual(pb.string, url, "\(short) \(row),\(col)")
+            }
         }
         // A short hard wrap doesn't join (#510): the first row is its own URL, never `//…`.
         feed(vc, "\u{1b}[2J\u{1b}[Hhttps://example.com/sh/abc\r\nrest/new\r\n")
@@ -253,6 +271,44 @@ final class WordSelectionTests: XCTestCase {
         XCTAssertEqual(selected(vc, tv), "https://example.com/sh/abc")
         vc.selectWord(at: point(tv, row: 1, col: 2))
         XCTAssertEqual(selected(vc, tv), "rest/new")
+    }
+
+    /// Claude Code word-wraps prose with real line breaks too, so a URL ending a line often
+    /// reaches the last two columns with the next word on the row below. That word is no
+    /// URL tail: a tap, a double tap and Copy all leave it out, as under a mid-row URL.
+    func testAWordWrappedUnderAURLAtTheEdgeIsNotItsTail() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let name = UIPasteboard.Name("word-selection-edge-prose")
+        let pb = try XCTUnwrap(UIPasteboard(name: name, create: true))
+        defer { UIPasteboard.remove(withName: name) }
+        vc.pasteboard = pb
+        let cols = tv.getTerminal().cols
+        let full = "https://example.com/e/" + String(repeating: "x", count: cols - 22)   // fills the row
+        let edge = "https://example.com/s/" + String(repeating: "y", count: cols - 27)   // after "see ", ends at cols − 2
+        let near = "https://example.com/docs" + String(repeating: "z", count: cols - 30) // after "see ", ends at cols − 3
+        let mid = "https://example.com/m/abc"
+        let cases: [(upper: String, url: String, lower: String, word: String)] = [
+            (upper: full, url: full, lower: "Next step here", word: "Next"),
+            (upper: "see " + edge, url: edge, lower: "  for details.", word: "for"),
+            (upper: "see " + edge, url: edge, lower: "Next. Then more", word: "Next."),
+            (upper: "see " + near, url: near, lower: "  for details.", word: "for"),
+            (upper: mid, url: mid, lower: "Next step here", word: "Next"),
+        ]
+        for k in cases {
+            feed(vc, "\u{1b}[2J\u{1b}[H" + k.upper + "\r\n" + k.lower + "\r\n")
+            XCTAssertFalse(tv.getTerminal().getLine(row: 1)?.isWrapped ?? true, "precondition: a hard wrap")
+            let w = try XCTUnwrap(k.lower.range(of: k.word)).lowerBound.utf16Offset(in: k.lower)
+            let u = k.upper.count - 3
+            XCTAssertNil(vc.link(at: point(tv, row: 1, col: w)), k.lower)
+            XCTAssertEqual(vc.link(at: point(tv, row: 0, col: u))?.absoluteString, k.url, k.lower)
+            vc.selectWord(at: point(tv, row: 1, col: w))
+            XCTAssertEqual(selected(vc, tv), k.word, k.lower)
+            vc.selectWord(at: point(tv, row: 0, col: u))
+            XCTAssertTrue(vc.selection.map { $0.end == (0, k.upper.count) } == true, k.lower)
+            pb.string = nil
+            vc.copySelection()
+            XCTAssertEqual(pb.string, k.url, k.lower)
+        }
     }
 
     func testADoubleTapOnAURLEndingInAWideCharSelectsTheWholeGlyph() async throws {
@@ -331,6 +387,39 @@ final class WordSelectionTests: XCTestCase {
         XCTAssertNil(vc.selection, "Copy ends the selection")
     }
 
+    func testCmdCCopiesWhatTheMenusCopyDoes() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let name = UIPasteboard.Name("word-selection-cmd-c")
+        let pb = try XCTUnwrap(UIPasteboard(name: name, create: true))
+        defer { UIPasteboard.remove(withName: name) }
+        vc.pasteboard = pb
+        let head = "https://example.com/hw/" + String(repeating: "h", count: tv.getTerminal().cols - 25)
+        feed(vc, "\u{1b}[2J\u{1b}[H  " + head + "\r\n  /installations/new?x=1\r\n")
+        vc.selectWord(at: point(tv, row: 1, col: 5))
+        tv.copy(nil)
+        XCTAssertEqual(pb.string, head + "/installations/new?x=1", "the URL, not the rows with their break")
+        XCTAssertNil(vc.selection)
+        XCTAssertFalse(tv.hasActiveSelection)
+    }
+
+    func testALinkSelectionWidenedPastTheLinkCopiesTheRows() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let name = UIPasteboard.Name("word-selection-widened-link")
+        let pb = try XCTUnwrap(UIPasteboard(name: name, create: true))
+        defer { UIPasteboard.remove(withName: name) }
+        vc.pasteboard = pb
+        feed(vc, "\u{1b}[2J\u{1b}[Hsee https://example.com/x and more\r\n")
+        vc.selectWord(at: point(tv, row: 0, col: 8))
+        XCTAssertEqual(selected(vc, tv), "https://example.com/x")
+        let end = point(tv, row: 0, col: 25, dx: 0), w = tv.caretFrame.width
+        vc.touchDown = end
+        _ = vc.dragHandle(.began, at: end)
+        _ = vc.dragHandle(.changed, at: CGPoint(x: end.x + 3 * w, y: end.y))
+        _ = vc.dragHandle(.ended, at: CGPoint(x: end.x + 3 * w, y: end.y))
+        vc.copySelection()
+        XCTAssertEqual(pb.string, "https://example.com/x an", "the link starts it but is no longer all of it")
+    }
+
     func testTheHandlesStandOnTheSelectionEnds() async throws {
         let (vc, tv, _, _) = try await makeVC()
         feed(vc, "\u{1b}[2J\u{1b}[Hsome selection here\r\n")
@@ -359,6 +448,14 @@ final class WordSelectionTests: XCTestCase {
         let press = try XCTUnwrap(vc.handlePress), single = try XCTUnwrap(vc.singleTap)
         XCTAssertEqual(press.minimumPressDuration, 0, "grabbed at the touch-down: no pan start distance to cross")
         XCTAssertTrue(vc.gestureRecognizer(single, shouldRequireFailureOf: press), "a touch on a handle is no tap")
+        let lp = try XCTUnwrap(vc.longPress), pan = try XCTUnwrap(vc.selectPan)
+        XCTAssertFalse(vc.gestureRecognizer(press, shouldRequireFailureOf: lp), "a grab never waits out the hold")
+        XCTAssertTrue(vc.gestureRecognizer(lp, shouldRequireFailureOf: press))
+        XCTAssertTrue(vc.gestureRecognizer(pan, shouldRequireFailureOf: press))
+        XCTAssertTrue(vc.gestureRecognizer(single, shouldRequireFailureOf: lp))
+        XCTAssertTrue(vc.gestureRecognizer(pan, shouldRequireFailureOf: lp))
+        XCTAssertFalse(vc.gestureRecognizer(press, shouldRequireFailureOf: press))
+        XCTAssertFalse(vc.gestureRecognizer(lp, shouldRequireFailureOf: lp))
         XCTAssertFalse(vc.gestureRecognizer(try XCTUnwrap(vc.doubleTap), shouldRequireFailureOf: press))
         XCTAssertTrue(vc.gestureRecognizer(press, shouldBeRequiredToFailBy: mouse), "and no mouse drag")
         let sent = spy.sent.count
@@ -403,6 +500,18 @@ final class WordSelectionTests: XCTestCase {
         // 15 pt above the row, between the two: the same distance to both handles.
         let p = point(tv, row: 2, col: 2)
         XCTAssertEqual(vc.handle(at: CGPoint(x: p.x, y: p.y - tv.caretFrame.height / 2 - 15)), true)
+    }
+
+    func testANudgeUpOffAHandleKeepsItsRow() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        feed(vc, "\u{1b}[2J\u{1b}[H\r\n\r\nx b y\r\n")
+        vc.selectWord(at: point(tv, row: 2, col: 2))
+        let end = point(tv, row: 2, col: 3, dx: 0)
+        vc.touchDown = end
+        XCTAssertTrue(vc.dragHandle(.began, at: end))
+        _ = vc.dragHandle(.changed, at: CGPoint(x: end.x, y: end.y - 3))
+        _ = vc.dragHandle(.ended, at: CGPoint(x: end.x, y: end.y - 3))
+        XCTAssertTrue(vc.selection.map { $0.start == (2, 2) && $0.end == (2, 3) } == true, "3 pt is no row")
     }
 
     func testTheGrabIsMeasuredFromTheTouchDownBothWays() async throws {

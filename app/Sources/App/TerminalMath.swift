@@ -344,7 +344,10 @@ enum TerminalMath {
     /// i's cells (nil for a wide char's second half) and whether it soft-wraps from row
     /// i − 1; nil past the buffer. A soft wrap always joins. A row break joins only when
     /// the upper row's ink reaches the last two columns, a hard wrap at the edge the way
-    /// Claude Code breaks a long URL; the next row's indent is dropped. SwiftTerm's own
+    /// Claude Code breaks a long URL, and the next row's first run, past its indent, looks
+    /// like a URL tail: it carries one of / ? = & # % or a "." before its end, or it is all
+    /// the row's ink. Claude Code word-wraps prose too, so a URL ending a line often lands
+    /// at the edge with "Next step" below it. The indent is dropped. SwiftTerm's own
     /// guess joins from cols − cols/5, gluing the prose under a URL onto it (#510).
     static func webLink(row: Int, col: Int, cols: Int,
                         line: (Int) -> (cells: [Character?], wrapped: Bool)?) -> String? {
@@ -358,7 +361,17 @@ enum TerminalMath {
         func ink(_ c: Character?) -> Bool { c.map { $0 != " " && $0 != "\0" } ?? false }
         func joins(_ lower: Int) -> Bool {
             guard let lo = line(lower), let up = line(lower - 1) else { return false }
-            return lo.wrapped || (up.cells.lastIndex(where: ink) ?? -1) >= cols - 2
+            return lo.wrapped || ((up.cells.lastIndex(where: ink) ?? -1) >= cols - 2 && tail(lo.cells))
+        }
+        func tail(_ cells: [Character?]) -> Bool {
+            guard let a = cells.firstIndex(where: ink) else { return false }
+            let b = cells[a...].firstIndex(where: { $0 == " " || $0 == "\0" }) ?? cells.count
+            let run = cells[a..<b].compactMap { $0 }
+            let body = run.last.map { ".,".contains($0) } == true ? run.dropLast() : run[...]
+            // ponytail: a lone word ending a row still joins, a URL's last piece or not; and a
+            // URL's last piece without any of them, prose after it on its row, doesn't.
+            return body.contains(where: "/?=&#%.".contains)
+                || (body.count == run.count && !cells[b...].contains(where: ink))
         }
         var top = row, bottom = row
         while joins(top) { top -= 1 }
