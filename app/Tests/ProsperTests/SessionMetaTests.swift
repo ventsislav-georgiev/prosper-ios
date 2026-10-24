@@ -33,11 +33,20 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(m.open, [.init(url: URL(string: "https://github.com/o/r/pull/1"), repo: "o/r", num: nil, title: "")])
     }
 
-    /// Wrong types and negative numbers drop only that field (or that PR), never the meta.
+    /// Wrong types and negative numbers drop only that field (or that PR); a meta left with nothing is nil.
     func testDecodeGarbage() {
         let m = meta(#"{"tasks":{"done":"3","total":-1,"in_progress":true,"queued":1.5},"prs":{"open":[1,"x",{"url":5,"repo":"o/r","num":-7,"title":["t"]},{"num":3},{"repo":"o/q","num":3,"url":"http://github.com/o/q/pull/3"},{"repo":"o/z","url":"https://evil.example/o/z/pull/1"}],"merged":"many"}}"#)!
         XCTAssertEqual(m, SessionMeta(open: [pr("o/r", nil), pr("o/q", 3), pr("o/z", nil)]))
-        XCTAssertEqual(meta(#"{"tasks":[],"prs":{"open":{"url":"x"},"merged":-2}}"#), SessionMeta())
+        XCTAssertNil(meta(#"{"tasks":[],"prs":{"open":{"url":"x"},"merged":-2}}"#))
+    }
+
+    /// A meta with nothing to draw is nil, so the row gains no empty gap.
+    func testNothingToShowIsNil() {
+        for j in [#"{}"#, #"{"prs":{"open":[]}}"#, #"{"prs":{"open":[],"merged":0}}"#, #"{"tasks":{"done":0,"total":0}}"#] {
+            XCTAssertNil(meta(j), j)
+        }
+        XCTAssertNotNil(meta(#"{"prs":{"open":[],"merged":4}}"#))
+        XCTAssertNotNil(meta(#"{"tasks":{"queued":2}}"#))
     }
 
     /// A whole list row with meta keeps the row; a row without keeps meta nil.

@@ -23,8 +23,8 @@ struct SessionMeta: Hashable {
 
     static let maxChips = 3
 
-    /// nil when `json` is not an object. A field of the wrong type or a negative count
-    /// is dropped on its own; it never costs the row.
+    /// nil when `json` is not an object or leaves nothing to draw. A field of the wrong
+    /// type or a negative count is dropped on its own; it never costs the row.
     init?(json: Any?) {
         guard let o = json as? [String: Any] else { return nil }
         if let t = o["tasks"] as? [String: Any] {
@@ -39,6 +39,7 @@ struct SessionMeta: Hashable {
                           title: Self.plain(e["title"] as? String ?? ""))
             }
         }
+        if open.isEmpty && mergedLabel == nil && taskLine == nil { return nil }
     }
 
     init(done: Int? = nil, total: Int? = nil, inProgress: Int? = nil, queued: Int? = nil,
