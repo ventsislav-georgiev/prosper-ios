@@ -94,13 +94,17 @@ struct SessionMeta: Hashable {
     /// "22/26 done · 2 in progress · 2 queued", zero and unknown parts left out.
     var taskLine: String? { summary(.all) }
 
-    /// The task line with only the parts `d` turns on; nil leaves no summary.
-    func summary(_ d: RowDetails) -> String? {
+    /// The task line with only the parts `d` turns on; nil leaves no summary. `spoken`
+    /// words it for VoiceOver: "41 of 68 tasks done, 8 in progress".
+    func summary(_ d: RowDetails, spoken: Bool = false) -> String? {
         var parts: [String] = []
-        if d.tasksDone, let total, total > 0 { parts.append("\(Self.count(done ?? 0))/\(Self.count(total)) done") }
+        if d.tasksDone, let total, total > 0 {
+            let (n, of) = (Self.count(done ?? 0), Self.count(total))
+            parts.append(spoken ? "\(n) of \(of) tasks done" : "\(n)/\(of) done")
+        }
         if d.inProgress, let n = inProgress, n > 0 { parts.append("\(Self.count(n)) in progress") }
         if d.queued, let n = queued, n > 0 { parts.append("\(Self.count(n)) queued") }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        return parts.isEmpty ? nil : parts.joined(separator: spoken ? ", " : " · ")
     }
 
     var mergedLabel: String? { merged.flatMap { $0 > 0 ? "\(Self.count($0)) merged" : nil } }
@@ -116,7 +120,7 @@ struct SessionMeta: Hashable {
     /// The PR lines ViewThatFits tries, the first that fits wins: 3, 2, 1 chips, each
     /// with full labels then repos cut to 18, beside "+N pending PRs", then beside a
     /// bare "+N", then repos cut to 12 (a chip shown beats the long wording); last no
-    /// chips. Empty draws no PR line.
+    /// chips, "+N pending PRs" then a bare "+N". Empty draws no PR line.
     func prLines(_ d: RowDetails) -> [PRLine] {
         let merged = d.merged ? mergedLabel : nil
         guard d.openPRs, !open.isEmpty else { return merged.map { [PRLine(chips: [], more: nil, merged: $0)] } ?? [] }
@@ -124,7 +128,7 @@ struct SessionMeta: Hashable {
         for k in stride(from: min(open.count, Self.maxChips), through: 0, by: -1) {
             let n = open.count - k
             let long: String? = n == 0 ? nil : Self.moreLabel(n), short: String? = n == 0 ? nil : "+\(n)"
-            let tries: [(maxRepo: Int?, more: String?)] = k == 0 ? [(maxRepo: nil, more: long)]
+            let tries: [(maxRepo: Int?, more: String?)] = k == 0 ? [(maxRepo: nil, more: long), (maxRepo: nil, more: short)]
                 : n == 0 ? [(maxRepo: nil, more: nil), (maxRepo: Self.maxRepo, more: nil), (maxRepo: Self.phoneRepo, more: nil)]
                 : [(maxRepo: nil, more: long), (maxRepo: Self.maxRepo, more: long), (maxRepo: nil, more: short),
                    (maxRepo: Self.maxRepo, more: short), (maxRepo: Self.phoneRepo, more: short)]
@@ -135,6 +139,9 @@ struct SessionMeta: Hashable {
         }
         return lines
     }
+
+    /// The PR line's long-press menu: only with open PRs to list, not for a lone merged count.
+    func hasMenu(_ d: RowDetails) -> Bool { d.openPRs && !open.isEmpty }
 
     /// "open pull requests a#1, b#2, c#3 and 2 more"; nil with no open PRs.
     var prAccessibility: String? {
@@ -172,7 +179,7 @@ extension DchSession {
         let prs: String? = d.openPRs ? meta?.prAccessibility : nil
         let merged: String? = d.merged ? meta?.mergedLabel : nil
         return [title, SessionStateStyle(state)?.label, agents, title != name ? name : nil,
-                meta?.summary(d), prs, merged].compactMap { $0 }.joined(separator: ", ")
+                meta?.summary(d, spoken: true), prs, merged].compactMap { $0 }.joined(separator: ", ")
     }
 }
 
@@ -191,6 +198,7 @@ struct SessionRow: View {
     @AppStorage(RowDetails.Key.queued) private var queued = RowDetails().queued
     @ScaledMetric(relativeTo: .subheadline) private var glyphWidth: CGFloat = 14
     @Environment(\.openURL) private var openURL
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let d = RowDetails(agents: agents, openPRs: openPRs, merged: merged,
@@ -199,6 +207,8 @@ struct SessionRow: View {
         let alias: String? = session.title != session.name ? session.name : nil
         let summary: String? = session.meta?.summary(d)
         let lines: [SessionMeta.PRLine] = session.meta?.prLines(d) ?? []
+        let agentsChip: String? = d.agents ? SessionStateStyle.agents(session.agents) : nil
+        let big = typeSize.isAccessibilitySize
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             // Unknown state from a newer server: an empty column, rather than a guess.
             Text(verbatim: style?.glyph ?? " ")
@@ -206,11 +216,24 @@ struct SessionRow: View {
                 .foregroundStyle(style?.tint ?? Color.clear)
                 .frame(width: glyphWidth)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(session.title).fontWeight(.medium).lineLimit(1)
-                    if d.agents, let a = SessionStateStyle.agents(session.agents) { chip(a).fixedSize() }
+                if big {
+                    // Accessibility sizes: nothing shares a line with the title or the
+                    // state word, and both may wrap, so the name and state always show.
+                    Text(session.title).fontWeight(.medium).lineLimit(2)
+                    if let agentsChip { chip(agentsChip) }
+                    VStack(alignment: .leading, spacing: 2) {
+                        stateAndName(style, alias)
+                        if let summary { summaryText(summary) }
+                    }
+                    .font(.footnote)
+                    .lineLimit(2)
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(session.title).fontWeight(.medium).lineLimit(1)
+                        if let agentsChip { chip(agentsChip).layoutPriority(1) }
+                    }
                 }
-                if style != nil || alias != nil || summary != nil {
+                if !big, style != nil || alias != nil || summary != nil {
                     // A phone row rarely fits every part: the summary moves under the state
                     // rather than truncate its numbers.
                     ViewThatFits(in: .horizontal) {
@@ -230,7 +253,7 @@ struct SessionRow: View {
                     ViewThatFits(in: .horizontal) {
                         ForEach(lines, id: \.self) { prLine($0) }
                     }
-                    .contextMenu { if d.openPRs, let meta = session.meta { menu(meta, d) } }
+                    .contextMenu { if let meta = session.meta, meta.hasMenu(d) { menu(meta, d) } }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -247,14 +270,12 @@ struct SessionRow: View {
     }
 
     @ViewBuilder private func stateAndName(_ style: SessionStateStyle?, _ alias: String?) -> some View {
-        if let style { Text(style.label).foregroundStyle(style.tint) }
-        if let alias {
-            Text(verbatim: alias).font(.caption2.monospaced()).foregroundStyle(Color.primary.opacity(0.35))
-        }
+        if let style { Text(style.label).foregroundStyle(style.tint).layoutPriority(1) }   // the name truncates first
+        if let alias { Text(verbatim: alias).font(.caption2.monospaced()).foregroundStyle(.secondary) }
     }
 
     private func summaryText(_ s: String) -> some View {
-        Text(verbatim: s).font(.caption.monospacedDigit()).foregroundStyle(Color.primary.opacity(0.5))
+        Text(verbatim: s).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
     }
 
     /// Lists the PRs to open; with Open PRs off the line has no chips and no menu.
@@ -266,13 +287,21 @@ struct SessionRow: View {
         if d.merged, let merged = meta.mergedLabel { Button {} label: { Text(verbatim: merged) }.disabled(true) }
     }
 
+    /// At accessibility sizes "N merged" goes under the chips instead of beside them.
     private func prLine(_ line: SessionMeta.PRLine) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
-            ForEach(Array(line.chips.enumerated()), id: \.offset) { _, c in chip(c) }
-            if let more = line.more { chip(more) }
+        let big = typeSize.isAccessibilitySize
+        let layout = big ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 0))
+        return layout {
+            if !line.chips.isEmpty || line.more != nil {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    ForEach(Array(line.chips.enumerated()), id: \.offset) { _, c in chip(c) }
+                    if let more = line.more { chip(more) }
+                }
+            }
             if let merged = line.merged {
-                Spacer(minLength: 8)
-                Text(verbatim: merged).font(.caption2.monospaced()).foregroundStyle(Color.primary.opacity(0.5))
+                if !big { Spacer(minLength: 8) }
+                Text(verbatim: merged).font(.caption2.monospaced()).foregroundStyle(.secondary)
             }
         }
         .lineLimit(1)
@@ -282,7 +311,8 @@ struct SessionRow: View {
     private func chip(_ s: String) -> some View {
         Text(verbatim: s)
             .font(.caption2.monospaced().weight(.medium))
-            .foregroundStyle(Color.primary.opacity(0.5))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
             .background(Color.primary.opacity(0.1), in: Capsule())

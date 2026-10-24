@@ -279,6 +279,7 @@ struct SessionListView: View {
     @State private var newName = ""
     @State private var sleeping = false            // sleep round-trip in flight
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     // Live store snapshot so the badge tracks cachedWake after handshake (the `machine`
     // prop is a stale value-type copy captured at navigation time).
@@ -378,18 +379,25 @@ struct SessionListView: View {
         } message: { Text("Opens a fresh dch session on \(title).") }
     }
 
+    /// At accessibility sizes the buttons go under the row, so the name and state keep
+    /// the width.
     @ViewBuilder private func row(_ s: DchSession) -> some View {
-        HStack(spacing: 16) {
-            SessionRow(session: s)
-                .contentShape(Rectangle())
-                .onTapGesture { open = s }
-                .accessibilityAction { open = s }
+        let label = SessionRow(session: s)
+            .contentShape(Rectangle())
+            .onTapGesture { open = s }
+            .accessibilityAction { open = s }
+        let buttons = HStack(spacing: 16) {
             Button { renaming = s; renameText = s.alias ?? "" } label: {
                 Image(systemName: "pencil")
             }.buttonStyle(.borderless)
             Button(role: .destructive) { killing = s } label: {
                 Image(systemName: "xmark.circle")
             }.buttonStyle(.borderless).foregroundStyle(.red)
+        }
+        if typeSize.isAccessibilitySize {
+            VStack(alignment: .trailing, spacing: 8) { label; buttons }
+        } else {
+            HStack(spacing: 16) { label; buttons }
         }
     }
 

@@ -35,7 +35,7 @@ enum SessionStateStyle: String, CaseIterable {
         switch self {
         case .working: return Self.dynamic(dark: (0.85, 0.47, 0.34), light: (0.70, 0.32, 0.19))
         case .blocked: return Self.dynamic(dark: (1.0, 0.7, 0.0), light: (0.66, 0.40, 0.0))
-        case .idle:    return Color.primary.opacity(0.4)
+        case .idle:    return Color(uiColor: .secondaryLabel)   // follows Increase Contrast
         case .done:    return Self.dynamic(dark: (0.4, 0.75, 0.45), light: (0.18, 0.52, 0.25))
         }
     }

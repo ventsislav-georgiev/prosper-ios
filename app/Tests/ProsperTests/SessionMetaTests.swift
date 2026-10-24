@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import Prosper
 
 /// The list row's PRs and tasks (the Mac's `meta`), decoded and drawn like Agent Island.
@@ -91,6 +92,7 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(pr("o/prosper", nil).chip, "prosper")
         XCTAssertEqual(pr("o/averyverylongrepo", 1).chip, "averyverylongrepo#1", "full label unless cut")
         XCTAssertEqual(pr("o/averyverylongrepo", 1).chip(maxRepo: SessionMeta.maxRepo), "averyverylongrepo#1", "17 fits")
+        XCTAssertEqual(pr("o/eighteencharsrepo1", 1).chip(maxRepo: SessionMeta.maxRepo), "eighteencharsrepo1#1", "18 fits")
         XCTAssertEqual(pr("o/nineteencharsrepo12", 1).chip(maxRepo: SessionMeta.maxRepo), "nineteencharsrepo…#1", "19 cut to 18")
         XCTAssertEqual(pr("o/averyverylongrepo", 1).chip(maxRepo: SessionMeta.phoneRepo), "averyverylo…#1", "cut to 12")
         XCTAssertEqual(SessionMeta(merged: 4).mergedLabel, "4 merged")
@@ -183,12 +185,14 @@ final class SessionMetaTests: XCTestCase {
             .init(chips: ["a#1"], more: "+4 pending PRs", merged: "7 merged"),
             .init(chips: ["a#1"], more: "+4", merged: "7 merged"),
             .init(chips: [], more: "+5 pending PRs", merged: "7 merged"),
+            .init(chips: [], more: "+5", merged: "7 merged"),
         ])
         XCTAssertEqual(SessionMeta(open: [pr("o/a", 1)]).prLines(RowDetails()),
-                       [.init(chips: ["a#1"], more: nil, merged: nil), .init(chips: [], more: "+1 pending PR", merged: nil)])
+                       [.init(chips: ["a#1"], more: nil, merged: nil), .init(chips: [], more: "+1 pending PR", merged: nil),
+                        .init(chips: [], more: "+1", merged: nil)])
         // No pending chip (k == n): full, cut to 18, cut to 12.
         XCTAssertEqual(SessionMeta(open: [pr(long, 2)]).prLines(RowDetails()).map(\.chips),
-                       [[full], [cut], [phone], []])
+                       [[full], [cut], [phone], [], []])
     }
 
     /// The screenshot row: a 16-character chip, 5 more and 75 merged. The short "+5"
@@ -218,6 +222,39 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(SessionMeta(done: 1, total: 2).prLines(RowDetails()), [], "no PRs, no line 3")
     }
 
+    func testMenuOnlyWithOpenPRs() {
+        XCTAssertTrue(full.hasMenu(RowDetails()))
+        XCTAssertFalse(full.hasMenu(with { $0.openPRs = false }))
+        XCTAssertFalse(SessionMeta(merged: 2).hasMenu(RowDetails()), "a lone merged count has nothing to pick")
+    }
+
+    func testSpokenSummary() {
+        XCTAssertEqual(full.summary(.all, spoken: true), "41 of 68 tasks done, 8 in progress, 19 queued")
+        XCTAssertEqual(full.summary(with { $0.inProgress = true; $0.queued = true }, spoken: true), "8 in progress, 19 queued")
+        XCTAssertNil(full.summary(RowDetails(), spoken: true))
+    }
+
+    /// QA at accessibility sizes: the fixed agents chip squeezed the title to "…" and
+    /// pushed the row past the screen edge.
+    @MainActor func testRowFitsAtAccessibilitySizes() {
+        let store = UserDefaults(suiteName: "SessionMetaTests.row")!
+        store.removePersistentDomain(forName: "SessionMetaTests.row")   // the default toggles
+        func size(_ s: DchSession, _ t: DynamicTypeSize, _ w: CGFloat) -> CGSize {
+            UIHostingController(rootView: SessionRow(session: s).environment(\.dynamicTypeSize, t).defaultAppStorage(store))
+                .sizeThatFits(in: CGSize(width: w, height: .greatestFiniteMagnitude))
+        }
+        let meta = SessionMeta(open: [pr("o/sample-codebase1", 370)] + (1...5).map { pr("o/r", $0) }, merged: 100_000)
+        let row = DchSession(name: "sample-1", alias: "A very long alias for this row", state: "blocked", agents: 12, meta: meta)
+        var lone = row; lone.agents = 0
+        var short = row; short.alias = "x"
+        for (t, w) in [(DynamicTypeSize.accessibility1, 300.0), (.accessibility5, 300), (.accessibility5, 200)] {
+            XCTAssertLessThanOrEqual(size(row, t, w).width, w + 0.5, "\(t) at \(w): nothing pushes the row wider")   // ⅓ pt rounding
+            XCTAssertGreaterThan(size(row, t, w).height, size(lone, t, w).height, "\(t): the agents chip has its own line")
+            XCTAssertGreaterThan(size(row, t, w).height, size(short, t, w).height, "\(t): the title wraps, not cut to …")
+        }
+        XCTAssertEqual(size(row, .large, 300).height, size(lone, .large, 300).height, "below them the chip sits by the title")
+    }
+
     /// #531: a blank title leaves no dangling dash.
     func testMenuLabel() {
         let p = { (t: String) in SessionMeta.PR(url: nil, repo: "o/tab", num: 2, title: t) }
@@ -241,7 +278,7 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(s.rowAccessibility(RowDetails()),
                        "Docs, Working, 4 agents, sec-1, open pull requests repo#12, 75 merged")
         XCTAssertEqual(s.rowAccessibility(.all),
-                       "Docs, Working, 4 agents, sec-1, 41/68 done · 8 in progress · 19 queued, open pull requests repo#12, 75 merged")
+                       "Docs, Working, 4 agents, sec-1, 41 of 68 tasks done, 8 in progress, 19 queued, open pull requests repo#12, 75 merged")
         XCTAssertEqual(s.rowAccessibility(RowDetails(agents: false, openPRs: false, merged: false)), "Docs, Working, sec-1")
         XCTAssertEqual(s.rowAccessibility(with { $0.agents = false; $0.queued = true }),
                        "Docs, Working, sec-1, 19 queued, open pull requests repo#12, 75 merged")
