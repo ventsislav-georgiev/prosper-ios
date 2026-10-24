@@ -3,6 +3,7 @@ What's new:
 • Insert: compose text on your phone and send it to the session in one go.
 • New session can start an agent session directly; set its command in Settings.
 • New compact terminal keyboard on iPhone, with key previews and common symbols one tap away.
+• Holding space in the Prosper keyboard now moves the caret up and down between lines too, not just sideways.
 • Shortcut bar is always visible, in two aligned rows, with a new default set of keys.
 • The session list can show how many helper tasks are running.
 • The session list shows each session's open pull requests and task progress; press and hold a session's pull request line to open one.
