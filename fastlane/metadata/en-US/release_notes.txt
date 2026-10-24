@@ -4,5 +4,6 @@ What's new:
 • New compact terminal keyboard on iPhone, with key previews and common symbols one tap away.
 • Shortcut bar is always visible, in two aligned rows, with a new default set of keys.
 • Watched sessions show the same name in alerts as in your session list, and the list can show how many helper tasks are running.
+• Watching a session no longer shows it in the Dynamic Island or on the Lock Screen; the bell still pings you while Prosper is open.
 • Typing is more reliable on weak connections: keystrokes are queued and delivered after a drop.
 • Smoother terminal scrolling.

@@ -377,7 +377,7 @@ struct SessionListView: View {
         } message: { Text("Opens a fresh dch session on \(title).") }
         .alert("Notifications are off", isPresented: $pingsDenied) {
             Button("Open Settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                if let url = URL(string: UIApplication.openNotificationSettingsURLString) { UIApplication.shared.open(url) }
             }
             Button("Later", role: .cancel) {}
         } message: {
