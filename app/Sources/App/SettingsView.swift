@@ -51,11 +51,12 @@ enum AgentCommand {
 
 /// Account settings (PLAN §3 / §6.3): sign in/out and the mandatory in-app Delete
 /// Account (Apple 5.1.1(v)). Reachable from Home. Signing in is only needed for
-/// Remote Wake — everything else works signed-out. Below them, the Prosper keyboard's
-/// switches (`KeyboardSettings`), the agent command (`AgentCommand`) and the session
-/// rows' details (`RowDetails`).
+/// Remote Wake and live status — everything else works signed-out. Below them, the live
+/// status switch (`LiveStatus`), the Prosper keyboard's switches (`KeyboardSettings`),
+/// the agent command (`AgentCommand`) and the session rows' details (`RowDetails`).
 struct SettingsView: View {
     @ObservedObject var account: AccountStore
+    @ObservedObject private var live = LiveStatus.shared
     @State private var showLogin = false
     @State private var confirmDelete = false
     @State private var busy = false
@@ -95,8 +96,35 @@ struct SettingsView: View {
             } header: {
                 Text("Account")
             } footer: {
-                Text("Signing in enables Remote Wake — waking a sleeping Mac from your phone. The terminal and demo don't require an account.")
+                Text("Signing in enables Remote Wake — waking a sleeping Mac from your phone — and live status. The terminal and demo don't require an account.")
             }
+
+            // Not on the Mac: no Live Activities there, and it is the Mac being watched.
+            #if !targetEnvironment(macCatalyst)
+            if account.isSignedIn {
+                Section {
+                    Toggle("Live status and alerts", isOn: Binding(get: { live.enabled }, set: { on in
+                        Task {
+                            busy = true
+                            defer { busy = false }
+                            if !on { await live.turnOff() }
+                            else if !(await live.turnOn()) {
+                                error = "Notifications are off for Prosper. Allow them in the Settings app, then try again."
+                            }
+                        }
+                    }))
+                    .disabled(busy)
+                    // Off in the Settings app: alerts still come, the card can't show.
+                    if live.enabled && !live.activitiesAllowed {
+                        Button("Live Activities are off · Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        }
+                    }
+                } footer: {
+                    Text("An alert only when a session needs you, and a live card on the Lock Screen while agents work. Needs your Mac signed in to the same account.")
+                }
+            }
+            #endif
 
             if account.isSignedIn {
                 Section {

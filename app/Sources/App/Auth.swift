@@ -93,8 +93,9 @@ struct AuthClient {
 
 // MARK: - Keychain (the session Bearer + email, this-device-only)
 
-/// Minimal Keychain store for the one credential we keep. WhenUnlockedThisDeviceOnly:
-/// never syncs to iCloud, unreadable while locked.
+/// Minimal Keychain store for the one credential we keep. AfterFirstUnlockThisDeviceOnly:
+/// never syncs to iCloud, and readable while locked, because a Live Activity the Worker
+/// starts by push hands the app its update token in the background (`LiveStatus`).
 enum Keychain {
     private static let service = "eu.illegible.prosperios.account"
     private static let account = "session"
@@ -111,8 +112,20 @@ enum Keychain {
         SecItemDelete(query as CFDictionary)
         var add = query
         add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(add as CFDictionary, nil)
+    }
+
+    /// Move a credential saved by an older build (WhenUnlocked) to the accessibility above,
+    /// in place, so nothing is ever deleted to do it.
+    static func allowAfterFirstUnlock() {
+        SecItemUpdate([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ] as CFDictionary, [
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ] as CFDictionary)
     }
 
     static func load() -> Stored? {
@@ -150,7 +163,11 @@ final class AccountStore: ObservableObject {
     var isSignedIn: Bool { session != nil }
 
     init() {
-        if let s = Keychain.load() { email = s.email; session = s.session }
+        if let s = Keychain.load() {
+            email = s.email
+            session = s.session
+            Keychain.allowAfterFirstUnlock()
+        }
     }
 
     /// Adopt fresh credentials (from a completed login) and persist them.
@@ -162,7 +179,9 @@ final class AccountStore: ObservableObject {
 
     /// Revoke server-side, await it, THEN clear local state (PLAN §3: don't drop the
     /// Keychain until the server confirms — a half-done sign-out leaves a live session).
+    /// The push tokens go first, while the Bearer still works.
     func signOut() async {
+        if let s = session, let e = email { await LiveStatus.shared.signOut(session: s, email: e) }
         if let s = session { try? await client.logout(session: s) }
         clearLocal()
     }
@@ -171,6 +190,9 @@ final class AccountStore: ObservableObject {
     /// call leaves the user signed in to retry (PLAN §6.3 / Apple 5.1.1(v)).
     func deleteAccount() async throws {
         guard let s = session else { clearLocal(); return }
+        // Live status off first, while the Bearer still works; a failed delete leaves the
+        // user signed in with the switch off.
+        await LiveStatus.shared.turnOff()
         var req = URLRequest(url: serverBaseURL.appendingPathComponent("/account/delete"))
         req.httpMethod = "POST"
         req.setValue("Bearer \(s)", forHTTPHeaderField: "Authorization")

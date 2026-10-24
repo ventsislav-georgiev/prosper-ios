@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// How a dch agent state reads on screen in the session list.
+/// How a dch agent state reads on screen: the session list and the Live Activity, so the
+/// two can't drift apart.
 enum SessionStateStyle: String, CaseIterable {
     case working, blocked, idle, done
 
@@ -26,6 +27,16 @@ enum SessionStateStyle: String, CaseIterable {
         case .working: return "\u{2733}\u{FE0E}"   // ✳, text style: not the green emoji
         case .blocked: return "!"
         case .idle, .done: return "\u{25CF}" // ●
+        }
+    }
+
+    /// The Live Activity's SF Symbols: a card and the island draw a symbol, not a glyph.
+    var symbol: String {
+        switch self {
+        case .working: return "circle.dotted"
+        case .blocked: return "hand.raised.fill"
+        case .idle:    return "moon.zzz"
+        case .done:    return "checkmark.circle"
         }
     }
 
