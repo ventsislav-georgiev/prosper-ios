@@ -377,7 +377,7 @@ enum TerminalMath {
                 if r == row && c == col { tap = s.utf16.count - (l.cells[c] == nil ? 1 : 0) }
                 guard let ch = l.cells[c].map({ $0 == "\0" ? " " : $0 }) else { continue }
                 s.append(ch)
-                at += repeatElement((r, c), count: ch.utf16.count)
+                at += repeatElement((row: r, col: c), count: ch.utf16.count)
             }
         }
         guard let tap, let m = webURLPattern.matches(in: s, range: NSRange(location: 0, length: s.utf16.count))
