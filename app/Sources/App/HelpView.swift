@@ -25,8 +25,6 @@ struct HelpView: View {
                           "Tailscale is the security boundary — the Mac only accepts peers already on your tailnet.")
                     label("arrow.triangle.2.circlepath", "Survives drops",
                           "Sessions keep running on the Mac. Lose signal and it silently reconnects right where you left off.")
-                    label("bell", "Watch a session",
-                          "Tap the bell on a session to get pinged when the agent needs you or finishes. Works while Prosper is open.")
                 } header: { Text("How it works") }
 
                 Section {

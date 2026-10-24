@@ -4,7 +4,8 @@ import UIKit
 @main
 struct ProsperApp: App {
     init() {
-        SessionPings.presentInForeground()
+        // The per-session bell is gone; drop the switches it persisted.
+        UserDefaults.standard.removeObject(forKey: "sessionAlerts.v1")
         #if DEBUG
         // ponytail: run the cheap assert-based self-checks once at launch so a broken
         // backoff schedule / Machine migration / wakeId derivation trips in dev.
@@ -276,9 +277,6 @@ struct SessionListView: View {
     @State private var creating = false            // new-session alert
     @State private var newName = ""
     @State private var sleeping = false            // sleep round-trip in flight
-    @StateObject private var alerts = SessionAlerts()
-    @State private var engine = SessionAlertEngine()
-    @State private var pingsDenied = false         // bell on, notifications off in Settings
     @Environment(\.scenePhase) private var scenePhase
 
     // Live store snapshot so the badge tracks cachedWake after handshake (the `machine`
@@ -348,8 +346,8 @@ struct SessionListView: View {
                 .disabled(sleeping || loading)
         }
         .task { await refresh() }
-        // Keyed on the scene phase: the watcher exists only while the app is in front.
-        .task(id: scenePhase == .active) { await watchLoop() }
+        // Keyed on the scene phase: the poll exists only while the app is in front.
+        .task(id: scenePhase == .active) { await pollStates() }
         // Programmatic push for tap-to-attach and newly created sessions.
         .navigationDestination(isPresented: Binding(get: { open != nil },
                                                     set: { if !$0 { open = nil } })) {
@@ -375,14 +373,6 @@ struct SessionListView: View {
             Button("Create") { startNew() }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Opens a fresh dch session on \(title).") }
-        .alert("Notifications are off", isPresented: $pingsDenied) {
-            Button("Open Settings") {
-                if let url = URL(string: UIApplication.openNotificationSettingsURLString) { UIApplication.shared.open(url) }
-            }
-            Button("Later", role: .cancel) {}
-        } message: {
-            Text("Prosper can't ping you about this session until notifications are allowed.")
-        }
     }
 
     @ViewBuilder private func row(_ s: DchSession) -> some View {
@@ -394,7 +384,6 @@ struct SessionListView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .onTapGesture { open = s }
-            alertToggle(s)
             Button { renaming = s; renameText = s.alias ?? "" } label: {
                 Image(systemName: "pencil")
             }.buttonStyle(.borderless)
@@ -404,38 +393,17 @@ struct SessionListView: View {
         }
     }
 
-    /// Per-session bell: ping me when this agent needs input or finishes.
-    @ViewBuilder private func alertToggle(_ s: DchSession) -> some View {
-        let on = alerts.isOn(machine: machine?.id, session: s.name)
-        Button {
-            let turnedOn = alerts.toggle(machine: machine?.id, session: s.name)
-            Task {
-                // Ask for the banner permission only when someone actually wants one, and
-                // say so if it's denied — a bell that can never ring is worse than no bell.
-                if turnedOn, await !SessionPings.authorize() { pingsDenied = true }
-            }
-        } label: {
-            Image(systemName: on ? "bell.fill" : "bell")
-        }
-        .buttonStyle(.borderless)
-        .foregroundStyle(on ? Color.orange : Color.secondary)
-        .accessibilityLabel(on ? "Stop watching \(s.title)" : "Watch \(s.title)")
-    }
-
-    /// Poll the sessions' states while the app is in front, ping on the two transitions
-    /// worth interrupting for.
+    /// Poll the sessions' states while the app is in front.
     ///
-    /// Polls whether or not anything is watched: the row's working/idle/blocked label is
-    /// the reason to open the list at all, and gating the poll on the bells left it frozen
-    /// at whatever the last manual refresh saw. One small list round-trip every few
-    /// seconds is cheaper than a user pressing refresh to find out.
-    private func watchLoop() async {
+    /// The row's working/idle/blocked label is the reason to open the list at all, and
+    /// without the poll it stays frozen at whatever the last manual refresh saw. One small
+    /// list round-trip every few seconds is cheaper than a user pressing refresh to find out.
+    private func pollStates() async {
         // Only ever started while the app is in front (`.task(id:)` on the scene phase), so
         // going away cancels the loop outright instead of leaving a timer ticking.
         guard scenePhase == .active else { return }
-        engine.forget()
-        let poll = UInt64(SessionAlertEngine.pollInterval * 1_000_000_000)
-        let backoff = UInt64(SessionAlertEngine.failureBackoff * 1_000_000_000)
+        let poll = UInt64(SessionPoll.interval * 1_000_000_000)
+        let backoff = UInt64(SessionPoll.failureBackoff * 1_000_000_000)
         // A fresh screen already has `.task { refresh() }` in flight, so wait a beat. Coming
         // back from the background has no such refresh, and the rows on screen are as stale
         // as the time away — poll those at once instead of showing yesterday's states for
@@ -452,12 +420,6 @@ struct SessionListView: View {
             // Don't touch `sessions` unless something actually moved: an equal array still
             // marks the state dirty and redraws every row.
             if !loading, list != sessions { sessions = list }
-            alerts.prune(machine: machine?.id, alive: list)
-            for alert in engine.step(list, now: CFAbsoluteTimeGetCurrent(),
-                                     isWatched: { alerts.isOn(machine: machine?.id, session: $0) },
-                                     attached: open?.name) {
-                SessionPings.fire(alert, machine: title)
-            }
         }
     }
 

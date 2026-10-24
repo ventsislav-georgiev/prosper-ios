@@ -1,10 +1,6 @@
 import SwiftUI
 
-/// How a dch agent state reads on screen. Shared by the session list and the notification
-/// text so the two can't drift apart.
-///
-/// `blocked` and `done` are the two worth interrupting someone over: the agent is either
-/// waiting on the user or finished. `working`/`idle` only ever update in place.
+/// How a dch agent state reads on screen in the session list.
 enum SessionStateStyle: String, CaseIterable {
     case working, blocked, idle, done
 
@@ -46,14 +42,5 @@ enum SessionStateStyle: String, CaseIterable {
     static func agents(_ n: Int?) -> String? {
         guard let n, n > 0 else { return nil }
         return n == 1 ? "1 agent" : "\(n) agents"
-    }
-
-    /// Notification body for the two states that ping.
-    func ping(session: String) -> String? {
-        switch self {
-        case .blocked: return "\(session) is waiting for your input."
-        case .done:    return "\(session) finished."
-        case .working, .idle: return nil
-        }
     }
 }

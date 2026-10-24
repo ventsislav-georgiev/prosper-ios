@@ -33,9 +33,9 @@ WHAT'S NEW IN THIS VERSION, AND WHERE TO SEE IT IN THE DEMO
   - Helper-task count in the session list: each session row can show how many
     helper tasks are running. The count only appears for sessions on a real Mac
     running Prosper, so it is not visible in the demo.
-  - The watched-session Live Activity / Dynamic Island has been removed in this
-    version, so the app no longer uses Live Activities. The "watch a session"
-    bell still sends notifications, unchanged.
+  - The watched-session Live Activity / Dynamic Island and the per-session bell
+    have been removed in this version, so the app no longer uses Live
+    Activities or notifications.
 No new permissions, data collection, accounts or purchases are added.
 
 ABOUT THE OPTIONAL "WAKE" BUTTON
