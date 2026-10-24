@@ -13,6 +13,7 @@ struct DchSession: Identifiable, Hashable {
     /// Live subagents on the session's Claude Code agent panel, as dch counts them.
     /// 0 when there are none, or the Mac's dch is too old to say.
     var agents: Int = 0
+    var meta: SessionMeta? = nil     // PRs and tasks; nil draws the row as before
     var id: String { name }
     var title: String { alias ?? name }
 }

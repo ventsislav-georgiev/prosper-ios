@@ -382,6 +382,7 @@ struct SessionListView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(s.title)
                 if let state = s.state, !state.isEmpty { SessionStateLabel(state: state, agents: s.agents) }
+                if let meta = s.meta { SessionMetaView(meta: meta) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
