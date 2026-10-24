@@ -25,11 +25,20 @@ final class KeyboardExtensionTests: XCTestCase {
             if hidesContext { return nil }
             var u = Array(((guess ?? shown)?.before ?? text).utf16)
             if lineBefore, let i = u.lastIndex(of: 0x0A) { u = i == u.count - 1 ? [0x0A] : Array(u[(i + 1)...]) }
+            if sentenceBefore, let i = u.indices.dropLast(2).last(where: { u[$0] == 0x2E && u[$0 + 1] == 0x20 }) {
+                u = Array(u[(i + 2)...])
+            }
+            if breakSpace, let i = u.lastIndex(of: 0x0A), i < u.count - 1 { u = [0x0A, 0x20] + Array(u[(i + 1)...]) }
             return String(decoding: u.suffix(window ?? u.count), as: UTF16.self)
         }
         /// The before-context is the caret's line, and only its LF at a line's start, as a
         /// UITextView's is.
         var lineBefore = false
+        /// The before-context starts at the caret's sentence, as some UIKit hosts' does.
+        var sentenceBefore = false
+        /// The before-context stops at the caret line's break and shows a space after it that
+        /// isn't in the text, as Safari's does at a paragraph's start.
+        var breakSpace = false
         /// Each context is this many units either side of the caret, sliding with it, as
         /// Safari's is.
         var window: Int?
@@ -1120,5 +1129,235 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(doc.moves, [-1, -1, -1, -2, -1, -2])
         XCTAssertEqual(doc.stops, [8, 7, 6, 4, 3, 1])
         XCTAssertTrue(walk.idle)
+    }
+
+    // MARK: Trackpad lines
+
+    /// `s` with `|` at the caret, in a UITextView (`kit`) or Safari, whose after-contexts
+    /// stop at the caret line's end (`cut`), after `moves` of (steps, lines), each asked once
+    /// the last has landed, or all at once up to a (0, 0) (`fast`), the host catching up
+    /// after every `perRefresh` asks (0: its context never lags): the text with `|` where
+    /// the caret ended. The caret never stops inside a Character but, in a UITextView, for
+    /// a moment between a CR and its LF.
+    private func lined(_ s: String, kit: Bool, cut: Bool = true, _ moves: [(Int, Int)], perRefresh: Int = 0,
+                       fast: Bool = false, _ why: String = "", tweak: (FakeProxy) -> Void = { _ in },
+                       file: StaticString = #filePath, line: UInt = #line) -> String {
+        let parts = s.components(separatedBy: "|"), text = parts.joined()
+        let doc = host(kit: kit, parts[0], parts[1])
+        doc.stopsAtLineEnd = cut
+        tweak(doc)
+        doc.lags = perRefresh > 0
+        var walk = CaretWalk(), polls = 0
+        func step(_ m: (Int, Int)) {
+            let units = walk.step(m.0, lines: m.1, before: doc.documentContextBeforeInput ?? "",
+                                  after: doc.documentContextAfterInput ?? "", settled: polls >= 3)
+            if units != 0 { doc.adjustTextPosition(byCharacterOffset: units); polls = 0 }
+        }
+        func settle() { for _ in 0..<400 where !walk.idle { doc.catchUp(); polls += 1; walk.poll(); step((0, 0)) } }
+        for (i, m) in moves.enumerated() {
+            step(m)
+            if perRefresh > 0, (i + 1) % perRefresh == 0 { doc.catchUp(); step((0, 0)) }
+            if !fast || m == (0, 0) { settle() }
+        }
+        settle()
+        let at = "\(why) kit \(kit) cut \(cut) lag \(perRefresh)"
+        XCTAssertTrue(walk.idle, at, file: file, line: line)
+        let u = Array(text.utf16), crlf = u.indices.dropFirst().filter { u[$0 - 1] == 0x0D && u[$0] == 0x0A }
+        let bad = doc.stops.filter { !boundaries(text).contains($0) && !(kit && crlf.contains($0)) }
+        XCTAssertEqual(bad, [], "\(at): stopped inside a Character", file: file, line: line)
+        return doc.text + "|" + (doc.after ?? "")
+    }
+
+    /// A line move in either host, lagging or not, the break past a line's end shown or
+    /// not: it keeps its column through a short line, counts it in Characters, crosses a
+    /// CR LF whole, stops at the text's first and last lines, and lands where a line
+    /// shows only in windows.
+    func testLineMovesKeepTheirColumnInEitherHost() {
+        let long = String(repeating: "x", count: 150), x30 = String(repeating: "x", count: 30)
+        let cases: [(String, [(Int, Int)], String, String)] = [
+            ("ab|c\ndef", [(0, 1)], "abc\nde|f", "down keeps the column"),
+            ("abc\nde|f", [(0, -1)], "ab|c\ndef", "up keeps the column"),
+            ("abc\n|def", [(0, -1)], "|abc\ndef", "from a line's start"),
+            ("abcdef|\nab\nabcdefgh", [(0, 1)], "abcdef\nab|\nabcdefgh", "a short line: its end"),
+            ("abcdef|\nab\nabcdefgh", [(0, 1), (0, 1)], "abcdef\nab\nabcdef|gh", "the column back past it"),
+            ("abcdef|\nab\nabcdefgh", [(0, 2)], "abcdef\nab\nabcdef|gh", "two lines in one move"),
+            ("abcdefgh\nab\nabc|def", [(0, -2)], "abc|defgh\nab\nabcdef", "two lines up"),
+            ("abcdefgh\nab\nabc|def", [(0, -1), (0, -1)], "abc|defgh\nab\nabcdef", "up, and up again"),
+            ("a|bc\ndef", [(0, -1)], "a|bc\ndef", "up on the first line: nothing"),
+            ("abc\nd|ef", [(0, 1)], "abc\nd|ef", "down on the last line: nothing"),
+            ("a|b\ncd", [(0, 5)], "ab\nc|d", "more lines than there are: the last"),
+            ("ab\nc|d", [(0, -5)], "a|b\ncd", "and the first"),
+            ("abc|\n\nabc", [(0, 1)], "abc\n|\nabc", "an empty line"),
+            ("abc|\n\nabc", [(0, 2)], "abc\n\nabc|", "past it, the column back"),
+            ("abc\n\nab|c", [(0, -1)], "abc\n|\nabc", "up onto an empty line"),
+            ("|", [(0, 1), (0, -1)], "|", "no text"),
+            ("ab|c\r\ndef", [(0, 1)], "abc\r\nde|f", "a CR LF is one break"),
+            ("abc\r\nde|f", [(0, -1)], "ab|c\r\ndef", "up over a CR LF"),
+            ("abcdef\r\nab\r\n|abcdefgh", [(0, -1)], "abcdef\r\n|ab\r\nabcdefgh", "QA's: never between CR and LF"),
+            ("abcdef\r\nab\r\nabcd|efgh", [(0, -2)], "abcd|ef\r\nab\r\nabcdefgh", "two up over CR LFs"),
+            ("ab😀c|d\n😀😀😀xyz", [(0, 1)], "ab😀cd\n😀😀😀x|yz", "the column in Characters"),
+            ("ab😀cd\n😀😀😀x|y", [(0, -1)], "ab😀c|d\n😀😀😀xy", "and back up"),
+            ("a👨‍👩‍👧b|\n🇧🇬🇺🇸x", [(0, 1)], "a👨‍👩‍👧b\n🇧🇬🇺🇸x|", "a family and flags"),
+            ("ab|c\u{2028}def", [(0, 1)], "abc\u{2028}de|f", "a line separator too"),
+            ("ab|c\ndefg", [(1, 1)], "abc\ndef|g", "a diagonal moves both"),
+            ("abcdef|\nab\nabcdefgh", [(0, 1), (-1, 0), (0, 1)], "abcdef\nab\na|bcdefgh",
+             "a sideways step sets a new column"),
+            (long + "\n" + x30 + "|" + long.dropFirst(30), [(0, -1)], x30 + "|" + long.dropFirst(30) + "\n" + long,
+             "up into a line longer than Safari's windows"),
+            (x30 + "|" + long.dropFirst(30) + "\n" + long, [(0, 1)], long + "\n" + x30 + "|" + long.dropFirst(30),
+             "and down"),
+            (String(repeating: "x", count: 90) + "|xxxxxxxxxx\n" + String(repeating: "😀", count: 100), [(0, 1)],
+             String(repeating: "x", count: 100) + "\n" + String(repeating: "😀", count: 90) + "|😀😀😀😀😀😀😀😀😀😀",
+             "a column past Safari's window"),
+        ]
+        for (s, moves, want, why) in cases {
+            for kit in [true, false] {
+                for cut in [true, false] {
+                    for perRefresh in [0, 1] {
+                        XCTAssertEqual(lined(s, kit: kit, cut: cut, moves, perRefresh: perRefresh, why), want,
+                                       "\(why) kit \(kit) cut \(cut) lag \(perRefresh)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// A line move from far into a line whose start the context doesn't reach, cut at a
+    /// sentence (a UITextView) or by a window (Safari), keeps the caret's true column.
+    func testLineMovesKeepAColumnTheContextCutsOff() {
+        let x120 = String(repeating: "x", count: 120), x30 = String(repeating: "x", count: 30)
+        let long = x120 + x30, abc = "abcdefghijklmnop"
+        let cases: [(String, [(Int, Int)], String, String)] = [
+            (abc + "\nOne. Two. Th|ree.", [(0, -1)], "abcdefghijkl|mnop\nOne. Two. Three.", "up from a cut sentence"),
+            ("One. Two. Th|ree.\n" + abc, [(0, 1)], "One. Two. Three.\nabcdefghijkl|mnop", "down from one"),
+            ("ab\nOne. Two. Th|ree.\n" + abc, [(0, 1)], "ab\nOne. Two. Three.\nabcdefghijkl|mnop", "down, a line above"),
+            (abc + "\nab\nOne. Two. Th|ree.", [(0, -2)], "abcdefghijkl|mnop\nab\nOne. Two. Three.", "up 2 past a short line"),
+            (long + "\n" + x120 + "|" + x30, [(0, -1)], x120 + "|" + x30 + "\n" + long, "up from past a window"),
+            ("ab\n" + x120 + "|" + x30 + "\n" + long, [(0, 1)], "ab\n" + long + "\n" + x120 + "|" + x30, "down from past one"),
+        ]
+        for (s, moves, want, why) in cases {
+            for kit in [true, false] {
+                for cut in [true, false] {
+                    for perRefresh in [0, 1] {
+                        XCTAssertEqual(lined(s, kit: kit, cut: cut, moves, perRefresh: perRefresh, why, tweak: { $0.sentenceBefore = kit }), want,
+                                       "\(why) kit \(kit) cut \(cut) lag \(perRefresh)")
+                    }
+                }
+                XCTAssertEqual(lined("ab\nOne. Two. Th|ree.\nabc", kit: kit, [(0, 1), (0, -1)], fast: true,
+                                     tweak: { $0.sentenceBefore = kit }),
+                               "ab\nOne. Two. Th|ree.\nabc", "down and up before the column shows: back where it was")
+            }
+        }
+    }
+
+    /// Safari's space after a break its context opens on is no Character of the line: the
+    /// column doesn't count it and an up move doesn't cross a line more for it.
+    func testLineMovesSeePastSafarisSpaceAfterABreak() {
+        let cases: [(String, Int, String, String)] = [
+            ("xy\n\nOne two thr|ee", -1, "xy\n|\nOne two three", "up onto an empty line"),
+            ("abcdefghijklmnop\nOne two thr|ee", -1, "abcdefghijk|lmnop\nOne two three", "up at the column"),
+            ("abc\nOne t|wo\nxyzxyzxyz", 1, "abc\nOne two\nxyzxy|zxyz", "down at the column"),
+        ]
+        for (s, n, want, why) in cases {
+            for cut in [true, false] {
+                for perRefresh in [0, 1] {
+                    XCTAssertEqual(lined(s, kit: false, cut: cut, [(0, n)], perRefresh: perRefresh, why, tweak: { $0.breakSpace = true }),
+                                   want, "\(why) cut \(cut) lag \(perRefresh)")
+                }
+            }
+        }
+    }
+
+    /// A drag faster than the host: the line moves add up or cancel out, and the sideways
+    /// steps asked during one wait for its landing, so a wobble never knocks it off its
+    /// line, then set a new column.
+    func testSidewaysStepsWaitForALineMoveToLand() {
+        let cases: [(String, [(Int, Int)], String, String)] = [
+            ("ab|c\nxyz\nmnop", [(0, 1), (-1, 0), (0, 1)], "abc\nxyz\nm|nop", "two down, then the step"),
+            ("abc\n|xyz", [(0, -1), (1, 0)], "a|bc\nxyz", "up, then the step"),
+            ("abcdef|\nab\nabcdefgh", [(0, 1), (-1, 0), (0, 0), (0, 1)], "abcdef\nab\na|bcdefgh",
+             "the held step sets a new column"),
+            ("abc\nde|f", [(0, -1), (0, 1)], "abc\nde|f", "up and down: back at the column"),
+            ("abc\nxyz\nm|nop", [(0, -2), (0, 1)], "abc\nx|yz\nmnop", "up 2, down 1: the line above"),
+        ]
+        for (s, moves, want, why) in cases {
+            for kit in [true, false] {
+                for perRefresh in [0, 1] {
+                    XCTAssertEqual(lined(s, kit: kit, moves, perRefresh: perRefresh, fast: true, why), want,
+                                   "\(why) kit \(kit) lag \(perRefresh)")
+                }
+            }
+        }
+    }
+
+    /// Through the view: a space-hold drag in a lagging UITextView moves by line, keeping
+    /// its column through a short line, a diagonal moves both ways, and a new hold starts
+    /// from the caret's own column. No text changes.
+    func testTrackpadMovesByLineThroughTheProxy() throws {
+        let kb = TerminalKeyboard(), doc = host(kit: true, "first line\nab\nthird", " line")
+        kb.target = doc
+        let space = try XCTUnwrap(laidOut(kb)["space"]).frame
+        func drag(_ moves: [(CGFloat, CGFloat)]) {
+            var p = CGPoint(x: space.midX, y: space.midY)
+            doc.lags = true
+            kb.track(.began, id: 1, at: p)
+            kb.fireHold()
+            for m in moves {
+                p.x += m.0 * KeyTouchTracker.caretStep
+                p.y += m.1 * KeyTouchTracker.lineStep
+                kb.track(.moved, id: 1, at: p)
+                kb.pollCaret()
+            }
+            kb.track(.ended, id: 1, at: p)
+            for _ in 0..<100 { doc.catchUp(); kb.pollCaret() }
+        }
+        drag([(0, -1), (0, -1)])
+        XCTAssertEqual(doc.text, "first", "up 2 through the short line, at its column")
+        drag([(0, 1.5)])
+        XCTAssertEqual(doc.text, "first line\nab", "the short line's end")
+        drag([(0, -1)])
+        XCTAssertEqual(doc.text, "fi", "the last hold's column is gone")
+        drag([(1, 1), (0, 1)])
+        XCTAssertEqual(doc.text, "first line\nab\nthi", "right and down, then down at that column")
+        XCTAssertEqual(doc.text + (doc.after ?? ""), "first line\nab\nthird line", "no text typed")
+        XCTAssertNil(kb.walkTimer)
+    }
+
+    /// A line move with nowhere to go sends nothing and ends nothing: the word touch
+    /// correction continues stays open and the suggestions hear of no move (QA's M188).
+    /// One that goes ends them once.
+    func testALineMoveWithNowhereToGoEndsNothing() {
+        let kb = TerminalKeyboard(), doc = host(kit: true, "")
+        kb.target = doc
+        var moved = 0
+        kb.didMoveCaret = { moved += 1 }
+        kb.press(.char("a")); kb.press(.char("b"))
+        doc.after = doc.text; doc.text = ""   // the user tapped the caret to the start
+        kb.line(-1)
+        for _ in 0..<40 { kb.pollCaret() }
+        XCTAssertEqual(doc.moves, [])
+        XCTAssertEqual(kb.word, "ab")
+        XCTAssertEqual(moved, 0)
+        kb.line(1)
+        for _ in 0..<40 { kb.pollCaret() }
+        XCTAssertEqual(doc.moves, [2, 1, -2], "to the end, nothing past it, back")
+        XCTAssertEqual(kb.word, "")
+        XCTAssertEqual(moved, 1)
+    }
+
+    /// A line move that sent nothing is forgotten by the next touch: a step then ends the
+    /// word once, not again for the line move.
+    func testALineMoveThatSentNothingEndsWithItsTouch() throws {
+        let kb = TerminalKeyboard(), doc = host(kit: true, "", "ab")
+        kb.target = doc
+        let space = try XCTUnwrap(laidOut(kb)["space"]).frame, p = CGPoint(x: space.midX, y: space.midY)
+        var moved = 0
+        kb.didMoveCaret = { moved += 1 }
+        kb.line(-1)
+        kb.track(.began, id: 1, at: p)
+        kb.track(.cancelled, id: 1, at: p)
+        kb.caret(1)
+        XCTAssertEqual(doc.moves, [1])
+        XCTAssertEqual(moved, 1)
     }
 }

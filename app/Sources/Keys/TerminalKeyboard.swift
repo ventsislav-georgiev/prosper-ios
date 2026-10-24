@@ -141,15 +141,18 @@ struct KeyboardSettings: Equatable {
 ///   cancels it inside `tapSlop`. One there that lifts normally still types.
 /// - A space touch still waiting after `holdDelay` (`startTrackpad`) is a trackpad, as on
 ///   Apple's keyboard: every `caretStep` its finger travels sideways moves the caret one
-///   character, and lifting it types nothing. Other fingers are ignored until it lifts.
+///   character, and every `lineStep` up or down one line; each axis carries its own
+///   remainder, so a diagonal drag moves both. Lifting it types nothing. Other fingers are
+///   ignored until it lifts.
 ///   Never one begun under the keys: that strip is the home gesture's.
 ///
 /// Points are in the view's coordinates; the defaults suit callers that don't care
 /// about travel.
 struct KeyTouchTracker {
     typealias Key = TerminalKeyboard.Key
-    /// `caret`: trackpad steps, negative left.
-    enum Effect: Equatable { case press(Key), startRepeat, stopRepeat, caret(Int) }
+    /// `caret`: trackpad steps, negative left. `line`: trackpad lines, negative up; one move
+    /// yields its `caret` before its `line`.
+    enum Effect: Equatable { case press(Key), startRepeat, stopRepeat, caret(Int), line(Int) }
 
     /// How far a finger may travel and still count as a tap if it's cancelled.
     static let tapSlop: CGFloat = 10
@@ -157,10 +160,12 @@ struct KeyTouchTracker {
     static let holdDelay: TimeInterval = 0.35
     /// How far a trackpad finger travels sideways per character the caret moves.
     ///
-    /// ponytail: a fixed step, no acceleration, and sideways only: the host field's proxy
-    /// has no line geometry and the terminal's up/down is shell history. Tune it on device;
-    /// add a speed curve if long moves feel slow.
+    /// ponytail: fixed steps, no acceleration. Tune them on device; add a speed curve if
+    /// long moves feel slow.
     static let caretStep: CGFloat = 9
+    /// How far a trackpad finger travels up or down per line: about a line of body text,
+    /// and twice `caretStep` so a sideways drag's wobble rarely changes line.
+    static let lineStep: CGFloat = 20
 
     private struct Touch {
         let id: Int; var key: Key; var done: Bool
@@ -168,8 +173,8 @@ struct KeyTouchTracker {
         var belowKeys = false
         /// Set by a hold: what the touch types instead of `key`.
         var symbol: String?
-        /// Set by a space hold: trackpad mode, the x its caret steps count from.
-        var anchor: CGFloat?
+        /// Set by a space hold: trackpad mode, the point its caret and line steps count from.
+        var anchor: CGPoint?
         var output: Key { symbol.map(Key.char) ?? key }
         mutating func reach(_ p: CGPoint) { travel = max(travel, hypot(p.x - start.x, p.y - start.y)) }
     }
@@ -214,24 +219,25 @@ struct KeyTouchTracker {
         if let point { touches[i].reach(point) }
         if let anchor = touches[i].anchor {
             guard let point else { return [] }
-            let steps = Int((point.x - anchor) / Self.caretStep)
-            if steps == 0 { return [] }
-            touches[i].anchor = anchor + CGFloat(steps) * Self.caretStep
-            return [.caret(steps)]
+            let steps = Int((point.x - anchor.x) / Self.caretStep)
+            let lines = Int((point.y - anchor.y) / Self.lineStep)
+            touches[i].anchor = CGPoint(x: anchor.x + CGFloat(steps) * Self.caretStep,
+                                        y: anchor.y + CGFloat(lines) * Self.lineStep)
+            return (steps == 0 ? [] : [.caret(steps)]) + (lines == 0 ? [] : [.line(lines)])
         }
         guard !touches[i].done, touches[i].symbol == nil, !Self.actsOnDown(key) else { return [] }
         touches[i].key = key
         return []
     }
 
-    /// The touch has stayed down `holdDelay`, now at `x`: a space touch becomes a trackpad
-    /// until it lifts, and lifting types nothing (Apple's types no space either). True if
-    /// it did.
-    mutating func startTrackpad(_ id: Int, at x: CGFloat) -> Bool {
+    /// The touch has stayed down `holdDelay`, now at `point`: a space touch becomes a
+    /// trackpad until it lifts, and lifting types nothing (Apple's types no space either).
+    /// True if it did.
+    mutating func startTrackpad(_ id: Int, at point: CGPoint) -> Bool {
         guard let i = touches.firstIndex(where: { $0.id == id }), !touches[i].done,
               touches[i].key == .space, !touches[i].belowKeys else { return false }
         touches[i].done = true
-        touches[i].anchor = x
+        touches[i].anchor = point
         return true
     }
 
@@ -294,6 +300,8 @@ struct KeyTouchTracker {
 /// - A move that can't show (a long run of one character in WebKit's fixed windows) is
 ///   taken as landed when the view stops waiting (`timedOut`).
 /// - A field whose context stays empty after a move gets every step as asked (`blank`).
+/// - Line moves (`lines`) go as legs of such steps (`lineLeg`), each sized from the context
+///   the last one landed in, so they keep all of the above.
 struct CaretWalk {
     /// The host counts UTF-16 units; nil until a move shows which.
     var utf16: Bool?
@@ -315,17 +323,38 @@ struct CaretWalk {
     /// The context the last step saw, and the polls since a move or since it last changed.
     private var shown: (String, String)?
     private var quiet = 0
-    var idle: Bool { sent == nil && queued == 0 }
+    /// Line moves asked for and not crossed yet, negative up.
+    private(set) var lines = 0
+    /// The column line moves aim for, in Characters from the line's start: kept from line
+    /// to line, so a short one on the way doesn't shorten the next, until a sideways step
+    /// goes or `drop`.
+    private var goal: Int?
+    /// The line move under way: the Characters it walked on the line it started on, nil
+    /// once it crossed a break, 0 once it landed; whether the leg in flight crosses one;
+    /// and once the last is crossed, its landing: to the line's start while that's out of
+    /// sight, then right.
+    private var walked: Int? = 0, crossing = false
+    private var landing: Landing?
+    private enum Landing { case start(Int), right(Int) }
+    /// Sideways steps asked for during a line move: they go once it has landed.
+    private var held = 0
+    var idle: Bool { sent == nil && queued == 0 && lines == 0 && landing == nil && held == 0 }
 
-    /// `steps` more Characters, negative left (0 checks the move in flight), given the
-    /// proxy's context now, and whether 40 ms have passed since the last move (`settled`):
-    /// the units to move it now.
-    mutating func step(_ steps: Int, before b: String, after a: String, settled: Bool = true) -> Int {
+    /// `steps` more Characters, negative left (0 checks the move in flight), and `lines`
+    /// more lines, negative up, given the proxy's context now, and whether 40 ms have
+    /// passed since the last move (`settled`): the units to move it now.
+    mutating func step(_ steps: Int, lines n: Int = 0, before raw: String, after a: String,
+                       settled: Bool = true) -> Int {
+        // ponytail: WebKit's before-context opening on a line's break shows a space after it
+        // that isn't in the text (Safari, a paragraph's start); a line that does start with
+        // a space reads a Character short there.
+        let b = utf16 != true && raw.hasPrefix("\n ") ? "\n" + raw.dropFirst(2) : raw
         if !b.isEmpty || !a.isEmpty { blank = false }
         if let w = shown, !Self.same(w, b, a) { quiet = 0 }
         shown = (b, a)
-        if blank { defer { queued = 0 }; return queued + steps }
-        queued += steps
+        if blank { defer { queued = 0 }; return queued + steps }   // no lines: nothing to see them by
+        if lines != 0 || landing != nil { held += steps } else { queued += steps; if steps != 0 { goal = nil } }
+        lines += n
         if let r = reckoned, !Self.same(r.seen, b, a) { reckoned = nil }
         if let s = sent {
             if Self.same(s.seen, b, a) {
@@ -364,6 +393,10 @@ struct CaretWalk {
             sent = nil
             believed = (b, a)
         }
+        if sent == nil, queued == 0, believed.map({ Self.same($0, b, a) }) ?? true {
+            let (before, after) = reckoned.map { ($0.before, $0.after) } ?? (b, a)
+            lineLeg(before: Array(before), after: Array(after))
+        }
         // Nothing sent since the walk believed a landing: any other context is an older answer.
         if sent == nil, let w = believed, !Self.same(w, b, a), queued != 0 { return 0 }
         guard queued != 0 else { return 0 }
@@ -400,6 +433,7 @@ struct CaretWalk {
     ///   own signal if a device shows one.
     mutating func timedOut() {
         guard let s = sent else { believed = nil; return }
+        if s.blind, crossing { crossing = false; sent = nil; edge(); return }   // no break past it
         if s.blind {
             if s.seen.0.isEmpty, s.seen.1.isEmpty { blank = true; sent = nil } else { drop() }
             return
@@ -423,7 +457,84 @@ struct CaretWalk {
 
     /// Forget the move in flight, the steps behind it and what the field showed: a touch
     /// starts afresh, looking for context again.
-    mutating func drop() { sent = nil; reckoned = nil; believed = nil; queued = 0; blank = false }
+    mutating func drop() {
+        sent = nil; reckoned = nil; believed = nil; queued = 0; blank = false
+        lines = 0; goal = nil; walked = 0; crossing = false; landing = nil; held = 0
+    }
+
+    /// The next leg of a line move, in Characters, from the context the last one landed in:
+    /// down, to the caret line's end and over its break; up, to its start and over the break
+    /// before it. A leg stops where the context does, to be read again, so none lands in
+    /// text the host hasn't shown. Hosts show no break past a line's end, so that crossing
+    /// goes blind, and one that never shows was the text's end (`timedOut`); no context
+    /// before the caret is the text's start. The goal column is counted from the start line's
+    /// start, walked to first if the context doesn't reach it. After the last break, that
+    /// column, or the line's end if it's shorter. Then the sideways steps held behind it.
+    ///
+    /// ponytail: a host that hides the line's break shows no edge either, so a line move
+    /// from the first line (UIKit) or the last (every host) walks to the edge and back.
+    private mutating func lineLeg(before: [Character], after: [Character]) {
+        if crossing { crossing = false; walked = nil }
+        let br = before.lastIndex(where: \.isNewline), col = br.map { before.count - $0 - 1 }
+        while queued == 0 {
+            if lines != 0 {
+                landing = nil
+                // The column from the line's start, which a host can cut off (a sentence, a
+                // window): walked to it first, counting, if it's out of sight.
+                if goal == nil, col == nil, !before.isEmpty {
+                    queued = -before.count
+                    walked = walked.map { $0 + queued }
+                    return
+                }
+                let g = goal ?? (col ?? 0) - (walked ?? 0), down = lines > 0
+                goal = g
+                if down, let k = after.firstIndex(where: \.isNewline) {
+                    queued = k + 1
+                } else if !down, let br {
+                    queued = br - before.count
+                } else if !(down ? after : before).isEmpty {
+                    queued = down ? after.count : -before.count   // to the edge of what's shown
+                    walked = walked.map { $0 + queued }
+                    return
+                } else if down {
+                    queued = 1   // blind
+                } else {
+                    edge()
+                    continue
+                }
+                crossing = true
+                lines -= lines.signum()
+                if lines == 0 { landing = .start(g) }
+                return
+            }
+            switch landing {
+            case .start(let g)?:
+                if col == nil, !before.isEmpty { queued = -before.count; return }
+                let c = col ?? 0
+                queued = min(g - c, 0)
+                landing = g > c ? .right(g - c) : nil
+                if landing == nil { walked = 0 }
+            case .right(let n)?:
+                let line = after.prefix { !$0.isNewline }
+                queued = min(n, line.count)
+                landing = queued < n && queued == after.count && queued > 0 ? .right(n - queued) : nil
+                if landing == nil { walked = 0 }
+            case nil:
+                if walked != 0 { edge(); continue }   // up and down cancelled out before it landed
+                if held != 0 { goal = nil }
+                queued = held
+                held = 0
+                return
+            }
+        }
+    }
+
+    /// The line move met the text's edge, or its lines cancelled out: back where it started,
+    /// or if it crossed a line on the way, landed on the one it reached.
+    private mutating func edge() {
+        lines = 0
+        if let w = walked { queued = -w; walked = 0; landing = nil } else { landing = .start(goal ?? 0) }
+    }
 
     private mutating func send(_ units: Int, _ seen: (String, String), _ before: String, _ after: String,
                                dir: Int, chars: Int, plain: Bool = false, blind: Bool = false) -> Int {
@@ -513,8 +624,9 @@ struct CaretWalk {
 /// goes to the one that continues the word being typed (`corrected`).
 ///
 /// Holding space turns the keys into a trackpad, as on Apple's keyboard: the labels blank
-/// out and a sideways drag moves the caret (`caret`), through `moveCaret` in the app (arrow
-/// keys) and the field's document proxy in the extension.
+/// out and a drag moves the caret (`caret`), through `moveCaret` in the app (arrow keys)
+/// and the field's document proxy in the extension, where up and down move it by line
+/// (`line`).
 ///
 /// Output goes through the terminal's own `UIKeyInput` (`insertText` / `deleteBackward`),
 /// so the host's sticky ctrl behaves exactly as it does for the system keyboard. Return
@@ -720,8 +832,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// Where trackpad steps go, negative left: the app sends arrow keys. Nil moves the
     /// host field's caret through its document proxy (the extension).
     var moveCaret: ((Int) -> Void)?
-    /// After each trackpad step: the extension's suggestions forget the word they were
-    /// following, and the bar recomputes. Nil in the app.
+    /// After each trackpad step, or a line move's first: the extension's suggestions forget
+    /// the word they were following, and the bar recomputes. Nil in the app.
     var didMoveCaret: (() -> Void)?
     private(set) var shift = ShiftState()
     /// The letters typed since the last non-letter, lowercase: the prefix touch correction
@@ -758,6 +870,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var walkField: UUID?
     private(set) var walkTimer: Timer?
     private var walkPolls = 0
+    /// A line move asked for hasn't sent anything yet (`line`).
+    private var lineAsked = false
     private var heightConstraint: NSLayoutConstraint!
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
@@ -856,25 +970,42 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     func caret(_ offset: Int) {
         if let moveCaret {
             moveCaret(offset)
-        } else if let doc = target as? UITextDocumentProxy {
-            if doc.documentIdentifier != walkField {
-                walkField = doc.documentIdentifier
-                walk = CaretWalk()
-            }
+        } else {
             walkOn(offset)
         }
+        caretMoved()
+    }
+
+    /// A trackpad move of `lines` lines, negative up: in a host field only, through `walk`.
+    /// The app ignores it, since a shell's up and down are history, not lines. The word
+    /// ends once the move sends something, so one with nowhere to go ends nothing.
+    func line(_ lines: Int) {
+        guard moveCaret == nil, target is UITextDocumentProxy else { return }
+        lineAsked = true
+        walkOn(lines: lines)
+    }
+
+    private func caretMoved() {
         word = ""
         autoCapitalize()
         didMoveCaret?()
     }
 
-    /// `steps` more for `walk`, and what it can send now; polls the host's context until
-    /// the walk is idle, or 0.3 s pass without a move landing.
-    private func walkOn(_ steps: Int = 0) {
+    /// `steps` and `lines` more for `walk`, and what it can send now; polls the host's
+    /// context until the walk is idle, or 0.3 s pass without a move landing.
+    private func walkOn(_ steps: Int = 0, lines: Int = 0) {
         guard let doc = target as? UITextDocumentProxy else { return }
-        let units = walk.step(steps, before: doc.documentContextBeforeInput ?? "", after: doc.documentContextAfterInput ?? "",
-                              settled: walkPolls >= 3)
-        if units != 0 { doc.adjustTextPosition(byCharacterOffset: units); walkPolls = 0 }
+        if steps != 0 || lines != 0, doc.documentIdentifier != walkField {
+            walkField = doc.documentIdentifier
+            walk = CaretWalk()
+        }
+        let units = walk.step(steps, lines: lines, before: doc.documentContextBeforeInput ?? "",
+                              after: doc.documentContextAfterInput ?? "", settled: walkPolls >= 3)
+        if units != 0 {
+            doc.adjustTextPosition(byCharacterOffset: units)
+            walkPolls = 0
+            if lineAsked { lineAsked = false; caretMoved() }
+        }
         if walk.idle {
             walkTimer?.invalidate()
             walkTimer = nil
@@ -1070,6 +1201,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             if tracker.isTrackpad { return }   // a second finger on the trackpad: ignored
             if !walk.idle { walkOn() }   // a last look for a split before typing
             walk.drop()
+            lineAsked = false
             knownCache = [:]; screenCache = nil
             feedback()
             let bottomRow = caps.last?.map(\.frame.maxY).max() ?? .infinity
@@ -1148,6 +1280,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             case .startRepeat: startRepeat()
             case .stopRepeat: stopRepeat()
             case .caret(let n): caret(n)
+            case .line(let n): line(n)
             }
         }
     }
@@ -1251,7 +1384,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     func fireHold() {
         guard let h = holdTouch else { return }
         stopHold()
-        if tracker.startTrackpad(h.id, at: h.at.x) {
+        if tracker.startTrackpad(h.id, at: h.at) {
             haptics.impactOccurred()
             haptics.prepare()
             refreshLabels()

@@ -395,6 +395,22 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertTrue(slots(bar).allSatisfy { $0?.highlighted != true })
     }
 
+    /// A line move ends the undo too, even one that comes back to the same spot.
+    func testTrackpadLineMoveEndsTheUndo() throws {
+        let (kb, bar, doc) = rig()
+        doc.text = "ab\n"
+        bar.refresh()
+        typing(kb, "teh ")
+        XCTAssertEqual(doc.text, "ab\nthe ")
+        kb.line(-1)
+        for _ in 0..<20 { kb.pollCaret() }
+        kb.line(1)
+        for _ in 0..<20 { kb.pollCaret() }
+        XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "ab\nthe |")
+        typing(kb, "⌫")
+        XCTAssertEqual(doc.text, "ab\nthe", "a plain delete, not the undo")
+    }
+
     /// A word typed after a caret move doesn't continue the one before it: "tes", the
     /// caret to the start, then a touch on r's right edge types r (after "tes" it would
     /// be corrected to t); and letters typed onto a word the keyboard didn't type there
