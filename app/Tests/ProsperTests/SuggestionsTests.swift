@@ -365,14 +365,19 @@ final class SuggestionsTests: XCTestCase {
         return caps
     }
 
-    /// Holds space and drags it by each of `offsets` caret steps in turn, then lifts.
-    private func drag(_ kb: TerminalKeyboard, _ offsets: [CGFloat]) throws {
+    /// Holds space and drags it by each of `offsets` caret steps in turn, then by each of
+    /// `lines`, then lifts.
+    private func drag(_ kb: TerminalKeyboard, _ offsets: [CGFloat], lines: [CGFloat] = []) throws {
         let space = try XCTUnwrap(caps(kb)["space"]).frame
         var p = CGPoint(x: space.midX, y: space.midY)
         kb.track(.began, id: 1, at: p)
         kb.fireHold()
         for o in offsets {
             p.x += o * KeyTouchTracker.caretStep
+            kb.track(.moved, id: 1, at: p)
+        }
+        for l in lines {
+            p.y += l * KeyTouchTracker.lineStep
             kb.track(.moved, id: 1, at: p)
         }
         kb.track(.ended, id: 1, at: p)
@@ -393,6 +398,19 @@ final class SuggestionsTests: XCTestCase {
         typing(kb, " teh ")
         XCTAssertEqual(doc.text, "the the ", "teh is still corrected")
         XCTAssertTrue(slots(bar).allSatisfy { $0?.highlighted != true })
+    }
+
+    /// A line move ends the undo too, even one that comes back to the same spot.
+    func testTrackpadLineMoveEndsTheUndo() throws {
+        let (kb, bar, doc) = rig()
+        doc.text = "ab\n"
+        bar.refresh()
+        typing(kb, "teh ")
+        XCTAssertEqual(doc.text, "ab\nthe ")
+        try drag(kb, [], lines: [-1, 1])
+        XCTAssertEqual(doc.moves, [-5, 5])
+        typing(kb, "⌫")
+        XCTAssertEqual(doc.text, "ab\nthe", "a plain delete, not the undo")
     }
 
     /// A word typed after a caret move doesn't continue the one before it: "tes", the

@@ -19,9 +19,11 @@ final class KeyboardExtensionTests: XCTestCase {
         var spellCheckingType: UITextSpellCheckingType = .default
         var textContentType: UITextContentType! = nil
         var isSecureTextEntry = false
-        var documentContextBeforeInput: String? { text }
+        var documentContextBeforeInput: String? { stale?.before ?? text }
         var after: String?
-        var documentContextAfterInput: String? { after }
+        var documentContextAfterInput: String? { stale.map(\.after) ?? after }
+        /// Set: the context a host reports a while after a caret move, the old one.
+        var stale: (before: String, after: String?)?
         var selectedText: String? { nil }
         var documentInputMode: UITextInputMode? { nil }
         var documentIdentifier: UUID { UUID() }
@@ -53,6 +55,86 @@ final class KeyboardExtensionTests: XCTestCase {
         var caps: [String: UIButton] = [:]
         for case let b as UIButton in kb.subviews { caps[b.accessibilityLabel ?? ""] = b }
         return caps
+    }
+
+    // MARK: Trackpad lines
+
+    /// `s` with `|` for the caret, moved `n` lines: the result the same way, and the goal.
+    private func lines(_ s: String, _ n: Int, goal: Int? = nil) -> (String, Int) {
+        let parts = s.components(separatedBy: "|")
+        let (offset, g) = TerminalKeyboard.lineOffset(before: parts[0], after: parts[1],
+                                                      lines: n, goal: goal)
+        let text = Array(parts[0]) + Array(parts[1]), at = parts[0].count + offset
+        return (String(text[..<at]) + "|" + String(text[at...]), g)
+    }
+
+    func testLineOffset() {
+        let cases: [(String, Int, Int?, String, Int, String)] = [
+            ("ab|c\ndef", 1, nil, "abc\nde|f", 2, "down keeps the column"),
+            ("abc\nde|f", -1, nil, "ab|c\ndef", 2, "up keeps the column"),
+            ("abc\n|def", -1, nil, "|abc\ndef", 0, "from a line's start"),
+            ("abcdef|\nab\nabcdefgh", 1, nil, "abcdef\nab|\nabcdefgh", 6, "a short line: its end"),
+            ("abcdef\nab|\nabcdefgh", 1, 6, "abcdef\nab\nabcdef|gh", 6, "the goal comes back"),
+            ("abcdef|\nab\nabcdefgh", 2, nil, "abcdef\nab\nabcdef|gh", 6, "two lines in one move"),
+            ("abcdefgh\nab\nabc|def", -2, nil, "abc|defgh\nab\nabcdef", 3, "two lines up"),
+            ("a|bc\ndef", -1, nil, "a|bc\ndef", 1, "up on the first line: nothing"),
+            ("abc\nd|ef", 1, nil, "abc\nd|ef", 1, "down on the last line: nothing"),
+            ("a|b\ncd", 5, nil, "ab\nc|d", 1, "more lines than there are: the last one"),
+            ("ab\nc|d", -5, nil, "a|b\ncd", 1, "and the first one"),
+            ("abc|\n\nabc", 1, nil, "abc\n|\nabc", 3, "an empty line"),
+            ("abc\n|\nabc", 1, 3, "abc\n\nabc|", 3, "past it, the column back"),
+            ("abc\n\nab|c", -1, nil, "abc\n|\nabc", 2, "up onto an empty line"),
+            ("xyz\nab|c", -1, nil, "xy|z\nabc", 2, "the context's start counts as a line's"),
+            ("x\nab|c", -1, nil, "x|\nabc", 2, "clamped to the line above's end"),
+            ("abcdef|\nab", 1, nil, "abcdef\nab|", 6, "never past the context's end"),
+            ("abcdef|\n", 1, nil, "abcdef\n|", 6, "nor into a line it shows none of"),
+            ("ab|c\r\ndef", 1, nil, "abc\r\nde|f", 2, "\\r\\n is one break"),
+            ("abc\r\nde|f", -1, nil, "ab|c\r\ndef", 2, "up over \\r\\n"),
+            ("ab|c\u{2028}def", 1, nil, "abc\u{2028}de|f", 2, "a line separator too"),
+            ("|", 1, nil, "|", 0, "no text"),
+            ("abc|", -1, 7, "abc|", 7, "nothing to move: the goal stays"),
+        ]
+        for (s, n, goal, want, wantGoal, why) in cases {
+            let (got, g) = lines(s, n, goal: goal)
+            XCTAssertEqual(got, want, why)
+            XCTAssertEqual(g, wantGoal, why)
+        }
+    }
+
+    /// Through the view and the proxy: a space-hold drag up and down moves by line, keeping
+    /// its column through a short line until a sideways step sets a new one, and a new hold
+    /// starts from the caret's own column. The host's context lags every move, as a real
+    /// one may: the moves still land, since the keyboard tracks the caret itself.
+    func testTrackpadMovesByLineThroughTheProxy() throws {
+        let kb = TerminalKeyboard()
+        let doc = FakeProxy()
+        doc.text = "first line\nab\nthird"
+        doc.after = " line"
+        kb.target = doc
+        let space = try XCTUnwrap(laidOut(kb)["space"]).frame
+        let step = KeyTouchTracker.caretStep, line = KeyTouchTracker.lineStep
+        func drag(_ moves: [(x: CGFloat, y: CGFloat)]) {
+            var p = CGPoint(x: space.midX, y: space.midY)
+            kb.track(.began, id: 1, at: p)
+            kb.fireHold()
+            doc.stale = (doc.text, doc.after)
+            for m in moves {
+                p.x += m.x * step; p.y += m.y * line
+                kb.track(.moved, id: 1, at: p)
+            }
+            kb.track(.ended, id: 1, at: p)
+            doc.stale = nil
+        }
+        drag([(0, -1), (0, -1), (0, 2), (2, 0), (0, -1), (0, -1)])
+        XCTAssertEqual(doc.moves, [-6, -8, 14, 2, -8, -6])
+        XCTAssertEqual(doc.text, "first l")
+        drag([(0, 1.5)])
+        XCTAssertEqual(doc.text, "first line\nab", "the end of the short line")
+        drag([(0, -1)])
+        XCTAssertEqual(doc.text, "fi", "the last hold's column is gone")
+        drag([(-5, 0), (0, 1)])
+        XCTAssertEqual(doc.text, "first line\n", "past the text's start, as the caret stops there")
+        XCTAssertEqual(doc.text + (doc.after ?? ""), "first line\nab\nthird line", "no text typed")
     }
 
     // MARK: Return
