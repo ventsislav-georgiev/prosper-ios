@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 import Network
 @testable import Prosper
@@ -199,10 +200,91 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertFalse(vc.keyboardInputEnabled, "a failed session must refuse the keyboard")
         XCTAssertLessThan(vc.view.subviews.first?.alpha ?? 1, 1, "a failed terminal is dimmed")
 
+        let tv = try XCTUnwrap(vc.view.subviews.first)
+        let bar = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? ShortcutBar }.first)
+        vc.view.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        vc.view.layoutIfNeeded()   // the caps join the bar's rows on its first layout
+        let caps = Self.caps(in: bar)
+        XCTAssertFalse(caps.isEmpty)
+        XCTAssertTrue(tv.accessibilityTraits.contains(.notEnabled))
+        XCTAssertLessThan(bar.alpha, 1)
+        XCTAssertFalse(bar.isUserInteractionEnabled)
+        XCTAssertTrue(caps.allSatisfy { $0.accessibilityTraits.contains(.notEnabled) },
+                      "VoiceOver must read the bar keys as dimmed")
+
         conn.retry()
         XCTAssertTrue(vc.keyboardInputEnabled, "retry re-enables input")
-        XCTAssertEqual(vc.view.subviews.first?.alpha, 1)
+        XCTAssertEqual(tv.alpha, 1)
+        XCTAssertFalse(tv.accessibilityTraits.contains(.notEnabled))
+        XCTAssertEqual(bar.alpha, 1)
+        XCTAssertTrue(bar.isUserInteractionEnabled)
+        XCTAssertFalse(caps.contains { $0.accessibilityTraits.contains(.notEnabled) })
         conn.close()
+    }
+
+    private static func caps(in v: UIView) -> [KeyCapButton] {
+        v.subviews.flatMap { ($0 as? KeyCapButton).map { [$0] } ?? caps(in: $0) }
+    }
+
+    /// The outbox depends on it: a drop the backoff is still working on keeps the keyboard.
+    func testKeyboardStaysOnWhileStalledOrReconnecting() async throws {
+        let (conn, t) = make()
+        let vc = TerminalHostVC(conn: conn, handle: TermHandle())
+        vc.loadViewIfNeeded()
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        XCTAssertTrue(vc.keyboardInputEnabled, "stalled must keep the keyboard")
+        vc.applyInputState(.reconnecting(attempt: 2))
+        XCTAssertTrue(vc.keyboardInputEnabled, "reconnecting must keep the keyboard")
+        conn.close()
+    }
+
+    /// OQ-13 (a) backstop: what is sent while `.failed` is dropped, not held for the
+    /// stream a retry brings up.
+    func testSendWhileFailedIsNotDeliveredAfterRetry() async throws {
+        let t = DeliveryTransport()
+        let conn = SessionConnection(transport: t, session: DchSession(name: "t", alias: nil),
+                                     backoff: BackoffPolicy(maxAttempts: 0))
+        conn.onBytes = { _ in }
+        let s1 = try await startLive(conn, t)
+        s1.drop()
+        try await waitUntil("failed") { if case .failed = conn.state { true } else { false } }
+        conn.send(Array("x".utf8)[...])
+
+        conn.retry()
+        try await waitUntil("reattach") { t.streams.count == 2 }
+        let s2 = t.streams[1]
+        s2.emit("$ ")
+        try await waitUntil("connected") { conn.state == .connected }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(s2.text, "", "input sent while failed must not reach the retried stream")
+        conn.close()
+    }
+
+    /// The Insert sheet keeps its text while the session is failed: both send buttons
+    /// are off, a line says why, and Retry shows; they come back once input is accepted.
+    func testInsertSheetHoldsWhileFailed() throws {
+        let accepts = CurrentValueSubject<Bool, Never>(true)
+        var retried = 0
+        let vc = InsertTextVC(accepts: accepts.eraseToAnyPublisher(), onRetry: { retried += 1 }) { _, _ in }
+        vc.loadViewIfNeeded()
+        let send = try XCTUnwrap(vc.navigationItem.rightBarButtonItems)
+        let retry = try XCTUnwrap(vc.navigationItem.leftBarButtonItems?.last)
+        XCTAssertTrue(send.allSatisfy(\.isEnabled))
+        XCTAssertNil(vc.navigationItem.prompt)
+        XCTAssertTrue(retry.isHidden)
+
+        accepts.send(false)
+        XCTAssertFalse(send.contains(where: \.isEnabled), "a failed session must not take the text")
+        XCTAssertNotNil(vc.navigationItem.prompt)
+        XCTAssertFalse(retry.isHidden)
+        _ = (retry.target as? NSObject)?.perform(retry.action)
+        XCTAssertEqual(retried, 1)
+
+        accepts.send(true)
+        XCTAssertTrue(send.allSatisfy(\.isEnabled), "retry re-enables sending")
+        XCTAssertNil(vc.navigationItem.prompt)
+        XCTAssertTrue(retry.isHidden)
     }
 
     func testRetryAfterCloseWhileFailedStaysFailed() async throws {

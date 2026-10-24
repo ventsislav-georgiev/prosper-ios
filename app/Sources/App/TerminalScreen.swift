@@ -281,6 +281,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         tv.alpha = on ? 1 : 0.4
         shortcutBar?.alpha = on ? 1 : 0.4
         shortcutBar?.isUserInteractionEnabled = on
+        shortcutBar?.capsEnabled = on
         if on { tv.accessibilityTraits.remove(.notEnabled) }
         else { tv.accessibilityTraits.insert(.notEnabled) }
     }
@@ -452,7 +453,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         case .pasteText:
             if let s = UIPasteboard.general.string, !s.isEmpty { sendText(s) }
         case .insertText:
-            let vc = InsertTextVC { [weak self] text, send in self?.sendText(text, thenEnter: send) }
+            let accepts = conn.$state.map(Self.acceptsInput).eraseToAnyPublisher()
+            let vc = InsertTextVC(accepts: accepts, onRetry: { [weak self] in self?.conn.retry() }) {
+                [weak self] text, send in self?.sendText(text, thenEnter: send)
+            }
             present(UINavigationController(rootViewController: vc), animated: true)
         case .pasteImage:
             pasteImage(then: key.bytes)

@@ -151,6 +151,8 @@ final class ShortcutBar: UIView {
     /// Each sticky modifier's state, set by the owner; a missing kind is off.
     var modes: [ShortcutKey.Kind: ShiftState.Mode] = [:] { didSet { refreshModifiers() } }
     var ctrlArmed: Bool { (modes[.ctrl] ?? .off) != .off }
+    /// Off while the session refuses input: VoiceOver reads every cap as dimmed.
+    var capsEnabled = true { didSet { refreshEnabled() } }
     private var modifierCaps: [ShortcutKey.Kind: KeyCapButton] = [:]
     private weak var container: UIView?
     private var caps: [KeyCapButton] = []
@@ -319,6 +321,11 @@ final class ShortcutBar: UIView {
         arrangedWidth = -1        // new caps → split again on the next layout pass
         setNeedsLayout()
         refreshModifiers()
+        refreshEnabled()
+    }
+
+    private func refreshEnabled() {
+        caps.forEach { $0.accessibilityTraits = capsEnabled ? .button : [.button, .notEnabled] }
     }
 
     // Neon keycaps, matching Prosper's theme palette (theme-default/theme.json):
