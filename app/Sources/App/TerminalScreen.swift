@@ -772,13 +772,22 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
     }
 
-    /// The web link under `p` (`tv` coordinates), if any. SwiftTerm finds it: an OSC 8
-    /// hyperlink, else a plain-text URL, joined across wrapped rows, trailing "." or ")"
-    /// left out. Only http(s) comes back (`webURL`).
+    /// The web link under `p` (`tv` coordinates), if any: an OSC 8 hyperlink (SwiftTerm's),
+    /// else a plain-text URL (`TerminalMath.webLink`: joined across wrapped rows, trailing
+    /// "." or ")" left out). Only http(s) comes back (`webURL`).
     func link(at p: CGPoint) -> URL? {
         let term = tv.getTerminal()
         let c = cell(at: p, term)
-        return Self.webURL(term.link(at: .buffer(Position(col: c.col, row: c.line)), mode: .explicitAndImplicit))
+        if let s = term.link(at: .buffer(Position(col: c.col, row: c.line)), mode: .explicitOnly) {
+            return Self.webURL(s)
+        }
+        let base = term.buffer.totalLinesTrimmed
+        return Self.webURL(TerminalMath.webLink(row: c.line, col: c.col, cols: term.cols) { i in
+            term.getScrollInvariantLine(row: i + base).map { l in
+                ((0..<min(term.cols, l.count)).map { l[$0].width == 0 ? nil : term.getCharacter(for: l[$0]) },
+                 l.isWrapped)
+            }
+        })
     }
 
     /// `s` as a URL when it is http or https; nil for anything else a terminal can print
@@ -1095,6 +1104,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// where every full-screen TUI lives, so the pill jumped to the top on every chunk
     /// of output.)
     func scrolled(source: TerminalView, position: Double) {}
+    /// Unreachable today: `disableSelectionGestures` strips the tap recognizer that would
+    /// call it, and taps go through `link(at:)`. The filter stays so a SwiftTerm update
+    /// that calls it again can't open file: or javascript: links (QA mutant M286).
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
         Self.webURL(link).map(openURL)
     }

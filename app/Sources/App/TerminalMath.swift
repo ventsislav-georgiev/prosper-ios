@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// Pure geometry for the terminal gestures — kept side-effect free so the unit
 /// tests can pin the scroll/selection feel without UIKit.
@@ -337,4 +338,43 @@ enum TerminalMath {
         if (p.row, p.col) < (fixed.row, fixed.col) { return (start: p, end: fixed, movingStart: true) }
         return (start: fixed, end: p, movingStart: false)
     }
+
+    /// The plain-text http(s) URL through cell `col` of row `row`, if any. `line(i)` is row
+    /// i's cells (nil for a wide char's second half) and whether it soft-wraps from row
+    /// i − 1; nil past the buffer. A soft wrap always joins. A row break joins only when
+    /// the upper row's ink reaches the last two columns, a hard wrap at the edge the way
+    /// Claude Code breaks a long URL; the next row's indent is dropped. SwiftTerm's own
+    /// guess joins from cols − cols/5, gluing the prose under a URL onto it (#510).
+    static func webLink(row: Int, col: Int, cols: Int,
+                        line: (Int) -> (cells: [Character?], wrapped: Bool)?) -> String? {
+        func ink(_ c: Character?) -> Bool { c.map { $0 != " " && $0 != "\0" } ?? false }
+        func joins(_ lower: Int) -> Bool {
+            guard let lo = line(lower), let up = line(lower - 1) else { return false }
+            return lo.wrapped || (up.cells.lastIndex(where: ink) ?? -1) >= cols - 2
+        }
+        var top = row, bottom = row
+        while joins(top) { top -= 1 }
+        while joins(bottom + 1) { bottom += 1 }
+        var s = "", tap: Int?   // tap: the tapped cell's UTF-16 offset in s
+        for r in top...bottom {
+            guard let l = line(r) else { return nil }
+            let lo = r > top && !l.wrapped ? l.cells.firstIndex(where: ink) ?? l.cells.count : 0
+            let hi = r < bottom && line(r + 1)?.wrapped == true ? l.cells.count
+                : (l.cells.lastIndex(where: ink) ?? -1) + 1
+            for c in lo..<max(lo, hi) {
+                if r == row && c == col { tap = s.utf16.count - (l.cells[c] == nil ? 1 : 0) }
+                if let ch = l.cells[c] { s.append(ch == "\0" ? " " : ch) }
+            }
+        }
+        guard let tap else { return nil }
+        return webURLPattern.matches(in: s, range: NSRange(location: 0, length: s.utf16.count))
+            .first { NSLocationInRange(tap, $0.range) }
+            .map { (s as NSString).substring(with: $0.range) }
+    }
+
+    /// SwiftTerm's URL characters, "(…)" only as a whole word, no trailing "." or ","
+    /// (Terminal.swift ghosttyImplicitLinkRegex), and a URL ends where another begins.
+    private static let webURLPattern = try! NSRegularExpression(
+        pattern: #"https?://(?:(?!https?://)(?:[\w\-.~:/?#@!$&*+,;=%]|[(\[]\w*[)\]]))+(?<![,.])"#,
+        options: .caseInsensitive)
 }
