@@ -147,6 +147,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var shortcutBar: ShortcutBar?
     private var longPress: UILongPressGestureRecognizer?
     private weak var toast: UIView?
+    /// Where a tapped link goes: the default browser. Tests swap it so nothing leaves.
+    var openURL: (URL) -> Void = { UIApplication.shared.open($0) }
     private var stateSub: AnyCancellable?
 
     /// macOS Terminal.app's vibrant 16-color ANSI palette (SwiftTerm's default is
@@ -723,11 +725,14 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Tap on the input line → raise the keyboard. Tap on content above it while a
     /// mouse-mode app is running → forward a left click (lets TUIs like Claude Code
     /// react to taps). Normal screen (no mouse mode) → always raise the keyboard.
-    /// Every tap also flashes the scroll thumb.
-    @objc private func onTap(_ g: UITapGestureRecognizer) {
+    /// A tap on an http(s) link opens it instead — before either of those, so a
+    /// mouse-mode app never sees the click. Every tap also flashes the scroll thumb.
+    @objc private func onTap(_ g: UITapGestureRecognizer) { tap(at: g.location(in: tv)) }
+
+    func tap(at p: CGPoint) {
         scrollThumb?.show()
+        if let url = link(at: p) { return openURL(url) }
         let term = tv.getTerminal()
-        let p = g.location(in: tv)
         let (row, col) = gridPos(p, term)
         let caret = term.getCursorLocation()
         if term.mouseMode != .off, !TerminalMath.tapRaisesKeyboard(row: row, caretRow: caret.y) {
@@ -738,6 +743,23 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         } else {
             _ = tv.becomeFirstResponder()
         }
+    }
+
+    /// The web link under `p` (`tv` coordinates), if any. SwiftTerm finds it: an OSC 8
+    /// hyperlink, else a plain-text URL, joined across wrapped rows, trailing "." or ")"
+    /// left out. Only http(s) comes back (`webURL`).
+    func link(at p: CGPoint) -> URL? {
+        let term = tv.getTerminal()
+        let c = cell(at: p, term)
+        return Self.webURL(term.link(at: .buffer(Position(col: c.col, row: c.line)), mode: .explicitAndImplicit))
+    }
+
+    /// `s` as a URL when it is http or https; nil for anything else a terminal can print
+    /// (file:, javascript:, ssh:, app schemes), which must never open from a tap.
+    static func webURL(_ s: String?) -> URL? {
+        guard let s, let url = URL(string: s), url.host?.isEmpty == false,
+              ["http", "https"].contains(url.scheme?.lowercased()) else { return nil }
+        return url
     }
 
     // MARK: - Keyboard avoidance
@@ -910,7 +932,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// where every full-screen TUI lives, so the pill jumped to the top on every chunk
     /// of output.)
     func scrolled(source: TerminalView, position: Double) {}
-    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
+    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        Self.webURL(link).map(openURL)
+    }
     func bell(source: TerminalView) {}
     func clipboardCopy(source: TerminalView, content: Data) {}
     func clipboardRead(source: TerminalView) -> Data? { nil }
