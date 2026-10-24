@@ -112,6 +112,52 @@ final class LinkTapTests: XCTestCase {
         XCTAssertNil(vc.link(at: point(tv, row: 2, col: 3)))
     }
 
+    func testAWideCharWrappedFromTheLastColumnKeepsTheURLWhole() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let t = tv.getTerminal()
+        let url = "https://example.com/" + String(repeating: "a", count: t.cols - 21) + "日本/x"
+        tv.feed(text: "\u{1b}[2J\u{1b}[H" + url + " end\r\n")
+        XCTAssertTrue(t.getLine(row: 1)?.isWrapped ?? false, "precondition: a soft wrap")
+        XCTAssertEqual(t.getLine(row: 0)?[t.cols - 1].getCharacter(), "\0", "precondition: 日 left the last cell empty")
+
+        let want = URL(string: url)?.absoluteString
+        XCTAssertEqual(vc.link(at: point(tv, row: 0, col: 3))?.absoluteString, want)
+        XCTAssertEqual(vc.link(at: point(tv, row: 1, col: 1))?.absoluteString, want, "the wide char's half of the URL")
+    }
+
+    private func span(_ rows: [[Character?]], wrapped: Set<Int> = [], row: Int, col: Int)
+        -> (url: String, start: (row: Int, col: Int), end: (row: Int, col: Int))? {
+        TerminalMath.webLinkSpan(row: row, col: col, cols: rows[0].count) { i in
+            rows.indices.contains(i) ? (rows[i], wrapped.contains(i)) : nil
+        }
+    }
+
+    func testAWrappedWideCharSpanEndsAfterIt() {
+        let rows: [[Character?]] = [Array("https://example.com/aa") + ["\0"], ["日", nil, "本", nil, "/", "x", " ", "e"]]
+        for (row, col) in [(0, 3), (1, 0), (1, 3)] {
+            let s = span(rows, wrapped: [1], row: row, col: col)
+            XCTAssertEqual(s?.url, "https://example.com/aa日本/x", "\(row),\(col)")
+            XCTAssertTrue(s.map { $0.start == (0, 0) && $0.end == (1, 6) } == true, "\(row),\(col)")
+        }
+    }
+
+    func testARealSpaceBeforeASoftWrapStillEndsTheURL() {
+        let rows: [[Character?]] = [Array("see https://example.com/a "), Array("bcd and more")]
+        XCTAssertEqual(span(rows, wrapped: [1], row: 0, col: 6)?.url, "https://example.com/a")
+        XCTAssertNil(span(rows, wrapped: [1], row: 1, col: 1), "the next row's word is not the link")
+    }
+
+    func testTheSecondHalfOfAWideCharEndingAURLOpensIt() {
+        let rows: [[Character?]] = [Array("https://example.com/日") + [nil] + Array(" end")]
+        XCTAssertEqual(span(rows, row: 0, col: 21)?.url, "https://example.com/日")
+        XCTAssertTrue(span(rows, row: 0, col: 21).map { $0.end == (0, 22) } == true, "the end is past the whole glyph")
+    }
+
+    func testATrailingCommaIsNotTheLink() {
+        XCTAssertEqual(span([Array("https://example.com/a, b")], row: 0, col: 4)?.url, "https://example.com/a")
+        XCTAssertNil(span([Array("https://example.com/a, b")], row: 0, col: 21))
+    }
+
     func testAHardWrapAtTheEdgeStillJoins() async throws {
         let (vc, tv, _, _) = try await makeVC()
         let cols = tv.getTerminal().cols

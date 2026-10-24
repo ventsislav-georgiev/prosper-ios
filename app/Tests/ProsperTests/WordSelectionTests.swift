@@ -195,6 +195,23 @@ final class WordSelectionTests: XCTestCase {
         XCTAssertEqual(vc.selection?.end.col, 8)
     }
 
+    func testADoubleTapOnAURLWithAWideCharWrappedAtTheEdgeSelectsItWhole() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let cols = tv.getTerminal().cols
+        feed(vc, "\u{1b}[2J\u{1b}[Hhttps://example.com/" + String(repeating: "a", count: cols - 21) + "日本/x end\r\n")
+        for (row, col) in [(0, 3), (1, 1)] {
+            vc.selectWord(at: point(tv, row: row, col: col))
+            XCTAssertTrue(vc.selection.map { $0.start == (0, 0) && $0.end == (1, 6) } == true, "\(row),\(col)")
+        }
+    }
+
+    func testADoubleTapOnAURLEndingInAWideCharSelectsTheWholeGlyph() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        feed(vc, "\u{1b}[2J\u{1b}[Hhttps://example.com/日 end\r\n")
+        vc.selectWord(at: point(tv, row: 0, col: 5))
+        XCTAssertTrue(vc.selection.map { $0.start == (0, 0) && $0.end == (0, 22) } == true)
+    }
+
     func testOutputKeepsTheSelectionUntilItScrollsTheTextAway() async throws {
         let (vc, tv, _, _) = try await makeVC()
         feed(vc, "\u{1b}[?1000h\u{1b}[2J\u{1b}[Hkeep this word\r\n")

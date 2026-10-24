@@ -368,7 +368,10 @@ enum TerminalMath {
         for r in top...bottom {
             guard let l = line(r) else { return nil }
             let lo = r > top && !l.wrapped ? l.cells.firstIndex(where: ink) ?? l.cells.count : 0
-            let hi = r < bottom && line(r + 1)?.wrapped == true ? l.cells.count
+            // A soft-wrapped row runs to its last cell but drops trailing never-written
+            // cells: a wide char that didn't fit leaves one there, and it is no space.
+            let hi = r < bottom && line(r + 1)?.wrapped == true
+                ? (l.cells.lastIndex(where: { $0 != "\0" }) ?? -1) + 1
                 : (l.cells.lastIndex(where: ink) ?? -1) + 1
             for c in lo..<max(lo, hi) {
                 if r == row && c == col { tap = s.utf16.count - (l.cells[c] == nil ? 1 : 0) }
@@ -380,7 +383,9 @@ enum TerminalMath {
         guard let tap, let m = webURLPattern.matches(in: s, range: NSRange(location: 0, length: s.utf16.count))
             .first(where: { NSLocationInRange(tap, $0.range) }) else { return nil }
         let last = at[NSMaxRange(m.range) - 1]
-        return ((s as NSString).substring(with: m.range), at[m.range.location], (last.row, last.col + 1))
+        // A wide last char ends after its second half, so the selection covers the glyph.
+        let wide = line(last.row).map { $0.cells.indices.contains(last.col + 1) && $0.cells[last.col + 1] == nil } == true
+        return ((s as NSString).substring(with: m.range), at[m.range.location], (last.row, last.col + (wide ? 2 : 1)))
     }
 
     /// SwiftTerm's URL characters, "(…)" only as a whole word, no trailing "." or ","
