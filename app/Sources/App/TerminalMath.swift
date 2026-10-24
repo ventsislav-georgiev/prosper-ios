@@ -303,12 +303,13 @@ enum TerminalMath {
     /// The cells a double tap selects: the run of word cells around `col` in one row,
     /// one entry per cell, nil for the second half of a wide (CJK) char, which goes with
     /// its first half. Word cells are SwiftTerm's — letters, digits, `.`, `_`, `-` — plus
-    /// `/`, so a path or a URL's path comes whole. Anything else, whitespace and the
-    /// never-written cells past a line's end included, selects nothing.
+    /// `/` and `~`, so a path comes whole, `~/` included (without it `~/a` copies as the
+    /// absolute `/a`). Anything else, whitespace and the never-written cells past a line's
+    /// end included, selects nothing.
     static func wordRange(_ cells: [Character?], at col: Int) -> Range<Int>? {
         func word(_ i: Int) -> Bool {
             guard let c = cells[i] ?? (i > 0 ? cells[i - 1] : nil) else { return false }
-            return c.isLetter || c.isNumber || "._-/".contains(c)
+            return c.isLetter || c.isNumber || "._-/~".contains(c)
         }
         guard cells.indices.contains(col), word(col) else { return nil }
         var lo = col, hi = col + 1
@@ -347,6 +348,13 @@ enum TerminalMath {
     /// guess joins from cols − cols/5, gluing the prose under a URL onto it (#510).
     static func webLink(row: Int, col: Int, cols: Int,
                         line: (Int) -> (cells: [Character?], wrapped: Bool)?) -> String? {
+        webLinkSpan(row: row, col: col, cols: cols, line: line)?.url
+    }
+
+    /// `webLink` with the cells it covers, `end` exclusive — what a double tap selects.
+    static func webLinkSpan(row: Int, col: Int, cols: Int,
+                            line: (Int) -> (cells: [Character?], wrapped: Bool)?)
+        -> (url: String, start: (row: Int, col: Int), end: (row: Int, col: Int))? {
         func ink(_ c: Character?) -> Bool { c.map { $0 != " " && $0 != "\0" } ?? false }
         func joins(_ lower: Int) -> Bool {
             guard let lo = line(lower), let up = line(lower - 1) else { return false }
@@ -356,6 +364,7 @@ enum TerminalMath {
         while joins(top) { top -= 1 }
         while joins(bottom + 1) { bottom += 1 }
         var s = "", tap: Int?   // tap: the tapped cell's UTF-16 offset in s
+        var at: [(row: Int, col: Int)] = []   // the cell of each UTF-16 unit of s
         for r in top...bottom {
             guard let l = line(r) else { return nil }
             let lo = r > top && !l.wrapped ? l.cells.firstIndex(where: ink) ?? l.cells.count : 0
@@ -363,13 +372,15 @@ enum TerminalMath {
                 : (l.cells.lastIndex(where: ink) ?? -1) + 1
             for c in lo..<max(lo, hi) {
                 if r == row && c == col { tap = s.utf16.count - (l.cells[c] == nil ? 1 : 0) }
-                if let ch = l.cells[c] { s.append(ch == "\0" ? " " : ch) }
+                guard let ch = l.cells[c].map({ $0 == "\0" ? " " : $0 }) else { continue }
+                s.append(ch)
+                at += repeatElement((r, c), count: ch.utf16.count)
             }
         }
-        guard let tap else { return nil }
-        return webURLPattern.matches(in: s, range: NSRange(location: 0, length: s.utf16.count))
-            .first { NSLocationInRange(tap, $0.range) }
-            .map { (s as NSString).substring(with: $0.range) }
+        guard let tap, let m = webURLPattern.matches(in: s, range: NSRange(location: 0, length: s.utf16.count))
+            .first(where: { NSLocationInRange(tap, $0.range) }) else { return nil }
+        let last = at[NSMaxRange(m.range) - 1]
+        return ((s as NSString).substring(with: m.range), at[m.range.location], (last.row, last.col + 1))
     }
 
     /// SwiftTerm's URL characters, "(…)" only as a whole word, no trailing "." or ","

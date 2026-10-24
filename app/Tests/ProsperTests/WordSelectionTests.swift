@@ -27,6 +27,19 @@ final class WordSelectionTests: XCTestCase {
         XCTAssertEqual(word(s, at: 10), "/usr/local/bin/run.sh", "the path, without the `;`")
         XCTAssertEqual(word(s, at: 45), "//example.com/a/b.html", "`:` ends a word, as in SwiftTerm")
         XCTAssertEqual(word(s, at: 33), "https")
+        XCTAssertEqual(word("vim ~/proj/x.swift:12", at: 7), "~/proj/x.swift", "`~/` stays, never an absolute path")
+    }
+
+    func testALinkSpanCoversTheWholeURL() {
+        let rows = ["see https://example.com/a?x=1&y=2 now", "next"]
+        let span = TerminalMath.webLinkSpan(row: 0, col: 15, cols: 40) { i in
+            rows.indices.contains(i) ? (cells(rows[i]), false) : nil
+        }
+        XCTAssertEqual(span?.url, "https://example.com/a?x=1&y=2")
+        XCTAssertTrue(span.map { $0.start == (0, 4) && $0.end == (0, 33) } == true)
+        XCTAssertNil(TerminalMath.webLinkSpan(row: 0, col: 1, cols: 40) { i in
+            rows.indices.contains(i) ? (cells(rows[i]), false) : nil
+        })
     }
 
     func testWhitespacePunctuationAndPastTheLineEndSelectNothing() {
@@ -109,12 +122,47 @@ final class WordSelectionTests: XCTestCase {
                                         end: Position(col: s.end.col, row: s.end.row))
     }
 
-    func testTheSingleTapWaitsForTheDoubleTap() async throws {
+    func testTheSingleTapWaitsForTheDoubleTapAndThePan() async throws {
         let (vc, _, _, _) = try await makeVC()
         let single = try XCTUnwrap(vc.singleTap), double = try XCTUnwrap(vc.doubleTap)
+        let pan = try XCTUnwrap(vc.selectPan)
         XCTAssertEqual(double.numberOfTapsRequired, 2)
         XCTAssertTrue(vc.gestureRecognizer(single, shouldRequireFailureOf: double))
         XCTAssertFalse(vc.gestureRecognizer(double, shouldRequireFailureOf: single))
+        XCTAssertTrue(vc.gestureRecognizer(single, shouldRequireFailureOf: pan), "a short handle drag is no tap")
+        XCTAssertFalse(vc.gestureRecognizer(double, shouldRequireFailureOf: pan))
+    }
+
+    func testSwiftTermsMousePanWaitsWhileASelectionShows() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let pan = try XCTUnwrap(vc.selectPan), lp = try XCTUnwrap(vc.longPress)
+        let before = tv.gestureRecognizers ?? []
+        feed(vc, "\u{1b}[?1000h\u{1b}[2J\u{1b}[Hpick me\r\n")
+        let mouse = try XCTUnwrap(tv.gestureRecognizers?.first { g in !before.contains { $0 === g } },
+                                  "SwiftTerm adds its mouse pan when mouse mode turns on")
+        XCTAssertTrue(mouse is UIPanGestureRecognizer)
+        XCTAssertFalse(vc.gestureRecognizer(pan, shouldBeRequiredToFailBy: mouse), "no selection: as before")
+        vc.selectWord(at: point(tv, row: 0, col: 1))
+        XCTAssertNotNil(vc.selection)
+        XCTAssertTrue(vc.gestureRecognizer(pan, shouldBeRequiredToFailBy: mouse))
+        XCTAssertTrue(vc.gestureRecognizer(lp, shouldBeRequiredToFailBy: mouse))
+        XCTAssertFalse(vc.gestureRecognizer(lp, shouldBeRequiredToFailBy: pan), "the pan waits on the hold, not back")
+        vc.clearSelection()
+        XCTAssertFalse(vc.gestureRecognizer(pan, shouldBeRequiredToFailBy: mouse))
+    }
+
+    func testTheScrollStripLetsTapsThroughWhileHidden() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let strip = try XCTUnwrap(vc.view.subviews.first { $0 !== tv && $0.frame.maxX == vc.view.bounds.maxX
+                                                          && $0.frame.width == 44 })
+        let edge = vc.view.bounds.maxX - 6
+        XCTAssertTrue(vc.view.hitTest(CGPoint(x: edge, y: strip.frame.minY + 20), with: nil)?.isDescendant(of: tv) == true,
+                      "hidden: a tap on the last column reaches the terminal")
+        XCTAssertTrue(vc.view.hitTest(CGPoint(x: edge, y: strip.frame.midY), with: nil) === strip,
+                      "the pill's own band still grabs")
+        vc.tap(at: point(tv, row: 5, col: 1))   // a tap shows the pill
+        XCTAssertTrue(vc.view.hitTest(CGPoint(x: edge, y: strip.frame.minY + 20), with: nil) === strip,
+                      "shown: the whole strip, as before")
     }
 
     func testADoubleTapInMouseModeSelectsLocallyAndSendsNothing() async throws {
@@ -127,7 +175,7 @@ final class WordSelectionTests: XCTestCase {
         XCTAssertEqual(selected(vc, tv), "build_all")
         XCTAssertTrue(tv.hasActiveSelection, "SwiftTerm draws it, handles included")
         vc.selectWord(at: point(tv, row: 0, col: 30))
-        XCTAssertEqual(selected(vc, tv), "//example.com/x", "a double tap on a link selects, never opens")
+        XCTAssertEqual(selected(vc, tv), "https://example.com/x", "a double tap on a link selects it whole, never opens")
         XCTAssertEqual(opened.urls, [])
         XCTAssertEqual(spy.sent.count, before, "no mouse click reaches the app")
 
@@ -162,6 +210,37 @@ final class WordSelectionTests: XCTestCase {
         XCTAssertFalse(tv.hasActiveSelection)
     }
 
+    func testTrimmingAFullScrollbackClearsIt() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let t = tv.getTerminal()
+        t.changeScrollback(3)
+        feed(vc, String(repeating: "line\r\n", count: t.rows + 10) + "pick me")
+        vc.selectWord(at: point(tv, row: t.rows - 1, col: 1))
+        XCTAssertEqual(selected(vc, tv), "pick")
+        let yDisp = t.buffer.yDisp, trimmed = t.buffer.totalLinesTrimmed
+        feed(vc, "\r\n")
+        XCTAssertEqual(t.buffer.yDisp, yDisp, "precondition: the view didn't move")
+        XCTAssertGreaterThan(t.buffer.totalLinesTrimmed, trimmed, "precondition: a line was trimmed")
+        XCTAssertNil(vc.selection, "the text moved up a line under it")
+    }
+
+    func testSwitchingScreensClearsIt() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let t = tv.getTerminal()
+        feed(vc, "\u{1b}[2J\u{1b}[Hmain words\r\n")
+        vc.selectWord(at: point(tv, row: 0, col: 1))
+        XCTAssertEqual(selected(vc, tv), "main")
+        feed(vc, "\u{1b}[?1049h\u{1b}[Halt words")
+        XCTAssertTrue(t.isCurrentBufferAlternate)
+        XCTAssertEqual(t.buffer.yDisp, 0, "precondition: same yDisp")
+        XCTAssertNil(vc.selection, "the alternate screen is other text")
+        vc.selectWord(at: point(tv, row: 0, col: 1))
+        XCTAssertEqual(selected(vc, tv), "alt")
+        feed(vc, "\u{1b}[?1049l")
+        XCTAssertFalse(t.isCurrentBufferAlternate)
+        XCTAssertNil(vc.selection, "and back")
+    }
+
     func testASingleTapClearsTheSelection() async throws {
         let (vc, tv, _, _) = try await makeVC()
         feed(vc, "\u{1b}[2J\u{1b}[Hone two\r\n")
@@ -174,12 +253,14 @@ final class WordSelectionTests: XCTestCase {
 
     func testCopyCopiesTheSelectedWord() async throws {
         let (vc, tv, _, _) = try await makeVC()
-        let borrowed = UIPasteboard.general.items
-        defer { UIPasteboard.general.items = borrowed }
+        let name = UIPasteboard.Name("word-selection-tests")
+        let pb = try XCTUnwrap(UIPasteboard(name: name, create: true))
+        defer { UIPasteboard.remove(withName: name) }
+        vc.pasteboard = pb   // never the general one: reading it back can prompt
         feed(vc, "\u{1b}[2J\u{1b}[Hcat /tmp/notes.txt\r\n")
         vc.selectWord(at: point(tv, row: 0, col: 8))
         vc.copySelection()
-        XCTAssertEqual(UIPasteboard.general.string, "/tmp/notes.txt")
+        XCTAssertEqual(pb.string, "/tmp/notes.txt")
         XCTAssertNil(vc.selection, "Copy ends the selection")
     }
 
@@ -192,5 +273,86 @@ final class WordSelectionTests: XCTestCase {
         XCTAssertEqual(vc.handle(at: point(tv, row: 1, col: 14, dx: 0.3)), false, "a finger's slop below")
         XCTAssertNil(vc.handle(at: point(tv, row: 0, col: 9)), "the middle of the word is no handle")
         XCTAssertNil(vc.handle(at: point(tv, row: 4, col: 5)))
+    }
+
+    // `selectWord` on "some selection here": "selection" is cols 5..<14 on row 0.
+    private func selectionVC() async throws -> (TerminalHostVC, TerminalView) {
+        let (vc, tv, _, _) = try await makeVC()
+        feed(vc, "\u{1b}[2J\u{1b}[Hsome selection here\r\n")
+        vc.selectWord(at: point(tv, row: 0, col: 6))
+        return (vc, tv)
+    }
+
+    func testTheGrabRadiusIs22PointsEachWay() async throws {
+        let (vc, tv) = try await selectionVC()
+        let end = point(tv, row: 0, col: 14, dx: 0), start = point(tv, row: 0, col: 5, dx: 0)
+        XCTAssertEqual(vc.handle(at: CGPoint(x: end.x + 21.9, y: end.y)), false)
+        XCTAssertNil(vc.handle(at: CGPoint(x: end.x + 22.1, y: end.y)))
+        XCTAssertEqual(vc.handle(at: CGPoint(x: start.x - 21.9, y: start.y)), true)
+        XCTAssertNil(vc.handle(at: CGPoint(x: start.x - 22.1, y: start.y)))
+    }
+
+    func testATieGoesToTheStartHandle() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        feed(vc, "\u{1b}[2J\u{1b}[H\r\n\r\nx b y\r\n")
+        vc.selectWord(at: point(tv, row: 2, col: 2))
+        XCTAssertEqual(selected(vc, tv), "b")
+        // 15 pt above the row, between the two: the same distance to both handles.
+        let p = point(tv, row: 2, col: 2)
+        XCTAssertEqual(vc.handle(at: CGPoint(x: p.x, y: p.y - tv.caretFrame.height / 2 - 15)), true)
+    }
+
+    func testTheGrabIsMeasuredFromTheTouchDownBothWays() async throws {
+        for way: CGFloat in [-1, 1] {
+            let (vc, tv) = try await selectionVC()
+            let end = point(tv, row: 0, col: 14, dx: 0)
+            // 18 pt right of the end handle; the pan begins 12 pt along the drag.
+            vc.touchDown = CGPoint(x: end.x + 18, y: end.y)
+            XCTAssertTrue(vc.dragHandle(.began, at: CGPoint(x: end.x + 18 + 12 * way, y: end.y)),
+                          way < 0 ? "dragging back across" : "dragging away")
+            _ = vc.dragHandle(.ended, at: CGPoint(x: end.x + 18 + 12 * way, y: end.y))
+        }
+    }
+
+    func testTheMenuComesBackAfterAHandleDrag() async throws {
+        let (vc, tv) = try await selectionVC()
+        var shown = 0
+        vc.presentMenu = { _ in shown += 1 }
+        vc.touchDown = point(tv, row: 0, col: 14, dx: 0)
+        XCTAssertTrue(vc.dragHandle(.began, at: vc.touchDown!))
+        XCTAssertTrue(vc.dragHandle(.changed, at: point(tv, row: 0, col: 16, dx: 0)))
+        XCTAssertEqual(shown, 0, "not while dragging")
+        XCTAssertTrue(vc.dragHandle(.ended, at: point(tv, row: 0, col: 16, dx: 0)))
+        XCTAssertEqual(shown, 1)
+        XCTAssertEqual(selected(vc, tv), "selection h")
+        vc.touchDown = point(tv, row: 0, col: 9)
+        XCTAssertFalse(vc.dragHandle(.began, at: vc.touchDown!), "off the handles the pan keeps its own job")
+    }
+
+    /// Drags the start handle of a word on the top row above the top edge; returns
+    /// yDisp before and after.
+    private func dragAboveTheTop(mouse: Bool) async throws -> (Int, Int) {
+        let (vc, tv, _, _) = try await makeVC()
+        let t = tv.getTerminal()
+        feed(vc, (mouse ? "\u{1b}[?1000h" : "") + String(repeating: "line\r\n", count: t.rows + 20))
+        XCTAssertGreaterThan(t.buffer.yDisp, 0, "precondition: scrollback above")
+        vc.selectWord(at: point(tv, row: 0, col: 1))
+        XCTAssertEqual(selected(vc, tv), "line")
+        vc.touchDown = point(tv, row: 0, col: 0, dx: 0)
+        XCTAssertTrue(vc.dragHandle(.began, at: vc.touchDown!))
+        let before = t.buffer.yDisp
+        let top = tv.convert(CGPoint(x: 0, y: vc.view.safeAreaInsets.top), from: vc.view).y
+        _ = vc.dragHandle(.changed, at: CGPoint(x: vc.touchDown!.x, y: top - 10))
+        return (before, t.buffer.yDisp)
+    }
+
+    func testAHandleDraggedPastTheTopScrollsTheScrollback() async throws {
+        let (before, after) = try await dragAboveTheTop(mouse: false)
+        XCTAssertEqual(after, before - 1)
+    }
+
+    func testInMouseModeAHandlePastTheTopClamps() async throws {
+        let (before, after) = try await dragAboveTheTop(mouse: true)
+        XCTAssertEqual(after, before, "the app has no local scrollback to move")
     }
 }

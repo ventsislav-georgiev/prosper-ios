@@ -146,9 +146,13 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// instead of the socket, so N wheel events cost one write. See `emitScroll`.
     private var coalescing: [UInt8]?
     private var shortcutBar: ShortcutBar?
-    private var longPress: UILongPressGestureRecognizer?
+    private(set) var longPress: UILongPressGestureRecognizer?
+    private(set) var selectPan: UIPanGestureRecognizer?
     private(set) var singleTap: UITapGestureRecognizer?
     private(set) var doubleTap: UITapGestureRecognizer?
+    /// Where the latest touch came down (`tv` coordinates, from `shouldReceive`). A pan
+    /// reports `.began` ~12 pt along the drag, so a handle grab is measured from here.
+    var touchDown: CGPoint?
     /// The double-tap selection, buffer lines, `end` exclusive. Prosper keeps its own
     /// copy: SwiftTerm's ends aren't public, and it drops its selection on every feed
     /// while mouse reporting is on (always, here) — `feed` puts this one back.
@@ -159,6 +163,13 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private weak var toast: UIView?
     /// Where a tapped link goes: the default browser. Tests swap it so nothing leaves.
     var openURL: (URL) -> Void = { UIApplication.shared.open($0) }
+    /// Where Copy puts the selection. Tests swap in a private named one: reading the
+    /// general one back can raise the paste-permission prompt.
+    var pasteboard = UIPasteboard.general
+    /// Shows the Copy menu at a point in `tv`. Tests swap it to see when it would show.
+    lazy var presentMenu: (CGPoint) -> Void = { [weak self] p in
+        self?.editMenu?.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: p))
+    }
     private var stateSub: AnyCancellable?
 
     /// macOS Terminal.app's vibrant 16-color ANSI palette (SwiftTerm's default is
@@ -567,6 +578,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         pan.maximumNumberOfTouches = 1
         pan.delegate = self
         tv.addGestureRecognizer(pan)
+        selectPan = pan
     }
 
     /// Big auto-hiding jog wheel on the right edge. Tap the screen to reveal it;
@@ -643,6 +655,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Hold on the text = copy the command under the finger as one line (`copyLine`).
     private func addLongPressGesture() {
         let lp = UILongPressGestureRecognizer(target: self, action: #selector(onLongPress(_:)))
+        lp.delegate = self   // for `shouldBeRequiredToFailBy`
         tv.addGestureRecognizer(lp)
         longPress = lp
     }
@@ -781,13 +794,19 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         if let s = term.link(at: .buffer(Position(col: c.col, row: c.line)), mode: .explicitOnly) {
             return Self.webURL(s)
         }
+        return Self.webURL(TerminalMath.webLink(row: c.line, col: c.col, cols: term.cols, line: rowCells(term)))
+    }
+
+    /// Buffer line i's cells (nil for a wide char's second half) and whether it soft-wraps,
+    /// the row shape `TerminalMath.webLink` and `wordRange` read; nil past the buffer.
+    private func rowCells(_ term: Terminal) -> (Int) -> (cells: [Character?], wrapped: Bool)? {
         let base = term.buffer.totalLinesTrimmed
-        return Self.webURL(TerminalMath.webLink(row: c.line, col: c.col, cols: term.cols) { i in
+        return { i in
             term.getScrollInvariantLine(row: i + base).map { l in
                 ((0..<min(term.cols, l.count)).map { l[$0].width == 0 ? nil : term.getCharacter(for: l[$0]) },
                  l.isWrapped)
             }
-        })
+        }
     }
 
     /// `s` as a URL when it is http or https; nil for anything else a terminal can print
@@ -938,9 +957,26 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     // opens copy mode, and a quick tap or a drag behaves as before.
     // The single tap also waits for the double tap, so a double tap never delivers the
     // tap's mouse click or keyboard raise; every single tap pays the double-tap interval.
+    // And for the pan: UIKit still counts a drag under ~45 pt as a tap, so a short handle
+    // drag ended in one. A pan that never began fails at lift, costing a tap nothing.
     func gestureRecognizer(_ g: UIGestureRecognizer,
                            shouldRequireFailureOf other: UIGestureRecognizer) -> Bool {
-        (other === longPress && g !== longPress) || (g === singleTap && other === doubleTap)
+        (other === longPress && g !== longPress)
+            || (g === singleTap && (other === doubleTap || other === selectPan))
+    }
+
+    // While a selection shows, SwiftTerm's mouse-mode pan (no delegate of its own) waits
+    // for the copy-mode pan and the long press to fail, so a handle drag never reaches
+    // the app as a press and release. Asked per touch, so it follows the selection.
+    func gestureRecognizer(_ g: UIGestureRecognizer,
+                           shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        selection != nil && (g === selectPan || g === longPress)
+            && other is UIPanGestureRecognizer && other !== selectPan && other.view === tv
+    }
+
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        touchDown = touch.location(in: tv)
+        return true
     }
 
     // MARK: - Double-tap selection
@@ -964,16 +1000,19 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// Double tap = select the word under `p` locally (`TerminalMath.wordRange`), with
     /// SwiftTerm's handles and the Copy menu. Never a mouse click, even in mouse mode.
+    /// Inside a plain-text web link it takes the whole URL, scheme and query too, unless
+    /// the link crosses a hard line break, which Copy would carry along.
     func selectWord(at p: CGPoint) {
         clearSelection()
         let term = tv.getTerminal()
         let c = cell(at: p, term)
-        guard let line = term.getScrollInvariantLine(row: c.line + term.buffer.totalLinesTrimmed) else { return }
-        let cells = (0..<min(term.cols, line.count)).map { i -> Character? in
-            line[i].width == 0 ? nil : term.getCharacter(for: line[i])
-        }
-        guard let r = TerminalMath.wordRange(cells, at: c.col) else { return }
-        selection = ((c.line, r.lowerBound), (c.line, r.upperBound))
+        let line = rowCells(term)
+        if let u = TerminalMath.webLinkSpan(row: c.line, col: c.col, cols: term.cols, line: line),
+           (u.start.row..<u.end.row).allSatisfy({ line($0 + 1)?.wrapped == true }) {
+            selection = (u.start, u.end)
+        } else if let cells = line(c.line)?.cells, let r = TerminalMath.wordRange(cells, at: c.col) {
+            selection = ((c.line, r.lowerBound), (c.line, r.upperBound))
+        } else { return }
         applySelection()
         showEditMenu()
     }
@@ -994,19 +1033,18 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// Drives a handle drag from the pan or the long press (a hold on a handle, then a
     /// drag). True when `g` started on a handle, so the caller skips its own job.
-    private func dragHandle(_ g: UIGestureRecognizer) -> Bool {
-        let p = g.location(in: tv)
-        if g.state == .began {
-            let down = (g as? UIPanGestureRecognizer).map {
-                let t = $0.translation(in: tv)
-                return CGPoint(x: p.x - t.x, y: p.y - t.y)
-            } ?? p
-            draggingStart = handle(at: down)
+    private func dragHandle(_ g: UIGestureRecognizer) -> Bool { dragHandle(g.state, at: g.location(in: tv)) }
+
+    /// `dragHandle(_:)` for a gesture in `state` with the finger at `p`. The grab is
+    /// tested where the touch came down (`touchDown`), not where the pan began.
+    func dragHandle(_ state: UIGestureRecognizer.State, at p: CGPoint) -> Bool {
+        if state == .began {
+            draggingStart = handle(at: touchDown ?? p)
             guard draggingStart != nil else { return false }
             editMenu?.dismissMenu()
         }
         guard let moving = draggingStart, let s = selection else { return false }
-        switch g.state {
+        switch state {
         case .began, .changed:
             let d = TerminalMath.dragSelection(start: s.start, end: s.end, movingStart: moving,
                                                to: handleCell(at: p))
@@ -1022,7 +1060,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// Which handle is under `p` (`tv` coordinates): true = start, false = end, nil =
     /// neither. A handle stands on its end's cell boundary, one row tall; the target
-    /// is a finger wide around it.
+    /// is a finger wide around it (22 pt). Equally near both, the start handle wins.
     func handle(at p: CGPoint) -> Bool? {
         guard let s = selection else { return nil }
         let size = tv.caretFrame.size
@@ -1056,8 +1094,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private func showEditMenu() {
         guard let s = selection else { return }
         let size = tv.caretFrame.size
-        editMenu?.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: CGPoint(
-            x: CGFloat(s.start.col) * size.width, y: CGFloat(s.start.row) * size.height)))
+        presentMenu(CGPoint(x: CGFloat(s.start.col) * size.width, y: CGFloat(s.start.row) * size.height))
     }
 
     func editMenuInteraction(_ i: UIEditMenuInteraction, menuFor c: UIEditMenuConfiguration,
@@ -1071,8 +1108,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Copy puts the selected text on the clipboard and ends the selection.
     func copySelection() {
         guard let s = selection else { return }
-        UIPasteboard.general.string = tv.getTerminal().getText(start: Position(col: s.start.col, row: s.start.row),
-                                                               end: Position(col: s.end.col, row: s.end.row))
+        pasteboard.string = tv.getTerminal().getText(start: Position(col: s.start.col, row: s.start.row),
+                                                     end: Position(col: s.end.col, row: s.end.row))
         clearSelection()
     }
 
@@ -1140,8 +1177,9 @@ enum TerminalFont {
 }
 
 /// Auto-hiding jog wheel for scrolling the terminal. A 44 pt touch strip on the
-/// right edge that ALWAYS owns its touches — a pan there can never start a text
-/// selection on the terminal below.
+/// right edge that owns its touches while the pill shows — a pan there can never start
+/// a text selection on the terminal below. Hidden, only the pill's own band does, so
+/// taps and double taps reach the last columns (`point(inside:with:)`).
 ///
 /// It is a spring-centered wheel, not a scrollbar: the pill rests in the middle,
 /// scrolls while held off center (faster the further off), and springs back on
@@ -1176,7 +1214,7 @@ private final class ScrollThumb: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        pill.alpha = 0   // the strip stays hit-testable; only the pill fades
+        pill.alpha = 0   // hidden: only the pill's band stays hit-testable
         pill.backgroundColor = UIColor.white.withAlphaComponent(0.55)
         pill.layer.cornerRadius = Self.pillSize.width / 2
         pill.isUserInteractionEnabled = false
@@ -1195,8 +1233,14 @@ private final class ScrollThumb: UIView {
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// Any touch on the strip reveals the pill — including the very first one,
-    /// so "tap near the right edge, then drag" always scrolls, never selects.
+    /// The whole strip while the pill shows or is dragged; hidden, only the band the
+    /// pill rests in, so "grab where the pill sits, then drag" still always scrolls.
+    override func point(inside p: CGPoint, with event: UIEvent?) -> Bool {
+        super.point(inside: p, with: event)
+            && (dragging || pill.alpha > 0 || (pill.frame.minY...pill.frame.maxY).contains(p.y))
+    }
+
+    /// Any touch on the strip reveals the pill — including the very first one.
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         super.touchesBegan(touches, with: event)
         show()
