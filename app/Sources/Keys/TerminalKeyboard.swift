@@ -284,7 +284,11 @@ struct KeyTouchTracker {
 ///   does; a WebKit landing only once the view stops waiting (`timedOut`), and once the
 ///   host is known to count units, never.
 /// - Past the end of the context (a line's or the document's) one unit goes blind, and
-///   any move that lands inside a Character (a CR LF) gets one more unit the same way.
+///   any move that lands inside a Character (a CR LF) gets one more code point the same
+///   way, so it never stops between a surrogate pair's halves. The host counts units then,
+///   so a context reading as that code point taken as a Character is the guess.
+/// - The view stops waiting 0.3 s after the move or after the last new context the host
+///   showed (`poll`): a host still answering older moves is working, not ignoring this one.
 /// - A move that can't show (a long run of one character in WebKit's fixed windows) is
 ///   taken as landed when the view stops waiting (`timedOut`).
 /// - A field whose context stays empty after a move gets every step as asked (`blank`).
@@ -306,6 +310,9 @@ struct CaretWalk {
     private var believed: (String, String)?
     /// Where the walk reckons the caret is while the proxy still shows `seen`.
     private var reckoned: (seen: (String, String), before: String, after: String)?
+    /// The context the last step saw, and the polls since a move or since it last changed.
+    private var shown: (String, String)?
+    private var quiet = 0
     var idle: Bool { sent == nil && queued == 0 }
 
     /// `steps` more Characters, negative left (0 checks the move in flight), given the
@@ -313,6 +320,8 @@ struct CaretWalk {
     /// the units to move it now.
     mutating func step(_ steps: Int, before b: String, after a: String, settled: Bool = true) -> Int {
         if !b.isEmpty || !a.isEmpty { blank = false }
+        if let w = shown, !Self.same(w, b, a) { quiet = 0 }
+        shown = (b, a)
         if blank { defer { queued = 0 }; return queued + steps }
         queued += steps
         if let r = reckoned, !Self.same(r.seen, b, a) { reckoned = nil }
@@ -326,10 +335,18 @@ struct CaretWalk {
                 queued += s.dir * (s.units > (s.dir < 0 ? s.before : s.after).count ? s.chars : s.chars - s.units)
             } else if Self.splits(before: b, after: a) {
                 utf16 = true
-                return send(s.dir, (b, a), b, a, dir: s.dir, chars: 1, blind: true)
+                return send(s.dir * Self.codePoint(before: b, after: a, dir: s.dir), (b, a), b, a, dir: s.dir, chars: 1, blind: true)
             } else if !s.plain, !settled {
                 return 0   // UIKit's guess, maybe: a line break crossed in Characters
-            } else if !s.blind {
+            } else if s.blind {
+                // A known UIKit host's extra lands exactly its units on: the Character's landing
+                // instead is its guess. One that neither explains crossed out of sight.
+                if utf16 == true, !(s.dir < 0 ? s.before : s.after).isEmpty {
+                    let fit = Self.landings(before: s.before, after: s.after, dir: s.dir, chars: s.chars, units: s.units,
+                                            nowBefore: b, nowAfter: a)
+                    if fit.units == 0, fit.chars != 0 { return 0 }
+                }
+            } else {
                 let fit = Self.landings(before: s.before, after: s.after, dir: s.dir, chars: s.chars, units: s.units,
                                         nowBefore: b, nowAfter: a)
                 if fit.units == 0, fit.chars == 0 {
@@ -375,11 +392,10 @@ struct CaretWalk {
     /// - Any other keeps waiting, now `late`: a next move sized from a context that hasn't
     ///   shown this one could land inside a Character once the host applies both. A WebKit
     ///   landing it shows is believed now, and so are one that shows nothing and one its
-    ///   landing doesn't explain (`step`). ponytail: 0.3 s from the move, while the host
-    ///   still answers moves sent before it, so a UIKit host 0.3 s behind (one taking
-    ///   150 ms a move, two moves deep in a drag) is taken for WebKit if the walk doesn't
-    ///   know it yet, and its older answers for the latest; wait on the host's own signal
-    ///   if a device shows one.
+    ///   landing doesn't explain (`step`). ponytail: 0.3 s with nothing new shown (`poll`),
+    ///   so a UIKit host taking longer than that over one move is taken for WebKit if the
+    ///   walk doesn't know it yet, and its older answers for the latest; wait on the host's
+    ///   own signal if a device shows one.
     mutating func timedOut() {
         guard let s = sent else { believed = nil; return }
         if s.blind {
@@ -396,6 +412,13 @@ struct CaretWalk {
         sent = nil
     }
 
+    /// One tick of the view's 20 ms poll: past 15 since the move or since the host last
+    /// showed a new context (it's still answering older moves), the view stops waiting.
+    mutating func poll() {
+        quiet += 1
+        if quiet > 15 { timedOut() }
+    }
+
     /// Forget the move in flight, the steps behind it and what the field showed: a touch
     /// starts afresh, looking for context again.
     mutating func drop() { sent = nil; reckoned = nil; believed = nil; queued = 0; blank = false }
@@ -403,6 +426,7 @@ struct CaretWalk {
     private mutating func send(_ units: Int, _ seen: (String, String), _ before: String, _ after: String,
                                dir: Int, chars: Int, plain: Bool = false, blind: Bool = false) -> Int {
         sent = (seen, before, after, dir, chars, abs(units), plain, blind, false)
+        quiet = 0
         return units
     }
 
@@ -429,6 +453,15 @@ struct CaretWalk {
             return tb.count == b.count && ta.count == a.count ? 2 : 1
         }
         return (fit(at + dir * units), fit(at + dir * widths.prefix(crossed).reduce(0, +)), crossed - chars)
+    }
+
+    /// The units of the code point next to a caret inside a Character, toward `dir`: 2 for
+    /// a whole surrogate pair, else 1 (a lone half, or U+FFFD in its place).
+    private static func codePoint(before: String, after: String, dir: Int) -> Int {
+        let u = dir < 0 ? Array(before.utf16.suffix(2).reversed()) : Array(after.utf16.prefix(2))
+        guard u.count == 2 else { return 1 }
+        return dir < 0 ? (UTF16.isTrailSurrogate(u[0]) && UTF16.isLeadSurrogate(u[1]) ? 2 : 1)
+                       : (UTF16.isLeadSurrogate(u[0]) && UTF16.isTrailSurrogate(u[1]) ? 2 : 1)
     }
 
     /// Two contexts around one caret read the same as far as both reach.
@@ -855,12 +888,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// The poll timer's tick; tests call it in place of waiting.
     ///
     /// ponytail: polling, not the controller's `textDidChange`, since Safari may send
-    /// none; 0.3 s is a guess at the slowest host. A drag past the document's end waits
-    /// that long before steps back count. A move that never shows stops the polling after
-    /// 2 s, still waited on: the next `caret` polls again, the next touch drops it.
+    /// none; 0.3 s of nothing new is a guess at the slowest host (`CaretWalk.poll`). A
+    /// drag past the document's end waits that long before steps back count. A move that
+    /// never shows stops the polling after 2 s, still waited on: the next `caret` polls
+    /// again, the next touch drops it.
     func pollCaret() {
         walkPolls += 1
-        if walkPolls > 15 { walk.timedOut() }   // the host clamped at the document's end, or never showed it
+        walk.poll()   // the host clamped at the document's end, or never showed it
         walkOn()
         guard walkPolls >= 100 else { return }   // 2 s: a move that never shows waits for the next `caret`
         walkPolls = 0

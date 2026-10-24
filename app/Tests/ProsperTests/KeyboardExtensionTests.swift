@@ -64,7 +64,9 @@ final class KeyboardExtensionTests: XCTestCase {
         /// The text and the caret in units, which a split context can't keep.
         private var units: (all: [UInt16], at: Int)?
         /// Right after each move the context shows it taken as Characters until `answer()`
-        /// or `catchUp()`, as UIKit's proxy guesses before the host answers.
+        /// or `catchUp()`, as UIKit's proxy guesses before the host answers: counted in the
+        /// text on the move's side of the caret alone, so from inside a Character a lone
+        /// surrogate half is one, and the rest of a family before a ZWJ another.
         var guesses = false
         private var guess: (before: String, after: String?)?
         func answer() { guess = nil }
@@ -74,8 +76,10 @@ final class KeyboardExtensionTests: XCTestCase {
             moves.append(offset)
             if lags { unshown.append((text, after)) }
             if guesses {
-                let all = text + (after ?? ""), at = min(max(text.count + offset, 0), all.count)
-                guess = (String(all.prefix(at)), String(all.dropFirst(at)))
+                let u = units ?? (Array((text + (after ?? "")).utf16), text.utf16.count)
+                let side = String(decoding: offset < 0 ? u.all[..<u.at] : u.all[u.at...], as: UTF16.self)
+                let at = offset < 0 ? side.dropLast(-offset).utf16.count : u.at + side.prefix(offset).utf16.count
+                guess = (String(decoding: u.all[..<at], as: UTF16.self), String(decoding: u.all[at...], as: UTF16.self))
             }
             if countsUTF16 {
                 let u = units ?? (Array((text + (after ?? "")).utf16), text.utf16.count)
@@ -533,7 +537,7 @@ final class KeyboardExtensionTests: XCTestCase {
 
     /// Steps through `walk` as the view sends them: the host catching up after every
     /// `perRefresh` of them (0: its context never lags), then polled until the walk is
-    /// idle, the walk settled from the third poll after a move and timing out after 15.
+    /// idle, the walk settled from the third poll after a move and timing out as the view's.
     private func drive(_ walk: inout CaretWalk, _ doc: FakeProxy, _ steps: [Int], perRefresh: Int) {
         var polls = 0
         func step(_ n: Int) {
@@ -549,7 +553,7 @@ final class KeyboardExtensionTests: XCTestCase {
         for _ in 0..<200 where !walk.idle {
             doc.catchUp()
             polls += 1
-            if polls > 15 { walk.timedOut() }
+            walk.poll()
             step(0)
         }
     }
@@ -1035,5 +1039,67 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(walk.utf16, true)
         XCTAssertEqual(doc.moves, [-4])
         XCTAssertEqual(doc.text.utf16.count, 44)
+    }
+
+    /// A UITextView answering each move 150 ms after its proxy's guess, dragged left over
+    /// "b", "a" and a skin-tone thumb in a field the walk knows nothing about yet: the
+    /// thumb's move waits behind the answers to the two letters, and its own comes more
+    /// than 0.3 s after it was sent. Each new context restarts the poll limit, so the host
+    /// is never taken for WebKit and the thumb is crossed whole. A move that shows nothing
+    /// still times out on the 16th poll.
+    func testAnOlderAnswerRestartsThePollLimit() {
+        let text = String(repeating: "ab😀👍🏽", count: 6)
+        let kb = TerminalKeyboard(), doc = host(kit: true, String(text.prefix(22)), String(text.dropFirst(22)))
+        kb.target = doc
+        doc.lags = true
+        kb.caret(-1)
+        kb.pollCaret()
+        kb.caret(-1)
+        kb.pollCaret()
+        kb.caret(-1)
+        kb.pollCaret()
+        doc.answer()
+        doc.showNext()
+        for _ in 0..<8 { kb.pollCaret() }
+        doc.showNext()
+        for _ in 0..<8 { kb.pollCaret() }
+        doc.catchUp()
+        for _ in 0..<5 { kb.pollCaret() }
+        XCTAssertEqual(doc.moves, [-1, -1, -4])
+        XCTAssertEqual(doc.stops, [41, 40, 36])
+        var walk = CaretWalk()
+        XCTAssertEqual(walk.step(1, before: "a", after: "😀"), 2)
+        for _ in 0..<15 { walk.poll(); XCTAssertEqual(walk.step(0, before: "a", after: "😀"), 0) }
+        XCTAssertNil(walk.utf16)
+        walk.poll()
+        XCTAssertEqual(walk.step(0, before: "a", after: "😀"), 1, "ignored past the end: WebKit")
+        XCTAssertEqual(walk.utf16, false)
+    }
+
+    /// A UITextView wrongly taken for WebKit steps one unit into a family's last emoji: the
+    /// split teaches its units, and the rest of the family follows a code point at a time,
+    /// never stopping between a surrogate pair's halves. Before the host answers each, its
+    /// proxy guesses the rest of the family crossed in one, a context that splits nothing:
+    /// that's outwaited, never taken for the landing.
+    func testASplitsExtraOutwaitsTheGuess() {
+        let family = "x👨‍👩‍👧"
+        let doc = host(kit: true, family)
+        var walk = CaretWalk()
+        walk.utf16 = false
+        func step(_ n: Int) {
+            let units = walk.step(n, before: doc.documentContextBeforeInput ?? "", after: doc.documentContextAfterInput ?? "")
+            if units != 0 { doc.adjustTextPosition(byCharacterOffset: units) }
+        }
+        step(-1)
+        doc.answer()
+        for _ in 0..<6 {
+            step(0)
+            step(0)
+            doc.answer()
+        }
+        XCTAssertEqual(walk.utf16, true)
+        XCTAssertEqual(doc.moves, [-1, -1, -1, -2, -1, -2])
+        XCTAssertEqual(doc.stops, [8, 7, 6, 4, 3, 1])
+        XCTAssertTrue(walk.idle)
     }
 }
