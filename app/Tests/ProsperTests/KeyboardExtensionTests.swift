@@ -1458,6 +1458,7 @@ final class KeyboardExtensionTests: XCTestCase {
             ((0, 40), 2, (2, 40), "down 2 over a line of sentences"),
             ((1, 40), 2, (3, 3), "down 2 onto a short line"),
             ((0, 30), 1, (1, 30), "down 1 into the third sentence"),
+            ((1, 10), 1, (2, 10), "down 1 from a sentence before the line's last, a fresh field's first leg"),
             ((2, 30), -1, (1, 30), "up 1 into it"),
             ((3, 3), -3, (0, 3), "up 3"),
             ((2, 40), -2, (0, 40), "up 2 over it"),
@@ -1516,6 +1517,34 @@ final class KeyboardExtensionTests: XCTestCase {
             XCTAssertEqual(slow(at(2, 40), lines: -1, delay: delay, sentences: 2, walk: &walk).0, at(1, 40),
                            "a fresh field: the late answer to the crossing is no landing, delay \(delay)")
         }
+    }
+
+    /// The lag a host showed is the most it has: a faster answer since doesn't shorten it
+    /// (QA's M625), and no landing is believed until a poll past it (M621), so a host that
+    /// showed some lag and then stalls longer never has a leg sized from its guess.
+    func testASlowUITextViewKeepsTheMostLagItShowed() {
+        let text = ["north south east west up down left right", "Uno dos. Tres cuatro. Cinco seis. Siete ocho nueve diez",
+                    "a slow grey cat naps on the warm sunny mat", "the end"]
+        func at(_ line: Int, _ col: Int) -> String {
+            var lines = text
+            lines[line].insert("|", at: lines[line].index(lines[line].startIndex, offsetBy: col))
+            return lines.joined(separator: "\n")
+        }
+        for (delays, why) in [([4, 1, 6], "slow, then fast: the slow lag stays"),
+                              ([0, 2, 6], "a short lag, then a stall: a poll past it")] {
+            var walk = CaretWalk()
+            XCTAssertEqual(slow(at(0, 5), lines: 1, delay: delays[0], sentences: 2, walk: &walk).0, at(1, 5), why)
+            XCTAssertEqual(slow(at(2, 40), lines: -1, delay: delays[1], sentences: 2, walk: &walk).0, at(1, 40), why)
+            XCTAssertEqual(slow(at(2, 25), lines: -1, delay: delays[2], sentences: 2, walk: &walk).0, at(1, 25), why)
+        }
+    }
+
+    /// A leg over a line break isn't plain: the line above's end shows nothing after it in
+    /// UIKit, so a context reading so, and as where the leg left, is its landing (QA's M626).
+    func testALegOverABreakLandsWhereNothingShowsPastIt() {
+        var walk = CaretWalk()
+        XCTAssertEqual(walk.step(0, lines: -1, before: "\nabc", after: ""), -4, "over the break")
+        XCTAssertEqual(walk.step(0, before: "abc", after: ""), -3, "landed at the end of abc: on to its start")
     }
 
     /// A plain leg's landing showing nothing on the side it came from is the host's answer
