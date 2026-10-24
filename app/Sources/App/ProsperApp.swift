@@ -267,6 +267,7 @@ struct SessionListView: View {
     var onChangeMachine: () -> Void = {}
     @State private var sessions: [DchSession] = []
     @State private var error: String?
+    @State private var notice: String?             // agent refusal; unlike `error`, gates nothing
     @State private var loading = false             // connect/list round-trip in flight
     @State private var trying: String?             // address being dialed right now
     @State private var unreachable: String?        // host-unreachable → offer Wake
@@ -325,8 +326,8 @@ struct SessionListView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .listRowBackground(Color.clear)
                 }
-            } else if let error {
-                Text(error).foregroundStyle(.secondary)
+            } else if let line = error ?? notice {
+                Text(line).foregroundStyle(.secondary)
             }
             ForEach(DchSession.ordered(sessions)) { s in row(s) }
         }
@@ -340,7 +341,7 @@ struct SessionListView: View {
                 }
                 .disabled(sleeping || unreachable != nil || error != nil || loading)   // can't sleep an unreachable Mac
             }
-            Button { newName = ""; creating = true } label: { Image(systemName: "plus") }
+            Button { newName = ""; notice = nil; creating = true } label: { Image(systemName: "plus") }
                 .disabled(sleeping || unreachable != nil || error != nil || loading)   // no new session on an unreachable Mac
             Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
                 .disabled(sleeping || loading)
@@ -448,8 +449,7 @@ struct SessionListView: View {
     /// The typed name when a session already has it: dch would attach to that one and
     /// never run the agent command.
     private var existingName: String? {
-        let typed = newName.trimmingCharacters(in: .whitespaces)
-        return sessions.contains { $0.name == typed } ? typed : nil
+        AgentCommand.taken(newName, in: sessions.map(\.name))
     }
 
     /// Start a session running the Settings agent command (`AgentCommand`), then open it
@@ -464,7 +464,7 @@ struct SessionListView: View {
         // The button is disabled for a taken name; this covers an alert that ignores that.
         if let taken = existingName {
             newName = ""
-            error = "A session named \(taken) already exists, so the agent command would not run."
+            notice = "A session named \(taken) already exists, so the agent command would not run."
             return
         }
         let name = takeNewName()
@@ -507,6 +507,7 @@ struct SessionListView: View {
         do {
             sessions = try await listWalkingAddresses()
             error = nil
+            notice = nil
             unreachable = nil
             loading = false          // connected: stop spinning + re-enable +/refresh BEFORE the slow handshake
             await handshake()        // opportunistic, may take ~2s — must not gate the toolbar

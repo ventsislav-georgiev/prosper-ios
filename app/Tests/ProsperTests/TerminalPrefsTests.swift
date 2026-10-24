@@ -51,7 +51,7 @@ final class TerminalPrefsTests: XCTestCase {
 /// user typed is the last argument, byte for byte, and the script around it is fixed.
 final class AgentCommandTests: XCTestCase {
 
-    private let script = #"exec "${SHELL:-/bin/zsh}" -lic 'cd; trap : INT; eval "$1"; exec "$0" -l' "${SHELL:-/bin/zsh}" "$1""#
+    private let script = #"exec "${SHELL:-/bin/zsh}" -lic 'builtin cd; trap : INT; eval "$1"; exec "$0" -l' "${SHELL:-/bin/zsh}" "$1""#
 
     func testDefault() {
         XCTAssertEqual(AgentCommand.argv(AgentCommand.defaultCommand),
@@ -73,8 +73,18 @@ final class AgentCommandTests: XCTestCase {
 
     /// The iOS keyboard's smart punctuation, which `.autocorrectionDisabled()` doesn't stop.
     func testSmartPunctuationIsUndone() {
-        XCTAssertEqual(AgentCommand.argv("claude \u{2014}chrome \u{201C}a\u{201D} \u{201E}b\u{201C} \u{2018}c\u{2019}").last,
-                       #"claude --chrome "a" "b" 'c'"#)
+        XCTAssertEqual(AgentCommand.argv("claude \u{2014}chrome \u{201C}a\u{201D} \u{201E}b\u{201C} \u{2018}c\u{2019} d\u{2026}").last,
+                       #"claude --chrome "a" "b" 'c' d..."#)
+    }
+
+    /// A taken name refuses the agent session (button disabled, `startAgent` refuses):
+    /// dch would attach to the existing one, whatever the case, and never run the command.
+    func testTakenIgnoresCaseAndNamesTheListedSession() {
+        let sessions = ["demo", "work"]
+        XCTAssertEqual(AgentCommand.taken("demo", in: sessions), "demo")
+        XCTAssertEqual(AgentCommand.taken(" Demo ", in: sessions), "demo", "the message names it as listed")
+        XCTAssertNil(AgentCommand.taken("other", in: sessions))
+        XCTAssertNil(AgentCommand.taken(" ", in: sessions), "blank generates a fresh name")
     }
 
     /// The create client is closed only once the session drew: dch's master exists from
