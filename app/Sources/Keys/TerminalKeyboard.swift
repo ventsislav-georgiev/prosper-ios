@@ -323,6 +323,9 @@ struct CaretWalk {
     /// The context the last step saw, and the polls since a move or since it last changed.
     private var shown: (String, String)?
     private var quiet = 0
+    /// Polls since the last move, and the most polls after a move the host has been seen
+    /// to change its context (`step`), 0 while it answers by the next poll.
+    private var age = 0, lag = 0
     /// Line moves asked for and not crossed yet, negative up.
     private(set) var lines = 0
     /// The column line moves aim for, in Characters from the line's start: kept from line
@@ -350,13 +353,22 @@ struct CaretWalk {
         // a space reads a Character short there.
         let b = utf16 != true && raw.hasPrefix("\n ") ? "\n" + raw.dropFirst(2) : raw
         if !b.isEmpty || !a.isEmpty { blank = false }
-        if let w = shown, !Self.same(w, b, a) { quiet = 0 }
+        let changed = shown.map { !Self.same($0, b, a) } ?? false
+        if changed { quiet = 0 }
         shown = (b, a)
         if blank { defer { queued = 0 }; return queued + steps }   // no lines: nothing to see them by
         if lines != 0 || landing != nil { held += steps } else { queued += steps; if steps != 0 { goal = nil } }
         lines += n
         if let r = reckoned, !Self.same(r.seen, b, a) { reckoned = nil }
         if let s = sent {
+            // The host answers this late: a guess shows at once, so a context changing later
+            // is the host's own. During a line move, no landing is believed before that, so no
+            // leg is sized from UIKit's guess, whose emptied side is no line's start or end.
+            // ponytail: the lag is learned, not known: a field's first line move on a host slower
+            // than the view's settle can still size a leg from a guess, and one host stall sets
+            // the most for the field. Time the host's answers if that shows.
+            if changed, age > 1 { lag = max(lag, age) }
+            if lines != 0 || landing != nil, lag > 0, age <= lag, !s.late { return 0 }
             if Self.same(s.seen, b, a) {
                 // Nothing shown when the view stopped waiting: UIKit's proxy shows at least its
                 // guess, so WebKit, which ignored a move past the end of its text (again, in
@@ -383,7 +395,11 @@ struct CaretWalk {
             } else {
                 let fit = Self.landings(before: s.before, after: s.after, dir: s.dir, chars: s.chars, units: s.units,
                                         nowBefore: b, nowAfter: a)
-                if fit.units == 0, fit.chars == 0 {
+                // So does a plain leg, its Characters beside it: a context showing none there,
+                // and still reading as where the leg left, is that answer too.
+                let stayed = s.plain && (s.dir < 0 ? a : b).isEmpty && !(s.dir < 0 ? b : a).isEmpty
+                    && Self.agree(Array(s.before.utf16)[...], Array(s.after.utf16)[...], Array(b.utf16), Array(a.utf16))
+                if stayed || fit.units == 0 && fit.chars == 0 {
                     guard s.late else { return 0 }   // an older answer: the host is behind
                 } else if fit.chars > fit.units, fit.back > 0 {
                     guard utf16 == nil, s.late else { return 0 }   // UIKit's guess, maybe
@@ -464,6 +480,7 @@ struct CaretWalk {
     /// showed a new context (it's still answering older moves), the view stops waiting.
     mutating func poll() {
         quiet += 1
+        age += 1
         if quiet > 15 { timedOut() }
     }
 
@@ -552,6 +569,7 @@ struct CaretWalk {
                                dir: Int, chars: Int, plain: Bool = false, blind: Bool = false) -> Int {
         sent = (seen, before, after, dir, chars, abs(units), plain, blind, false)
         quiet = 0
+        age = 0
         return units
     }
 

@@ -1361,23 +1361,28 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(moved, 1)
     }
 
-    /// A UITextView answering each caret move `delay` polls (20 ms each) late, in ASCII
-    /// text: until it answers, its proxy shows its guess, the window it showed last with the
-    /// caret moved inside it, so a side a move took all of reads empty. Its windows, cut as
+    /// A UITextView answering each caret move `delay` polls (20 ms each) late, one move at a
+    /// time as a busy main thread does, in ASCII text: until it answers, its proxy shows its
+    /// guess, the window it showed last with the caret moved inside it, so a side a move
+    /// took all of reads empty. Its windows, cut as
     /// UIKit's: before, back to the caret line's break; after, to the end of the caret's
     /// sentence (". ") or line. `wide`: the first window's before reaches back over all the
-    /// text, as one left from an earlier caret can.
+    /// text, as one left from an earlier caret can. `sentences`: the before goes back that
+    /// many sentence starts instead (after ". " or a break, the break unshown at the
+    /// window's start), as QA's UIKit host's does: right after a break ("Uno d"), or at a
+    /// line's last sentence ("Siete ocho nueve diez").
     private struct SlowKit {
-        let text: [Character], delay: Int
+        let text: [Character], delay: Int, sentences: Int
         private(set) var at: Int
         private(set) var shown = ("", "")
-        private var due: [(poll: Int, at: Int)] = [], polls = 0
+        private var due: [(poll: Int, at: Int)] = [], polls = 0, free = 0
 
-        init(_ s: String, delay: Int, wide: Bool) {
+        init(_ s: String, delay: Int, wide: Bool, sentences: Int = 0) {
             let parts = s.components(separatedBy: "|")
             text = Array(parts.joined())
             at = parts[0].count
             self.delay = delay
+            self.sentences = sentences
             shown = window(at)
             if wide { shown.0 = parts[0] }
         }
@@ -1388,12 +1393,15 @@ final class KeyboardExtensionTests: XCTestCase {
                 end += 1
                 if end > 1, text[end - 2] == ".", text[end - 1] == " " { break }
             }
-            return (String(text[(text[..<i].lastIndex(of: "\n") ?? 0)..<i]), String(text[i..<end]))
+            let starts = (0..<i).filter { $0 == 0 || text[$0 - 1] == "\n" || ($0 > 1 && text[$0 - 2] == "." && text[$0 - 1] == " ") }
+            let start = sentences == 0 ? text[..<i].lastIndex(of: "\n") ?? 0 : starts.dropLast(sentences - 1).last ?? 0
+            return (String(text[start..<i]), String(text[i..<end]))
         }
 
         mutating func move(_ n: Int) {
             at = min(max(at + n, 0), text.count)
-            due.append((polls + delay, at))
+            free = max(polls, free) + delay
+            due.append((free, at))
             let (b, a) = shown
             shown = n > 0 ? (b + a.prefix(n), String(a.dropFirst(n))) : (String(b.dropLast(-n)), b.suffix(-n) + a)
         }
@@ -1406,18 +1414,29 @@ final class KeyboardExtensionTests: XCTestCase {
     }
 
     /// `s` with `|` at the caret in a `SlowKit`, after a line move of `lines` through a walk
-    /// polled as the view polls it: the text with `|` where the host's caret ended, and the
-    /// polls it took.
-    private func slow(_ s: String, lines: Int, delay: Int, wide: Bool = false) -> (String, Int) {
-        var host = SlowKit(s, delay: delay, wide: wide), walk = CaretWalk(), polls = 0, total = 0
+    /// polled as the view polls it: the text with `|` where the host's caret ended, the
+    /// polls it took, and the most in a row with nothing sent.
+    private func slow(_ s: String, lines: Int, delay: Int, wide: Bool = false) -> (String, Int, Int) {
+        var walk = CaretWalk()
+        return slow(s, lines: lines, delay: delay, wide: wide, walk: &walk)
+    }
+
+    /// The same through `walk`, which keeps what it learned of the host, as the view's does
+    /// from hold to hold in one field.
+    private func slow(_ s: String, lines: Int, delay: Int, wide: Bool = false, sentences: Int = 0,
+                      walk: inout CaretWalk) -> (String, Int, Int) {
+        var host = SlowKit(s, delay: delay, wide: wide, sentences: sentences), polls = 0, total = 0, wait = 0
+        walk.drop()
         func step(_ n: Int) {
             let units = walk.step(0, lines: n, before: host.shown.0, after: host.shown.1, settled: polls >= 3)
             if units != 0 { host.move(units); polls = 0 }
         }
         step(lines)
-        for _ in 0..<400 where !walk.idle { host.tick(); polls += 1; total += 1; walk.poll(); step(0) }
+        for _ in 0..<400 where !walk.idle {
+            host.tick(); polls += 1; total += 1; wait = max(wait, polls); walk.poll(); step(0)
+        }
         XCTAssertTrue(walk.idle)
-        return (String(host.text[..<host.at]) + "|" + String(host.text[host.at...]), total)
+        return (String(host.text[..<host.at]) + "|" + String(host.text[host.at...]), total, wait)
     }
 
     /// QA's 489r finding 1: a UITextView that answers each move late, whose proxy cuts its
@@ -1446,7 +1465,7 @@ final class KeyboardExtensionTests: XCTestCase {
         for c in cases {
             for delay in 0...5 {
                 for wide in [false, true] {
-                    let (got, polls) = slow(at(c.from.0, c.from.1), lines: c.lines, delay: delay, wide: wide)
+                    let (got, polls, _) = slow(at(c.from.0, c.from.1), lines: c.lines, delay: delay, wide: wide)
                     XCTAssertEqual(got, at(c.to.0, c.to.1), "\(c.why) delay \(delay) wide \(wide)")
                     if delay == 0 { XCTAssertLessThan(polls, 16, "\(c.why) wide \(wide): no wait at once") }
                 }
@@ -1456,6 +1475,79 @@ final class KeyboardExtensionTests: XCTestCase {
             XCTAssertEqual(slow("Ends he|re. \nnext line", lines: 1, delay: delay).0, "Ends here. \nnext li|ne",
                            "a line that does end at a sentence's space: crossed at the poll limit, delay \(delay)")
         }
+    }
+
+    /// QA's 489r3 F1: up moves on a UITextView answering 50-80 ms late (delays 2-5), whose
+    /// before-context is cut at a sentence's start or right after a break, run as QA's
+    /// sweep did, twice over in one field after a first move down. The host's late answer
+    /// to one leg is never taken for the next one's landing (shape A), and once it has shown
+    /// its lag, a guess's empty before is never read as the line's start (B) or the text's
+    /// (C). A host answering by the next poll never waits out the poll limit.
+    func testASlowUITextViewLandsUpMovesOnTheirLine() {
+        let text = ["north south east west up down left right", "Uno dos. Tres cuatro. Cinco seis. Siete ocho nueve diez",
+                    "a slow grey cat naps on the warm sunny mat", "the end"]
+        func at(_ line: Int, _ col: Int) -> String {
+            var lines = text
+            lines[line].insert("|", at: lines[line].index(lines[line].startIndex, offsetBy: col))
+            return lines.joined(separator: "\n")
+        }
+        let cases: [(from: (Int, Int), lines: Int, to: (Int, Int), why: String)] = [
+            ((0, 5), 1, (1, 5), "down 1, the field's first move"),
+            ((2, 40), -1, (1, 40), "up 1 into the last sentence"),
+            ((3, 5), -3, (0, 5), "up 3"),
+            ((2, 25), -1, (1, 25), "up 1 into the third sentence"),
+            ((1, 25), -1, (0, 25), "and onto the first line"),
+        ]
+        for delay in 0...6 {
+            for sentences in [1, 2] {
+                var walk = CaretWalk()
+                for run in 1...2 {
+                    for c in cases {
+                        let (got, _, wait) = slow(at(c.from.0, c.from.1), lines: c.lines, delay: delay, sentences: sentences, walk: &walk)
+                        let why = "\(c.why) delay \(delay) sentences \(sentences) run \(run)"
+                        XCTAssertEqual(got, at(c.to.0, c.to.1), why)
+                        if delay == 0 { XCTAssertLessThan(wait, 16, "\(why): no wait at once") }
+                    }
+                }
+            }
+        }
+        for delay in 1...3 {
+            var walk = CaretWalk()
+            XCTAssertEqual(slow(at(2, 40), lines: -1, delay: delay, sentences: 2, walk: &walk).0, at(1, 40),
+                           "a fresh field: the late answer to the crossing is no landing, delay \(delay)")
+        }
+    }
+
+    /// A plain leg's landing showing nothing on the side it came from is the host's answer
+    /// to a move before it only while the rest still reads as where the leg left: one over
+    /// all the context shown, its window since widened, waits; a host that shows no
+    /// after-context lands a step left at once, and so does an emptied field.
+    func testOnlyAContextStillWhereTheLegLeftIsAnOlderAnswer() {
+        var stayed = CaretWalk()
+        XCTAssertEqual(stayed.step(-3, before: "abc", after: ""), -3)
+        XCTAssertEqual(stayed.step(-1, before: "xabc", after: ""), 0, "still after the c: the host is behind")
+        var walk = CaretWalk()
+        XCTAssertEqual(walk.step(-1, before: "abc", after: ""), -1)
+        XCTAssertEqual(walk.step(-1, before: "ab", after: ""), -1, "landed: the next step goes")
+        XCTAssertEqual(walk.step(0, before: "", after: ""), 0)
+        XCTAssertTrue(walk.idle, "nothing shown either side: landed too")
+    }
+
+    /// Only UIKit's guess, the window a leg was sized in moved with it, waits where UIKit
+    /// cuts: another window lands at once (QA's M546), and so does the guess once the view
+    /// stopped waiting for the leg (QA's M545).
+    func testOnlyAGuessOnTimeWaitsAtAUIKitCut() {
+        var walk = CaretWalk()
+        XCTAssertEqual(walk.step(0, lines: -1, before: "\nab", after: "c"), -3, "over the break")
+        XCTAssertEqual(walk.step(0, before: "", after: "\nabc"), 0)
+        XCTAssertFalse(walk.idle, "the guess waits")
+        XCTAssertEqual(walk.step(0, before: "", after: "\nab"), 0)
+        XCTAssertTrue(walk.idle, "another window: landed, on the empty line above")
+        var late = CaretWalk()
+        XCTAssertEqual(late.step(0, lines: -1, before: "\nab", after: "c"), -3)
+        for _ in 0..<16 { late.poll() }
+        XCTAssertEqual(late.step(0, before: "", after: "\nabc"), 0)
+        XCTAssertTrue(late.idle, "the view stopped waiting: the guess lands at once")
     }
 
     /// A sideways step past a sentence's space at the context's end goes on at once: only
