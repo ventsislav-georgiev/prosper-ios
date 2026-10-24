@@ -371,6 +371,7 @@ struct SessionListView: View {
         .alert("New session", isPresented: $creating) {
             TextField("Name (optional)", text: $newName)
             Button("Create") { startNew() }
+            Button("Create agent session") { Task { await startAgent() } }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Opens a fresh dch session on \(title).") }
     }
@@ -431,12 +432,41 @@ struct SessionListView: View {
     }
 
     private func startNew() {
+        open = DchSession(name: takeNewName(), alias: nil)
+    }
+
+    /// dch creates the session on first attach; a stable name keeps reconnects
+    /// pinned to it. Generate one when the user doesn't name it.
+    private func takeNewName() -> String {
         let typed = newName.trimmingCharacters(in: .whitespaces)
-        // dch creates the session on first attach; a stable name keeps reconnects
-        // pinned to it. Generate one when the user doesn't name it.
-        let name = typed.isEmpty ? "ses-\(String(Int(Date().timeIntervalSince1970), radix: 36))" : typed
         newName = ""
-        open = DchSession(name: name, alias: nil)
+        return typed.isEmpty ? "ses-\(String(Int(Date().timeIntervalSince1970), radix: 36))" : typed
+    }
+
+    /// Start a session running the Settings agent command (`AgentCommand`), then open it
+    /// by name like any other. Our create client is dropped only after the first output,
+    /// once dch's master surely exists; closing it detaches, the session keeps running.
+    /// The demo has no agent to start, so it opens its sample agent session instead.
+    private func startAgent() async {
+        guard !(transport is DemoTransport) else {
+            newName = ""
+            open = DchSession(name: "claude", alias: "claude (sample)")
+            return
+        }
+        let name = takeNewName()
+        let command = AgentCommand.argv(UserDefaults.standard.string(forKey: AgentCommand.key) ?? "")
+        do {
+            let stream = try await withDeadline(seconds: 8) {
+                let stream = try await transport.create(name: name, command: command, cols: 80, rows: 24)
+                for await _ in stream.output { break }
+                return stream
+            }
+            stream.close()
+            open = DchSession(name: name, alias: nil)
+        } catch {
+            guard !isCancellation(error) else { return }
+            self.error = error.localizedDescription
+        }
     }
 
     /// Open a throwaway session that triggers `prosper://sleep` on the Mac, then

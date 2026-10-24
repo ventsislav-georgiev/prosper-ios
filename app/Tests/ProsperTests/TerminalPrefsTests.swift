@@ -46,3 +46,28 @@ final class TerminalPrefsTests: XCTestCase {
         XCTAssertEqual(TerminalPrefs.fontSize, TerminalPrefs.defaultSize, accuracy: 0.001)
     }
 }
+
+/// The agent command reaches dch as argv, never spliced into a shell script: what the
+/// user typed is the last argument, byte for byte, and the script around it is fixed.
+final class AgentCommandTests: XCTestCase {
+
+    private let script = #"exec "${SHELL:-/bin/zsh}" -lic 'trap : INT; eval "$1"; exec "$0" -l' "${SHELL:-/bin/zsh}" "$1""#
+
+    func testDefault() {
+        XCTAssertEqual(AgentCommand.argv(AgentCommand.defaultCommand),
+                       ["/bin/sh", "-c", script, "sh", "headroom wrap claude --chrome"])
+    }
+
+    func testEmptyOrBlankFallsBackToDefault() {
+        XCTAssertEqual(AgentCommand.argv("").last, AgentCommand.defaultCommand)
+        XCTAssertEqual(AgentCommand.argv("  \n").last, AgentCommand.defaultCommand)
+    }
+
+    /// Quotes, `$` and `;` would break or inject if quoted into the script; as `$1` they
+    /// reach `eval` untouched, so the login shell parses them exactly as typed.
+    func testShellMetacharactersPassVerbatim() {
+        let typed = #"claude --append-system-prompt "it's $HOME"; echo 'done'"#
+        XCTAssertEqual(AgentCommand.argv(typed), ["/bin/sh", "-c", script, "sh", typed])
+        XCTAssertEqual(AgentCommand.argv("  \(typed) ").last, typed, "only the edges are trimmed")
+    }
+}

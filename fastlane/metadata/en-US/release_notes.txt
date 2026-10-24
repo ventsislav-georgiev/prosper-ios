@@ -1,6 +1,7 @@
 What's new:
 • Copy mode: drag over the terminal to select text natively, then edit what goes to the clipboard.
 • Insert: compose text on your phone and send it to the session in one go.
+• New session can start an agent session directly; set its command in Settings.
 • New compact terminal keyboard on iPhone, with key previews and common symbols one tap away.
 • Shortcut bar is always visible, in two aligned rows, with a new default set of keys.
 • The session list can show how many helper tasks are running.
