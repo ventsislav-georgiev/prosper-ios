@@ -50,6 +50,7 @@ final class KeyboardViewController: UIInputViewController {
     /// it, toward Apple's keyboard (`KeyboardSettings.hops`).
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        TerminalKeyboard.undelayEdges(view.window)
         let mark = KeyboardSettings.takeHop()
         let login = Suggestions.isLoginField(textDocumentProxy)
         let own = Bundle.main.bundleIdentifier ?? ""

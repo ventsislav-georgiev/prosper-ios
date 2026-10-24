@@ -897,4 +897,14 @@ final class TerminalKeyboardTests: XCTestCase {
         spin(0.5)
     }
 
+    func testUndelayEdges() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        let gate = UIGestureRecognizer()
+        gate.delaysTouchesBegan = true
+        gate.delaysTouchesEnded = true
+        window.addGestureRecognizer(gate)
+        TerminalKeyboard.undelayEdges(window)
+        XCTAssertFalse(gate.delaysTouchesBegan)
+        XCTAssertTrue(gate.delaysTouchesEnded)
+    }
 }

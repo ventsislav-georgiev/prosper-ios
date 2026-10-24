@@ -332,6 +332,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static func metrics(compact: Bool) -> (row: CGFloat, gap: CGFloat, top: CGFloat) {
         compact ? (26, 4, 3) : (rowHeight, rowGap, topPadding)
     }
+    /// The host window's system gesture gate holds a touch near the left or right edge
+    /// until the lift, so an edge key shows no pressed look and its hold fails: let it
+    /// through. `delaysTouchesEnded` stays.
+    static func undelayEdges(_ window: UIWindow?) {
+        window?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
+    }
     static func keysHeight(compact: Bool) -> CGFloat {
         let m = metrics(compact: compact)
         return m.top + 5 * m.row + 4 * m.gap
