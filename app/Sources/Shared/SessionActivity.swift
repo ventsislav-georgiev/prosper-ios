@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// How a dch agent state reads on screen in the session list.
+/// How a dch agent state reads on screen: the session list and the Live Activity, so the
+/// two can't drift apart.
 enum SessionStateStyle: String, CaseIterable {
     case working, blocked, idle, done
 

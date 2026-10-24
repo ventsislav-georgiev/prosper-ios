@@ -6,9 +6,9 @@ the companion Prosper desktop app) and streams them to iPhone/iPad. The phone an
 Mac communicate over the user's private Tailscale network — terminal traffic flows
 directly device-to-Mac and does not pass through any service we operate.
 
-An OPTIONAL feature, "Remote Wake", lets a signed-in user wake their own sleeping
-Mac. This is the ONLY feature that requires an account; everything else (terminal,
-demo) works fully signed-out.
+Two OPTIONAL features need an account: "Remote Wake", which lets a signed-in user
+wake their own sleeping Mac, and "Live status and alerts" (below). Everything else
+(terminal, demo) works fully signed-out.
 
 HOW TO REVIEW WITHOUT A MAC OR TAILSCALE
 You do not need any external setup, and you do NOT need to sign in. The app ships
@@ -33,10 +33,25 @@ WHAT'S NEW IN THIS VERSION, AND WHERE TO SEE IT IN THE DEMO
   - Helper-task count in the session list: each session row can show how many
     helper tasks are running. The count only appears for sessions on a real Mac
     running Prosper, so it is not visible in the demo.
-  - The watched-session Live Activity / Dynamic Island and the per-session bell
-    have been removed in this version, so the app no longer uses Live
-    Activities or notifications.
-No new permissions, data collection, accounts or purchases are added.
+  - Live status and alerts (see below). Not visible in the demo.
+New in this version: the notification permission, asked only after the user
+taps "Turn On". No new data collection, accounts or purchases are added.
+
+LIVE STATUS AND ALERTS (NOTIFICATIONS AND LIVE ACTIVITY)
+After signing in, the home screen offers "Turn on notifications" (Turn On / Not
+now); Settings has a "Live status and alerts" switch. Turned on, the app registers
+for push notifications with our server, which pushes:
+  - a Live Activity (Lock Screen and Dynamic Island) for the user's Mac while
+    its agent sessions are working, showing session names, their states and
+    counts. If updates stop arriving it reads "status unavailable" instead of
+    old states, and it shows when the Mac is offline;
+  - a notification only when a session needs the user. Tapping it opens that
+    session.
+Only session names and states are sent, never terminal content. Both need the
+user's own Mac running Prosper and signed in to the same account, so neither can
+appear in a review environment; the demo has no Mac and sends nothing. Turning
+the switch off, or signing out, removes the device's registration from our
+server and ends the Live Activity.
 
 ABOUT THE OPTIONAL "WAKE" BUTTON
 The Wake button only appears when the app actually FAILS to reach a real, saved
@@ -51,7 +66,7 @@ Sign-in is passwordless: the user enters an email address and taps a one-time
 magic link. We do not use third-party sign-in, and "Sign in with Apple" is not
 required here because we do not offer any third-party/social login option
 (Guideline 4.8 does not apply — email is our only login mechanism and is used
-solely to operate the optional Remote Wake feature).
+solely to operate the optional Remote Wake and live status features).
 
 ACCOUNT DELETION
 A signed-in user can delete their account in-app: Settings → Delete Account. This

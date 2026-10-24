@@ -6,6 +6,6 @@ What's new:
 • Shortcut bar is always visible, in two aligned rows, with a new default set of keys.
 • The session list can show how many helper tasks are running.
 • The session list shows each session's open pull requests and task progress; tap a pull request to open it.
-• The session bell is gone: it could only ping you while Prosper was open.
+• The session bell is replaced by live status: a Lock Screen and Dynamic Island card while agents work on your Mac, and a notification only when a session needs you, even with Prosper closed. Sign in on the Mac and the phone, then turn it on.
 • Typing is more reliable on weak connections: keystrokes are queued and delivered after a drop.
 • Smoother terminal scrolling.

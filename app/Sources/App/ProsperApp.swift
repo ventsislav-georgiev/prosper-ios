@@ -3,6 +3,9 @@ import UIKit
 
 @main
 struct ProsperApp: App {
+    // Device-token callbacks and notification taps for live status (`LiveStatus`).
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     init() {
         // The per-session bell is gone; drop the switches it persisted.
         UserDefaults.standard.removeObject(forKey: "sessionAlerts.v1")
@@ -35,11 +38,12 @@ struct ProsperApp: App {
 let uiScreen = ProcessInfo.processInfo.environment["PROSPER_UI_SCREEN"]
 
 /// Navigation routes for the Remote Terminal feature. `connect` = the machine
-/// picker; `sessions` = the dch session list for a machine (id, or the demo sentinel);
+/// picker; `sessions` = the dch session list for a machine (id, or the demo sentinel),
+/// optionally opening one session once it is listed (a tapped alert);
 /// `settings` = the account screen.
 enum Route: Hashable {
     case connect
-    case sessions(MachineRef)
+    case sessions(MachineRef, open: String? = nil)
     case settings
 }
 
@@ -57,8 +61,10 @@ enum MachineRef: Hashable {
 struct HomeView: View {
     @StateObject private var store = MachineStore()
     @StateObject private var account = AccountStore()
+    @ObservedObject private var live = LiveStatus.shared
     @State private var path: NavigationPath
     @State private var showHelp = false
+    @State private var notificationsDenied = false   // Turn On met an earlier "Don't Allow"
 
     init() {
         var p = NavigationPath()
@@ -73,6 +79,9 @@ struct HomeView: View {
     var body: some View {
         NavigationStack(path: $path) {
             List {
+                #if !targetEnvironment(macCatalyst)
+                if account.isSignedIn && !live.asked && !live.enabled { notificationsCard }
+                #endif
                 NavigationLink(value: store.machines.first.map { Route.sessions(.machine($0.id)) } ?? Route.connect) {
                     Label("Remote Terminal", systemImage: "terminal")
                 }
@@ -83,16 +92,52 @@ struct HomeView: View {
             .navigationTitle("Prosper")
             .toolbar { helpButton($showHelp) }
             .sheet(isPresented: $showHelp) { HelpView() }
+            // iOS asks only once; after a denial Turn On shows no prompt, so say so.
+            .alert("Notifications are off", isPresented: $notificationsDenied) {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openNotificationSettingsURLString) { UIApplication.shared.open(url) }
+                }
+                Button("Later", role: .cancel) {}
+            } message: {
+                Text("Notifications are off for Prosper. Allow them in the Settings app, then turn on Live status in Prosper's Settings.")
+            }
             .navigationDestination(for: Route.self) { route in
                 switch route {
                 case .connect:
                     ConnectScreen(store: store) { ref in go(.sessions(ref)) }
-                case .sessions(let ref):
-                    sessionList(for: ref)
+                case .sessions(let ref, let open):
+                    sessionList(for: ref, open: open)
                 case .settings:
                     SettingsView(account: account)
                 }
             }
+        }
+        // The Live Activity's link and a tapped "needs you" alert: that Mac's sessions
+        // (and the session, for an alert), or just home when no saved Mac matches.
+        .onOpenURL { url in if let t = LiveTarget(url: url) { live.target = t } }
+        .onReceive(live.$target) { t in
+            guard let t else { return }
+            live.target = nil
+            if let m = t.machine(in: store.machines) {
+                go(.sessions(.machine(m.id), open: t.session))
+            } else {
+                path = NavigationPath()
+            }
+        }
+    }
+
+    /// Asked once, after sign-in: Turn On or Not now, and never again after Not now
+    /// (Settings keeps the switch).
+    private var notificationsCard: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Turn on notifications", systemImage: "bell.badge").font(.headline)
+                Text("Prosper notifies you only when a session needs you, and shows a live card on the Lock Screen while agents work on your Mac.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 4)
+            Button("Turn On") { Task { if !(await live.turnOn()) { notificationsDenied = true } } }
+            Button("Not now") { live.notNow() }.foregroundStyle(.secondary)
         }
     }
 
@@ -103,7 +148,7 @@ struct HomeView: View {
         path.append(route)
     }
 
-    @ViewBuilder private func sessionList(for ref: MachineRef) -> some View {
+    @ViewBuilder private func sessionList(for ref: MachineRef, open: String?) -> some View {
         // "Change" PUSHES the picker on top of Sessions (Home → Sessions → Machines),
         // so Back from Machines returns to Sessions — the expected hierarchy.
         switch ref {
@@ -118,8 +163,8 @@ struct HomeView: View {
                 // half-finished `trying` address, and its leftover error text.
                 SessionListView(transport: ProsperTransport(host: m.addresses.first ?? m.name),
                                 title: m.name, machine: m, store: store, account: account,
-                                onChangeMachine: { path.append(Route.connect) })
-                    .id(ref)
+                                onChangeMachine: { path.append(Route.connect) }, openSession: open)
+                    .id(Route.sessions(ref, open: open))
             } else {
                 ConnectScreen(store: store) { r in go(.sessions(r)) }
             }
@@ -265,6 +310,8 @@ struct SessionListView: View {
     @ObservedObject var store: MachineStore   // observed so handshake-populated cachedWake redraws the badge
     @ObservedObject var account: AccountStore
     var onChangeMachine: () -> Void = {}
+    var openSession: String? = nil     // a tapped alert's session, opened once it is listed
+    @State private var openTried = false
     @State private var sessions: [DchSession] = []
     @State private var error: String?
     @State private var loading = false             // connect/list round-trip in flight
@@ -351,7 +398,14 @@ struct SessionListView: View {
         // Programmatic push for tap-to-attach and newly created sessions.
         .navigationDestination(isPresented: Binding(get: { open != nil },
                                                     set: { if !$0 { open = nil } })) {
-            if let open { TerminalScreen(transport: transport, session: open) }
+            if let open {
+                // Tracked so that session's own "needs you" alert doesn't banner over it.
+                TerminalScreen(transport: transport, session: open)
+                    .onAppear {
+                        LiveStatus.shared.attached = LiveTarget(macId: liveMachine?.serverDeviceId, session: open.name)
+                    }
+                    .onDisappear { LiveStatus.shared.attached = nil }
+            }
         }
         .alert("Rename session", isPresented: Binding(get: { renaming != nil },
                                                       set: { if !$0 { renaming = nil } })) {
@@ -508,6 +562,11 @@ struct SessionListView: View {
             sessions = try await listWalkingAddresses()
             error = nil
             unreachable = nil
+            // Only a listed session: attaching to a name that's gone would create it anew.
+            if !openTried, let name = openSession {
+                openTried = true
+                open = sessions.first { $0.name == name }
+            }
             loading = false          // connected: stop spinning + re-enable +/refresh BEFORE the slow handshake
             await handshake()        // opportunistic, may take ~2s — must not gate the toolbar
         } catch let e as TransportError {
