@@ -52,7 +52,8 @@ enum AgentCommand {
 /// Account settings (PLAN §3 / §6.3): sign in/out and the mandatory in-app Delete
 /// Account (Apple 5.1.1(v)). Reachable from Home. Signing in is only needed for
 /// Remote Wake — everything else works signed-out. Below them, the Prosper keyboard's
-/// switches (`KeyboardSettings`), and the agent command (`AgentCommand`).
+/// switches (`KeyboardSettings`), the agent command (`AgentCommand`) and the session
+/// rows' details (`RowDetails`).
 struct SettingsView: View {
     @ObservedObject var account: AccountStore
     @State private var showLogin = false
@@ -73,6 +74,13 @@ struct SettingsView: View {
     @AppStorage(KeyboardSettings.Key.periodShortcut, store: KeyboardSettings.store())
     private var periodShortcut = KeyboardSettings().periodShortcut
     @AppStorage(AgentCommand.key) private var agentCommand = ""
+    // Session list rows (`RowDetails`), on this device only.
+    @AppStorage(RowDetails.Key.agents) private var rowAgents = RowDetails().agents
+    @AppStorage(RowDetails.Key.openPRs) private var rowOpenPRs = RowDetails().openPRs
+    @AppStorage(RowDetails.Key.merged) private var rowMerged = RowDetails().merged
+    @AppStorage(RowDetails.Key.tasksDone) private var rowTasksDone = RowDetails().tasksDone
+    @AppStorage(RowDetails.Key.inProgress) private var rowInProgress = RowDetails().inProgress
+    @AppStorage(RowDetails.Key.queued) private var rowQueued = RowDetails().queued
 
     var body: some View {
         List {
@@ -108,6 +116,19 @@ struct SettingsView: View {
                 Text("Agent command")
             } footer: {
                 Text("Create agent session runs this in your login shell on the Mac, then leaves you at a shell when it exits. Empty uses the default.")
+            }
+
+            Section {
+                Toggle("Agents", isOn: $rowAgents)
+                Toggle("Open PRs", isOn: $rowOpenPRs)
+                Toggle("Merged", isOn: $rowMerged)
+                Toggle("Tasks done", isOn: $rowTasksDone)
+                Toggle("In progress", isOn: $rowInProgress)
+                Toggle("Queued", isOn: $rowQueued)
+            } header: {
+                Text("Session list")
+            } footer: {
+                Text("Row details each session shows. Its name and state always show.")
             }
 
             // Apple's Settings › General › Keyboard, in its order, for what Prosper's has.

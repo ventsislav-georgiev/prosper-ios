@@ -380,14 +380,10 @@ struct SessionListView: View {
 
     @ViewBuilder private func row(_ s: DchSession) -> some View {
         HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(s.title)
-                if let state = s.state, !state.isEmpty { SessionStateLabel(state: state, agents: s.agents) }
-                if let meta = s.meta { SessionMetaView(meta: meta) }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture { open = s }
+            SessionRow(session: s)
+                .contentShape(Rectangle())
+                .onTapGesture { open = s }
+                .accessibilityAction { open = s }
             Button { renaming = s; renameText = s.alias ?? "" } label: {
                 Image(systemName: "pencil")
             }.buttonStyle(.borderless)
@@ -602,25 +598,6 @@ struct WakeBadge: View {
             .background(.orange.opacity(0.18), in: Capsule())
             .foregroundStyle(.orange)
             .accessibilityLabel(secs.map { "Remote wake ready, checks every \($0 / 60) minutes" } ?? "Remote wake ready")
-        }
-    }
-}
-
-/// What the agent in a session is doing, as dch reports it (`--ls-json`): it reads
-/// the session's rendered screen, so "blocked" really means a prompt is waiting for
-/// a human — the reason to open that session before the others.
-struct SessionStateLabel: View {
-    let state: String
-    var agents = 0
-
-    var body: some View {
-        // Unknown state from a newer server → say nothing rather than guess.
-        if let style = SessionStateStyle(state) {
-            let text = [style.label, SessionStateStyle.agents(agents)].compactMap { $0 }.joined(separator: " · ")
-            Label(text, systemImage: style.symbol)
-                .font(.caption2)
-                .foregroundStyle(style.tint)
-                .accessibilityLabel("Session is \(text)")
         }
     }
 }

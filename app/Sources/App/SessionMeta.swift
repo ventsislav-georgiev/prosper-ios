@@ -10,10 +10,20 @@ struct SessionMeta: Hashable {
         var title: String       // untrusted: plain text, newlines collapsed
 
         /// "prosper#12": the repo's name part, then the number when there is one.
-        var chip: String {
+        var chip: String { chip(maxRepo: nil) }
+
+        /// The chip with a repo name past `maxRepo` characters cut to fit, "…" last;
+        /// nil keeps it whole.
+        func chip(maxRepo: Int?) -> String {
             let name = repo.split(separator: "/").last.map(String.init) ?? repo
-            let short = name.count > 12 ? String(name.prefix(11)) + "…" : name
+            let short = maxRepo.map { name.count > $0 ? String(name.prefix($0 - 1)) + "…" : name } ?? name
             return num.map { "\(short)#\($0)" } ?? short
+        }
+
+        /// "prosper#12 — title" for the long-press menu, the title isolated (FSI…PDI) so
+        /// its direction can't spill into the label. A blank title leaves just the chip.
+        var menuLabel: String {
+            title.trimmingCharacters(in: .whitespaces).isEmpty ? chip : "\(chip) — \u{2068}\(title)\u{2069}"
         }
     }
 
@@ -22,6 +32,7 @@ struct SessionMeta: Hashable {
     var merged: Int?
 
     static let maxChips = 3
+    static let maxRepo = 18, phoneRepo = 12    // the Mac's cut, then the old iOS one
 
     /// nil when `json` is not an object or leaves nothing to draw. A field of the wrong
     /// type or a negative count is dropped on its own; it never costs the row.
@@ -81,18 +92,49 @@ struct SessionMeta: Hashable {
     static func count(_ n: Int) -> String { n > 99_999 ? "99999+" : "\(n)" }
 
     /// "22/26 done · 2 in progress · 2 queued", zero and unknown parts left out.
-    var taskLine: String? {
+    var taskLine: String? { summary(.all) }
+
+    /// The task line with only the parts `d` turns on; nil leaves no summary.
+    func summary(_ d: RowDetails) -> String? {
         var parts: [String] = []
-        if let total, total > 0 { parts.append("\(Self.count(done ?? 0))/\(Self.count(total)) done") }
-        if let n = inProgress, n > 0 { parts.append("\(Self.count(n)) in progress") }
-        if let n = queued, n > 0 { parts.append("\(Self.count(n)) queued") }
+        if d.tasksDone, let total, total > 0 { parts.append("\(Self.count(done ?? 0))/\(Self.count(total)) done") }
+        if d.inProgress, let n = inProgress, n > 0 { parts.append("\(Self.count(n)) in progress") }
+        if d.queued, let n = queued, n > 0 { parts.append("\(Self.count(n)) queued") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     var mergedLabel: String? { merged.flatMap { $0 > 0 ? "\(Self.count($0)) merged" : nil } }
 
-    /// The chip counts ViewThatFits tries, most first: 3, 2, 1, 0 for three or more PRs.
-    static func chipCounts(_ n: Int) -> [Int] { Array((0...min(n, maxChips)).reversed()) }
+    /// The chip for the PRs left over: "+2 pending PRs", "+1 pending PR".
+    static func moreLabel(_ n: Int) -> String { "+\(n) pending PR\(n == 1 ? "" : "s")" }
+
+    /// One way to draw the PR line: chips, the pending chip, the merged count.
+    struct PRLine: Hashable {
+        var chips: [String], more: String?, merged: String?
+    }
+
+    /// The PR lines ViewThatFits tries, the first that fits wins: 3, 2, 1 chips, each
+    /// with full labels then repos cut to 18, beside "+N pending PRs", then beside a
+    /// bare "+N", then repos cut to 12 (a chip shown beats the long wording); last no
+    /// chips. Empty draws no PR line.
+    func prLines(_ d: RowDetails) -> [PRLine] {
+        let merged = d.merged ? mergedLabel : nil
+        guard d.openPRs, !open.isEmpty else { return merged.map { [PRLine(chips: [], more: nil, merged: $0)] } ?? [] }
+        var lines: [PRLine] = []
+        for k in stride(from: min(open.count, Self.maxChips), through: 0, by: -1) {
+            let n = open.count - k
+            let long: String? = n == 0 ? nil : Self.moreLabel(n), short: String? = n == 0 ? nil : "+\(n)"
+            let tries: [(maxRepo: Int?, more: String?)] = k == 0 ? [(maxRepo: nil, more: long)]
+                : n == 0 ? [(maxRepo: nil, more: nil), (maxRepo: Self.maxRepo, more: nil), (maxRepo: Self.phoneRepo, more: nil)]
+                : [(maxRepo: nil, more: long), (maxRepo: Self.maxRepo, more: long), (maxRepo: nil, more: short),
+                   (maxRepo: Self.maxRepo, more: short), (maxRepo: Self.phoneRepo, more: short)]
+            for t in tries {
+                let line = PRLine(chips: open.prefix(k).map { $0.chip(maxRepo: t.maxRepo) }, more: t.more, merged: merged)
+                if !lines.contains(line) { lines.append(line) }
+            }
+        }
+        return lines
+    }
 
     /// "open pull requests a#1, b#2, c#3 and 2 more"; nil with no open PRs.
     var prAccessibility: String? {
@@ -103,63 +145,146 @@ struct SessionMeta: Hashable {
     }
 }
 
-/// The row's meta lines: PR chips, "+M" and "N merged", then the task counts.
-/// Chips drop from the right when the line is too narrow; nothing animates.
+/// Which details a session row draws besides its title, state and name, set in
+/// Settings › Session list and kept per device. Labels and defaults match the Mac's
+/// Agent Island.
+struct RowDetails: Equatable {
+    enum Key {
+        static let agents = "sessionRow.agents"
+        static let openPRs = "sessionRow.openPRs"
+        static let merged = "sessionRow.merged"
+        static let tasksDone = "sessionRow.tasksDone"
+        static let inProgress = "sessionRow.inProgress"
+        static let queued = "sessionRow.queued"
+    }
+
+    var agents = true, openPRs = true, merged = true
+    var tasksDone = false, inProgress = false, queued = false
+
+    static let all = RowDetails(agents: true, openPRs: true, merged: true, tasksDone: true, inProgress: true, queued: true)
+}
+
+extension DchSession {
+    /// What VoiceOver reads for the row: the title and state, then only the details shown.
+    func rowAccessibility(_ d: RowDetails) -> String {
+        let n = agents
+        let agents: String? = d.agents && n > 0 ? (n == 1 ? "1 agent" : "\(n) agents") : nil
+        let prs: String? = d.openPRs ? meta?.prAccessibility : nil
+        let merged: String? = d.merged ? meta?.mergedLabel : nil
+        return [title, SessionStateStyle(state)?.label, agents, title != name ? name : nil,
+                meta?.summary(d), prs, merged].compactMap { $0 }.joined(separator: ", ")
+    }
+}
+
+/// A session row as the Mac's Agent Island draws it: a state glyph, then line 1 the
+/// title and "+N agents", line 2 the state, the name under an alias and the task
+/// summary, line 3 the PR chips and "N merged". Nothing animates.
 /// The chips are inert, so a tap anywhere opens the session: a Link's 44 pt hit band
-/// covered the name and the task line. A long press lists the PRs to open.
-struct SessionMetaView: View {
-    let meta: SessionMeta
+/// covered the name and the task line. A long press on the PR line lists the PRs.
+struct SessionRow: View {
+    let session: DchSession
+    @AppStorage(RowDetails.Key.agents) private var agents = RowDetails().agents
+    @AppStorage(RowDetails.Key.openPRs) private var openPRs = RowDetails().openPRs
+    @AppStorage(RowDetails.Key.merged) private var merged = RowDetails().merged
+    @AppStorage(RowDetails.Key.tasksDone) private var tasksDone = RowDetails().tasksDone
+    @AppStorage(RowDetails.Key.inProgress) private var inProgress = RowDetails().inProgress
+    @AppStorage(RowDetails.Key.queued) private var queued = RowDetails().queued
+    @ScaledMetric(relativeTo: .subheadline) private var glyphWidth: CGFloat = 14
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if !meta.open.isEmpty || meta.mergedLabel != nil {
-                ViewThatFits(in: .horizontal) {
-                    ForEach(SessionMeta.chipCounts(meta.open.count), id: \.self) { prLine($0) }
+        let d = RowDetails(agents: agents, openPRs: openPRs, merged: merged,
+                           tasksDone: tasksDone, inProgress: inProgress, queued: queued)
+        let style = SessionStateStyle(session.state)
+        let alias: String? = session.title != session.name ? session.name : nil
+        let summary: String? = session.meta?.summary(d)
+        let lines: [SessionMeta.PRLine] = session.meta?.prLines(d) ?? []
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            // Unknown state from a newer server: an empty column, rather than a guess.
+            Text(verbatim: style?.glyph ?? " ")
+                .font(.subheadline.bold())
+                .foregroundStyle(style?.tint ?? Color.clear)
+                .frame(width: glyphWidth)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(session.title).fontWeight(.medium).lineLimit(1)
+                    if d.agents, let a = SessionStateStyle.agents(session.agents) { chip(a).fixedSize() }
                 }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel([meta.prAccessibility, meta.mergedLabel].compactMap { $0 }.joined(separator: ", "))
-                .accessibilityActions {
-                    ForEach(Array(meta.open.enumerated()), id: \.offset) { _, pr in
-                        if let url = pr.url { Button("Open \(pr.chip)") { openURL(url) } }
+                if style != nil || alias != nil || summary != nil {
+                    // A phone row rarely fits every part: the summary moves under the state
+                    // rather than truncate its numbers.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            stateAndName(style, alias)
+                            if let summary { Spacer(minLength: 6); summaryText(summary) }
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(alignment: .firstTextBaseline, spacing: 6) { stateAndName(style, alias) }
+                            if let summary { summaryText(summary) }
+                        }
                     }
+                    .font(.footnote)
+                    .lineLimit(1)
+                }
+                if !lines.isEmpty {
+                    ViewThatFits(in: .horizontal) {
+                        ForEach(lines, id: \.self) { prLine($0) }
+                    }
+                    .contextMenu { if d.openPRs, let meta = session.meta { menu(meta, d) } }
                 }
             }
-            if let line = meta.taskLine {
-                Text(verbatim: line).foregroundStyle(.secondary).lineLimit(1)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .font(.caption2)
-        .contextMenu {
-            if !meta.open.isEmpty {
-                ForEach(Array(meta.open.enumerated()), id: \.offset) { _, pr in
-                    // Title isolated (FSI…PDI) so its direction can't spill into the label.
-                    let label = Text(verbatim: pr.title.isEmpty ? pr.chip : "\(pr.chip) — \u{2068}\(pr.title)\u{2069}")
-                    if let url = pr.url { Link(destination: url) { label } } else { Button {} label: { label }.disabled(true) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(session.rowAccessibility(d))
+        .accessibilityActions {
+            if d.openPRs {
+                ForEach(Array((session.meta?.open ?? []).enumerated()), id: \.offset) { _, pr in
+                    if let url = pr.url { Button("Open \(pr.chip)") { openURL(url) } }
                 }
-                if let merged = meta.mergedLabel { Button {} label: { Text(verbatim: merged) }.disabled(true) }
             }
         }
     }
 
-    private func prLine(_ k: Int) -> some View {
-        let rest = meta.open.dropFirst(k)
-        return HStack(spacing: 4) {
-            ForEach(Array(meta.open.prefix(k).enumerated()), id: \.offset) { _, pr in
-                chip(pr.chip).foregroundStyle(pr.url == nil ? Color.secondary : Color.accentColor)
-            }
-            if !rest.isEmpty { chip("+\(rest.count)") }
-            if let merged = meta.mergedLabel {
-                Text(verbatim: merged).foregroundStyle(.secondary)
+    @ViewBuilder private func stateAndName(_ style: SessionStateStyle?, _ alias: String?) -> some View {
+        if let style { Text(style.label).foregroundStyle(style.tint) }
+        if let alias {
+            Text(verbatim: alias).font(.caption2.monospaced()).foregroundStyle(Color.primary.opacity(0.35))
+        }
+    }
+
+    private func summaryText(_ s: String) -> some View {
+        Text(verbatim: s).font(.caption.monospacedDigit()).foregroundStyle(Color.primary.opacity(0.5))
+    }
+
+    /// Lists the PRs to open; with Open PRs off the line has no chips and no menu.
+    @ViewBuilder private func menu(_ meta: SessionMeta, _ d: RowDetails) -> some View {
+        ForEach(Array(meta.open.enumerated()), id: \.offset) { _, pr in
+            let label = Text(verbatim: pr.menuLabel)
+            if let url = pr.url { Link(destination: url) { label } } else { Button {} label: { label }.disabled(true) }
+        }
+        if d.merged, let merged = meta.mergedLabel { Button {} label: { Text(verbatim: merged) }.disabled(true) }
+    }
+
+    private func prLine(_ line: SessionMeta.PRLine) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            ForEach(Array(line.chips.enumerated()), id: \.offset) { _, c in chip(c) }
+            if let more = line.more { chip(more) }
+            if let merged = line.merged {
+                Spacer(minLength: 8)
+                Text(verbatim: merged).font(.caption2.monospaced()).foregroundStyle(Color.primary.opacity(0.5))
             }
         }
         .lineLimit(1)
     }
 
+    /// The agents capsule; the PR chips share it.
     private func chip(_ s: String) -> some View {
         Text(verbatim: s)
+            .font(.caption2.monospaced().weight(.medium))
+            .foregroundStyle(Color.primary.opacity(0.5))
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(.tint.opacity(0.15), in: Capsule())
+            .background(Color.primary.opacity(0.1), in: Capsule())
     }
 }

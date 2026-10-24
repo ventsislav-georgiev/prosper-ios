@@ -89,7 +89,10 @@ final class SessionMetaTests: XCTestCase {
     func testChipsMoreAndMerged() {
         XCTAssertEqual(pr("o/prosper", 12).chip, "prosper#12")
         XCTAssertEqual(pr("o/prosper", nil).chip, "prosper")
-        XCTAssertEqual(pr("o/averyverylongrepo", 1).chip, "averyverylo…#1")
+        XCTAssertEqual(pr("o/averyverylongrepo", 1).chip, "averyverylongrepo#1", "full label unless cut")
+        XCTAssertEqual(pr("o/averyverylongrepo", 1).chip(maxRepo: SessionMeta.maxRepo), "averyverylongrepo#1", "17 fits")
+        XCTAssertEqual(pr("o/nineteencharsrepo12", 1).chip(maxRepo: SessionMeta.maxRepo), "nineteencharsrepo…#1", "19 cut to 18")
+        XCTAssertEqual(pr("o/averyverylongrepo", 1).chip(maxRepo: SessionMeta.phoneRepo), "averyverylo…#1", "cut to 12")
         XCTAssertEqual(SessionMeta(merged: 4).mergedLabel, "4 merged")
         XCTAssertNil(SessionMeta(merged: 0).mergedLabel)
     }
@@ -125,11 +128,124 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertNil(meta("{\"prs\":{\"open\":[{\"repo\":\"o/r\",\"num\":\(Int.max)}]}}")!.open.first!.num)
     }
 
-    /// ViewThatFits takes the first that fits, so the widest line comes first.
-    func testChipCountsDescend() {
-        XCTAssertEqual(SessionMeta.chipCounts(5), [3, 2, 1, 0])
-        XCTAssertEqual(SessionMeta.chipCounts(2), [2, 1, 0])
-        XCTAssertEqual(SessionMeta.chipCounts(0), [0])
+    // MARK: - Row details (#533)
+
+    private let full = SessionMeta(done: 41, total: 68, inProgress: 8, queued: 19,
+                                   open: [.init(url: nil, repo: "o/repo", num: 12, title: "")], merged: 75)
+
+    private func with(_ change: (inout RowDetails) -> Void) -> RowDetails {
+        var d = RowDetails(); change(&d); return d
+    }
+
+    /// Agents, Open PRs and Merged on; Tasks done, In progress and Queued off, so a
+    /// default row has no task summary.
+    func testRowDetailsDefaults() {
+        XCTAssertEqual(RowDetails(), RowDetails(agents: true, openPRs: true, merged: true,
+                                                tasksDone: false, inProgress: false, queued: false))
+        XCTAssertNil(full.summary(RowDetails()))
+    }
+
+    func testSummaryFollowsToggles() {
+        XCTAssertEqual(full.summary(.all), "41/68 done · 8 in progress · 19 queued")
+        XCTAssertEqual(full.summary(with { $0.tasksDone = true }), "41/68 done")
+        XCTAssertEqual(full.summary(with { $0.inProgress = true }), "8 in progress")
+        XCTAssertEqual(full.summary(with { $0.queued = true }), "19 queued")
+        XCTAssertEqual(full.summary(with { $0.tasksDone = true; $0.queued = true }), "41/68 done · 19 queued")
+        XCTAssertNil(SessionMeta(done: 1, total: 2, queued: 0).summary(with { $0.queued = true }), "a zero part is dropped")
+        XCTAssertNil(SessionMeta(inProgress: 3).summary(with { $0.tasksDone = true }), "an unknown part is dropped")
+        XCTAssertEqual(SessionMeta(inProgress: 100_000).summary(.all), "99999+ in progress")
+    }
+
+    func testPendingWording() {
+        XCTAssertEqual(SessionMeta.moreLabel(1), "+1 pending PR")
+        XCTAssertEqual(SessionMeta.moreLabel(5), "+5 pending PRs")
+    }
+
+    /// Up to 3 chips, widest first: each count with full labels, repos cut to 18, beside
+    /// "+N pending PRs", then a bare "+N", then repos cut to 12, before fewer chips;
+    /// none last.
+    func testPRLinesWidestFirst() {
+        let long = "o/" + String(repeating: "r", count: 20)
+        let m = SessionMeta(open: [pr("o/a", 1), pr(long, 2), pr("o/c", 3), pr("o/d", 4), pr("o/e", 5)], merged: 7)
+        let full = String(repeating: "r", count: 20) + "#2", cut = String(repeating: "r", count: 17) + "…#2"
+        let phone = String(repeating: "r", count: 11) + "…#2"
+        XCTAssertEqual(m.prLines(RowDetails()), [
+            .init(chips: ["a#1", full, "c#3"], more: "+2 pending PRs", merged: "7 merged"),
+            .init(chips: ["a#1", cut, "c#3"], more: "+2 pending PRs", merged: "7 merged"),
+            .init(chips: ["a#1", full, "c#3"], more: "+2", merged: "7 merged"),
+            .init(chips: ["a#1", cut, "c#3"], more: "+2", merged: "7 merged"),
+            .init(chips: ["a#1", phone, "c#3"], more: "+2", merged: "7 merged"),
+            .init(chips: ["a#1", full], more: "+3 pending PRs", merged: "7 merged"),
+            .init(chips: ["a#1", cut], more: "+3 pending PRs", merged: "7 merged"),
+            .init(chips: ["a#1", full], more: "+3", merged: "7 merged"),
+            .init(chips: ["a#1", cut], more: "+3", merged: "7 merged"),
+            .init(chips: ["a#1", phone], more: "+3", merged: "7 merged"),
+            .init(chips: ["a#1"], more: "+4 pending PRs", merged: "7 merged"),
+            .init(chips: ["a#1"], more: "+4", merged: "7 merged"),
+            .init(chips: [], more: "+5 pending PRs", merged: "7 merged"),
+        ])
+        XCTAssertEqual(SessionMeta(open: [pr("o/a", 1)]).prLines(RowDetails()),
+                       [.init(chips: ["a#1"], more: nil, merged: nil), .init(chips: [], more: "+1 pending PR", merged: nil)])
+        // No pending chip (k == n): full, cut to 18, cut to 12.
+        XCTAssertEqual(SessionMeta(open: [pr(long, 2)]).prLines(RowDetails()).map(\.chips),
+                       [[full], [cut], [phone], []])
+    }
+
+    /// The screenshot row: a 16-character chip, 5 more and 75 merged. The short "+5"
+    /// keeps the chip before the line falls back to no chips.
+    func testShortPendingKeepsChip() throws {
+        let lines = SessionMeta(open: [pr("o/sample-code1", 370)] + (1...5).map { pr("o/r", $0) }, merged: 75).prLines(RowDetails())
+        let short = try XCTUnwrap(lines.firstIndex(of: .init(chips: ["sample-code1#370"], more: "+5", merged: "75 merged")))
+        let none = try XCTUnwrap(lines.firstIndex { $0.chips.isEmpty })
+        XCTAssertLessThan(short, none)
+        XCTAssertEqual(lines[none], .init(chips: [], more: "+6 pending PRs", merged: "75 merged"))
+    }
+
+    /// A 20-character chip: the 12-character cut beside "+5" comes before no chips.
+    func testPhoneCutKeepsChip() throws {
+        let lines = SessionMeta(open: [pr("o/sample-codebase1", 370)] + (1...5).map { pr("o/r", $0) }, merged: 75).prLines(RowDetails())
+        let phone = try XCTUnwrap(lines.firstIndex(of: .init(chips: ["sample-code…#370"], more: "+5", merged: "75 merged")))
+        XCTAssertLessThan(phone, try XCTUnwrap(lines.firstIndex { $0.chips.isEmpty }))
+        XCTAssertEqual(lines[phone - 1], .init(chips: ["sample-codebase1#370"], more: "+5", merged: "75 merged"),
+                       "the 18 cut leaves a 16-character repo whole, so it was deduped")
+    }
+
+    func testPRLineToggles() {
+        XCTAssertEqual(full.prLines(with { $0.openPRs = false }), [.init(chips: [], more: nil, merged: "75 merged")])
+        XCTAssertEqual(full.prLines(with { $0.merged = false }).first, .init(chips: ["repo#12"], more: nil, merged: nil))
+        XCTAssertEqual(full.prLines(with { $0.openPRs = false; $0.merged = false }), [], "no line 3")
+        XCTAssertEqual(SessionMeta(merged: 4).prLines(with { $0.merged = false }), [])
+        XCTAssertEqual(SessionMeta(done: 1, total: 2).prLines(RowDetails()), [], "no PRs, no line 3")
+    }
+
+    /// #531: a blank title leaves no dangling dash.
+    func testMenuLabel() {
+        let p = { (t: String) in SessionMeta.PR(url: nil, repo: "o/tab", num: 2, title: t) }
+        XCTAssertEqual(p("").menuLabel, "tab#2")
+        XCTAssertEqual(p("   ").menuLabel, "tab#2")
+        XCTAssertEqual(p(SessionMeta.plain("\u{202E}\n")).menuLabel, "tab#2", "blank after plain()")
+        XCTAssertEqual(p("Fix it").menuLabel, "tab#2 — \u{2068}Fix it\u{2069}")
+    }
+
+    func testStateWords() {
+        XCTAssertEqual(SessionStateStyle.allCases.map(\.label), ["Working", "Needs input", "Idle", "Done"])
+        XCTAssertEqual(SessionStateStyle.allCases.map(\.glyph), ["\u{2733}\u{FE0E}", "!", "\u{25CF}", "\u{25CF}"])
+        XCTAssertEqual(SessionStateStyle.agents(1), "+1 agent")
+        XCTAssertEqual(SessionStateStyle.agents(4), "+4 agents")
+        XCTAssertNil(SessionStateStyle.agents(0))
+    }
+
+    /// VoiceOver reads the title and state, then only what is toggled on.
+    func testRowAccessibilityFollowsToggles() {
+        let s = DchSession(name: "sec-1", alias: "Docs", state: "working", agents: 4, meta: full)
+        XCTAssertEqual(s.rowAccessibility(RowDetails()),
+                       "Docs, Working, 4 agents, sec-1, open pull requests repo#12, 75 merged")
+        XCTAssertEqual(s.rowAccessibility(.all),
+                       "Docs, Working, 4 agents, sec-1, 41/68 done · 8 in progress · 19 queued, open pull requests repo#12, 75 merged")
+        XCTAssertEqual(s.rowAccessibility(RowDetails(agents: false, openPRs: false, merged: false)), "Docs, Working, sec-1")
+        XCTAssertEqual(s.rowAccessibility(with { $0.agents = false; $0.queued = true }),
+                       "Docs, Working, sec-1, 19 queued, open pull requests repo#12, 75 merged")
+        XCTAssertEqual(DchSession(name: "a", alias: nil, agents: 1).rowAccessibility(RowDetails()), "a, 1 agent")
     }
 
     func testTransportListDecode() throws {
