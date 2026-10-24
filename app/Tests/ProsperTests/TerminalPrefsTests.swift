@@ -51,7 +51,7 @@ final class TerminalPrefsTests: XCTestCase {
 /// user typed is the last argument, byte for byte, and the script around it is fixed.
 final class AgentCommandTests: XCTestCase {
 
-    private let script = #"exec "${SHELL:-/bin/zsh}" -lic 'trap : INT; eval "$1"; exec "$0" -l' "${SHELL:-/bin/zsh}" "$1""#
+    private let script = #"exec "${SHELL:-/bin/zsh}" -lic 'cd; trap : INT; eval "$1"; exec "$0" -l' "${SHELL:-/bin/zsh}" "$1""#
 
     func testDefault() {
         XCTAssertEqual(AgentCommand.argv(AgentCommand.defaultCommand),
@@ -70,4 +70,40 @@ final class AgentCommandTests: XCTestCase {
         XCTAssertEqual(AgentCommand.argv(typed), ["/bin/sh", "-c", script, "sh", typed])
         XCTAssertEqual(AgentCommand.argv("  \(typed) ").last, typed, "only the edges are trimmed")
     }
+
+    /// The iOS keyboard's smart punctuation, which `.autocorrectionDisabled()` doesn't stop.
+    func testSmartPunctuationIsUndone() {
+        XCTAssertEqual(AgentCommand.argv("claude \u{2014}chrome \u{201C}a\u{201D} \u{201E}b\u{201C} \u{2018}c\u{2019}").last,
+                       #"claude --chrome "a" "b" 'c'"#)
+    }
+
+    /// The create client is closed only once the session drew: dch's master exists from
+    /// the first output on, and closing sooner leaves no session.
+    @MainActor
+    func testStartClosesOnlyAfterFirstOutput() async throws {
+        let transport = CreateSpy()
+        let started = Task { try await AgentCommand.start("my agent", name: "work", on: transport) }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(transport.stream.closed, "closed before the session showed output")
+        transport.stream.emit("\u{1b}[H\u{1b}[2J")
+        let name = try await started.value
+        XCTAssertTrue(transport.stream.closed)
+        XCTAssertEqual(name, "work")
+        XCTAssertEqual(transport.created?.name, "work")
+        XCTAssertEqual(transport.created?.command, AgentCommand.argv("my agent"))
+    }
+}
+
+/// Records the one create and hands back a stream the test drives.
+private final class CreateSpy: SessionTransport {
+    let stream = DeliveryStream()
+    var created: (name: String?, command: [String])?
+    func listSessions() async throws -> [DchSession] { [] }
+    func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream { stream }
+    func create(name: String?, command: [String], cols: Int, rows: Int) async throws -> TerminalStream {
+        created = (name, command)
+        return stream
+    }
+    func kill(name: String) async throws {}
+    func rename(name: String, alias: String?) async throws {}
 }

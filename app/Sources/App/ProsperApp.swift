@@ -372,6 +372,7 @@ struct SessionListView: View {
             TextField("Name (optional)", text: $newName)
             Button("Create") { startNew() }
             Button("Create agent session") { Task { await startAgent() } }
+                .disabled(existingName != nil)
             Button("Cancel", role: .cancel) {}
         } message: { Text("Opens a fresh dch session on \(title).") }
     }
@@ -443,26 +444,34 @@ struct SessionListView: View {
         return typed.isEmpty ? "ses-\(String(Int(Date().timeIntervalSince1970), radix: 36))" : typed
     }
 
+    /// The typed name when a session already has it: dch would attach to that one and
+    /// never run the agent command.
+    private var existingName: String? {
+        let typed = newName.trimmingCharacters(in: .whitespaces)
+        return sessions.contains { $0.name == typed } ? typed : nil
+    }
+
     /// Start a session running the Settings agent command (`AgentCommand`), then open it
-    /// by name like any other. Our create client is dropped only after the first output,
-    /// once dch's master surely exists; closing it detaches, the session keeps running.
-    /// The demo has no agent to start, so it opens its sample agent session instead.
+    /// by name like any other. The demo has no agent to start, so it opens its sample
+    /// agent session instead.
     private func startAgent() async {
         guard !(transport is DemoTransport) else {
             newName = ""
             open = DchSession(name: "claude", alias: "claude (sample)")
             return
         }
+        // The button is disabled for a taken name; this covers an alert that ignores that.
+        if let taken = existingName {
+            newName = ""
+            error = "A session named \(taken) already exists, so the agent command would not run."
+            return
+        }
         let name = takeNewName()
-        let command = AgentCommand.argv(UserDefaults.standard.string(forKey: AgentCommand.key) ?? "")
+        let setting = UserDefaults.standard.string(forKey: AgentCommand.key) ?? ""
         do {
-            let stream = try await withDeadline(seconds: 8) {
-                let stream = try await transport.create(name: name, command: command, cols: 80, rows: 24)
-                for await _ in stream.output { break }
-                return stream
-            }
-            stream.close()
-            open = DchSession(name: name, alias: nil)
+            open = DchSession(name: try await withDeadline(seconds: 8) {
+                try await AgentCommand.start(setting, name: name, on: transport)
+            }, alias: nil)
         } catch {
             guard !isCancellation(error) else { return }
             self.error = error.localizedDescription

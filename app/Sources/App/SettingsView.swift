@@ -6,17 +6,36 @@ enum AgentCommand {
     static let defaultCommand = "headroom wrap claude --chrome"
 
     /// The argv dch spawns for `setting`. dch execs it without a shell, on the GUI app's
-    /// PATH, and drops the session when it exits. So: the user's `$SHELL` as a login,
-    /// interactive shell (PATH and aliases from the rc files), the command `eval`ed from
-    /// `$1` (passed as an argument, never quoted into the script), then `exec` a login
-    /// shell so the session stays at a prompt. `trap : INT` keeps a Ctrl-C that kills
-    /// the agent from aborting that `exec`; a handler, unlike an ignore, resets in the agent.
+    /// PATH and in its cwd `/`, and drops the session when it exits. So: the user's
+    /// `$SHELL` as a login, interactive shell (PATH and aliases from the rc files), `cd`
+    /// home, the command `eval`ed from `$1` (passed as an argument, never quoted into the
+    /// script), then `exec` a login shell so the session stays at a prompt. A Ctrl-C that
+    /// kills the agent would abort that `exec`; `trap : INT` needs to be a handler, since
+    /// an ignore (`trap '' INT`) doesn't stop it.
     static func argv(_ setting: String) -> [String] {
-        let typed = setting.trimmingCharacters(in: .whitespacesAndNewlines)
+        let typed = plain(setting.trimmingCharacters(in: .whitespacesAndNewlines))
         let shell = "\"${SHELL:-/bin/zsh}\""
         return ["/bin/sh", "-c",
-                "exec \(shell) -lic 'trap : INT; eval \"$1\"; exec \"$0\" -l' \(shell) \"$1\"",
+                "exec \(shell) -lic 'cd; trap : INT; eval \"$1\"; exec \"$0\" -l' \(shell) \"$1\"",
                 "sh", typed.isEmpty ? defaultCommand : typed]
+    }
+
+    /// Undo smart punctuation: the iOS keyboard (and Catalyst's substitutions) type
+    /// `--` as `—` and quotes as curly ones, even with autocorrection off.
+    static func plain(_ s: String) -> String {
+        s.replacingOccurrences(of: "\u{2014}", with: "--")
+            .replacingOccurrences(of: "[\u{201C}\u{201D}\u{201E}]", with: "\"", options: .regularExpression)
+            .replacingOccurrences(of: "[\u{2018}\u{2019}]", with: "'", options: .regularExpression)
+    }
+
+    /// Create the agent session `name` and detach once it has drawn. dch's master exists
+    /// from the first output on (17-164 ms after spawn); a client closed sooner leaves no
+    /// session. Closing only detaches: the session keeps running for the attach that follows.
+    static func start(_ setting: String, name: String, on transport: SessionTransport) async throws -> String {
+        let stream = try await transport.create(name: name, command: argv(setting), cols: 80, rows: 24)
+        for await _ in stream.output { break }
+        stream.close()
+        return name
     }
 }
 
