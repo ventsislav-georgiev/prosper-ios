@@ -56,7 +56,15 @@ final class ProsperTransport: SessionTransport {
     func listSessions() async throws -> [DchSession] {
         let (type, payload) = try await oneShot(send: F.list, payload: Data())
         guard type == F.listResp else { throw TransportError.protocolError("expected list") }
-        let arr = (try? JSONSerialization.jsonObject(with: payload)) as? [[String: Any]] ?? []
+        return try Self.decodeList(payload)
+    }
+
+    /// The list reply's rows. A payload that isn't a JSON array throws, so the screen keeps
+    /// its rows and shows the error instead of reading it as "no sessions".
+    static func decodeList(_ payload: Data) throws -> [DchSession] {
+        guard let arr = (try? JSONSerialization.jsonObject(with: payload)) as? [[String: Any]] else {
+            throw TransportError.protocolError("unreadable session list")
+        }
         return arr.compactMap { o in
             (o["name"] as? String).map {
                 DchSession(name: $0, alias: o["alias"] as? String, state: o["state"] as? String,

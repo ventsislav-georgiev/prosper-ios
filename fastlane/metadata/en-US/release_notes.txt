@@ -3,9 +3,12 @@ What's new:
 • Insert: compose text on your phone and send it to the session in one go.
 • New session can start an agent session directly; set its command in Settings.
 • New compact terminal keyboard on iPhone, with key previews and common symbols one tap away.
+• Holding space in the Prosper keyboard now moves the caret up and down between lines too, not just sideways.
 • Shortcut bar is always visible, in two aligned rows, with a new default set of keys.
 • The session list can show how many helper tasks are running.
-• The session list shows each session's open pull requests and task progress; tap a pull request to open it.
+• The session list shows each session's open pull requests and task progress; press and hold a session's pull request line to open one.
+• Session rows follow the Mac's Agent Island layout; choose which details they show in Settings.
 • The session bell is replaced by live status: a Lock Screen and Dynamic Island card while agents work on your Mac, and a notification only when a session needs you, even with Prosper closed. Sign in on the Mac and the phone, then turn it on.
 • Typing is more reliable on weak connections: keystrokes are queued and delivered after a drop.
 • Smoother terminal scrolling.
+• A drag along the right edge of the terminal scrolls even while the scroll wheel is hidden.

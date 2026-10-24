@@ -58,13 +58,13 @@ final class LiveStatusTests: XCTestCase {
 
     func testLiveCardShowsCountsAndTopSessions() {
         let card = SessionsCard(status: busy, isStale: false)
-        XCTAssertEqual(card.headline, "1 needs you · 2 working · 3 idle")
+        XCTAssertEqual(card.headline, "1 needs input · 2 working · 3 idle")
         XCTAssertEqual(card.lead, .blocked)
         XCTAssertEqual(card.compactText, "1")
         let top = card.rows(limit: 3)
         XCTAssertEqual(top.sessions.map(\.name), ["s1", "s2", "s3"])
         XCTAssertEqual(top.more, 7, "3 pushed but not shown + 4 the Worker left out")
-        XCTAssertEqual(SessionsCard.detail(.init(name: "x", alias: nil, state: .working, agents: 2)), "working · 2 agents")
+        XCTAssertEqual(SessionsCard.detail(.init(name: "x", alias: nil, state: .working, agents: 2)), "Working · +2 agents")
     }
 
     /// Past the stale date: no session state at all, only "status unavailable".

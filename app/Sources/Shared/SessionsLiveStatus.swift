@@ -80,7 +80,7 @@ struct SessionsCard {
         let c = status.counts
         let parts = [(c.blocked, SessionStateStyle.blocked), (c.working, .working), (c.idle, .idle), (c.done, .done)]
             .filter { $0.0 > 0 }
-            .map { "\($0.0) \($0.1.label)" }
+            .map { "\($0.0) \($0.1.label.lowercased())" }
         return parts.isEmpty ? "no sessions" : parts.joined(separator: " · ")
     }
 

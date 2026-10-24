@@ -8,24 +8,34 @@ enum AgentCommand {
     /// The argv dch spawns for `setting`. dch execs it without a shell, on the GUI app's
     /// PATH and in its cwd `/`, and drops the session when it exits. So: the user's
     /// `$SHELL` as a login, interactive shell (PATH and aliases from the rc files), `cd`
-    /// home, the command `eval`ed from `$1` (passed as an argument, never quoted into the
-    /// script), then `exec` a login shell so the session stays at a prompt. A Ctrl-C that
+    /// home (`builtin`, past any `cd` function from the rc files, such as zoxide's), the
+    /// command `eval`ed from `$1` (passed as an argument, never quoted into the script),
+    /// then `exec` a login shell so the session stays at a prompt. A Ctrl-C that
     /// kills the agent would abort that `exec`; `trap : INT` needs to be a handler, since
     /// an ignore (`trap '' INT`) doesn't stop it.
     static func argv(_ setting: String) -> [String] {
         let typed = plain(setting.trimmingCharacters(in: .whitespacesAndNewlines))
         let shell = "\"${SHELL:-/bin/zsh}\""
         return ["/bin/sh", "-c",
-                "exec \(shell) -lic 'cd; trap : INT; eval \"$1\"; exec \"$0\" -l' \(shell) \"$1\"",
+                "exec \(shell) -lic 'builtin cd; trap : INT; eval \"$1\"; exec \"$0\" -l' \(shell) \"$1\"",
                 "sh", typed.isEmpty ? defaultCommand : typed]
     }
 
     /// Undo smart punctuation: the iOS keyboard (and Catalyst's substitutions) type
-    /// `--` as `—` and quotes as curly ones, even with autocorrection off.
+    /// `--` as `—`, `...` as `…` and quotes as curly ones, even with autocorrection off.
     static func plain(_ s: String) -> String {
         s.replacingOccurrences(of: "\u{2014}", with: "--")
+            .replacingOccurrences(of: "\u{2026}", with: "...")
             .replacingOccurrences(of: "[\u{201C}\u{201D}\u{201E}]", with: "\"", options: .regularExpression)
             .replacingOccurrences(of: "[\u{2018}\u{2019}]", with: "'", options: .regularExpression)
+    }
+
+    /// The session `name` would attach to, as listed: dch names ignore case, so `Demo`
+    /// attaches to a running `demo` and the agent command never runs. Nil when free or blank.
+    static func taken(_ name: String, in sessions: [String]) -> String? {
+        let typed = name.trimmingCharacters(in: .whitespaces)
+        guard !typed.isEmpty else { return nil }
+        return sessions.first { $0.caseInsensitiveCompare(typed) == .orderedSame }
     }
 
     /// Create the agent session `name` and detach once it has drawn. dch's master exists
@@ -43,7 +53,7 @@ enum AgentCommand {
 /// Account (Apple 5.1.1(v)). Reachable from Home. Signing in is only needed for
 /// Remote Wake and live status — everything else works signed-out. Below them, the live
 /// status switch (`LiveStatus`), the Prosper keyboard's switches (`KeyboardSettings`),
-/// and the agent command (`AgentCommand`).
+/// the agent command (`AgentCommand`) and the session rows' details (`RowDetails`).
 struct SettingsView: View {
     @ObservedObject var account: AccountStore
     @ObservedObject private var live = LiveStatus.shared
@@ -65,6 +75,13 @@ struct SettingsView: View {
     @AppStorage(KeyboardSettings.Key.periodShortcut, store: KeyboardSettings.store())
     private var periodShortcut = KeyboardSettings().periodShortcut
     @AppStorage(AgentCommand.key) private var agentCommand = ""
+    // Session list rows (`RowDetails`), on this device only.
+    @AppStorage(RowDetails.Key.agents) private var rowAgents = RowDetails().agents
+    @AppStorage(RowDetails.Key.openPRs) private var rowOpenPRs = RowDetails().openPRs
+    @AppStorage(RowDetails.Key.merged) private var rowMerged = RowDetails().merged
+    @AppStorage(RowDetails.Key.tasksDone) private var rowTasksDone = RowDetails().tasksDone
+    @AppStorage(RowDetails.Key.inProgress) private var rowInProgress = RowDetails().inProgress
+    @AppStorage(RowDetails.Key.queued) private var rowQueued = RowDetails().queued
 
     var body: some View {
         List {
@@ -121,6 +138,19 @@ struct SettingsView: View {
                 Text("Agent command")
             } footer: {
                 Text("Create agent session runs this in your login shell on the Mac, then leaves you at a shell when it exits. Empty uses the default.")
+            }
+
+            Section {
+                Toggle("Agents", isOn: $rowAgents)
+                Toggle("Open PRs", isOn: $rowOpenPRs)
+                Toggle("Merged", isOn: $rowMerged)
+                Toggle("Tasks done", isOn: $rowTasksDone)
+                Toggle("In progress", isOn: $rowInProgress)
+                Toggle("Queued", isOn: $rowQueued)
+            } header: {
+                Text("Session list")
+            } footer: {
+                Text("Row details each session shows. Its name and state always show.")
             }
 
             // Apple's Settings › General › Keyboard, in its order, for what Prosper's has.

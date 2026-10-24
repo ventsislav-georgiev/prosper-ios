@@ -9,12 +9,11 @@ import Foundation
 /// machine" reply.
 final class DemoTransport: SessionTransport {
     func listSessions() async throws -> [DchSession] {
-        [DchSession(name: "demo", alias: "Demo session"),
-         DchSession(name: "claude", alias: "claude (sample)", meta: SessionMeta(
+        [DchSession(name: "demo", alias: "Demo session", state: "idle"),
+         DchSession(name: "claude", alias: "claude (sample)", state: "working", agents: 2, meta: SessionMeta(
             done: 22, total: 26, inProgress: 2, queued: 2,
-            open: [12, 15, 18, 21].map { n in
-                SessionMeta.PR(url: URL(string: "https://github.com/example/app/pull/\(n)"),
-                               repo: "example/app", num: n, title: "Sample change #\(n)")
+            open: [12, 15, 18, 21].map { (n: Int) in      // no URL: the sample repo doesn't exist
+                SessionMeta.PR(url: nil, repo: "example/app", num: n, title: "Sample change #\(n)")
             }, merged: 4))]
     }
     func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream {

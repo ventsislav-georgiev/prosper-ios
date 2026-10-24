@@ -303,12 +303,13 @@ enum TerminalMath {
     /// The cells a double tap selects: the run of word cells around `col` in one row,
     /// one entry per cell, nil for the second half of a wide (CJK) char, which goes with
     /// its first half. Word cells are SwiftTerm's — letters, digits, `.`, `_`, `-` — plus
-    /// `/`, so a path or a URL's path comes whole. Anything else, whitespace and the
-    /// never-written cells past a line's end included, selects nothing.
+    /// `/` and `~`, so a path comes whole, `~/` included (without it `~/a` copies as the
+    /// absolute `/a`). Anything else, whitespace and the never-written cells past a line's
+    /// end included, selects nothing.
     static func wordRange(_ cells: [Character?], at col: Int) -> Range<Int>? {
         func word(_ i: Int) -> Bool {
             guard let c = cells[i] ?? (i > 0 ? cells[i - 1] : nil) else { return false }
-            return c.isLetter || c.isNumber || "._-/".contains(c)
+            return c.isLetter || c.isNumber || "._-/~".contains(c)
         }
         guard cells.indices.contains(col), word(col) else { return nil }
         var lo = col, hi = col + 1
@@ -343,33 +344,61 @@ enum TerminalMath {
     /// i's cells (nil for a wide char's second half) and whether it soft-wraps from row
     /// i − 1; nil past the buffer. A soft wrap always joins. A row break joins only when
     /// the upper row's ink reaches the last two columns, a hard wrap at the edge the way
-    /// Claude Code breaks a long URL; the next row's indent is dropped. SwiftTerm's own
+    /// Claude Code breaks a long URL, and the next row's first run, past its indent, looks
+    /// like a URL tail: it carries one of / ? = & # % or a "." before its end, or it is all
+    /// the row's ink. Claude Code word-wraps prose too, so a URL ending a line often lands
+    /// at the edge with "Next step" below it. The indent is dropped. SwiftTerm's own
     /// guess joins from cols − cols/5, gluing the prose under a URL onto it (#510).
     static func webLink(row: Int, col: Int, cols: Int,
                         line: (Int) -> (cells: [Character?], wrapped: Bool)?) -> String? {
+        webLinkSpan(row: row, col: col, cols: cols, line: line)?.url
+    }
+
+    /// `webLink` with the cells it covers, `end` exclusive — what a double tap selects.
+    static func webLinkSpan(row: Int, col: Int, cols: Int,
+                            line: (Int) -> (cells: [Character?], wrapped: Bool)?)
+        -> (url: String, start: (row: Int, col: Int), end: (row: Int, col: Int))? {
         func ink(_ c: Character?) -> Bool { c.map { $0 != " " && $0 != "\0" } ?? false }
         func joins(_ lower: Int) -> Bool {
             guard let lo = line(lower), let up = line(lower - 1) else { return false }
-            return lo.wrapped || (up.cells.lastIndex(where: ink) ?? -1) >= cols - 2
+            return lo.wrapped || ((up.cells.lastIndex(where: ink) ?? -1) >= cols - 2 && tail(lo.cells))
+        }
+        func tail(_ cells: [Character?]) -> Bool {
+            guard let a = cells.firstIndex(where: ink) else { return false }
+            let b = cells[a...].firstIndex(where: { $0 == " " || $0 == "\0" }) ?? cells.count
+            let run = cells[a..<b].compactMap { $0 }
+            let body = run.last.map { ".,".contains($0) } == true ? run.dropLast() : run[...]
+            // ponytail: a lone word ending a row still joins, a URL's last piece or not; and a
+            // URL's last piece without any of them, prose after it on its row, doesn't.
+            return body.contains(where: "/?=&#%.".contains)
+                || (body.count == run.count && !cells[b...].contains(where: ink))
         }
         var top = row, bottom = row
         while joins(top) { top -= 1 }
         while joins(bottom + 1) { bottom += 1 }
         var s = "", tap: Int?   // tap: the tapped cell's UTF-16 offset in s
+        var at: [(row: Int, col: Int)] = []   // the cell of each UTF-16 unit of s
         for r in top...bottom {
             guard let l = line(r) else { return nil }
             let lo = r > top && !l.wrapped ? l.cells.firstIndex(where: ink) ?? l.cells.count : 0
-            let hi = r < bottom && line(r + 1)?.wrapped == true ? l.cells.count
+            // A soft-wrapped row runs to its last cell but drops trailing never-written
+            // cells: a wide char that didn't fit leaves one there, and it is no space.
+            let hi = r < bottom && line(r + 1)?.wrapped == true
+                ? (l.cells.lastIndex(where: { $0 != "\0" }) ?? -1) + 1
                 : (l.cells.lastIndex(where: ink) ?? -1) + 1
             for c in lo..<max(lo, hi) {
                 if r == row && c == col { tap = s.utf16.count - (l.cells[c] == nil ? 1 : 0) }
-                if let ch = l.cells[c] { s.append(ch == "\0" ? " " : ch) }
+                guard let ch = l.cells[c].map({ $0 == "\0" ? " " : $0 }) else { continue }
+                s.append(ch)
+                at += repeatElement((row: r, col: c), count: ch.utf16.count)
             }
         }
-        guard let tap else { return nil }
-        return webURLPattern.matches(in: s, range: NSRange(location: 0, length: s.utf16.count))
-            .first { NSLocationInRange(tap, $0.range) }
-            .map { (s as NSString).substring(with: $0.range) }
+        guard let tap, let m = webURLPattern.matches(in: s, range: NSRange(location: 0, length: s.utf16.count))
+            .first(where: { NSLocationInRange(tap, $0.range) }) else { return nil }
+        let last = at[NSMaxRange(m.range) - 1]
+        // A wide last char ends after its second half, so the selection covers the glyph.
+        let wide = line(last.row).map { $0.cells.indices.contains(last.col + 1) && $0.cells[last.col + 1] == nil } == true
+        return ((s as NSString).substring(with: m.range), at[m.range.location], (last.row, last.col + (wide ? 2 : 1)))
     }
 
     /// SwiftTerm's URL characters, "(…)" only as a whole word, no trailing "." or ","

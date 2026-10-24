@@ -166,7 +166,8 @@ final class ImagePasteTests: XCTestCase {
     }
 
     /// The compact keyboard's space-bar trackpad: each step is a left or right arrow, in
-    /// the cursor-key mode the program set, never up or down; the word ends there.
+    /// the cursor-key mode the program set, never up or down (a line move sends nothing:
+    /// a shell's up and down are history); the word ends there.
     func testCompactKeyboardTrackpadSendsLeftAndRightArrows() async throws {
         let saved = TerminalKeyboard.hardwareKeyboardConnected
         TerminalKeyboard.hardwareKeyboardConnected = { false }
@@ -181,6 +182,10 @@ final class ImagePasteTests: XCTestCase {
         kb.caret(1)
         XCTAssertEqual(Array(spy.sent[before...]), [[0x1b, 0x5b, 0x44, 0x1b, 0x5b, 0x44], [0x1b, 0x5b, 0x43]])
         XCTAssertEqual(kb.word, "", "a caret move ends the word, as an arrow does")
+        before = spy.sent.count
+        kb.line(-2)
+        kb.line(3)
+        XCTAssertEqual(spy.sent.count, before, "no up or down arrows")
 
         spy.emit("\u{1b}[?1h")   // DECCKM: application cursor keys (vim, less)
         try await Task.sleep(nanoseconds: 50_000_000)
@@ -668,7 +673,7 @@ final class ImagePasteTests: XCTestCase {
         let (vc, _) = try await makeVC()
         let (_, tv) = try barAndTerminal(vc)
         let all = tv.gestureRecognizers ?? []
-        let holds = all.filter { $0 is UILongPressGestureRecognizer }
+        let holds = all.filter { $0 is UILongPressGestureRecognizer && $0 !== vc.handlePress }   // the handle grab is ours
         XCTAssertEqual(holds.count, 1, "SwiftTerm's own long-press must stay stripped")
         let hold = try XCTUnwrap(holds.first)
         let tap = try XCTUnwrap(all.first { $0 is UITapGestureRecognizer && $0.delegate === vc })

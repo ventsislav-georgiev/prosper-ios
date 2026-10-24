@@ -314,6 +314,7 @@ struct SessionListView: View {
     @State private var openTried = false
     @State private var sessions: [DchSession] = []
     @State private var error: String?
+    @State private var notice: String?             // agent refusal; unlike `error`, gates nothing
     @State private var loading = false             // connect/list round-trip in flight
     @State private var trying: String?             // address being dialed right now
     @State private var unreachable: String?        // host-unreachable → offer Wake
@@ -325,6 +326,7 @@ struct SessionListView: View {
     @State private var newName = ""
     @State private var sleeping = false            // sleep round-trip in flight
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     // Live store snapshot so the badge tracks cachedWake after handshake (the `machine`
     // prop is a stale value-type copy captured at navigation time).
@@ -372,8 +374,8 @@ struct SessionListView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .listRowBackground(Color.clear)
                 }
-            } else if let error {
-                Text(error).foregroundStyle(.secondary)
+            } else if let line = error ?? notice {
+                Text(line).foregroundStyle(.secondary)
             }
             ForEach(DchSession.ordered(sessions)) { s in row(s) }
         }
@@ -387,7 +389,7 @@ struct SessionListView: View {
                 }
                 .disabled(sleeping || unreachable != nil || error != nil || loading)   // can't sleep an unreachable Mac
             }
-            Button { newName = ""; creating = true } label: { Image(systemName: "plus") }
+            Button { newName = ""; notice = nil; creating = true } label: { Image(systemName: "plus") }
                 .disabled(sleeping || unreachable != nil || error != nil || loading)   // no new session on an unreachable Mac
             Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
                 .disabled(sleeping || loading)
@@ -431,22 +433,25 @@ struct SessionListView: View {
         } message: { Text("Opens a fresh dch session on \(title).") }
     }
 
+    /// At accessibility sizes the buttons go under the row, so the name and state keep
+    /// the width.
     @ViewBuilder private func row(_ s: DchSession) -> some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(s.title)
-                if let state = s.state, !state.isEmpty { SessionStateLabel(state: state, agents: s.agents) }
-                if let meta = s.meta { SessionMetaView(meta: meta) }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        let label = SessionRow(session: s)
             .contentShape(Rectangle())
             .onTapGesture { open = s }
+            .accessibilityAction { open = s }
+        let buttons = HStack(spacing: 16) {
             Button { renaming = s; renameText = s.alias ?? "" } label: {
                 Image(systemName: "pencil")
             }.buttonStyle(.borderless)
             Button(role: .destructive) { killing = s } label: {
                 Image(systemName: "xmark.circle")
             }.buttonStyle(.borderless).foregroundStyle(.red)
+        }
+        if typeSize.isAccessibilitySize {
+            VStack(alignment: .trailing, spacing: 8) { label; buttons }
+        } else {
+            HStack(spacing: 16) { label; buttons }
         }
     }
 
@@ -502,8 +507,7 @@ struct SessionListView: View {
     /// The typed name when a session already has it: dch would attach to that one and
     /// never run the agent command.
     private var existingName: String? {
-        let typed = newName.trimmingCharacters(in: .whitespaces)
-        return sessions.contains { $0.name == typed } ? typed : nil
+        AgentCommand.taken(newName, in: sessions.map(\.name))
     }
 
     /// Start a session running the Settings agent command (`AgentCommand`), then open it
@@ -518,7 +522,7 @@ struct SessionListView: View {
         // The button is disabled for a taken name; this covers an alert that ignores that.
         if let taken = existingName {
             newName = ""
-            error = "A session named \(taken) already exists, so the agent command would not run."
+            notice = "A session named \(taken) already exists, so the agent command would not run."
             return
         }
         let name = takeNewName()
@@ -561,6 +565,7 @@ struct SessionListView: View {
         do {
             sessions = try await listWalkingAddresses()
             error = nil
+            notice = nil
             unreachable = nil
             // Only a listed session: attaching to a name that's gone would create it anew.
             if !openTried, let name = openSession {
@@ -660,25 +665,6 @@ struct WakeBadge: View {
             .background(.orange.opacity(0.18), in: Capsule())
             .foregroundStyle(.orange)
             .accessibilityLabel(secs.map { "Remote wake ready, checks every \($0 / 60) minutes" } ?? "Remote wake ready")
-        }
-    }
-}
-
-/// What the agent in a session is doing, as dch reports it (`--ls-json`): it reads
-/// the session's rendered screen, so "blocked" really means a prompt is waiting for
-/// a human — the reason to open that session before the others.
-struct SessionStateLabel: View {
-    let state: String
-    var agents = 0
-
-    var body: some View {
-        // Unknown state from a newer server → say nothing rather than guess.
-        if let style = SessionStateStyle(state) {
-            let text = [style.label, SessionStateStyle.agents(agents)].compactMap { $0 }.joined(separator: " · ")
-            Label(text, systemImage: style.symbol)
-                .font(.caption2)
-                .foregroundStyle(style.tint)
-                .accessibilityLabel("Session is \(text)")
         }
     }
 }
