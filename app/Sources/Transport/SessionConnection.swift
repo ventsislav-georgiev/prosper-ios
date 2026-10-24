@@ -189,8 +189,8 @@ final class SessionConnection: ObservableObject {
 
     /// Nothing will take queued input on this run: closed by the user, ended, or `.failed`.
     /// The outbox is cleared on reaching any of these. `.failed` is not final — the user
-    /// can `retry()` it — input typed while failed is dropped today; OQ-13 decides whether
-    /// to hold it.
+    /// can `retry()` it — but per OQ-13 (a) input is not held for after a retry: the terminal
+    /// is dimmed and refuses the keyboard while failed, and this drop is the backstop.
     private var isOver: Bool {
         if userClosed { return true }
         switch state {

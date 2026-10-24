@@ -183,6 +183,28 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(t.streams.count, 2, "retry after close must stay closed")
     }
 
+    /// OQ-13 (a): while `.failed` the terminal is dimmed and refuses the keyboard; the
+    /// retry that brings it back re-enables it.
+    func testFailedTerminalRefusesKeyboardUntilRetry() async throws {
+        let t = DeliveryTransport()
+        let conn = SessionConnection(transport: t, session: DchSession(name: "t", alias: nil),
+                                     backoff: BackoffPolicy(maxAttempts: 0))
+        let vc = TerminalHostVC(conn: conn, handle: TermHandle())
+        vc.loadViewIfNeeded()
+        let s1 = try await startLive(conn, t)
+        XCTAssertTrue(vc.keyboardInputEnabled)
+
+        s1.drop()
+        try await waitUntil("failed") { if case .failed = conn.state { true } else { false } }
+        XCTAssertFalse(vc.keyboardInputEnabled, "a failed session must refuse the keyboard")
+        XCTAssertLessThan(vc.view.subviews.first?.alpha ?? 1, 1, "a failed terminal is dimmed")
+
+        conn.retry()
+        XCTAssertTrue(vc.keyboardInputEnabled, "retry re-enables input")
+        XCTAssertEqual(vc.view.subviews.first?.alpha, 1)
+        conn.close()
+    }
+
     func testRetryAfterCloseWhileFailedStaysFailed() async throws {
         let t = DeliveryTransport()
         let conn = SessionConnection(transport: t, session: DchSession(name: "t", alias: nil),

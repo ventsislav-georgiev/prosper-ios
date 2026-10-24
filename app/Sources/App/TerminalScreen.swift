@@ -1,3 +1,4 @@
+import Combine
 import GameController
 import os
 import SwiftUI
@@ -49,6 +50,7 @@ struct TerminalScreen: View {
                 Button { handle.vc?.toggleKeyboard() } label: {
                     Image(systemName: handle.keyboardShown ? "keyboard.chevron.compact.down" : "keyboard")
                 }
+                .disabled(!TerminalHostVC.acceptsInput(conn.state))
             }
         }
         .sheet(isPresented: $editingShortcuts, onDismiss: { handle.vc?.reloadShortcuts() }) {
@@ -145,6 +147,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var shortcutBar: ShortcutBar?
     private var longPress: UILongPressGestureRecognizer?
     private weak var toast: UIView?
+    private var stateSub: AnyCancellable?
 
     /// macOS Terminal.app's vibrant 16-color ANSI palette (SwiftTerm's default is
     /// muted). 8-bit values widened to 16-bit (×257 maps 255→65535).
@@ -259,7 +262,31 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             MainActor.assumeIsolated { self?.conn.resize(cols: cols, rows: rows) }
         }
         tv.onPaste = { [weak self] s in self?.sendText(s) }
+        stateSub = conn.$state.sink { [weak self] in self?.applyInputState($0) }
     }
+
+    /// OQ-13 (a): a `.failed` session takes no input until retried — the keyboard is
+    /// not silently eating keys. `send` dropping while failed stays as the backstop.
+    static func acceptsInput(_ state: ConnectionState) -> Bool {
+        if case .failed = state { return false }
+        return true
+    }
+
+    /// Dim the terminal and its bar and drop the keyboard while input is refused;
+    /// retry restores them (the keyboard stays down until the user raises it).
+    func applyInputState(_ state: ConnectionState) {
+        let on = Self.acceptsInput(state)
+        tv.inputLocked = !on
+        if !on, tv.isFirstResponder { _ = tv.resignFirstResponder() }
+        tv.alpha = on ? 1 : 0.4
+        shortcutBar?.alpha = on ? 1 : 0.4
+        shortcutBar?.isUserInteractionEnabled = on
+        if on { tv.accessibilityTraits.remove(.notEnabled) }
+        else { tv.accessibilityTraits.insert(.notEnabled) }
+    }
+
+    /// Whether the terminal would take the keyboard now.
+    var keyboardInputEnabled: Bool { tv.canBecomeFirstResponder }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -1144,7 +1171,12 @@ private final class DchTerminalView: TerminalView {
         if isFirstResponder { reloadInputViews() }
     }
 
+    /// Set while the session is `.failed`: taps and the toolbar toggle can't raise the keyboard.
+    var inputLocked = false
+    override var canBecomeFirstResponder: Bool { !inputLocked && super.canBecomeFirstResponder }
+
     override func becomeFirstResponder() -> Bool {
+        guard !inputLocked else { return false }
         refreshInputView()
         (inputView as? TerminalKeyboard)?.settings = .current()   // the app's Keyboard settings
         return super.becomeFirstResponder()
