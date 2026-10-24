@@ -270,11 +270,13 @@ struct KeyTouchTracker {
 /// host round-trips. The host isn't named, and UIKit's keyboard daemon can crash when the
 /// caret lands inside a surrogate pair, so no move is ever sized to land inside one:
 /// - One move is in flight at a time: steps queue until the context changes from the one
-///   the move left, and the next move is sized from the context then.
+///   the move left to one its landing explains, and the next move is sized from the
+///   context then. Until the next move any other context is an older answer from a host
+///   that's behind (`believed`), and the steps wait for the latest.
 /// - A Character goes at its UTF-16 length unless the host is known to count Characters
 ///   (`utf16` false): UIKit lands exactly, WebKit goes further, by whole Characters.
 /// - Until the host is known, a move is no longer in units than the Characters in sight,
-///   and the context after it tells which happened (`countedUnits`): WebKit's overshoot
+///   and the context after it tells which happened (`landings`): WebKit's overshoot
 ///   goes back, and the host is known from then on.
 /// - Right after a move UIKit's proxy shows its own guess, the move taken as Characters,
 ///   until the host answers with its units. A context after a move that isn't plain is
@@ -300,6 +302,8 @@ struct CaretWalk {
     /// The field showed no context even after a move (`timedOut`): nothing to size by or
     /// see a split in, so steps go as asked until it shows some.
     var blank = false
+    /// The context the last move was taken to land in, until a touch or the poll limit.
+    private var believed: (String, String)?
     /// Where the walk reckons the caret is while the proxy still shows `seen`.
     private var reckoned: (seen: (String, String), before: String, after: String)?
     var idle: Bool { sent == nil && queued == 0 }
@@ -322,21 +326,27 @@ struct CaretWalk {
                 queued += s.dir * (s.units > (s.dir < 0 ? s.before : s.after).count ? s.chars : s.chars - s.units)
             } else if Self.splits(before: b, after: a) {
                 utf16 = true
-                return send(s.dir, (b, a), b, a, dir: s.dir, chars: 1)
+                return send(s.dir, (b, a), b, a, dir: s.dir, chars: 1, blind: true)
             } else if !s.plain, !settled {
                 return 0   // UIKit's guess, maybe: a line break crossed in Characters
-            } else if utf16 != false, s.units != s.chars, let back = Self.countedUnits(
-                before: s.before, after: s.after, dir: s.dir, chars: s.chars, units: s.units,
-                nowBefore: b, nowAfter: a) {
-                if back > 0 {
+            } else if !s.blind {
+                let fit = Self.landings(before: s.before, after: s.after, dir: s.dir, chars: s.chars, units: s.units,
+                                        nowBefore: b, nowAfter: a)
+                if fit.units == 0, fit.chars == 0 {
+                    guard s.late else { return 0 }   // an older answer: the host is behind
+                } else if fit.chars > fit.units, fit.back > 0 {
                     guard utf16 == nil, s.late else { return 0 }   // UIKit's guess, maybe
                     utf16 = false
-                    return send(-s.dir * back, (b, a), b, a, dir: -s.dir, chars: back)
+                    return send(-s.dir * fit.back, (b, a), b, a, dir: -s.dir, chars: fit.back)
+                } else if fit.units > fit.chars {
+                    utf16 = true
                 }
-                utf16 = true
             }
             sent = nil
+            believed = (b, a)
         }
+        // Nothing sent since the walk believed a landing: any other context is an older answer.
+        if sent == nil, let w = believed, !Self.same(w, b, a), queued != 0 { return 0 }
         guard queued != 0 else { return 0 }
         let (before, after) = reckoned.map { ($0.before, $0.after) } ?? (b, a)
         let d = queued.signum(), ahead = d < 0 ? Array(before.reversed()) : Array(after)
@@ -353,7 +363,8 @@ struct CaretWalk {
         return send(d * units, (b, a), before, after, dir: d, chars: n, plain: plain)
     }
 
-    /// The view stopped waiting for the move in flight to show, its context still `seen`:
+    /// The view stopped waiting for the move in flight to show, its context still `seen`,
+    /// or with none in flight, for the context `believed` to come back (forgotten now):
     /// - A blind move from no context at all: the field shows none (`blank`).
     /// - Any other blind move (past the document's end): forgotten, with the steps behind.
     ///   ponytail: a host only stalled at a line's end looks the same, and a step stacked
@@ -363,11 +374,14 @@ struct CaretWalk {
     ///   `seen` reaches (a long run of one character): taken as landed there.
     /// - Any other keeps waiting, now `late`: a next move sized from a context that hasn't
     ///   shown this one could land inside a Character once the host applies both. A WebKit
-    ///   landing it shows is believed now, and so is one that shows nothing (`step`).
-    ///   ponytail: a UIKit host whose proxy still guesses, or shows nothing, after 0.3 s
-    ///   is taken for WebKit there; wait on the host's own signal if a device shows one.
+    ///   landing it shows is believed now, and so are one that shows nothing and one its
+    ///   landing doesn't explain (`step`). ponytail: 0.3 s from the move, while the host
+    ///   still answers moves sent before it, so a UIKit host 0.3 s behind (one taking
+    ///   150 ms a move, two moves deep in a drag) is taken for WebKit if the walk doesn't
+    ///   know it yet, and its older answers for the latest; wait on the host's own signal
+    ///   if a device shows one.
     mutating func timedOut() {
-        guard let s = sent else { return }
+        guard let s = sent else { believed = nil; return }
         if s.blind {
             if s.seen.0.isEmpty, s.seen.1.isEmpty { blank = true; sent = nil } else { drop() }
             return
@@ -382,8 +396,9 @@ struct CaretWalk {
         sent = nil
     }
 
-    /// Forget the move in flight and the steps behind it.
-    mutating func drop() { sent = nil; reckoned = nil; queued = 0 }
+    /// Forget the move in flight, the steps behind it and what the field showed: a touch
+    /// starts afresh, looking for context again.
+    mutating func drop() { sent = nil; reckoned = nil; believed = nil; queued = 0; blank = false }
 
     private mutating func send(_ units: Int, _ seen: (String, String), _ before: String, _ after: String,
                                dir: Int, chars: Int, plain: Bool = false, blind: Bool = false) -> Int {
@@ -395,14 +410,14 @@ struct CaretWalk {
         seen.0.utf16.elementsEqual(before.utf16) && seen.1.utf16.elementsEqual(after.utf16)
     }
 
-    /// How a host counted a move of `units` (sign `dir`) over `chars` Characters from
-    /// between `before` and `after`, by the context it shows now: 0 in UTF-16 units, n > 0
-    /// in Characters, n of them too far; nil when it can't tell. The two landings are
-    /// checked in the text the walk saw, Characters clamped to its end: each fits if both
-    /// sides agree as far as both reach (WebKit's windows slide, UIKit's stop at the
-    /// line), better if both reach exactly as far, and the better fit wins.
-    static func countedUnits(before: String, after: String, dir: Int, chars: Int, units: Int,
-                             nowBefore: String, nowAfter: String) -> Int? {
+    /// How well the context a host shows now fits a move of `units` (sign `dir`) over
+    /// `chars` Characters from between `before` and `after` landing in UTF-16 units, and in
+    /// Characters, n of them too far (`back`). Each landing is checked in the text the walk
+    /// saw, Characters clamped to its end: 0 if it doesn't fit, 1 if both sides agree as far
+    /// as both reach (WebKit's windows slide, UIKit's stop at the line), 2 if both reach
+    /// exactly as far. Where both landings are one, they fit alike.
+    static func landings(before: String, after: String, dir: Int, chars: Int, units: Int,
+                         nowBefore: String, nowAfter: String) -> (units: Int, chars: Int, back: Int) {
         let head = uncut(Array(before.utf16), start: true), text = head + uncut(Array(after.utf16), start: false)
         let at = head.count, widths = (dir < 0 ? Array(before.reversed()) : Array(after)).map(\.utf16.count)
         let crossed = min(units, widths.count)
@@ -413,8 +428,7 @@ struct CaretWalk {
             guard agree(tb, ta, b, a) else { return 0 }
             return tb.count == b.count && ta.count == a.count ? 2 : 1
         }
-        let u = fit(at + dir * units), c = fit(at + dir * widths.prefix(crossed).reduce(0, +))
-        return u == c ? nil : u > c ? 0 : crossed - chars
+        return (fit(at + dir * units), fit(at + dir * widths.prefix(crossed).reduce(0, +)), crossed - chars)
     }
 
     /// Two contexts around one caret read the same as far as both reach.
@@ -810,8 +824,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         } else if let doc = target as? UITextDocumentProxy {
             if doc.documentIdentifier != walkField {
                 walkField = doc.documentIdentifier
-                walk.utf16 = nil
-                walk.blank = false
+                walk = CaretWalk()
             }
             walkOn(offset)
         }
@@ -1019,8 +1032,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         switch phase {
         case .began:
             if tracker.isTrackpad { return }   // a second finger on the trackpad: ignored
-            if !walk.idle { walkOn(); walk.drop() }   // a last look for a split before typing
-            walk.blank = false   // each hold looks for context again
+            if !walk.idle { walkOn() }   // a last look for a split before typing
+            walk.drop()
             knownCache = [:]; screenCache = nil
             feedback()
             let bottomRow = caps.last?.map(\.frame.maxY).max() ?? .infinity

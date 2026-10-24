@@ -950,13 +950,90 @@ final class KeyboardExtensionTests: XCTestCase {
         }
     }
 
-    /// A context neither landing explains (the text changed under the move) teaches the
-    /// walk nothing about the host.
-    func testAContextNeitherLandingExplainsTeachesNothing() {
+    /// A context neither landing explains (an older answer, or the text changed under the
+    /// move) is waited out to the poll limit; one both explain alike is a landing, and
+    /// neither teaches the walk anything about the host.
+    func testAContextNeitherLandingExplainsIsWaitedOut() {
         var walk = CaretWalk()
         XCTAssertEqual(walk.step(1, before: "", after: "😀ab"), 2)
         XCTAssertEqual(walk.step(0, before: "q", after: "r"), 0)
-        XCTAssertNil(walk.utf16)
+        XCTAssertFalse(walk.idle)
+        walk.timedOut()
+        XCTAssertEqual(walk.step(0, before: "q", after: "r"), 0)
         XCTAssertTrue(walk.idle)
+        XCTAssertNil(walk.utf16)
+        var tie = CaretWalk()
+        XCTAssertEqual(tie.step(1, before: "", after: "😀😀😀"), 2)
+        XCTAssertEqual(tie.step(0, before: "😀", after: "😀"), 0)
+        XCTAssertTrue(tie.idle)
+        XCTAssertNil(tie.utf16)
+    }
+
+    /// A UITextView answering each move well after its proxy's guess, three steps left over
+    /// "b", "a" and a skin-tone thumb: the guesses for the two letters are believed, then
+    /// the answer to the first shows the caret back after "b". Nothing has been sent since,
+    /// so that's an older answer: the third step waits for the latest instead of being
+    /// sized from it, and the thumb is crossed whole.
+    func testAnOlderAnswerIsNeverTakenForTheLatestMove() {
+        let text = String(repeating: "ab😀👍🏽", count: 6)
+        let doc = host(kit: true, String(text.prefix(22)), String(text.dropFirst(22)))
+        doc.lags = true
+        var walk = CaretWalk()
+        walk.utf16 = true
+        func step(_ n: Int) {
+            let units = walk.step(n, before: doc.documentContextBeforeInput ?? "", after: doc.documentContextAfterInput ?? "")
+            if units != 0 { doc.adjustTextPosition(byCharacterOffset: units) }
+        }
+        step(-1)
+        step(0)
+        step(-1)
+        step(0)
+        doc.answer()
+        doc.showNext()
+        step(-1)
+        XCTAssertEqual(doc.moves, [-1, -1], "the older answer sizes nothing")
+        doc.catchUp()
+        step(0)
+        XCTAssertEqual(doc.stops, [41, 40, 36])
+    }
+
+    /// A context that changes with nothing sent (the host edited its text) holds the steps
+    /// only to the poll limit, and a touch starts afresh: typing between two holds never
+    /// holds the next.
+    func testOnlyTheMovesHoldBackTheNextOlderAnswer() throws {
+        var walk = CaretWalk()
+        XCTAssertEqual(walk.step(1, before: "", after: "ab"), 1)
+        XCTAssertEqual(walk.step(0, before: "a", after: "b"), 0)
+        XCTAssertEqual(walk.step(1, before: "xa", after: "b"), 0)
+        walk.timedOut()
+        XCTAssertEqual(walk.step(0, before: "xa", after: "b"), 1)
+        XCTAssertEqual(walk.step(0, before: "xab", after: ""), 0)
+        walk.drop()
+        XCTAssertEqual(walk.step(-1, before: "yab", after: ""), -1)
+        let kb = TerminalKeyboard(), doc = host(kit: true, "ab", "cd")
+        kb.target = doc
+        try drag(kb, doc, [1])
+        try tap(kb, "z")
+        try drag(kb, doc, [1], settle: false)
+        XCTAssertEqual(doc.moves, [1, 1])
+    }
+
+    /// A field known to count units whose host is busy past the poll limit: its proxy's
+    /// guess, the move taken in Characters, is still never taken for WebKit's overshoot.
+    func testAKnownUnitsHostOutwaitsItsGuessPastThePollLimit() {
+        let doc = host(kit: true, String(repeating: "ab😀👍🏽", count: 6))
+        var walk = CaretWalk()
+        walk.utf16 = true
+        func step(_ n: Int) {
+            let units = walk.step(n, before: doc.documentContextBeforeInput ?? "", after: doc.documentContextAfterInput ?? "")
+            if units != 0 { doc.adjustTextPosition(byCharacterOffset: units) }
+        }
+        step(-1)
+        for p in 1...20 { if p > 15 { walk.timedOut() }; step(0) }
+        doc.answer()
+        step(0)
+        XCTAssertEqual(walk.utf16, true)
+        XCTAssertEqual(doc.moves, [-4])
+        XCTAssertEqual(doc.text.utf16.count, 44)
     }
 }
