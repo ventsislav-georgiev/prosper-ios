@@ -11,7 +11,7 @@ final class KeyboardExtensionTests: XCTestCase {
     /// A host text field as the extension sees it: the text before the cursor, and the
     /// field's traits. SuggestionsTests uses it too.
     final class FakeProxy: NSObject, UITextDocumentProxy {
-        var text = ""
+        var text = "" { didSet { units = nil } }
         var calls: [String] = []
         var autocapitalizationType: UITextAutocapitalizationType = .sentences
         var keyboardType: UIKeyboardType = .default
@@ -19,22 +19,51 @@ final class KeyboardExtensionTests: XCTestCase {
         var spellCheckingType: UITextSpellCheckingType = .default
         var textContentType: UITextContentType! = nil
         var isSecureTextEntry = false
-        var documentContextBeforeInput: String? { text }
-        var after: String?
-        var documentContextAfterInput: String? { after }
+        /// Both contexts are nil, as a password field's are.
+        var hidesContext = false
+        var documentContextBeforeInput: String? { hidesContext ? nil : shown?.before ?? text }
+        var after: String? { didSet { units = nil } }
+        var documentContextAfterInput: String? {
+            if hidesContext { return nil }
+            let a = shown == nil ? after : shown?.after
+            return stopsAtLineEnd ? a.map { String($0.utf16.prefix { $0 != 0x0A && $0 != 0x0D }) ?? "" } : a
+        }
+        /// The after-context stops at the caret line's end, as a host's does.
+        var stopsAtLineEnd = false
         var selectedText: String? { nil }
         var documentInputMode: UITextInputMode? { nil }
-        var documentIdentifier: UUID { UUID() }
+        let documentIdentifier = UUID()
         var hasText: Bool { !text.isEmpty }
         func insertText(_ s: String) { text += s; calls.append(s) }
         func deleteBackward() { _ = text.popLast(); calls.append("⌫") }
         /// Every caret move, as asked; the caret moves within `text` + `after`.
         var moves: [Int] = []
+        /// Where each move left the caret, in UTF-16 units from the start.
+        var stops: [Int] = []
+        /// Moves count UTF-16 units, as UIKit hosts do, not Characters, as WebKit does: they
+        /// can stop inside a Character, whose halves then show as U+FFFD.
+        var countsUTF16 = false
+        /// The context shows each move only after `catchUp()`, as a host's lags.
+        var lags = false
+        private var shown: (before: String, after: String?)?
+        /// The text and the caret in units, which a split context can't keep.
+        private var units: (all: [UInt16], at: Int)?
+        func catchUp() { shown = nil }
         func adjustTextPosition(byCharacterOffset offset: Int) {
             moves.append(offset)
-            let all = text + (after ?? ""), at = min(max(text.count + offset, 0), all.count)
-            text = String(all.prefix(at))
-            after = String(all.dropFirst(at))
+            if lags, shown == nil { shown = (text, after) }
+            if countsUTF16 {
+                let u = units ?? (Array((text + (after ?? "")).utf16), text.utf16.count)
+                let at = min(max(u.at + offset, 0), u.all.count)
+                text = String(decoding: u.all[..<at], as: UTF16.self)
+                after = String(decoding: u.all[at...], as: UTF16.self)
+                units = (u.all, at)
+            } else {
+                let all = text + (after ?? ""), at = min(max(text.count + offset, 0), all.count)
+                text = String(all.prefix(at))
+                after = String(all.dropFirst(at))
+            }
+            stops.append(text.utf16.count)
         }
         func setMarkedText(_ markedText: String, selectedRange: NSRange) {}
         func unmarkText() {}
@@ -448,5 +477,151 @@ final class KeyboardExtensionTests: XCTestCase {
             kb.press(.char("o")); kb.press(.space); kb.press(.space)
             XCTAssertEqual(doc.text, on ? "o. " : "o  ")
         }
+    }
+
+    // MARK: Trackpad in a host field
+
+    /// Emoji, a ZWJ family, two flags, a CR LF, a combining accent, a keycap and a heart
+    /// with its variation selector, between plain letters.
+    private static let mixed = "a😀b👨‍👩‍👧c🇧🇬🇺🇸d\r\ne\u{301}1️⃣❤️f"
+
+    /// Where the caret may stop in `s`, in UTF-16 units: between two Characters.
+    private func boundaries(_ s: String) -> [Int] { s.indices.map { s[..<$0].utf16.count } + [s.utf16.count] }
+
+    /// A host field holding `mixed`, the caret at its end.
+    private func field(utf16: Bool, lineEnds: Bool) -> FakeProxy {
+        let doc = FakeProxy()
+        doc.text = Self.mixed
+        doc.countsUTF16 = utf16
+        doc.stopsAtLineEnd = lineEnds
+        return doc
+    }
+
+    /// Single steps through `walk`, the host catching up after every `perRefresh` of them
+    /// (0: its context never lags), then until the walk is idle, or gives up as the view does.
+    private func drive(_ walk: inout CaretWalk, _ doc: FakeProxy, _ steps: [Int], perRefresh: Int) {
+        func step(_ n: Int) {
+            let units = walk.step(n, before: doc.documentContextBeforeInput ?? "", after: doc.documentContextAfterInput ?? "")
+            if units != 0 { doc.adjustTextPosition(byCharacterOffset: units) }
+        }
+        doc.lags = perRefresh > 0
+        for (i, n) in steps.enumerated() {
+            step(n)
+            if perRefresh > 0, (i + 1) % perRefresh == 0 { doc.catchUp(); step(0) }
+        }
+        for _ in 0..<40 where !walk.idle { doc.catchUp(); step(0) }
+        if !walk.idle { walk.drop() }
+    }
+
+    func testSplitsSeesEveryWayACharacterCanBeCut() {
+        let cuts: [(String, String)] = [
+            ("ab\u{FFFD}", "\u{FFFD}cd"), ("\r", "\n"), ("\r", ""), ("e", "\u{301}"), ("❤", "\u{FE0F}"),
+            ("1", "\u{FE0F}\u{20E3}"), ("👨\u{200D}", "👩\u{200D}👧"), ("👨\u{200D}👩", "\u{200D}👧"),
+        ]
+        for (b, a) in cuts { XCTAssertTrue(CaretWalk.splits(before: b, after: a), "\(b.debugDescription) | \(a.debugDescription)") }
+        let whole: [(String, String)] = [
+            ("ab", "cd"), ("😀", "b"), ("a", "😀"), ("🇧🇬", "🇺🇸"), ("\r\n", "e"), ("d", "\r\n"), ("", "x"), ("x", ""),
+            ("👨‍👩‍👧", "c"), ("e\u{301}", "1️⃣"), ("\n", ""),
+        ]
+        for (b, a) in whole { XCTAssertFalse(CaretWalk.splits(before: b, after: a), "\(b.debugDescription) | \(a.debugDescription)") }
+    }
+
+    /// In both kinds of host, however many steps go between the host's catching up: a
+    /// drag past either end stops there, and one step at a time stops on every Character
+    /// boundary in turn, none skipped. Once the walk has learned the host, no move ever
+    /// stops inside a Character, not even for a moment.
+    func testTheWalkStopsOnlyBetweenCharactersInEitherHost() {
+        let ends = boundaries(Self.mixed), n = ends.count - 1
+        for utf16 in [false, true] {
+            for lineEnds in [false, true] {
+                for perRefresh in [0, 1, 3, 100] {
+                    let doc = field(utf16: utf16, lineEnds: lineEnds), at = "\(utf16) \(lineEnds) \(perRefresh)"
+                    var walk = CaretWalk()
+                    drive(&walk, doc, Array(repeating: -1, count: n + 2), perRefresh: perRefresh)
+                    XCTAssertEqual(doc.text, "", at)
+                    XCTAssertEqual(walk.utf16, utf16, at)
+                    let learned = doc.stops.count
+                    drive(&walk, doc, Array(repeating: 1, count: n + 2), perRefresh: perRefresh)
+                    XCTAssertEqual(doc.text.utf16.count, Self.mixed.utf16.count, at)
+                    // The one blind step: off a line's end into a CR LF the context cut.
+                    let crlf = lineEnds && utf16 ? ["a😀b👨‍👩‍👧c🇧🇬🇺🇸d\r".utf16.count] : []
+                    XCTAssertTrue(doc.stops[learned...].allSatisfy((ends + crlf).contains), "\(at): \(doc.stops[learned...])")
+
+                    let fresh = field(utf16: utf16, lineEnds: lineEnds)
+                    fresh.text = ""; fresh.after = Self.mixed
+                    walk = CaretWalk()
+                    for k in 1...n {
+                        drive(&walk, fresh, [1], perRefresh: perRefresh)
+                        XCTAssertEqual(fresh.text.utf16.count, ends[k], "\(at) step \(k)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Holds space and drags it by each of `offsets` caret steps in turn, the host never
+    /// catching up mid-drag, then lifts and lets the host catch up as the poll timer does.
+    private func drag(_ kb: TerminalKeyboard, _ doc: FakeProxy, _ offsets: [CGFloat]) throws {
+        let space = try XCTUnwrap(laidOut(kb)["space"]).frame
+        var p = CGPoint(x: space.midX, y: space.midY)
+        doc.lags = true
+        kb.track(.began, id: 1, at: p)
+        kb.fireHold()
+        for o in offsets {
+            p.x += o * KeyTouchTracker.caretStep
+            kb.track(.moved, id: 1, at: p)
+        }
+        kb.track(.ended, id: 1, at: p)
+        for _ in 0..<20 { doc.catchUp(); kb.pollCaret() }
+    }
+
+    /// QA's case through the keyboard: one step left over an emoji, or a CR LF, then a
+    /// letter. A UIKit host takes a probe and a nudge, and so a fast drag over the family;
+    /// a WebKit host the one move. The letter lands whole beside it either way.
+    func testATrackpadStepThenALetterNeverBreaksAnEmojiOrACRLF() throws {
+        for utf16 in [false, true] {
+            for (before, after, typed, moves) in [
+                ("ab😀", "cd", "abz😀cd", [-1, -1]), ("ab\r\n", "cd", "abz\r\ncd", [-1, -1]),
+                ("x👨‍👩‍👧", "", "xz👨‍👩‍👧", [-1, -7]),
+            ] {
+                let kb = TerminalKeyboard(), doc = FakeProxy()
+                kb.target = doc
+                doc.countsUTF16 = utf16
+                doc.text = before; doc.after = after
+                try drag(kb, doc, [-1.2])
+                let z = try XCTUnwrap(laidOut(kb)["z"]).center
+                kb.track(.began, id: 2, at: z)
+                kb.track(.ended, id: 2, at: z)
+                XCTAssertEqual(doc.text + (doc.after ?? ""), typed, "\(utf16)")
+                XCTAssertEqual(doc.moves, utf16 ? moves : [-1], "\(utf16) \(typed.debugDescription)")
+            }
+        }
+        let kb = TerminalKeyboard(), doc = FakeProxy()
+        kb.target = doc
+        doc.countsUTF16 = true
+        doc.text = Self.mixed
+        try drag(kb, doc, Array(repeating: -1, count: 5))
+        XCTAssertEqual(doc.text, "a😀b👨‍👩‍👧c🇧🇬🇺🇸d", "five back, the drag never waiting for the host")
+        try drag(kb, doc, [-1, -1, -1])
+        XCTAssertEqual(doc.text, "a😀b👨‍👩‍👧c", "learned: three back")
+        try drag(kb, doc, [2])
+        XCTAssertEqual(doc.text, "a😀b👨‍👩‍👧c🇧🇬🇺🇸", "and two on")
+        XCTAssertEqual(doc.moves.suffix(3), [-1, -8, 8], "the flags in one move each way, sized in units")
+    }
+
+    /// A field that shows no context, like a password's: a drag moves the caret at once,
+    /// one unit a step as asked, with nothing left waiting on the host.
+    func testAFieldWithNoContextMovesAtOnce() throws {
+        var walk = CaretWalk()
+        XCTAssertEqual(walk.step(-5, before: "", after: ""), -5)
+        XCTAssertTrue(walk.idle)
+        let kb = TerminalKeyboard(), doc = FakeProxy()
+        kb.target = doc
+        doc.hidesContext = true
+        doc.text = "abcdef"
+        try drag(kb, doc, [-5])
+        try drag(kb, doc, [2])
+        XCTAssertEqual(doc.moves, [-5, 2])
+        XCTAssertEqual(doc.text, "abc")
     }
 }
