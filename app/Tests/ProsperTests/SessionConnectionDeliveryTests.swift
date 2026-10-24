@@ -261,30 +261,74 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         conn.close()
     }
 
-    /// The Insert sheet keeps its text while the session is failed: both send buttons
-    /// are off, a line says why, and Retry shows; they come back once input is accepted.
+    /// The Insert sheet keeps its text while the session is failed: Retry replaces both
+    /// send buttons and a line says why; they come back once input is accepted.
     func testInsertSheetHoldsWhileFailed() throws {
         let accepts = CurrentValueSubject<Bool, Never>(true)
         var retried = 0
         let vc = InsertTextVC(accepts: accepts.eraseToAnyPublisher(), onRetry: { retried += 1 }) { _, _ in }
         vc.loadViewIfNeeded()
-        let send = try XCTUnwrap(vc.navigationItem.rightBarButtonItems)
-        let retry = try XCTUnwrap(vc.navigationItem.leftBarButtonItems?.last)
-        XCTAssertTrue(send.allSatisfy(\.isEnabled))
+        XCTAssertEqual(vc.navigationItem.rightBarButtonItems?.map(\.title), ["Insert & Send", "Insert"])
         XCTAssertNil(vc.navigationItem.prompt)
-        XCTAssertTrue(retry.isHidden)
 
         accepts.send(false)
-        XCTAssertFalse(send.contains(where: \.isEnabled), "a failed session must not take the text")
+        let retry = try XCTUnwrap(vc.navigationItem.rightBarButtonItems?.first)
+        XCTAssertEqual(vc.navigationItem.rightBarButtonItems?.map(\.title), ["Retry"],
+                       "a failed session must not take the text")
         XCTAssertNotNil(vc.navigationItem.prompt)
-        XCTAssertFalse(retry.isHidden)
+        XCTAssertNotNil(vc.navigationItem.leftBarButtonItem, "Cancel stays")
         _ = (retry.target as? NSObject)?.perform(retry.action)
         XCTAssertEqual(retried, 1)
 
         accepts.send(true)
-        XCTAssertTrue(send.allSatisfy(\.isEnabled), "retry re-enables sending")
+        XCTAssertEqual(vc.navigationItem.rightBarButtonItems?.map(\.title), ["Insert & Send", "Insert"],
+                       "retry brings sending back")
         XCTAssertNil(vc.navigationItem.prompt)
-        XCTAssertTrue(retry.isHidden)
+    }
+
+    /// The terminal wires its Insert sheet to the connection: opened while failed it
+    /// shows only Retry, and that Retry reattaches the session.
+    func testInsertKeyWhileFailedOpensASheetWiredToTheConnection() async throws {
+        let t = DeliveryTransport()
+        let conn = SessionConnection(transport: t, session: DchSession(name: "t", alias: nil),
+                                     backoff: BackoffPolicy(maxAttempts: 0))
+        let vc = TerminalHostVC(conn: conn, handle: TermHandle())
+        let win = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        win.rootViewController = vc
+        win.makeKeyAndVisible()
+        defer { win.isHidden = true }
+        let s1 = try await startLive(conn, t)
+        s1.drop()
+        try await waitUntil("failed") { if case .failed = conn.state { true } else { false } }
+
+        let bar = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? ShortcutBar }.first)
+        bar.onKey?(ShortcutKey(id: "insert", label: "insert", kind: .insertText))
+        let nav = try XCTUnwrap(vc.presentedViewController as? UINavigationController)
+        let sheet = try XCTUnwrap(nav.viewControllers.first as? InsertTextVC)
+        sheet.loadViewIfNeeded()
+        let retry = try XCTUnwrap(sheet.navigationItem.rightBarButtonItems?.first)
+        XCTAssertEqual(sheet.navigationItem.rightBarButtonItems?.map(\.title), ["Retry"],
+                       "the sheet must follow the failed connection")
+
+        _ = (retry.target as? NSObject)?.perform(retry.action)
+        try await waitUntil("retry reattaches") { t.streams.count == 2 }
+        XCTAssertEqual(sheet.navigationItem.rightBarButtonItems?.map(\.title), ["Insert & Send", "Insert"])
+        vc.dismiss(animated: false)
+        conn.close()
+    }
+
+    /// A bar rebuilt while input is refused (Edit stays open while failed) keeps its
+    /// caps read as dimmed.
+    func testReloadedBarKeepsCapsDisabled() {
+        let bar = ShortcutBar()
+        bar.frame = CGRect(x: 0, y: 0, width: 402, height: 86)
+        bar.capsEnabled = false
+        bar.reload()
+        bar.layoutIfNeeded()
+        let caps = Self.caps(in: bar)
+        XCTAssertFalse(caps.isEmpty)
+        XCTAssertTrue(caps.allSatisfy { $0.accessibilityTraits.contains(.notEnabled) },
+                      "a rebuilt bar must keep the caps dimmed")
     }
 
     func testRetryAfterCloseWhileFailedStaysFailed() async throws {

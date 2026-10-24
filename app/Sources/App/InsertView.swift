@@ -6,7 +6,7 @@ import UIKit
 /// undo — and only the finished text crosses the wire, as one paste (see
 /// `TerminalHostVC.sendText`). Insert leaves Enter to the user; Insert & Send
 /// presses it once the paste has landed. While the session refuses input (`accepts`
-/// false: `.failed`) both are off and the text stays; Retry here brings them back.
+/// false: `.failed`) Retry stands in for both and the text stays; once input is back they return.
 final class InsertTextVC: UIViewController, UITextViewDelegate {
     private let editor = UITextView()
     private let accepts: AnyPublisher<Bool, Never>
@@ -27,18 +27,18 @@ final class InsertTextVC: UIViewController, UITextViewDelegate {
         super.viewDidLoad()
         title = "Insert"
         view.backgroundColor = .systemBackground
-        let retry = UIBarButtonItem(title: "Retry", style: .plain, target: self, action: #selector(retry))
-        navigationItem.leftBarButtonItems = [
-            UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(cancel)), retry,
-        ]
-        navigationItem.rightBarButtonItems = [   // first item sits rightmost
+        navigationItem.leftBarButtonItem =
+            UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(cancel))
+        // first item sits rightmost. While failed Retry takes the whole side: four
+        // items don't fit at 402 pt and iOS folds one into a More menu.
+        let send = [
             UIBarButtonItem(title: "Insert & Send", style: .done, target: self, action: #selector(insertAndSend)),
             UIBarButtonItem(title: "Insert", style: .plain, target: self, action: #selector(insert)),
         ]
+        let retry = [UIBarButtonItem(title: "Retry", style: .plain, target: self, action: #selector(retry))]
         acceptsSub = accepts.sink { [weak self] on in
-            self?.navigationItem.rightBarButtonItems?.forEach { $0.isEnabled = on }
+            self?.navigationItem.rightBarButtonItems = on ? send : retry
             self?.navigationItem.prompt = on ? nil : "Session failed. Retry before sending."
-            retry.isHidden = on
         }
 
         editor.font = .preferredFont(forTextStyle: .body)
