@@ -141,18 +141,15 @@ struct KeyboardSettings: Equatable {
 ///   cancels it inside `tapSlop`. One there that lifts normally still types.
 /// - A space touch still waiting after `holdDelay` (`startTrackpad`) is a trackpad, as on
 ///   Apple's keyboard: every `caretStep` its finger travels sideways moves the caret one
-///   character, and every `lineStep` up or down one line; each axis carries its own
-///   remainder, so a diagonal drag moves both. Lifting it types nothing. Other fingers are
-///   ignored until it lifts.
+///   character, and lifting it types nothing. Other fingers are ignored until it lifts.
 ///   Never one begun under the keys: that strip is the home gesture's.
 ///
 /// Points are in the view's coordinates; the defaults suit callers that don't care
 /// about travel.
 struct KeyTouchTracker {
     typealias Key = TerminalKeyboard.Key
-    /// `caret`: trackpad steps, negative left. `line`: trackpad lines, negative up; one move
-    /// yields its `caret` before its `line`.
-    enum Effect: Equatable { case press(Key), startRepeat, stopRepeat, caret(Int), line(Int) }
+    /// `caret`: trackpad steps, negative left.
+    enum Effect: Equatable { case press(Key), startRepeat, stopRepeat, caret(Int) }
 
     /// How far a finger may travel and still count as a tap if it's cancelled.
     static let tapSlop: CGFloat = 10
@@ -160,12 +157,10 @@ struct KeyTouchTracker {
     static let holdDelay: TimeInterval = 0.35
     /// How far a trackpad finger travels sideways per character the caret moves.
     ///
-    /// ponytail: fixed steps, no acceleration. Tune them on device; add a speed curve if
-    /// long moves feel slow.
+    /// ponytail: a fixed step, no acceleration, and sideways only: the host field's proxy
+    /// has no line geometry and the terminal's up/down is shell history. Tune it on device;
+    /// add a speed curve if long moves feel slow.
     static let caretStep: CGFloat = 9
-    /// How far a trackpad finger travels up or down per line: about a line of body text,
-    /// and twice `caretStep` so a sideways drag's wobble rarely changes line.
-    static let lineStep: CGFloat = 20
 
     private struct Touch {
         let id: Int; var key: Key; var done: Bool
@@ -173,8 +168,8 @@ struct KeyTouchTracker {
         var belowKeys = false
         /// Set by a hold: what the touch types instead of `key`.
         var symbol: String?
-        /// Set by a space hold: trackpad mode, the point its caret and line steps count from.
-        var anchor: CGPoint?
+        /// Set by a space hold: trackpad mode, the x its caret steps count from.
+        var anchor: CGFloat?
         var output: Key { symbol.map(Key.char) ?? key }
         mutating func reach(_ p: CGPoint) { travel = max(travel, hypot(p.x - start.x, p.y - start.y)) }
     }
@@ -219,25 +214,24 @@ struct KeyTouchTracker {
         if let point { touches[i].reach(point) }
         if let anchor = touches[i].anchor {
             guard let point else { return [] }
-            let steps = Int((point.x - anchor.x) / Self.caretStep)
-            let lines = Int((point.y - anchor.y) / Self.lineStep)
-            touches[i].anchor = CGPoint(x: anchor.x + CGFloat(steps) * Self.caretStep,
-                                        y: anchor.y + CGFloat(lines) * Self.lineStep)
-            return (steps == 0 ? [] : [.caret(steps)]) + (lines == 0 ? [] : [.line(lines)])
+            let steps = Int((point.x - anchor) / Self.caretStep)
+            if steps == 0 { return [] }
+            touches[i].anchor = anchor + CGFloat(steps) * Self.caretStep
+            return [.caret(steps)]
         }
         guard !touches[i].done, touches[i].symbol == nil, !Self.actsOnDown(key) else { return [] }
         touches[i].key = key
         return []
     }
 
-    /// The touch has stayed down `holdDelay`, now at `point`: a space touch becomes a
-    /// trackpad until it lifts, and lifting types nothing (Apple's types no space either).
-    /// True if it did.
-    mutating func startTrackpad(_ id: Int, at point: CGPoint) -> Bool {
+    /// The touch has stayed down `holdDelay`, now at `x`: a space touch becomes a trackpad
+    /// until it lifts, and lifting types nothing (Apple's types no space either). True if
+    /// it did.
+    mutating func startTrackpad(_ id: Int, at x: CGFloat) -> Bool {
         guard let i = touches.firstIndex(where: { $0.id == id }), !touches[i].done,
               touches[i].key == .space, !touches[i].belowKeys else { return false }
         touches[i].done = true
-        touches[i].anchor = point
+        touches[i].anchor = x
         return true
     }
 
@@ -292,9 +286,8 @@ struct KeyTouchTracker {
 /// goes to the one that continues the word being typed (`corrected`).
 ///
 /// Holding space turns the keys into a trackpad, as on Apple's keyboard: the labels blank
-/// out and a drag moves the caret (`caret`), through `moveCaret` in the app (arrow keys)
-/// and the field's document proxy in the extension, where up and down move it by line
-/// (`line`).
+/// out and a sideways drag moves the caret (`caret`), through `moveCaret` in the app (arrow
+/// keys) and the field's document proxy in the extension.
 ///
 /// Output goes through the terminal's own `UIKeyInput` (`insertText` / `deleteBackward`),
 /// so the host's sticky ctrl behaves exactly as it does for the system keyboard. Return
@@ -500,7 +493,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// Where trackpad steps go, negative left: the app sends arrow keys. Nil moves the
     /// host field's caret through its document proxy (the extension).
     var moveCaret: ((Int) -> Void)?
-    /// After each trackpad step or line: the extension's suggestions forget the word they were
+    /// After each trackpad step: the extension's suggestions forget the word they were
     /// following, and the bar recomputes. Nil in the app.
     var didMoveCaret: (() -> Void)?
     private(set) var shift = ShiftState()
@@ -533,15 +526,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var holdTouch: (id: Int, at: CGPoint)?
     /// The labels are blank: a trackpad touch is down (`refreshLabels`).
     private var blanked = false
-    /// The extension's trackpad: the host's text around the caret as read when it started,
-    /// the caret's index in it since, and the column line moves aim for (`lineOffset`).
-    /// A proxy's context lags `adjustTextPosition`, so a drag never re-reads it: each step
-    /// moves `at` itself. Nil in the app and after the trackpad.
-    ///
-    /// ponytail: one read per hold. A line move can't leave the context the host gave, and
-    /// `at` stops at its ends as the caret does at the text's: a sideways drag past a cut-off
-    /// context leaves it off until the next hold. Re-read on `selectionDidChange` if that bites.
-    private var pad: (text: [Character], at: Int, goal: Int?)?
     private var heightConstraint: NSLayoutConstraint!
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
@@ -641,60 +625,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             moveCaret(offset)
         } else {
             (target as? UITextDocumentProxy)?.adjustTextPosition(byCharacterOffset: offset)
-            if let p = pad {   // a sideways step sets a new column; the host stops at the ends
-                pad = (p.text, min(max(p.at + offset, 0), p.text.count), nil)
-            }
         }
-        caretMoved()
-    }
-
-    /// A trackpad move of `lines` lines, negative up: the extension's only. The app ignores
-    /// it, since a shell's up and down are history, not lines.
-    func line(_ lines: Int) {
-        guard let doc = target as? UITextDocumentProxy, moveCaret == nil,
-              let p = pad else { return }
-        let (offset, goal) = Self.lineOffset(before: String(p.text[..<p.at]),
-                                             after: String(p.text[p.at...]),
-                                             lines: lines, goal: p.goal)
-        pad = (p.text, p.at + offset, goal)
-        guard offset != 0 else { return }
-        doc.adjustTextPosition(byCharacterOffset: offset)
-        caretMoved()
-    }
-
-    private func caretMoved() {
         word = ""
         autoCapitalize()
         didMoveCaret?()
-    }
-
-    /// The caret offset that moves it `lines` hard lines (`isNewline`, so `\r\n` too) down,
-    /// negative up, within `before` + `after`, and the column it aims for: `goal` if set,
-    /// else the caret's own, so a short line on the way doesn't shorten the next one.
-    ///
-    /// Soft wraps are unknowable. The context may be cut short, so its edges count as the
-    /// text's: on its first line up moves nothing, on its last down moves nothing, the
-    /// column of a line above with no line break before it counts from the context's start,
-    /// and a line below with none after it ends where the context does. The caret never
-    /// lands past text the context showed.
-    static func lineOffset(before: String, after: String, lines: Int,
-                           goal: Int?) -> (offset: Int, goal: Int) {
-        let text = Array(before) + Array(after), caret = before.count
-        func start(_ i: Int) -> Int { text[..<i].lastIndex(where: \.isNewline).map { $0 + 1 } ?? 0 }
-        let goal = goal ?? caret - start(caret)
-        var at = caret
-        for _ in 0..<abs(lines) {
-            if lines < 0 {
-                let line = start(at)
-                if line == 0 { break }
-                at = min(start(line - 1) + goal, line - 1)
-            } else {
-                guard let br = text[at...].firstIndex(where: \.isNewline) else { break }
-                let end = text[(br + 1)...].firstIndex(where: \.isNewline) ?? text.count
-                at = min(br + 1 + goal, end)
-            }
-        }
-        return (at - caret, goal)
     }
 
     /// Shift on at a sentence start, off elsewhere, when the target is a host app's text
@@ -891,7 +825,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// `adjustTextPosition`, and Safari sends no `selectionDidChange`; one re-read 0.1 s
     /// on is a guess at the host's lag. Re-read on the next `textDidChange` if it lags more.
     private func trackpadEnded() {
-        pad = nil
         refreshLabels()
         guard target is UITextDocumentProxy else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -940,7 +873,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             case .startRepeat: startRepeat()
             case .stopRepeat: stopRepeat()
             case .caret(let n): caret(n)
-            case .line(let n): line(n)
             }
         }
     }
@@ -1044,11 +976,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     func fireHold() {
         guard let h = holdTouch else { return }
         stopHold()
-        if tracker.startTrackpad(h.id, at: h.at) {
-            if moveCaret == nil, let doc = target as? UITextDocumentProxy {
-                let text = Array(doc.documentContextBeforeInput ?? "")
-                pad = (text + Array(doc.documentContextAfterInput ?? ""), text.count, nil)
-            }
+        if tracker.startTrackpad(h.id, at: h.at.x) {
             haptics.impactOccurred()
             haptics.prepare()
             refreshLabels()
