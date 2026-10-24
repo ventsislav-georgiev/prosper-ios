@@ -393,13 +393,24 @@ final class WordSelectionTests: XCTestCase {
         let pb = try XCTUnwrap(UIPasteboard(name: name, create: true))
         defer { UIPasteboard.remove(withName: name) }
         vc.pasteboard = pb
+        // Read back only this test's own content: on iOS reading another app's raises the paste alert (#271).
+        #if targetEnvironment(macCatalyst)
+        let borrowed = UIPasteboard.general.items
+        defer { UIPasteboard.general.items = borrowed }
+        #endif
+        UIPasteboard.general.string = "cmd-c sentinel"
         let head = "https://example.com/hw/" + String(repeating: "h", count: tv.getTerminal().cols - 25)
         feed(vc, "\u{1b}[2J\u{1b}[H  " + head + "\r\n  /installations/new?x=1\r\n")
         vc.selectWord(at: point(tv, row: 1, col: 5))
         tv.copy(nil)
         XCTAssertEqual(pb.string, head + "/installations/new?x=1", "the URL, not the rows with their break")
+        XCTAssertEqual(UIPasteboard.general.string, "cmd-c sentinel", "SwiftTerm's copy must not overwrite it")
         XCTAssertNil(vc.selection)
         XCTAssertFalse(tv.hasActiveSelection)
+        tv.selectAll(nil)
+        tv.copy(nil)
+        XCTAssertTrue(UIPasteboard.general.string?.contains("/installations/new?x=1") == true,
+                      "no app selection: Cmd-A then Cmd-C is SwiftTerm's copy")
     }
 
     func testALinkSelectionWidenedPastTheLinkCopiesTheRows() async throws {

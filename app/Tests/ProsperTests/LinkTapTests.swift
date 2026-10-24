@@ -184,6 +184,7 @@ final class LinkTapTests: XCTestCase {
             (lower: "  /new?state=abc123", url: head + "/new?state=abc123"),
             (lower: "x=1&y=2 then more", url: head + "x=1&y=2"),
             (lower: "a.html and more", url: head + "a.html"),
+            (lower: "  2/files then more", url: head + "2/files"),
             (lower: "  abc123", url: head + "abc123"),
             (lower: "Next step here", url: head),
             (lower: "  for details.", url: head),
