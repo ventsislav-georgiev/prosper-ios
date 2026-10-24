@@ -33,11 +33,13 @@ struct SessionMeta: Hashable {
         }
         if let p = o["prs"] as? [String: Any] {
             merged = Self.count(p["merged"])
-            open = ((p["open"] as? [Any]) ?? []).prefix(50).compactMap { e in
+            // ponytail: at most 50 kept, so beyond 50 open PRs "+M" undercounts; send a total if that matters.
+            open = Array(((p["open"] as? [Any]) ?? []).lazy.compactMap { e -> PR? in
                 guard let e = e as? [String: Any], let repo = e["repo"] as? String, !repo.isEmpty else { return nil }
-                return PR(url: Self.pullURL(e["url"]), repo: Self.plain(String(repo.prefix(100))), num: Self.count(e["num"]),
+                return PR(url: Self.pullURL(e["url"]), repo: Self.plain(String(repo.prefix(100))),
+                          num: Self.count(e["num"]).flatMap { $0 <= 9_999_999 ? $0 : nil },   // a chip stays chip-sized
                           title: Self.plain(e["title"] as? String ?? ""))
-            }
+            }.prefix(50))
         }
         if open.isEmpty && mergedLabel == nil && taskLine == nil { return nil }
     }
@@ -62,14 +64,14 @@ struct SessionMeta: Hashable {
         return u
     }
 
-    /// One line of plain text: line breaks become spaces, other control characters
+    /// One line of plain text: line breaks and tabs become spaces, other control characters
     /// (U+0000 included) and bidi controls go, so a title can't reorder what is drawn
     /// around it.
     static func plain(_ s: String) -> String {
         let bidi = Set("\u{200E}\u{200F}\u{061C}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}".unicodeScalars)
         var out = String.UnicodeScalarView()
         for u in s.prefix(200).unicodeScalars where !bidi.contains(u) {
-            if "\n\r\u{85}\u{2028}\u{2029}".unicodeScalars.contains(u) { out.append(" ") }
+            if "\n\r\t\u{85}\u{2028}\u{2029}".unicodeScalars.contains(u) { out.append(" ") }
             else if u.value >= 0x20, !(0x7F...0x9F).contains(u.value) { out.append(u) }
         }
         return String(out)
@@ -89,6 +91,9 @@ struct SessionMeta: Hashable {
 
     var mergedLabel: String? { merged.flatMap { $0 > 0 ? "\(Self.count($0)) merged" : nil } }
 
+    /// The chip counts ViewThatFits tries, most first: 3, 2, 1, 0 for three or more PRs.
+    static func chipCounts(_ n: Int) -> [Int] { Array((0...min(n, maxChips)).reversed()) }
+
     /// "open pull requests a#1, b#2, c#3 and 2 more"; nil with no open PRs.
     var prAccessibility: String? {
         guard !open.isEmpty else { return nil }
@@ -100,6 +105,8 @@ struct SessionMeta: Hashable {
 
 /// The row's meta lines: PR chips, "+M" and "N merged", then the task counts.
 /// Chips drop from the right when the line is too narrow; nothing animates.
+/// The chips are inert, so a tap anywhere opens the session: a Link's 44 pt hit band
+/// covered the name and the task line. A long press lists the PRs to open.
 struct SessionMetaView: View {
     let meta: SessionMeta
     @Environment(\.openURL) private var openURL
@@ -108,7 +115,7 @@ struct SessionMetaView: View {
         VStack(alignment: .leading, spacing: 2) {
             if !meta.open.isEmpty || meta.mergedLabel != nil {
                 ViewThatFits(in: .horizontal) {
-                    ForEach((0...min(meta.open.count, SessionMeta.maxChips)).reversed(), id: \.self) { prLine($0) }
+                    ForEach(SessionMeta.chipCounts(meta.open.count), id: \.self) { prLine($0) }
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel([meta.prAccessibility, meta.mergedLabel].compactMap { $0 }.joined(separator: ", "))
@@ -123,28 +130,25 @@ struct SessionMetaView: View {
             }
         }
         .font(.caption2)
+        .contextMenu {
+            if !meta.open.isEmpty {
+                ForEach(Array(meta.open.enumerated()), id: \.offset) { _, pr in
+                    // Title isolated (FSI…PDI) so its direction can't spill into the label.
+                    let label = Text(verbatim: pr.title.isEmpty ? pr.chip : "\(pr.chip) — \u{2068}\(pr.title)\u{2069}")
+                    if let url = pr.url { Link(destination: url) { label } } else { Button {} label: { label }.disabled(true) }
+                }
+                if let merged = meta.mergedLabel { Button {} label: { Text(verbatim: merged) }.disabled(true) }
+            }
+        }
     }
 
     private func prLine(_ k: Int) -> some View {
         let rest = meta.open.dropFirst(k)
         return HStack(spacing: 4) {
             ForEach(Array(meta.open.prefix(k).enumerated()), id: \.offset) { _, pr in
-                if let url = pr.url {
-                    Link(destination: url) { chip(pr.chip) }.buttonStyle(.borderless)
-                } else {
-                    chip(pr.chip).foregroundStyle(.secondary)
-                }
+                chip(pr.chip).foregroundStyle(pr.url == nil ? Color.secondary : Color.accentColor)
             }
-            if !rest.isEmpty {
-                Menu {
-                    ForEach(Array(rest.enumerated()), id: \.offset) { _, pr in
-                        // Title isolated (FSI…PDI) so its direction can't spill into the label.
-                        let label = Text(verbatim: "\(pr.chip) \u{2068}\(pr.title)\u{2069}")
-                        if let url = pr.url { Link(destination: url) { label.lineLimit(1) } } else { label.lineLimit(1) }
-                    }
-                } label: { chip("+\(rest.count)") }
-                .buttonStyle(.borderless)
-            }
+            if !rest.isEmpty { chip("+\(rest.count)") }
             if let merged = meta.mergedLabel {
                 Text(verbatim: merged).foregroundStyle(.secondary)
             }

@@ -59,7 +59,8 @@ final class SessionMetaTests: XCTestCase {
     func testTitleIsOnePlainLine() {
         XCTAssertEqual(SessionMeta.plain("a\nb\r\u{202E}c\u{2066}d\u{2069}"), "a b cd")
         XCTAssertEqual(SessionMeta.plain("\u{202A}\u{202B}\u{202C}\u{202D}\u{2067}\u{2068}x"), "x", "bidi overrides and isolates go")
-        XCTAssertEqual(SessionMeta.plain("a\u{0}b\tc\u{7F}\u{9B}d"), "abcd", "controls, U+0000 included, go")
+        XCTAssertEqual(SessionMeta.plain("a\u{0}b\u{1B}c\u{7F}\u{9B}d"), "abcd", "controls, U+0000 included, go")
+        XCTAssertEqual(SessionMeta.plain("line4\ttab"), "line4 tab", "a tab is a space")
         let m = meta(#"{"prs":{"open":[{"repo":"o/r","num":1,"title":"x\u0000y\n\u202Ez"}]}}"#)!
         XCTAssertEqual(m.open.first?.title, "xy z", "decoded titles are cleaned")
         XCTAssertEqual(SessionMeta.plain("👨‍👩‍👧 ok"), "👨‍👩‍👧 ok", "ZWJ is not a bidi control")
@@ -98,5 +99,51 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(five.prAccessibility, "open pull requests a#1, b#2, c#3 and 2 more")
         XCTAssertEqual(SessionMeta(open: [pr("o/a", 1)]).prAccessibility, "open pull requests a#1")
         XCTAssertNil(SessionMeta(merged: 3).prAccessibility)
+    }
+
+    /// Junk entries never hide valid PRs behind the cap, and the cap still holds.
+    func testCapAfterFilter() {
+        let valid = { (n: Int) in #"{"repo":"o/r","num":\#(n)}"# }
+        let junk = Array(repeating: "1", count: 50) + (1...3).map(valid)
+        XCTAssertEqual(meta(#"{"prs":{"open":["# + junk.joined(separator: ",") + "]}}")?.open.count, 3)
+        XCTAssertEqual(meta(#"{"prs":{"open":["# + (1...60).map(valid).joined(separator: ",") + "]}}")?.open.count, 50)
+    }
+
+    func testQueuedZeroLeftOut() {
+        XCTAssertEqual(SessionMeta(done: 1, total: 2, queued: 0).taskLine, "1/2 done")
+        XCTAssertNil(SessionMeta(queued: 0).taskLine)
+    }
+
+    func testEmptyRepoDroppedAndRepoCleaned() {
+        let m = meta(#"{"prs":{"open":[{"repo":"","num":1},{"repo":"o/\u202Eab\u0000c\nd","num":2}]}}"#)!
+        XCTAssertEqual(m.open.map(\.repo), ["o/abc d"])
+    }
+
+    /// A num too big for a chip is dropped like any other bad num.
+    func testHugeNumIsNil() {
+        XCTAssertEqual(meta(#"{"prs":{"open":[{"repo":"o/r","num":9999999}]}}"#)?.open.first?.num, 9_999_999)
+        XCTAssertNil(meta("{\"prs\":{\"open\":[{\"repo\":\"o/r\",\"num\":\(Int.max)}]}}")!.open.first!.num)
+    }
+
+    /// ViewThatFits takes the first that fits, so the widest line comes first.
+    func testChipCountsDescend() {
+        XCTAssertEqual(SessionMeta.chipCounts(5), [3, 2, 1, 0])
+        XCTAssertEqual(SessionMeta.chipCounts(2), [2, 1, 0])
+        XCTAssertEqual(SessionMeta.chipCounts(0), [0])
+    }
+
+    func testTransportListDecode() throws {
+        let rows = try ProsperTransport.decodeList(Data(#"[{"name":"a","agents":2,"meta":{"prs":{"open":[{"repo":"o/r","num":5}],"merged":1}}},{"name":"b"},{"x":1}]"#.utf8))
+        XCTAssertEqual(rows.map(\.name), ["a", "b"])
+        XCTAssertEqual(rows[0].meta, SessionMeta(open: [pr("o/r", 5)], merged: 1))
+        XCTAssertNil(rows[1].meta)
+        XCTAssertEqual(try ProsperTransport.decodeList(Data("[]".utf8)), [])
+    }
+
+    /// An unreadable list is an error, not "no sessions".
+    func testTransportListUnparseableThrows() {
+        for bad in [#"[{"name":"a","n":1e400}]"#, #"[{"name":"\ud800"}]"#, "{}", ""] {
+            XCTAssertThrowsError(try ProsperTransport.decodeList(Data(bad.utf8)), bad)
+        }
     }
 }

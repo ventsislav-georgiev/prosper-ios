@@ -5,7 +5,7 @@ What's new:
 • New compact terminal keyboard on iPhone, with key previews and common symbols one tap away.
 • Shortcut bar is always visible, in two aligned rows, with a new default set of keys.
 • The session list can show how many helper tasks are running.
-• The session list shows each session's open pull requests and task progress; tap a pull request to open it.
+• The session list shows each session's open pull requests and task progress; press and hold a session's pull request line to open one.
 • The session bell is gone: it could only ping you while Prosper was open.
 • Typing is more reliable on weak connections: keystrokes are queued and delivered after a drop.
 • Smoother terminal scrolling.
