@@ -114,6 +114,12 @@ struct SettingsView: View {
                         }
                     }))
                     .disabled(busy)
+                    // Off in the Settings app: alerts still come, the card can't show.
+                    if live.enabled && !live.activitiesAllowed {
+                        Button("Live Activities are off · Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        }
+                    }
                 } footer: {
                     Text("An alert only when a session needs you, and a live card on the Lock Screen while agents work. Needs your Mac signed in to the same account.")
                 }

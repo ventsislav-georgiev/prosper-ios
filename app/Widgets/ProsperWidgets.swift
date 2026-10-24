@@ -23,10 +23,12 @@ struct SessionsActivityWidget: Widget {
             // Lock Screen / banner.
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Image(systemName: card.symbol).foregroundStyle(card.tint)
+                    Image(systemName: card.symbol).foregroundStyle(card.tint).accessibilityHidden(true)
                     Text(context.attributes.macName).font(.headline).lineLimit(1)
                     Spacer()
-                    Text(card.headline).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    // Big counts shrink rather than lose the last state.
+                    Text(card.headline).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).minimumScaleFactor(0.6)
                 }
                 rows(card, limit: 3)
             }
@@ -41,20 +43,25 @@ struct SessionsActivityWidget: Widget {
                         .font(.caption).foregroundStyle(card.tint)
                         .lineLimit(1).padding(.leading, 4)
                 }
-                DynamicIslandExpandedRegion(.trailing) {
-                    Text(card.headline)
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .lineLimit(1).padding(.trailing, 4)
-                }
+                // The headline takes the full width under the name: the trailing region
+                // cut even the default mix short. Inset off the island's curved corners.
                 DynamicIslandExpandedRegion(.bottom) {
-                    rows(card, limit: 2)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(card.headline)
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.6)
+                        rows(card, limit: 2)
+                    }
+                    .padding(.horizontal, 8)
                 }
             } compactLeading: {
-                Image(systemName: card.symbol).foregroundStyle(card.tint)
+                Image(systemName: card.symbol).foregroundStyle(card.tint).accessibilityHidden(true)
             } compactTrailing: {
                 Text(card.compactText).font(.caption2).foregroundStyle(card.tint)
+                    .accessibilityLabel(card.compactLabel)
             } minimal: {
                 Image(systemName: card.symbol).foregroundStyle(card.tint)
+                    .accessibilityLabel(card.compactLabel)
             }
             .widgetURL(LiveTarget.url(macId: context.attributes.macId))
         }
@@ -65,12 +72,13 @@ struct SessionsActivityWidget: Widget {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(Array(top.sessions.enumerated()), id: \.offset) { _, s in
                 HStack(spacing: 6) {
-                    Image(systemName: s.state.symbol).foregroundStyle(s.state.tint)
+                    Image(systemName: s.state.symbol).foregroundStyle(s.state.tint).accessibilityHidden(true)
                     Text(s.title).lineLimit(1)
                     Spacer()
                     Text(SessionsCard.detail(s)).foregroundStyle(s.state.tint).lineLimit(1)
                 }
                 .font(.caption)
+                .accessibilityElement(children: .combine)
             }
             if top.more > 0 {
                 Text("+\(top.more) more").font(.caption2).foregroundStyle(.secondary)

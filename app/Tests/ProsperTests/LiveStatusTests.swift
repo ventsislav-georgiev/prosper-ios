@@ -43,6 +43,14 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(s.sessions[0].agents, 1)
     }
 
+    /// A wrong type reads as missing instead of failing the push: the card keeps updating.
+    func testWrongTypesReadAsMissing() throws {
+        let s = try decode(#"{"v":"1","online":"yes","counts":{"blocked":"2","working":1},"sessions":[{"name":"e","alias":7,"state":3,"agents":"2"}],"more":null}"#)
+        XCTAssertEqual(s, SessionsStatus(counts: .init(working: 1),
+                                         sessions: [.init(name: "e", alias: nil, state: .idle, agents: nil)]))
+        XCTAssertEqual(try decode(#"{"counts":{"idle":1},"sessions":[{"state":"idle"}]}"#).sessions, [], "no name, no rows")
+    }
+
     /// What ActivityKit encodes for a local activity decodes back to the same state.
     func testRoundTrips() throws {
         let s = SessionsStatus(counts: .init(blocked: 1), sessions: [.init(name: "a", alias: nil, state: .blocked, agents: nil)])
@@ -65,6 +73,26 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(top.sessions.map(\.name), ["s1", "s2", "s3"])
         XCTAssertEqual(top.more, 7, "3 pushed but not shown + 4 the Worker left out")
         XCTAssertEqual(SessionsCard.detail(.init(name: "x", alias: nil, state: .working, agents: 2)), "Working · +2 agents")
+        XCTAssertEqual(card.compactLabel, "1 session needs input")
+        XCTAssertEqual(SessionsStatus.Session(name: "x", alias: "", state: .idle).title, "x", "an empty alias is no alias")
+    }
+
+    /// With nothing blocked, the island leads with working, then idle.
+    func testLeadFallsToWorkingThenIdle() {
+        let working = SessionsCard(status: SessionsStatus(counts: .init(working: 2, idle: 3)), isStale: false)
+        XCTAssertEqual(working.lead, .working)
+        XCTAssertEqual(working.compactText, "2")
+        XCTAssertEqual(working.compactLabel, "2 sessions working")
+        let idle = SessionsCard(status: SessionsStatus(counts: .init(idle: 3, done: 1)), isStale: false)
+        XCTAssertEqual(idle.lead, .idle)
+        XCTAssertEqual(idle.compactText, "3")
+        XCTAssertEqual(SessionsCard(status: SessionsStatus(counts: .init(blocked: 3)), isStale: false).compactLabel,
+                       "3 sessions need input")
+    }
+
+    func testNegativeMoreCountsAsNone() {
+        let s = SessionsStatus(sessions: [.init(name: "a", alias: nil, state: .idle)], more: -3)
+        XCTAssertEqual(SessionsCard(status: s, isStale: false).rows(limit: 3).more, 0)
     }
 
     /// Past the stale date: no session state at all, only "status unavailable".
@@ -74,7 +102,9 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertNil(card.lead)
         XCTAssertTrue(card.rows(limit: 3).sessions.isEmpty)
         XCTAssertEqual(card.rows(limit: 3).more, 0)
-        XCTAssertFalse(card.compactText.contains("1"))
+        XCTAssertEqual(card.compactText, "–")
+        XCTAssertEqual(card.compactLabel, "status unavailable")
+        XCTAssertEqual(card.symbol, "questionmark.circle")
     }
 
     func testOfflineCardSaysSoAndShowsNoStates() {
@@ -173,6 +203,7 @@ final class LiveStatusTests: XCTestCase {
             await c.post(.alert, token: String(repeating: "a", count: 513)),
             await c.post(.laUpdate, token: tok, activityId: "act-1"),  // no mac_id
             await c.post(.laUpdate, token: tok, macId: "m"),            // no activity_id
+            await c.post(.laUpdate, token: tok, activityId: "act-1", macId: ""),
             await c.post(.laUpdate, token: tok, activityId: "has space", macId: "m"),
             await c.delete(.laUpdate, activityId: ""),
         ]
@@ -254,6 +285,105 @@ final class LiveStatusTests: XCTestCase {
         let refused = await client(rec2).post(.laUpdate, token: tok, activityId: "x", macId: "m")
         XCTAssertFalse(refused)
         XCTAssertEqual(rec2.requests.count, 1)
+    }
+
+    // MARK: the switch and the tokens
+
+    /// A send that can hold one request until released, to have a repost in flight.
+    private final class Gate: @unchecked Sendable {
+        var requests: [URLRequest] = []
+        var holdNext = false
+        private var held: CheckedContinuation<Void, Never>?
+        var holding: Bool { held != nil }
+        func send(_ r: URLRequest) async throws -> Int {
+            requests.append(r)
+            if holdNext {
+                holdNext = false
+                await withCheckedContinuation { held = $0 }
+            }
+            return 204
+        }
+        func release() { held?.resume(); held = nil }
+        func waitHeld() async {
+            for _ in 0..<500 where !holding { try? await Task.sleep(nanoseconds: 2_000_000) }
+        }
+        var methods: [String?] { requests.map(\.httpMethod) }
+    }
+
+    @MainActor
+    private func liveStatus(_ gate: Gate, on: Bool = true, notifications: Bool = true) -> LiveStatus {
+        let d = UserDefaults(suiteName: "LiveStatusTests-\(UUID())")!
+        d.set(on, forKey: LiveStatus.enabledKey)
+        return LiveStatus(defaults: d, client: {
+            var c = PushTokens(base: URL(string: "https://worker.test")!, session: "b", deviceId: "dev-12345678", env: "sandbox")
+            c.send = gate.send
+            c.retryDelays = [0]
+            return c
+        }, notificationsAllowed: { notifications })
+    }
+
+    @MainActor
+    func testNoPostAndNothingCachedWithTheSwitchOff() async {
+        let gate = Gate()
+        let ls = liveStatus(gate, on: false)
+        await ls.post(.alert, token: tok)
+        XCTAssertTrue(gate.requests.isEmpty)
+        XCTAssertTrue(ls.cache.entries.isEmpty)
+    }
+
+    /// The switch goes off mid-repost: its DELETE is the last request, no POST after it.
+    @MainActor
+    func testRepostStopsWhenTheSwitchGoesOff() async {
+        let gate = Gate()
+        let ls = liveStatus(gate)
+        await ls.post(.alert, token: tok)
+        await ls.post(.laStart, token: tok)
+        gate.holdNext = true
+        let fg = Task { await ls.foreground() }
+        await gate.waitHeld()
+        await ls.turnOff()
+        gate.release()
+        await fg.value
+        XCTAssertEqual(gate.methods, ["POST", "POST", "POST", "DELETE"])
+    }
+
+    /// A foreground while a repost is in flight adds nothing.
+    @MainActor
+    func testOneRepostAtATime() async {
+        let gate = Gate()
+        let ls = liveStatus(gate)
+        await ls.post(.alert, token: tok)
+        await ls.post(.laStart, token: tok)
+        gate.holdNext = true
+        let fg = Task { await ls.foreground() }
+        await gate.waitHeld()
+        await ls.foreground()
+        gate.release()
+        await fg.value
+        XCTAssertEqual(gate.methods, ["POST", "POST", "POST", "POST"])
+    }
+
+    /// An ended card's token is taken back and never reposted.
+    @MainActor
+    func testEndedActivityIsNotReposted() async {
+        let gate = Gate()
+        let ls = liveStatus(gate)
+        await ls.post(.laUpdate, token: tok, activityId: "act-1", macId: "mac-a")
+        await ls.ended("act-1")
+        await ls.foreground()
+        XCTAssertEqual(gate.methods, ["POST", "DELETE"])
+    }
+
+    /// Notifications turned off in the Settings app: the switch follows and the Worker
+    /// forgets this device.
+    @MainActor
+    func testNotificationsOffInSettingsTurnsTheSwitchOff() async {
+        let gate = Gate()
+        let ls = liveStatus(gate, notifications: false)
+        await ls.post(.alert, token: tok)
+        await ls.foreground()
+        XCTAssertFalse(ls.enabled)
+        XCTAssertEqual(gate.methods, ["POST", "DELETE"])
     }
 
     func testEnvChoice() {
@@ -342,6 +472,21 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertTrue(LiveTarget(userInfo: ["mac_id": "aa11", "session": "other", "more": 0]).banners(over: onScreen))
         XCTAssertTrue(LiveTarget(userInfo: ["mac_id": "bb22", "session": "fix"]).banners(over: onScreen))
         XCTAssertTrue(LiveTarget(userInfo: ["mac_id": "aa11", "session": "fix"]).banners(over: nil))
+    }
+
+    /// Each tap is its own route, so a second alert for the session an earlier one opened
+    /// still navigates after the user moved to another by hand; the screen is replaced,
+    /// never stacked.
+    func testEveryTapIsANewRoute() {
+        let t = LiveTarget(userInfo: ["mac_id": "aa11", "session": "fix"])
+        guard case .sessions(.machine(let id), "fix", let tap1?)? = t.route(in: machines),
+              case .sessions(.machine(id), "fix", let tap2?)? = t.route(in: machines) else {
+            return XCTFail("a route to that Mac's session")
+        }
+        XCTAssertEqual(id, machines[0].id)
+        XCTAssertNotEqual(tap1, tap2)
+        XCTAssertNil(LiveTarget(userInfo: ["mac_id": "cc33", "session": "fix"]).route(in: machines), "home")
+        XCTAssertFalse(t.banners(over: LiveTarget(macId: "aa11", session: "fix")), "already on screen: stays put")
     }
 
     func testCardURLRoundTrips() {

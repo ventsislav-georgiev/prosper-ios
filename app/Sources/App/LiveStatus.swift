@@ -43,6 +43,9 @@ struct PushTokens {
     /// Seconds before each try. A token lost to one dropped request is a card the Worker
     /// can't update, so network errors and 5xx get two more tries; a 4xx won't change.
     var retryDelays: [UInt64] = [0, 2, 6]
+    /// Checked before every POST try: false once the switch is off, so a repost or a retry
+    /// still under way can't hand the Worker a token after turnOff's DELETE.
+    var live: @MainActor () -> Bool = { true }
 
     /// The Worker's checks, mirrored so a bad value fails here instead of as a 400: tokens
     /// are lowercase hex, 16-512 characters.
@@ -66,7 +69,7 @@ struct PushTokens {
             body["activity_id"] = activityId
             body["mac_id"] = macId
         }
-        return await call("POST", body)
+        return await call("POST", body, while: live)
     }
 
     /// Without `kind`, every token of this device. A 404 means the Worker already dropped
@@ -82,7 +85,8 @@ struct PushTokens {
         return await call("DELETE", body)
     }
 
-    private func call(_ method: String, _ body: [String: String]) async -> Bool {
+    private func call(_ method: String, _ body: [String: String],
+                      while live: @MainActor () -> Bool = { true }) async -> Bool {
         var req = URLRequest(url: base.appendingPathComponent("/push/tokens"))
         req.httpMethod = method
         // Three tries at URLSession's 60 s default would stall sign-out for minutes.
@@ -92,6 +96,7 @@ struct PushTokens {
         req.httpBody = try? JSONSerialization.data(withJSONObject: body, options: .sortedKeys)
         for delay in retryDelays {
             if delay > 0 { try? await Task.sleep(nanoseconds: delay * 1_000_000_000) }
+            guard await live() else { return false }
             guard let code = try? await send(req) else { continue }
             guard code < 500 else { continue }
             // A refusal is an answer, not a blip: a 403 on la_update is a Mac this account
@@ -189,6 +194,13 @@ extension LiveTarget {
         guard let macId else { return nil }
         return machines.first { $0.serverDeviceId == macId }
     }
+
+    /// Where the tap lands: that Mac's session list, opening the session once listed; nil
+    /// is home. Every call is a new route (`tap`), so a second tap for the same place
+    /// still navigates after the user moved away by hand.
+    func route(in machines: [Machine]) -> Route? {
+        machine(in: machines).map { .sessions(.machine($0.id), open: session, tap: UUID()) }
+    }
 }
 
 extension Data {
@@ -204,17 +216,20 @@ extension Data {
 final class LiveStatus: ObservableObject {
     static let shared = LiveStatus()
 
-    private static let enabledKey = "liveStatus.enabled"
+    static let enabledKey = "liveStatus.enabled"
     private static let askedKey = "liveStatus.asked"
 
+    private let defaults: UserDefaults
     /// The "Live status and alerts" switch.
-    @Published private(set) var enabled = UserDefaults.standard.bool(forKey: enabledKey) {
-        didSet { UserDefaults.standard.set(enabled, forKey: Self.enabledKey) }
+    @Published private(set) var enabled: Bool {
+        didSet { defaults.set(enabled, forKey: Self.enabledKey) }
     }
     /// The Turn On / Not now card was answered; it never comes back after Not now.
-    @Published private(set) var asked = UserDefaults.standard.bool(forKey: askedKey) {
-        didSet { UserDefaults.standard.set(asked, forKey: Self.askedKey) }
+    @Published private(set) var asked: Bool {
+        didSet { defaults.set(asked, forKey: Self.askedKey) }
     }
+    /// Live Activities allowed for Prosper in the Settings app, as of the last foreground.
+    @Published private(set) var activitiesAllowed = true
     /// A tapped alert or card waiting for Home to route it.
     @Published var target: LiveTarget?
     /// The session open on screen, so its own alert doesn't banner over it.
@@ -224,8 +239,22 @@ final class LiveStatus: ObservableObject {
     private var tracked: Set<String> = []
     private(set) var cache = PushTokenCache()
     private var reposting = false
+    private let signedIn: () -> PushTokens?
+    private let notificationsAllowed: () async -> Bool
 
-    init() {
+    /// Tests substitute the defaults, the client and the permission check.
+    init(defaults: UserDefaults = .standard,
+         client: @escaping () -> PushTokens? = {
+             Keychain.load().map { PushTokens(session: $0.session, deviceId: InstallID.get(email: $0.email)) }
+         },
+         notificationsAllowed: @escaping () async -> Bool = {
+             await UNUserNotificationCenter.current().notificationSettings().authorizationStatus != .denied
+         }) {
+        self.defaults = defaults
+        enabled = defaults.bool(forKey: Self.enabledKey)
+        asked = defaults.bool(forKey: Self.askedKey)
+        signedIn = client
+        self.notificationsAllowed = notificationsAllowed
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
                                                object: nil, queue: .main) { _ in
             Task { @MainActor in await LiveStatus.shared.foreground() }
@@ -233,11 +262,16 @@ final class LiveStatus: ObservableObject {
     }
 
     /// Re-post every cached token, once per key; a foreground while one is in flight
-    /// adds nothing.
+    /// adds nothing. Notifications turned off in the Settings app turn the switch off,
+    /// so the Worker forgets this device.
     func foreground() async {
         guard enabled, !reposting, let client = client() else { return }
         reposting = true
         defer { reposting = false }
+        #if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
+        if #available(iOS 16.1, *) { activitiesAllowed = ActivityAuthorizationInfo().areActivitiesEnabled }
+        #endif
+        guard await notificationsAllowed() else { return await turnOff() }
         await cache.repost(client)
     }
 
@@ -285,11 +319,12 @@ final class LiveStatus: ObservableObject {
     }
 
     private func client() -> PushTokens? {
-        guard let s = Keychain.load() else { return nil }
-        return PushTokens(session: s.session, deviceId: InstallID.get(email: s.email))
+        guard var c = signedIn() else { return nil }
+        c.live = { [weak self] in self?.enabled == true }
+        return c
     }
 
-    private func post(_ kind: PushKind, token: String, activityId: String? = nil, macId: String? = nil) async {
+    func post(_ kind: PushKind, token: String, activityId: String? = nil, macId: String? = nil) async {
         guard enabled, let client = client() else { return }
         cache.remember(.init(kind: kind, token: token, activityId: activityId, macId: macId))
         await client.post(kind, token: token, activityId: activityId, macId: macId)
@@ -328,14 +363,19 @@ final class LiveStatus: ObservableObject {
         })
         observers.append(Task {
             for await state in activity.activityStateUpdates where state == .ended || state == .dismissed {
-                tracked.remove(id)
-                cache.forget(activityId: id)
-                if let client = client() { await client.delete(.laUpdate, activityId: id) }
+                await ended(id)
                 return
             }
         })
     }
     #endif
+
+    /// An ended card's token: no more reposts, and the Worker drops it.
+    func ended(_ id: String) async {
+        tracked.remove(id)
+        cache.forget(activityId: id)
+        if let client = client() { await client.delete(.laUpdate, activityId: id) }
+    }
 
     private func stop() async {
         observers.forEach { $0.cancel() }

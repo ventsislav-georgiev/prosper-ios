@@ -39,11 +39,11 @@ let uiScreen = ProcessInfo.processInfo.environment["PROSPER_UI_SCREEN"]
 
 /// Navigation routes for the Remote Terminal feature. `connect` = the machine
 /// picker; `sessions` = the dch session list for a machine (id, or the demo sentinel),
-/// optionally opening one session once it is listed (a tapped alert);
-/// `settings` = the account screen.
+/// optionally opening one session once it is listed (a tapped alert), `tap` telling one
+/// tap's screen from the last one's; `settings` = the account screen.
 enum Route: Hashable {
     case connect
-    case sessions(MachineRef, open: String? = nil)
+    case sessions(MachineRef, open: String? = nil, tap: UUID? = nil)
     case settings
 }
 
@@ -105,8 +105,8 @@ struct HomeView: View {
                 switch route {
                 case .connect:
                     ConnectScreen(store: store) { ref in go(.sessions(ref)) }
-                case .sessions(let ref, let open):
-                    sessionList(for: ref, open: open)
+                case .sessions(let ref, let open, let tap):
+                    sessionList(for: ref, open: open, tap: tap)
                 case .settings:
                     SettingsView(account: account)
                 }
@@ -118,11 +118,9 @@ struct HomeView: View {
         .onReceive(live.$target) { t in
             guard let t else { return }
             live.target = nil
-            if let m = t.machine(in: store.machines) {
-                go(.sessions(.machine(m.id), open: t.session))
-            } else {
-                path = NavigationPath()
-            }
+            // Already in that session (an alert tapped in Notification Center): stay put.
+            guard t.banners(over: live.attached) else { return }
+            if let r = t.route(in: store.machines) { go(r) } else { path = NavigationPath() }
         }
     }
 
@@ -148,7 +146,7 @@ struct HomeView: View {
         path.append(route)
     }
 
-    @ViewBuilder private func sessionList(for ref: MachineRef, open: String?) -> some View {
+    @ViewBuilder private func sessionList(for ref: MachineRef, open: String?, tap: UUID?) -> some View {
         // "Change" PUSHES the picker on top of Sessions (Home → Sessions → Machines),
         // so Back from Machines returns to Sessions — the expected hierarchy.
         switch ref {
@@ -160,11 +158,12 @@ struct HomeView: View {
                 // `.id(ref)` because SwiftUI reuses a destination view of the same type at
                 // the same depth: without it, switching machines kept the previous machine's
                 // @State — its transport (so the new machine's row dialed the OLD Mac), its
-                // half-finished `trying` address, and its leftover error text.
+                // half-finished `trying` address, and its leftover error text. A new tap is
+                // a fresh list too, so its session opens even if an earlier tap opened it.
                 SessionListView(transport: ProsperTransport(host: m.addresses.first ?? m.name),
                                 title: m.name, machine: m, store: store, account: account,
                                 onChangeMachine: { path.append(Route.connect) }, openSession: open)
-                    .id(Route.sessions(ref, open: open))
+                    .id(Route.sessions(ref, open: open, tap: tap))
             } else {
                 ConnectScreen(store: store) { r in go(.sessions(r)) }
             }

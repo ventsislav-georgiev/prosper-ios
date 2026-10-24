@@ -5,8 +5,9 @@ import SwiftUI
 /// push's stale date, which the card reads as `isStale`.
 ///
 /// Decoded leniently, because a push that fails to decode is a card that silently stops
-/// updating: unknown keys are ignored, a newer `v` still reads, `alias` and `agents` may be
-/// missing, and an unknown state reads as idle.
+/// updating: unknown keys are ignored, a newer `v` still reads, a missing value or one of
+/// the wrong type reads as its default (no alias, no agents, zero, no sessions), and an
+/// unknown state reads as idle.
 struct SessionsStatus: Codable, Hashable {
     struct Counts: Codable, Hashable {
         var blocked = 0, working = 0, idle = 0, done = 0
@@ -34,32 +35,37 @@ struct SessionsStatus: Codable, Hashable {
 extension SessionsStatus {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        v = try c.decodeIfPresent(Int.self, forKey: .v) ?? 1
-        online = try c.decodeIfPresent(Bool.self, forKey: .online) ?? true
-        counts = try c.decodeIfPresent(Counts.self, forKey: .counts) ?? Counts()
-        sessions = try c.decodeIfPresent([Session].self, forKey: .sessions) ?? []
-        more = try c.decodeIfPresent(Int.self, forKey: .more) ?? 0
+        v = c.lenient(.v) ?? 1
+        online = c.lenient(.online) ?? true
+        counts = c.lenient(.counts) ?? Counts()
+        sessions = c.lenient(.sessions) ?? []
+        more = c.lenient(.more) ?? 0
     }
 }
 
 extension SessionsStatus.Counts {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        blocked = try c.decodeIfPresent(Int.self, forKey: .blocked) ?? 0
-        working = try c.decodeIfPresent(Int.self, forKey: .working) ?? 0
-        idle = try c.decodeIfPresent(Int.self, forKey: .idle) ?? 0
-        done = try c.decodeIfPresent(Int.self, forKey: .done) ?? 0
+        blocked = c.lenient(.blocked) ?? 0
+        working = c.lenient(.working) ?? 0
+        idle = c.lenient(.idle) ?? 0
+        done = c.lenient(.done) ?? 0
     }
 }
 
 extension SessionsStatus.Session {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        name = try c.decode(String.self, forKey: .name)
-        alias = try c.decodeIfPresent(String.self, forKey: .alias)
-        state = SessionStateStyle(try c.decodeIfPresent(String.self, forKey: .state)) ?? .idle
-        agents = try c.decodeIfPresent(Int.self, forKey: .agents)
+        name = try c.decode(String.self, forKey: .name)   // none: the card lists no sessions
+        alias = c.lenient(.alias)
+        state = SessionStateStyle(c.lenient(.state)) ?? .idle
+        agents = c.lenient(.agents)
     }
+}
+
+private extension KeyedDecodingContainer {
+    /// The value, or nil when it is missing or of the wrong type.
+    func lenient<T: Decodable>(_ key: Key) -> T? { (try? decodeIfPresent(T.self, forKey: key)) ?? nil }
 }
 
 extension SessionStateStyle: Codable {}
@@ -102,18 +108,31 @@ struct SessionsCard {
 
     var tint: Color { lead?.tint ?? .secondary }
 
+    /// How many sessions are in the lead state.
+    private var leadCount: Int {
+        let c = status.counts
+        switch lead {
+        case .blocked: return c.blocked
+        case .working: return c.working
+        case .idle:    return c.idle
+        case .done:    return c.done
+        case nil:      return 0
+        }
+    }
+
     /// The compact island's trailing text: how many sessions are in the lead state.
     var compactText: String {
         if isStale { return "–" }
         if !status.online { return "offline" }
-        let c = status.counts
-        switch lead {
-        case .blocked: return "\(c.blocked)"
-        case .working: return "\(c.working)"
-        case .idle:    return "\(c.idle)"
-        case .done:    return "\(c.done)"
-        case nil:      return "0"
-        }
+        return "\(leadCount)"
+    }
+
+    /// What VoiceOver reads for that count: "3 sessions need input", not a bare "3".
+    var compactLabel: String {
+        guard let lead else { return headline }
+        let n = leadCount
+        let state = lead != .blocked ? lead.label.lowercased() : n == 1 ? "needs input" : "need input"
+        return "\(n) \(n == 1 ? "session" : "sessions") \(state)"
     }
 
     /// Up to `limit` sessions, and the "+N more" count for the rest.
@@ -123,7 +142,7 @@ struct SessionsCard {
         return (shown, status.sessions.count - shown.count + max(0, status.more))
     }
 
-    /// "working · 2 agents" for one row.
+    /// The row's state and its subagents: "Working · +2 agents", or just "Working".
     static func detail(_ s: SessionsStatus.Session) -> String {
         [s.state.label, SessionStateStyle.agents(s.agents)].compactMap { $0 }.joined(separator: " · ")
     }
