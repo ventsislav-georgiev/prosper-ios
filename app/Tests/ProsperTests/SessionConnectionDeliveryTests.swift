@@ -268,12 +268,14 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         var retried = 0
         let vc = InsertTextVC(accepts: accepts.eraseToAnyPublisher(), onRetry: { retried += 1 }) { _, _ in }
         vc.loadViewIfNeeded()
-        XCTAssertEqual(vc.navigationItem.rightBarButtonItems?.map(\.title), ["Insert & Send", "Insert"])
+        let items = try XCTUnwrap(vc.navigationItem.rightBarButtonItems)
+        XCTAssertEqual(visibleTitles(vc), ["Insert & Send", "Insert"])
         XCTAssertNil(vc.navigationItem.prompt)
 
         accepts.send(false)
-        let retry = try XCTUnwrap(vc.navigationItem.rightBarButtonItems?.first)
-        XCTAssertEqual(vc.navigationItem.rightBarButtonItems?.map(\.title), ["Retry"],
+        assertSameItems(vc, items)
+        let retry = try XCTUnwrap(items.first { $0.title == "Retry" })
+        XCTAssertEqual(visibleTitles(vc), ["Retry"],
                        "a failed session must not take the text")
         XCTAssertNotNil(vc.navigationItem.prompt)
         XCTAssertNotNil(vc.navigationItem.leftBarButtonItem, "Cancel stays")
@@ -281,9 +283,23 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(retried, 1)
 
         accepts.send(true)
-        XCTAssertEqual(vc.navigationItem.rightBarButtonItems?.map(\.title), ["Insert & Send", "Insert"],
+        assertSameItems(vc, items)
+        XCTAssertEqual(visibleTitles(vc), ["Insert & Send", "Insert"],
                        "retry brings sending back")
         XCTAssertNil(vc.navigationItem.prompt)
+    }
+
+    /// Titles of the right items on show; hidden ones take no room in the bar.
+    private func visibleTitles(_ vc: UIViewController) -> [String?]? {
+        vc.navigationItem.rightBarButtonItems?.filter { !$0.isHidden }.map(\.title)
+    }
+
+    /// The right items are set once: re-assigning them stops iOS drawing the prompt.
+    private func assertSameItems(_ vc: UIViewController, _ items: [UIBarButtonItem],
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        let now = vc.navigationItem.rightBarButtonItems ?? []
+        XCTAssertTrue(now.count == items.count && zip(now, items).allSatisfy { $0 === $1 },
+                      "rightBarButtonItems was re-assigned", file: file, line: line)
     }
 
     /// The terminal wires its Insert sheet to the connection: opened while failed it
@@ -306,13 +322,15 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         let nav = try XCTUnwrap(vc.presentedViewController as? UINavigationController)
         let sheet = try XCTUnwrap(nav.viewControllers.first as? InsertTextVC)
         sheet.loadViewIfNeeded()
-        let retry = try XCTUnwrap(sheet.navigationItem.rightBarButtonItems?.first)
-        XCTAssertEqual(sheet.navigationItem.rightBarButtonItems?.map(\.title), ["Retry"],
+        let items = try XCTUnwrap(sheet.navigationItem.rightBarButtonItems)
+        let retry = try XCTUnwrap(items.first { $0.title == "Retry" })
+        XCTAssertEqual(visibleTitles(sheet), ["Retry"],
                        "the sheet must follow the failed connection")
 
         _ = (retry.target as? NSObject)?.perform(retry.action)
         try await waitUntil("retry reattaches") { t.streams.count == 2 }
-        XCTAssertEqual(sheet.navigationItem.rightBarButtonItems?.map(\.title), ["Insert & Send", "Insert"])
+        assertSameItems(sheet, items)
+        XCTAssertEqual(visibleTitles(sheet), ["Insert & Send", "Insert"])
         vc.dismiss(animated: false)
         conn.close()
     }

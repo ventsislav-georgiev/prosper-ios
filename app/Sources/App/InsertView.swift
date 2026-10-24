@@ -29,15 +29,18 @@ final class InsertTextVC: UIViewController, UITextViewDelegate {
         view.backgroundColor = .systemBackground
         navigationItem.leftBarButtonItem =
             UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(cancel))
-        // first item sits rightmost. While failed Retry takes the whole side: four
-        // items don't fit at 402 pt and iOS folds one into a More menu.
+        // first item sits rightmost. The items are set once and only shown or hidden:
+        // re-assigning them stops iOS drawing the prompt, and hidden items take no room,
+        // so while failed Retry stands alone and nothing folds into a More menu at 402 pt.
         let send = [
             UIBarButtonItem(title: "Insert & Send", style: .done, target: self, action: #selector(insertAndSend)),
             UIBarButtonItem(title: "Insert", style: .plain, target: self, action: #selector(insert)),
         ]
-        let retry = [UIBarButtonItem(title: "Retry", style: .plain, target: self, action: #selector(retry))]
+        let retry = UIBarButtonItem(title: "Retry", style: .plain, target: self, action: #selector(retry))
+        navigationItem.rightBarButtonItems = send + [retry]
         acceptsSub = accepts.sink { [weak self] on in
-            self?.navigationItem.rightBarButtonItems = on ? send : retry
+            send.forEach { $0.isHidden = !on }
+            retry.isHidden = on
             self?.navigationItem.prompt = on ? nil : "Session failed. Retry before sending."
         }
 
