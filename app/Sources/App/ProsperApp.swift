@@ -324,6 +324,8 @@ struct SessionListView: View {
     @State private var creating = false            // new-session alert
     @State private var newName = ""
     @State private var sleeping = false            // sleep round-trip in flight
+    @State private var sidekickTab = false         // the Sidekicks segment is showing
+    @AppStorage(DchSession.sidekickKey) private var sidekickPattern = DchSession.sidekickDefault
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -376,7 +378,20 @@ struct SessionListView: View {
             } else if let line = error ?? notice {
                 Text(line).foregroundStyle(.secondary)
             }
-            ForEach(DchSession.ordered(sessions)) { s in row(s) }
+            let split = DchSession.split(DchSession.ordered(sessions), pattern: sidekickPattern)
+            if !split.sidekicks.isEmpty {
+                Picker("Sessions", selection: $sidekickTab) {
+                    Text("Sessions (\(split.primary.count))").tag(false)
+                    Text("Sidekicks (\(split.sidekicks.count))").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+            }
+            ForEach(sidekickTab && !split.sidekicks.isEmpty ? split.sidekicks : split.primary) { s in row(s) }
+        }
+        // The last sidekick gone (or the split turned off): back to Sessions for good.
+        .onChange(of: DchSession.split(sessions, pattern: sidekickPattern).sidekicks.isEmpty) { empty in
+            if empty { sidekickTab = false }
         }
         .navigationTitle("Sessions")
         .toolbar {
@@ -649,6 +664,20 @@ extension DchSession {
             let c = $0.title.localizedStandardCompare($1.title)
             return c == .orderedSame ? $0.name < $1.name : c == .orderedAscending
         }
+    }
+
+    /// Settings key and default for the sidekick name pattern.
+    static let sidekickKey = "sidekickPattern"
+    static let sidekickDefault = "-qa"
+
+    /// Splits `list` into primary sessions and sidekicks: a sidekick's real `name` (not
+    /// its alias) contains `pattern`, case-insensitive. An empty pattern turns the split
+    /// off. Order is kept.
+    static func split(_ list: [DchSession], pattern: String) -> (primary: [DchSession], sidekicks: [DchSession]) {
+        let p = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return (list, []) }
+        let isSidekick = { (s: DchSession) in s.name.range(of: p, options: .caseInsensitive) != nil }
+        return (list.filter { !isSidekick($0) }, list.filter(isSidekick))
     }
 }
 

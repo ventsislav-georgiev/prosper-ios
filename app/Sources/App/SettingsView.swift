@@ -75,6 +75,7 @@ struct SettingsView: View {
     @AppStorage(KeyboardSettings.Key.characterPreview, store: KeyboardSettings.store())
     private var characterPreview = KeyboardSettings().characterPreview
     @AppStorage(AgentCommand.key) private var agentCommand = ""
+    @AppStorage(DchSession.sidekickKey) private var sidekickPattern = DchSession.sidekickDefault
     // Session list rows (`RowDetails`), on this device only.
     @AppStorage(RowDetails.Key.agents) private var rowAgents = RowDetails().agents
     @AppStorage(RowDetails.Key.openPRs) private var rowOpenPRs = RowDetails().openPRs
@@ -159,6 +160,17 @@ struct SettingsView: View {
                 Text("Row details each session shows. Its name and state always show.")
             }
 
+            Section {
+                TextField("Sidekick pattern", text: $sidekickPattern)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.body, design: .monospaced))
+            } header: {
+                Text("Sidekicks")
+            } footer: {
+                Text("Sessions whose name contains this, ignoring case, go under a Sidekicks tab in the session list. Empty shows every session together.")
+            }
+
             // Apple's Settings › General › Keyboard, in its order, for what Prosper's has.
             // Not on the Mac: no Prosper keyboard there to read them.
             #if !targetEnvironment(macCatalyst)
@@ -179,7 +191,7 @@ struct SettingsView: View {
                 NavigationLink("System Keyboard Toolbar") { ShortcutEditor(bar: .toolbar) }
                 Button("Terminal Shortcut Keys") { editingShortcuts = true }
             } footer: {
-                Text("The System Keyboard Toolbar shows above the Prosper keyboard in other apps when you tap the toolbar toggle at the leading edge of its strip. Terminal Shortcut Keys are the bar under the terminal.")
+                Text("The System Keyboard Toolbar shows above the Prosper keyboard in other apps when you tap the toolbar toggle at the leading edge of its strip. Terminal Shortcut Keys are the bar under the terminal. The toolbar list needs Full Access; without it, the keyboard shows the default keys.")
             }
             #endif
 
