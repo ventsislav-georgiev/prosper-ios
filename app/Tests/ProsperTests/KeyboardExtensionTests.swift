@@ -1364,6 +1364,72 @@ final class KeyboardExtensionTests: XCTestCase {
         }
     }
 
+    /// A line move whose landing the context shows goes there in one move, with no stop at a
+    /// line's end on the way, in Safari and a UIKit host showing whole contexts, lagging or
+    /// not; one it doesn't show (the text's first line, a last line shorter than the column,
+    /// an after-context cut at the line's end) goes in legs as before. Each starts past a
+    /// break, so the column shows.
+    func testALineMoveTheContextShowsGoesInOneMove() {
+        let cases: [(String, [(Int, Int)], String, [Int]?, Bool, String)] = [
+            ("abc\nabcdef\nab|cdef", [(0, -1)], "abc\nab|cdef\nabcdef", [-7], true, "up"),
+            ("x\nab|cdef\nabcdef\nabc", [(0, 1)], "x\nabcdef\nab|cdef\nabc", [7], false, "down"),
+            ("x\nabc\nabcdef|", [(0, -1)], "x\nabc|\nabcdef", [-7], true, "up onto a shorter line: its end"),
+            ("x\nabcdef|\nabc\nx", [(0, 1)], "x\nabcdef\nabc|\nx", [4], false, "down onto one"),
+            ("x\nabcdefgh\nab\nabc|def", [(0, -2)], "x\nabc|defgh\nab\nabcdef", [-12], true, "up 2"),
+            ("x\nabcdef\nab\nabcd|ef", [(0, -1), (0, -1)], "x\nabcd|ef\nab\nabcdef", [-5, -5], true,
+             "up, and up again: the column back past a short line"),
+            ("x\nab|c\ndef", [(0, 1)], "x\nabc\nde|f", [4], false, "down onto the last line"),
+            ("abc\nde|f", [(0, -1)], "ab|c\ndef", nil, true, "up onto the first line: its start unseen"),
+            ("x\nabcdef|\nab", [(0, 1)], "x\nabcdef\nab|", nil, false, "down onto a short last line: its end unseen"),
+            ("x\nab|c\ndef", [(0, 1)], "x\nabc\nde|f", nil, true, "down past an after-context cut at the line's end"),
+        ]
+        for (s, moves, want, sent, cut, why) in cases {
+            for kit in [true, false] {
+                for perRefresh in [0, 1] {
+                    var doc: FakeProxy?
+                    let got = lined(s, kit: kit, cut: cut, moves, perRefresh: perRefresh, why,
+                                    tweak: { $0.lineBefore = false; doc = $0 })
+                    let at = "\(why) kit \(kit) lag \(perRefresh)"
+                    XCTAssertEqual(got, want, at)
+                    if let sent { XCTAssertEqual(doc?.moves, sent, at) } else { XCTAssertGreaterThan(doc?.moves.count ?? 0, 1, at) }
+                }
+            }
+        }
+    }
+
+    /// The moves a line move up and down sends in each host's model, lagging or not:
+    /// Safari's textarea, whose before-context spans lines (QA: about 3), goes up in one;
+    /// a UITextView's, cut at the caret's line or sentence, and Safari's paragraph, opening
+    /// on the caret line's break, never show the line above whole and go in legs; so does
+    /// down wherever the after-context stops at the line's end, as every host's does.
+    func testLineMovesPerHost() {
+        let s = "zero\nfirst line here\nsecond| line text\nthird line, longer one", parts = s.components(separatedBy: "|")
+        let models: [(String, Bool, (FakeProxy) -> Void, up: [Int], down: [Int])] = [
+            ("UITextView", true, { _ in }, [-6, -1, -15, 6], [-6, 16, 1, 6]),
+            ("Safari textarea", false, { $0.stopsAtLineEnd = true }, [-16], [10, 1, 6]),
+            ("Safari paragraph", false, { $0.stopsAtLineEnd = true; $0.breakSpace = true }, [-7, -9], [10, 1, 6]),
+            ("whole contexts", false, { $0.window = nil }, [-16], [17]),
+        ]
+        for (name, kit, tweak, up, down) in models {
+            for (n, want) in [(-1, up), (1, down)] {
+                for lag in [false, true] {
+                    let doc = host(kit: kit, parts[0], parts[1])
+                    tweak(doc)
+                    doc.lags = lag
+                    var walk = CaretWalk(), polls = 0
+                    func step(_ l: Int) {
+                        let u = walk.step(0, lines: l, before: doc.documentContextBeforeInput ?? "",
+                                          after: doc.documentContextAfterInput ?? "", settled: polls >= 3)
+                        if u != 0 { doc.adjustTextPosition(byCharacterOffset: u); polls = 0 }
+                    }
+                    step(n)
+                    for _ in 0..<400 where !walk.idle { doc.catchUp(); polls += 1; walk.poll(); step(0) }
+                    XCTAssertEqual(doc.moves, want, "\(name) \(n) lag \(lag)")
+                }
+            }
+        }
+    }
+
     /// A drag faster than the host: the line moves add up or cancel out, and the sideways
     /// steps asked during one wait for its landing, so a wobble never knocks it off its
     /// line, then set a new column.
@@ -1696,9 +1762,9 @@ final class KeyboardExtensionTests: XCTestCase {
     /// goes alone (QA's M473).
     func testDropForgetsTheLinesAsked() {
         var walk = CaretWalk()
-        XCTAssertEqual(walk.step(0, lines: 2, before: "\nab", after: "c\nxyz\nmno"), 2, "over the break, a line still to go")
+        XCTAssertEqual(walk.step(0, lines: 2, before: "\nab", after: "c\nxyz\nm"), 2, "over the break, a line still to go")
         walk.drop()
-        XCTAssertEqual(walk.step(1, before: "\nab", after: "c\nxyz\nmno"), 1, "the new hold's step, not the old lines")
+        XCTAssertEqual(walk.step(1, before: "\nab", after: "c\nxyz\nm"), 1, "the new hold's step, not the old lines")
     }
 
     /// A line move asked while the host shows an older answer than the landing the walk
@@ -1711,7 +1777,7 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertTrue(walk.idle)
         XCTAssertEqual(walk.step(0, lines: 1, before: "\nab", after: "cd\nxyz"), 0, "the older answer sizes nothing")
         XCTAssertFalse(walk.idle, "a line still to move")
-        XCTAssertEqual(walk.step(0, before: "\nabc", after: "d\nxyz"), 2, "the latest again: over the break")
+        XCTAssertEqual(walk.step(0, before: "\nabc", after: "d\nxyz"), 5, "the latest again: to the column below")
     }
 
     /// A line move as the first thing in another field starts a fresh walk there, never

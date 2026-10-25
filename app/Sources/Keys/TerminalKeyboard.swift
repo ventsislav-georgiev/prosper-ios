@@ -528,6 +528,7 @@ struct CaretWalk {
     /// before the caret is the text's start. The goal column is counted from the start line's
     /// start, walked to first if the context doesn't reach it. After the last break, that
     /// column, or the line's end if it's shorter. Then the sideways steps held behind it.
+    /// A landing the context already shows goes in one move (`reach`).
     ///
     /// ponytail: a host that hides the line's break shows no edge either, so a line move
     /// from the first line (UIKit) or the last (every host) walks to the edge and back.
@@ -546,6 +547,11 @@ struct CaretWalk {
                 }
                 let g = goal ?? (col ?? 0) - (walked ?? 0), down = lines > 0
                 goal = g
+                // The line it goes to in sight: there in one move, no stop at a line's end.
+                if let to = Self.reach(lines, column: g, before: before, after: after) {
+                    queued = to; lines = 0; walked = 0
+                    return
+                }
                 if down, let k = after.firstIndex(where: \.isNewline) {
                     queued = k + 1
                 } else if !down, let br {
@@ -592,6 +598,25 @@ struct CaretWalk {
     private mutating func edge() {
         lines = 0
         if let w = walked { queued = -w; walked = 0; landing = nil } else { landing = .start(goal ?? 0) }
+    }
+
+    /// Where a move of `n` lines (negative up) lands, in Characters from the caret, if the
+    /// context shows it: the line from its start to column `g`, or to its end if shorter.
+    /// Up needs the break before that line in sight, as a host can cut a line's start; down,
+    /// the line's end or the column, as a host can cut the after-context anywhere. Safari's
+    /// textarea shows lines above; a UITextView's context, cut at a line or a sentence it
+    /// can't be told from, and every after-context, stopping at the line's end, never do.
+    static func reach(_ n: Int, column g: Int, before: [Character], after: [Character]) -> Int? {
+        let side = n > 0 ? after : before, brs = side.indices.filter { side[$0].isNewline }
+        if n > 0 {
+            guard brs.count >= n else { return nil }
+            let start = brs[n - 1] + 1, line = after[start...].prefix { !$0.isNewline }
+            guard line.count >= g || start + line.count < after.count else { return nil }
+            return start + min(g, line.count)
+        }
+        guard brs.count > -n else { return nil }
+        let start = brs[brs.count + n - 1] + 1, end = brs[brs.count + n]
+        return start + min(g, end - start) - before.count
     }
 
     private mutating func send(_ units: Int, _ seen: (String, String), _ before: String, _ after: String,
