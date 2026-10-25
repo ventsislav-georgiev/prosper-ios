@@ -268,6 +268,33 @@ final class KeyboardToolbarTests: XCTestCase {
         withExtendedLifetime(kb) {}
     }
 
+    /// Rotating rebuilds the toolbar: Paste leaves in landscape and comes back in portrait,
+    /// with nothing else reloading it.
+    func testRotatingDropsAndRestoresTheToolbarPaste() throws {
+        guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+        let (kb, bar, _) = rig("say h", keys: Shortcuts.Bar.toolbar.defaults)
+        bar.suggestions.pasteboard = { pb }
+        let toolbar = try XCTUnwrap(bar.toolbar)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        bar.frame = CGRect(x: 0, y: 0, width: 402, height: 44)
+        window.addSubview(bar)
+        window.isHidden = false
+        defer { window.isHidden = true }
+        window.layoutIfNeeded()
+        XCTAssertFalse(Self.pasteControls(toolbar).isEmpty, "portrait")
+
+        window.traitOverrides.verticalSizeClass = .compact
+        window.layoutIfNeeded()
+        XCTAssertTrue(Self.pasteControls(toolbar).isEmpty, "landscape")
+
+        window.traitOverrides.verticalSizeClass = .regular
+        window.layoutIfNeeded()
+        XCTAssertFalse(Self.pasteControls(toolbar).isEmpty, "portrait again")
+        withExtendedLifetime(kb) {}
+    }
+
     // MARK: Edits (#553)
 
     /// A toolbar edit pressed, then the host answering and the walk polling until it lands.
