@@ -11,7 +11,7 @@ final class KeyboardExtensionTests: XCTestCase {
     /// A host text field as the extension sees it: the text before the cursor, and the
     /// field's traits. SuggestionsTests uses it too.
     final class FakeProxy: NSObject, UITextDocumentProxy {
-        var text = "" { didSet { units = nil; rest = nil } }
+        var text = "" { didSet { units = nil; rest = nil; blank = false } }
         var calls: [String] = []
         var autocapitalizationType: UITextAutocapitalizationType = .sentences
         var keyboardType: UIKeyboardType = .default
@@ -22,8 +22,10 @@ final class KeyboardExtensionTests: XCTestCase {
         /// Both contexts are nil, as some hosts' fields show none.
         var hidesContext = false
         var documentContextBeforeInput: String? {
-            if hidesContext { return nil }
+            if hidesContext || blank && shown == nil { return nil }
+            if let f = frozen { return f.before }
             if let h = held { return h.before }
+            if let o = old { return context(before: o.before) }
             let s = guess ?? shown
             if let r = s.map({ $0.rest }) ?? rest { return r }
             return context(before: s?.before ?? text)
@@ -55,9 +57,10 @@ final class KeyboardExtensionTests: XCTestCase {
         private var rest: String?
         var after: String? { didSet { units = nil } }
         var documentContextAfterInput: String? {
-            if hidesContext { return nil }
+            if hidesContext || blank && shown == nil { return nil }
+            if let f = frozen { return f.after }
             if let h = held { return h.after }
-            let a = (guess ?? shown).map(\.after) ?? after
+            let a = old.map(\.after) ?? (guess ?? shown).map(\.after) ?? after
             let cut = stopsAtLineEnd && !(guessesPastLineEnd && guess != nil) ? a.map { String($0.utf16.prefix { $0 != 0x0A && $0 != 0x0D }) ?? "" } : a
             return window.flatMap { w in cut.map { String(decoding: Array($0.utf16.prefix(w)), as: UTF16.self) } } ?? cut
         }
@@ -69,13 +72,16 @@ final class KeyboardExtensionTests: XCTestCase {
         var selectedText: String? { nil }
         var documentInputMode: UITextInputMode? { nil }
         let documentIdentifier = UUID()
-        var hasText: Bool { !text.isEmpty }
+        var hasText: Bool { !text.isEmpty || after?.isEmpty == false }
         /// Edits lag as moves do (`lags`): the context shows them only after `catchUp()`, as
         /// real hosts show none in the runloop turn that sent them.
         var lagsEdits = false
         /// The context shows all but the last edit until `catchUp()`: a host one edit behind,
         /// whose context changes but still shows the last Character deleted.
         var behind = false
+        /// How many edits a host `behind` is behind: from 2 on, its context shows part of a
+        /// batch still there after the batch went, as a host that hadn't seen all of it.
+        var behindBy = 1
         /// A delete that leaves the caret at the text's start leaves the before-context as it
         /// was till a caret move, as QA's UITextView's did (#553 QA).
         var staleAtStart = false
@@ -85,6 +91,22 @@ final class KeyboardExtensionTests: XCTestCase {
         /// after it not in it. No answer follows an edit, so the last move's stays (#553 QA,
         /// a host blocking 150 ms).
         var answersLate = false
+        /// Where the after-context shows none (the text's end, or a line's with
+        /// `stopsAtLineEnd`), once a delete used up the window (`cutsEdits`), both contexts are
+        /// nil till a caret move, as QA's UITextView's are (#553 QA): not a field that shows
+        /// none (`hidesContext`).
+        var nilsAtEnd = false
+        private var blank = false
+        /// Every this many deletes, the context stops showing them till a caret move, as
+        /// Safari's at times kept its old window (#553 QA).
+        var stallsEdits = 0
+        private var deletes = 0
+        private var frozen: (before: String?, after: String?)?
+        /// After a delete the context shows the text as it was before it, moves and all, till
+        /// `catchUp()`: a host answering from its copy before the batch, later than the
+        /// steps for a fresh context (#553 QA: a stalling host's).
+        var showsOld = false
+        private var old: (before: String, after: String)?
         private var held: (before: String, after: String)?
         private var late: [(before: String, after: String)] = []
         func insertText(_ s: String) {
@@ -94,11 +116,18 @@ final class KeyboardExtensionTests: XCTestCase {
             calls.append(s)
         }
         func deleteBackward() {
+            if showsOld, old == nil { old = (text, after ?? "") }
+            deletes += 1
+            if stallsEdits > 0, deletes % stallsEdits == 0, frozen == nil {
+                frozen = (documentContextBeforeInput, documentContextAfterInput)
+            }
             let was = documentContextBeforeInput
             let left = cutsEdits ? String((rest ?? context(before: text)).dropLast()) : nil
             if lagsEdits || behind { unshown.append((text, after, rest)) }
             _ = text.popLast()
             rest = staleAtStart && text.isEmpty ? was : left
+            blank = false
+            blank = nilsAtEnd && left == "" && documentContextAfterInput?.isEmpty != false
             if let h = held { held = (String(h.before.dropLast()), h.after) }
             calls.append("⌫")
         }
@@ -114,7 +143,9 @@ final class KeyboardExtensionTests: XCTestCase {
         var lags = false
         /// The context before each move not shown yet.
         private var unshown: [(before: String, after: String?, rest: String?)] = []
-        private var shown: (before: String, after: String?, rest: String?)? { behind ? unshown.last : unshown.first }
+        private var shown: (before: String, after: String?, rest: String?)? {
+            behind ? unshown.isEmpty ? nil : unshown[max(0, unshown.count - behindBy)] : unshown.first
+        }
         /// The text and the caret in units, which a split context can't keep.
         private var units: (all: [UInt16], at: Int)?
         /// Right after each move the context shows it taken as Characters until `answer()`
@@ -125,12 +156,17 @@ final class KeyboardExtensionTests: XCTestCase {
         private var guess: (before: String, after: String?, rest: String?)?
         func answer() { guess = nil }
         func catchUp() {
-            unshown = []; guess = nil
+            unshown = []; guess = nil; old = nil
             if !late.isEmpty { held = late.removeFirst() }
         }
         func showNext() { if !unshown.isEmpty { unshown.removeFirst() } }
         func adjustTextPosition(byCharacterOffset offset: Int) {
             moves.append(offset)
+            frozen = nil
+            if let o = old {
+                let all = o.before + o.after, to = min(max(o.before.count + offset, 0), all.count)
+                old = (String(all.prefix(to)), String(all.dropFirst(to)))
+            }
             var guessed: (before: String, after: String)?
             if answersLate {
                 let b = documentContextBeforeInput ?? "", a = documentContextAfterInput ?? ""
