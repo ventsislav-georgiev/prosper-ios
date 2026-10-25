@@ -1480,7 +1480,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             stopRepeat(); stopHold(); tracker.reset(); refreshPressed()
             if blanked { refreshLabels() }
         } else {
-            Self.undelayEdges(window)   // the app's keyboard window; the extension's again on appear
+            Self.undelayEdges(window)   // a no-op in the app's keyboard window (no gate); reaches the extension's before viewDidAppear
         }
     }
 

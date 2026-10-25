@@ -202,6 +202,8 @@ struct BottomRowSettings: View {
     private var order = KeyboardSettings().bottomOrder
     @AppStorage(KeyboardSettings.Key.bottomHidden, store: KeyboardSettings.store())
     private var hidden = KeyboardSettings().bottomHidden
+    private static let names: [Character: String] =
+        [".": "Period", ",": "Comma", "/": "Slash", "?": "Question Mark"]
 
     var body: some View {
         let keys = KeyboardSettings.order(order)
@@ -211,10 +213,16 @@ struct BottomRowSettings: View {
                     if k == " " {
                         Text("Space").foregroundStyle(.secondary)
                     } else {
-                        Toggle(String(k), isOn: Binding(
+                        let name = Self.names[k] ?? String(k)
+                        Toggle(isOn: Binding(
                             get: { !hidden.contains(k) },
-                            set: { on in hidden = hidden.filter { $0 != k } + (on ? "" : String(k)) }))
-                        .font(.body.monospaced())
+                            set: { on in hidden = hidden.filter { $0 != k } + (on ? "" : String(k)) })) {
+                            HStack {
+                                Text(name)
+                                Text(String(k)).font(.body.monospaced()).foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityLabel(name)
                     }
                 }
                 .onMove { from, to in
