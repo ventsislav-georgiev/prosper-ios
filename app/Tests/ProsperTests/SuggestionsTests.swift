@@ -114,6 +114,18 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(best(["сол", "дал"], "сал", bg), "дал", "с and д are neighbors")
         XCTAssertNil(best(["phone", "iphones"], "iphone", en), "the first guess isn't confident")
         XCTAssertNil(best([], "tge", en))
+        XCTAssertEqual(best(["not", "one"], "noe", en), "not", "one is a swap away, but o isn't n's neighbor")
+    }
+
+    /// A word typed lowercase takes a capitalized guess only when it's the first.
+    func testALowercaseWordSkipsCapitalizedGuesses() {
+        let en = TerminalKeyboard.Layout.english.letterRows, best = Suggestions.best
+        XCTAssertEqual(best(["ran", "Ron", "run"], "rkn", en), "run")
+        XCTAssertEqual(best(["dab", "Dan", "day"], "daj", en), "day")
+        XCTAssertEqual(best(["here", "Hess"], "hese", en), "here")
+        XCTAssertEqual(best(["bean", "Ben", "begin"], "begn", en), "begin")
+        XCTAssertEqual(best(["Ron", "run"], "rkn", en), "Ron", "the first guess stays")
+        XCTAssertEqual(best(["ran", "Ron", "run"], "Rkn", en), "Ron", "typed capitalized")
     }
 
     /// The real checker: "tge" comes out "the".

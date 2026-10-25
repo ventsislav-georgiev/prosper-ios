@@ -339,12 +339,14 @@ final class Suggestions {
     /// (`keyDistance`): "tge" is "the" (h is g's neighbor) before "toe". Ties keep the
     /// checker's order. Only ever one of `guesses`, and none unless the first is confident:
     /// a first guess that drops a letter ("iphone" → "phone") says the word is deliberate.
+    /// A word typed lowercase takes a capitalized guess only first: "rkn" is "run", not "Ron".
     ///
     /// ponytail: no frequency weighting; the checker's order is the only tie-break.
     static func best(_ guesses: [String], for word: String, rows: [[Character]]) -> String? {
         guard let first = guesses.first, isConfident(word, guess: first, rows: rows) else { return nil }
         let lower = word.lowercased()
-        return guesses.filter { isConfident(word, guess: $0, rows: rows) }
+        let rest = guesses.dropFirst().filter { word != lower || $0.first?.isUppercase != true }
+        return ([first] + rest).filter { isConfident(word, guess: $0, rows: rows) }
             .min { keyDistance(lower, $0.lowercased(), rows: rows) < keyDistance(lower, $1.lowercased(), rows: rows) }
     }
 

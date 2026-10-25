@@ -127,6 +127,34 @@ final class TouchCorrectionTests: XCTestCase {
         XCTAssertEqual(kb.key(at: CGPoint(x: f["1"]!.midX, y: f["1"]!.maxY + 3)), .char("1"))
     }
 
+    /// Row 3's letters lift too: a touch in the gap 3 pt over x, nearest x, aims into s's
+    /// row.
+    func testALowTouchOverXAimsUp() {
+        let (kb, f) = laidOut()
+        let x = f["x"]!, p = CGPoint(x: x.midX, y: x.minY - 3)
+        XCTAssertLessThan(K.distance(p, x), min(K.distance(p, f["s"]!), K.distance(p, f["d"]!)), "precondition: x is nearer")
+        XCTAssertTrue([.char("s"), .char("d")].contains(kb.key(at: p)))
+    }
+
+    /// Shift and backspace are never lifted: in landscape the 4 pt row gap is under the
+    /// lift, so a touch 1.5 pt into their tops would type a or l's row.
+    func testTheLiftNeverLeavesShiftOrBackspace() throws {
+        guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 874, height: 402))
+        window.traitOverrides.verticalSizeClass = .compact
+        let kb = K()
+        kb.frame = CGRect(x: 0, y: 0, width: 874, height: K.height)
+        window.addSubview(kb)
+        window.isHidden = false
+        defer { window.isHidden = true }
+        window.layoutIfNeeded()
+        for (label, key) in [("shift", K.Key.shift), ("delete", .backspace)] {
+            let f = try XCTUnwrap(kb.subviews.lazy.compactMap { $0 as? UIButton }.first { $0.accessibilityLabel == label }, label).frame
+            XCTAssertEqual(f.height, 26, "precondition: landscape")
+            XCTAssertEqual(kb.key(at: CGPoint(x: f.midX, y: f.minY + 1.5)), key, label)
+        }
+    }
+
     /// The real UITextChecker: "tesr" starts no word, "test" does.
     func testRealDictionaryCorrectsTesR() {
         XCTAssertTrue(K.dictionaryKnows("test"))

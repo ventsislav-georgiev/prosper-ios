@@ -1459,15 +1459,17 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// How far above a touch on the letter rows it aims: thumbs land low.
     ///
     /// ponytail: one fixed lift, not per side or per size class, no Settings slider; 4 pt
-    /// from the typo harness (`TypoRateTests`). Tune it on a device. Settable for tests.
+    /// because the typo harness (`TypoRateTests`) assumes taps land 4 pt low, so it's an
+    /// assumption, not a measurement. Tune it on a device. Settable for tests.
     static var tapLift: CGFloat = 4
 
     /// Where a touch aims: `tapLift` higher, when both the touch and the lifted point are
-    /// nearest a key on the letter rows (shift's included). The digit row, the bottom row
-    /// and the strip under it keep the touch where it is, so a lift never turns space or a
-    /// digit into a letter, nor a letter into a digit.
+    /// nearest a character key on the letter rows. The digit row, the bottom row, shift,
+    /// backspace and the strip under the bottom row keep the touch where it is, so a lift
+    /// never turns space, shift or backspace into a letter (in landscape the 4 pt row gap
+    /// is under the lift), nor a digit into a letter or a letter into a digit.
     private func aimed(_ point: CGPoint) -> CGPoint {
-        let letters = Set(caps.dropFirst().dropLast().joined().map(\.key))
+        let letters = Set(caps.dropFirst().dropLast().joined().map(\.key).filter { if case .char = $0 { true } else { false } })
         let lifted = CGPoint(x: point.x, y: point.y - Self.tapLift)
         return letters.contains(nearest(at: point)) && letters.contains(nearest(at: lifted)) ? lifted : point
     }

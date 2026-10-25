@@ -6,7 +6,8 @@ import UIKit
 /// each tap at its key's center plus seeded jitter (σ 7 pt sideways and 8 pt up and down,
 /// centered 4 pt low, as thumbs land), then the character error rate with `tapLift` as
 /// shipped and at 0. Touch correction is on in both.
-/// Deterministic: the same seed for both, so they see the same taps.
+/// Deterministic: the same seed for both, so they see the same taps. The 4 pt low is an
+/// assumption, not a measurement: the harness guards that the lift helps, not its value.
 @MainActor
 final class TypoRateTests: XCTestCase {
     typealias K = TerminalKeyboard
