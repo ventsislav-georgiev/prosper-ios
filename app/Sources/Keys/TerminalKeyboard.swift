@@ -958,6 +958,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var walkPolls = 0
     /// A line move asked for hasn't sent anything yet (`line`).
     private var lineAsked = false
+    /// What runs once the walk lands (`caret(_:then:)`); a key, a touch or the poll limit drops it.
+    private var landed: (() -> Void)?
     private var heightConstraint: NSLayoutConstraint!
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
@@ -1013,6 +1015,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// What a key does. The touch tracker's presses land here; so do the tests'.
     func press(_ key: Key) {
         defer { didPress?() }
+        landed = nil
         if willPress?(key) == true {
             // ponytail: the text is no longer what the keys typed (an undone autocorrect),
             // so touch correction starts afresh rather than guess it back.
@@ -1076,6 +1079,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// `walk`, so it never stops inside one. The word touch correction continues ends here,
     /// as it does at an arrow key (`resetWord`).
     func caret(_ offset: Int) {
+        landed = nil
         if let moveCaret {
             moveCaret(offset)
         } else {
@@ -1084,11 +1088,21 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         caretMoved()
     }
 
+    /// A step of `offset`, then `then` once the walk has landed it: a toolbar edit's deletes
+    /// after its move (`SuggestionBar.edit`). The edit changes the text the walk last saw, so
+    /// the walk starts afresh after it.
+    func caret(_ offset: Int, then: @escaping () -> Void) {
+        caret(offset)
+        landed = { [weak self] in self?.walk.drop(); then() }
+        if walk.idle, let f = landed { landed = nil; f() }
+    }
+
     /// A trackpad move of `lines` lines, negative up: in a host field only, through `walk`.
     /// The app ignores it, since a shell's up and down are history, not lines. The word
     /// ends once the move sends something, so one with nowhere to go ends nothing.
     func line(_ lines: Int) {
         guard moveCaret == nil, target is UITextDocumentProxy else { return }
+        landed = nil
         lineAsked = true
         walkOn(lines: lines)
     }
@@ -1117,6 +1131,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if walk.idle {
             walkTimer?.invalidate()
             walkTimer = nil
+            if let then = landed { landed = nil; then() }
         } else if walkTimer == nil {
             let t = Timer(timeInterval: 0.02, repeats: true) { [weak self] t in
                 if let self { self.pollCaret() } else { t.invalidate() }
@@ -1139,6 +1154,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         walkOn()
         guard walkPolls >= 100 else { return }   // 2 s: a move that never shows waits for the next `caret`
         walkPolls = 0
+        landed = nil
         walkTimer?.invalidate()
         walkTimer = nil
     }
@@ -1302,6 +1318,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         switch phase {
         case .began:
             if tracker.isTrackpad { return }   // a second finger on the trackpad: ignored
+            landed = nil
             if !walk.idle { walkOn() }   // a last look for a split before typing
             walk.drop()
             lineAsked = false

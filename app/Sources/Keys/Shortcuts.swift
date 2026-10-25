@@ -70,6 +70,20 @@ enum Shortcuts {
         ShortcutKey(id: "redraw",  label: "redraw", kind: .redraw, systemImage: "arrow.clockwise"),
     ]
 
+    /// The system keyboards' toolbar only (`Bar.toolbar`): text edits a terminal has no use for.
+    static let hostOnly: [ShortcutKey] = [
+        ShortcutKey(id: "wordNext", label: "next word",     kind: .bytes, systemImage: "chevron.right.2"),
+        ShortcutKey(id: "wordEnd",  label: "word end",      kind: .bytes, systemImage: "forward.end"),
+        ShortcutKey(id: "wordBack", label: "previous word", kind: .bytes, systemImage: "chevron.left.2"),
+        ShortcutKey(id: "delWord",  label: "delete word",   kind: .bytes, systemImage: "delete.left"),
+        ShortcutKey(id: "delHome",  label: "delete to line start", kind: .bytes, systemImage: "delete.left.fill"),
+        ShortcutKey(id: "delEnd",   label: "delete to line end",   kind: .bytes, systemImage: "delete.right.fill"),
+        ShortcutKey(id: "delLine",  label: "delete line",   kind: .bytes, systemImage: "strikethrough"),
+        ShortcutKey(id: "delAll",   label: "delete all",    kind: .bytes, systemImage: "trash"),
+        ShortcutKey(id: "copyLine", label: "copy line",     kind: .bytes, systemImage: "doc.on.doc"),
+        ShortcutKey(id: "cutLine",  label: "cut line",      kind: .bytes, systemImage: "scissors"),
+    ]
+
     /// The send key: every terminal bar has it, and the editor can't remove it there.
     static let sendID = "enter"
 
@@ -132,7 +146,7 @@ enum Shortcuts {
         var storageKey: String { self == .terminal ? Shortcuts.storageKey : "toolbarKeys" }
         /// What the editor offers: on the toolbar, the keys a text field can use (`hostKey`).
         var catalog: [ShortcutKey] {
-            self == .terminal ? Shortcuts.catalog : Shortcuts.catalog.filter { hostKey($0.id) != nil }
+            self == .terminal ? Shortcuts.catalog : (Shortcuts.catalog + hostOnly).filter { hostKey($0.id) != nil }
         }
         /// The toolbar's: the default bar's keys it can use, in order, less send.
         var defaults: [ShortcutKey] {
@@ -177,6 +191,15 @@ enum Shortcuts {
         /// The clip, through the system's Paste control (`ShortcutBar`'s `oneRow`), only with
         /// Full Access.
         case paste
+        case edit(Edit)
+    }
+
+    /// nvim's motions and deletes, and its yank and cut of a line (`SuggestionBar.edit`).
+    enum Edit: Equatable {
+        case wordNext, wordEnd, wordBack, deleteWord, deleteToStart, deleteToEnd, deleteLine, deleteAll
+        case copyLine, cutLine
+        /// Writes the pasteboard: Full Access only.
+        var copies: Bool { self == .copyLine || self == .cutLine }
     }
 
     /// The toolbar's action for a catalog id; nil hides the key there. The terminal-only
@@ -195,6 +218,16 @@ enum Shortcuts {
         case "pipe": return .key(.char("|"))
         case "snl", sendID: return .key(.ret)
         case "paste": return .paste
+        case "wordNext": return .edit(.wordNext)
+        case "wordEnd": return .edit(.wordEnd)
+        case "wordBack": return .edit(.wordBack)
+        case "delWord": return .edit(.deleteWord)
+        case "delHome": return .edit(.deleteToStart)
+        case "delEnd": return .edit(.deleteToEnd)
+        case "delLine": return .edit(.deleteLine)
+        case "delAll": return .edit(.deleteAll)
+        case "copyLine": return .edit(.copyLine)
+        case "cutLine": return .edit(.cutLine)
         default: return nil
         }
     }

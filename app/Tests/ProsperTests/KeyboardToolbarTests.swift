@@ -267,4 +267,168 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertTrue(Self.pasteControls(toolbar).isEmpty, "landscape: blank under 36 pt")
         withExtendedLifetime(kb) {}
     }
+
+    // MARK: Edits (#553)
+
+    /// A toolbar edit pressed, then the host answering and the walk polling until it lands.
+    private func edit(_ id: String, _ kb: TerminalKeyboard, _ bar: SuggestionBar, _ doc: Proxy) throws {
+        bar.press(try XCTUnwrap(Shortcuts.Bar.toolbar.catalog.first { $0.id == id }, id))
+        for _ in 0..<2_000 { doc.catchUp(); kb.pollCaret() }
+    }
+
+    /// The edits are the toolbar's only, each an icon with a spoken label; the terminal's
+    /// catalog and its saved keys never see them, the toolbar's keep them.
+    func testEditKeysAreToolbarOnlyIconsWithLabels() throws {
+        let ids = ["wordNext", "wordEnd", "wordBack", "delWord", "delHome", "delEnd", "delLine", "delAll",
+                   "copyLine", "cutLine"]
+        XCTAssertEqual(Shortcuts.hostOnly.map(\.id), ids)
+        let edits: [Shortcuts.Edit] = [.wordNext, .wordEnd, .wordBack, .deleteWord, .deleteToStart, .deleteToEnd,
+                                       .deleteLine, .deleteAll, .copyLine, .cutLine]
+        for (k, e) in zip(Shortcuts.hostOnly, edits) {
+            XCTAssertEqual(Shortcuts.hostKey(k.id), .edit(e), k.id)
+            XCTAssertNotNil(UIImage(systemName: try XCTUnwrap(k.systemImage, k.id)), k.id)
+            XCTAssertGreaterThan(k.label.count, 3, "VoiceOver reads it: \(k.id)")
+        }
+        XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.catalog.map(\.id)))
+        XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.Bar.terminal.catalog.map(\.id)))
+        XCTAssertTrue(Set(ids).isSubset(of: Shortcuts.Bar.toolbar.catalog.map(\.id)))
+        XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.Bar.toolbar.defaults.map(\.id)), "added in the editor")
+
+        let store = try suiteStore(".edits")
+        let saved = Shortcuts.hostOnly.prefix(3) + [try key("left")]
+        Shortcuts.save(Array(saved), to: store, key: Shortcuts.Bar.toolbar.storageKey)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["wordNext", "wordEnd", "wordBack", "left"])
+        let (_, bar, _) = rig(keys: Shortcuts.hostOnly)
+        XCTAssertEqual(Self.caps(try XCTUnwrap(bar.toolbar)).compactMap(\.accessibilityLabel),
+                       Shortcuts.hostOnly.filter { !["copyLine", "cutLine"].contains($0.id) }.map(\.label),
+                       "no copy or cut without Full Access")
+    }
+
+    /// nvim's word classes: letters, digits and "_" one, other punctuation another, blanks
+    /// between. `w` lands on the next word's start, `e` after the word's end, `b` on its start.
+    func testWordMotionsFollowNvimsClasses() throws {
+        XCTAssertEqual(SuggestionBar.toNextWord("foo_bar1.baz qux"), 8, "to the dot")
+        XCTAssertEqual(SuggestionBar.toNextWord(".baz qux"), 1)
+        XCTAssertEqual(SuggestionBar.toNextWord("...  qux"), 5)
+        XCTAssertEqual(SuggestionBar.toNextWord("  \n qux"), 4)
+        XCTAssertEqual(SuggestionBar.toNextWord("здравей свят"), 8)
+        XCTAssertEqual(SuggestionBar.toNextWord(""), 0)
+        XCTAssertEqual(SuggestionBar.toWordEdge("  baz.qux"), 5)
+        XCTAssertEqual(SuggestionBar.toWordEdge("o bar"), 1)
+        XCTAssertEqual(SuggestionBar.toWordEdge("->x"), 2)
+        XCTAssertEqual(SuggestionBar.toWordEdge("say foo ".reversed()), 4)
+
+        let (kb, bar, doc) = rig("say hello", after: " world.foo")
+        try edit("wordNext", kb, bar, doc)
+        XCTAssertEqual(doc.text, "say hello ")
+        try edit("wordEnd", kb, bar, doc)
+        XCTAssertEqual(doc.text, "say hello world")
+        try edit("wordNext", kb, bar, doc)
+        XCTAssertEqual(doc.text, "say hello world.")
+        try edit("wordBack", kb, bar, doc)
+        XCTAssertEqual(doc.text, "say hello world", "the dot is a word of its own")
+        try edit("wordBack", kb, bar, doc)
+        XCTAssertEqual(doc.text, "say hello ")
+        try edit("wordBack", kb, bar, doc)
+        XCTAssertEqual(doc.text, "say ")
+        XCTAssertEqual(doc.after, "hello world.foo")
+    }
+
+    /// ctrl-w and ctrl-u delete back; ctrl-u reads the context again after each batch, so a
+    /// host showing only the caret's sentence or a window still loses the whole line, and
+    /// no more: the break before it and the lines above stay.
+    func testDeletesBackThroughATruncatedContext() throws {
+        let (kb, bar, doc) = rig("top\nFirst one. Second tw", after: "o")
+        try edit("delWord", kb, bar, doc)
+        XCTAssertEqual(doc.text, "top\nFirst one. Second ")
+        try edit("delWord", kb, bar, doc)
+        XCTAssertEqual(doc.text, "top\nFirst one. ")
+        doc.text = "top\nFirst one. Second tw"
+        doc.sentenceBefore = true
+        try edit("delHome", kb, bar, doc)
+        XCTAssertEqual(doc.text, "top\n")
+        XCTAssertEqual(doc.after, "o")
+
+        let (wkb, wbar, safari) = rig("top\nthe quick brown fox", after: " jumps")
+        safari.window = 4
+        try edit("delHome", wkb, wbar, safari)
+        XCTAssertEqual(safari.text, "top\n")
+        safari.text = "top\nnext"
+        safari.window = nil
+        safari.breakSpace = true
+        try edit("delHome", wkb, wbar, safari)
+        XCTAssertEqual(safari.text, "top\n", "Safari's space after the break isn't the line's")
+    }
+
+    /// ctrl-k, dd and delete all walk the caret forward first, a leg per window of context,
+    /// then delete back: in Safari's windows, and where the after-context stops at the
+    /// line's end and the before-context starts at it (a UITextView).
+    func testForwardEditsWalkATruncatedContext() throws {
+        for (name, cut) in [("windows", { (d: Proxy) in d.window = 5 }),
+                            ("lines", { (d: Proxy) in d.stopsAtLineEnd = true; d.lineBefore = true })] {
+            let (kb, bar, doc) = rig("one\nthe qu", after: "ick brown fox\nlast line")
+            cut(doc)
+            try edit("delEnd", kb, bar, doc)
+            XCTAssertEqual(doc.text, "one\nthe qu", name)
+            XCTAssertEqual(doc.after, "\nlast line", name)
+            try edit("delLine", kb, bar, doc)
+            XCTAssertEqual(doc.text + (doc.after ?? ""), "one\nlast line", name)
+            doc.text = "one\ntwo\nthr"; doc.after = "ee"
+            try edit("delLine", kb, bar, doc)
+            XCTAssertEqual(doc.text + (doc.after ?? ""), "one\ntwo", "the last line takes the break before it: \(name)")
+            doc.text = "first line\nsecond li"; doc.after = "ne\nthird line\nend"
+            try edit("delAll", kb, bar, doc)
+            XCTAssertEqual(doc.text, "", name)
+            XCTAssertEqual(doc.after, "", name)
+        }
+    }
+
+    /// Copy line puts the caret's line on the pasteboard and the caret back where it was;
+    /// cut line is dd that copies. Both need Full Access: hidden, and doing nothing, without.
+    func testCopyAndCutLineNeedFullAccess() throws {
+        let (kb, bar, doc) = rig("one\ntw", after: "o\nthree", keys: Shortcuts.hostOnly)
+        doc.window = 2
+        try edit("copyLine", kb, bar, doc)
+        try edit("cutLine", kb, bar, doc)
+        XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "one\ntw|o\nthree", "nothing without Full Access")
+
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+        bar.suggestions.pasteboard = { pb }
+        let toolbar = try XCTUnwrap(bar.toolbar)
+        toolbar.reload()
+        XCTAssertEqual(Self.caps(toolbar).suffix(2).compactMap(\.accessibilityLabel), ["copy line", "cut line"])
+        try edit("copyLine", kb, bar, doc)
+        XCTAssertEqual(pb.string, "two")
+        XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "one\ntw|o\nthree", "the caret back")
+        try edit("cutLine", kb, bar, doc)
+        XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "one\n|three")
+        try edit("copyLine", kb, bar, doc)
+        XCTAssertEqual(pb.string, "three")
+        try edit("delLine", kb, bar, doc)
+        XCTAssertEqual(pb.string, "three", "dd copies nothing")
+        XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "one|")
+    }
+
+    /// A host whose context lags the edits: deleting stops once the context stops changing,
+    /// rather than deleting again from a context that still shows what went. Moves that lag
+    /// are waited for, so the deletes after them start in the right place.
+    func testEditsStopWhenTheContextLags() throws {
+        let (kb, bar, doc) = rig("abc\ndef", after: "")
+        doc.lineBefore = true
+        doc.lagsEdits = true
+        bar.press(try XCTUnwrap(Shortcuts.Bar.toolbar.catalog.first { $0.id == "delAll" }))
+        for _ in 0..<100 { kb.pollCaret() }   // the host never answers the deletes
+        XCTAssertEqual(doc.text, "abc\n", "one batch: the frozen context repeats")
+        try edit("delAll", kb, bar, doc)   // caught up, a second press goes on
+        XCTAssertEqual(doc.text, "abc", "and stops again")
+
+        let (lkb, lbar, late) = rig("x the qu", after: "ick fox\nnext")
+        late.lags = true
+        late.window = 3
+        try edit("delEnd", lkb, lbar, late)
+        XCTAssertEqual(late.text + "|" + (late.after ?? ""), "x the qu|\nnext")
+        try edit("delLine", lkb, lbar, late)
+        XCTAssertEqual(late.text + "|" + (late.after ?? ""), "|next")
+    }
 }

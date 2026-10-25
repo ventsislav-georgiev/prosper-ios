@@ -55,8 +55,10 @@ final class KeyboardExtensionTests: XCTestCase {
         var documentInputMode: UITextInputMode? { nil }
         let documentIdentifier = UUID()
         var hasText: Bool { !text.isEmpty }
-        func insertText(_ s: String) { text += s; calls.append(s) }
-        func deleteBackward() { _ = text.popLast(); calls.append("⌫") }
+        /// Edits lag as moves do (`lags`): the context shows them only after `catchUp()`.
+        var lagsEdits = false
+        func insertText(_ s: String) { if lagsEdits { unshown.append((text, after)) }; text += s; calls.append(s) }
+        func deleteBackward() { if lagsEdits { unshown.append((text, after)) }; _ = text.popLast(); calls.append("⌫") }
         /// Every caret move, as asked; the caret moves within `text` + `after`.
         var moves: [Int] = []
         /// Where each move left the caret, in UTF-16 units from the start.

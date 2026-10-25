@@ -686,10 +686,15 @@ final class SuggestionBar: UIView {
     /// The toolbar: `keys` (read again on `toolbar.reload()`) less those a text field
     /// can't use (`Shortcuts.hostKey`), in one row that scrolls, and the toggle before it.
     /// Paste only where the bar's own would show: with Full Access, and not in landscape.
+    /// Copy and cut line with Full Access: a keyboard writes the pasteboard only with it.
     func addToolbar(_ keys: @escaping () -> [ShortcutKey]) {
         let tools = ShortcutBar(keys: { [weak self] in
-            let pastes = self?.suggestions.pasteFits == true && self?.suggestions.pasteboard() != nil
-            return keys().filter { Shortcuts.hostKey($0.id) != nil && (pastes || $0.id != "paste") }
+            let full = self?.suggestions.pasteboard() != nil, pastes = full && self?.suggestions.pasteFits == true
+            return keys().filter { key in
+                guard let action = Shortcuts.hostKey(key.id) else { return false }
+                if case .edit(let e) = action, e.copies { return full }
+                return pastes || action != .paste
+            }
         }, oneRow: true)
         tools.onKey = { [weak self] in self?.press($0) }
         tools.onPaste = { [weak self] in self?.load($0, fromToolbar: true) }
@@ -714,14 +719,163 @@ final class SuggestionBar: UIView {
         case .caret(let n): keyboard.caret(n)
         case .line(let n): keyboard.line(n)
         case .lineEdge(let dir):
-            let before = doc.documentContextBeforeInput ?? ""
-            var n = dir < 0 ? before.reversed().prefix { !$0.isNewline }.count
-                : (doc.documentContextAfterInput ?? "").prefix { !$0.isNewline }.count
-            // Safari's space after a break that isn't in the text, as `CaretWalk.step` reads it.
             // ponytail: only as far as the context shows the line; a second press goes on.
-            if dir < 0, before.hasPrefix("\n "), n == before.count - 1 { n -= 1 }
+            let n = dir < 0 ? Self.toLineStart(doc.documentContextBeforeInput ?? "")
+                : Self.toLineEnd(doc.documentContextAfterInput ?? "")
             if n > 0 { keyboard.caret(dir * n) }
+        case .edit(let e): edit(e, keyboard, doc)
         }
+    }
+
+    /// Characters back to the line's start in `before`, as far as it shows. Safari's space
+    /// after a break isn't in the text, as `CaretWalk.step` reads it.
+    static func toLineStart(_ before: String) -> Int {
+        let n = before.reversed().prefix { !$0.isNewline }.count
+        return before.hasPrefix("\n ") && n == before.count - 1 ? n - 1 : n
+    }
+
+    static func toLineEnd(_ after: String) -> Int { after.prefix { !$0.isNewline }.count }
+
+    /// nvim's word classes: 0 blank, 1 letters, digits and "_", 2 any other.
+    static func wordClass(_ c: Character) -> Int {
+        c.isWhitespace ? 0 : c.isLetter || c.isNumber || c == "_" ? 1 : 2
+    }
+
+    /// Characters over the blanks and then the run of one class at the start of `text`:
+    /// `e` on the after-context (the caret lands after the word), `b` and ctrl-w on the
+    /// before-context reversed.
+    static func toWordEdge<S: Sequence<Character>>(_ text: S) -> Int {
+        var n = 0, run: Int?
+        for c in text {
+            let k = wordClass(c)
+            if k == 0 { if run != nil { break } } else if run == nil { run = k } else if k != run { break }
+            n += 1
+        }
+        return n
+    }
+
+    /// nvim's `w`: over the run the caret is before, then the blanks.
+    static func toNextWord(_ after: String) -> Int {
+        let a = Array(after), k = a.first.map(wordClass) ?? 0
+        let run = k == 0 ? 0 : a.prefix { wordClass($0) == k }.count
+        return run + a[run...].prefix { wordClass($0) == 0 }.count
+    }
+
+    /// A toolbar edit. Word motions and ctrl-w go as far as the context shows, as home and end
+    /// do: a second press goes on. Line and document edits read the context again after each
+    /// move or batch of deletes, since it shows only part of the text (`walk`, `deleteBack`).
+    /// Forward deletes walk the caret there first: a proxy deletes only backward.
+    private func edit(_ e: Shortcuts.Edit, _ keyboard: TerminalKeyboard, _ doc: UITextDocumentProxy) {
+        let before = doc.documentContextBeforeInput ?? "", after = doc.documentContextAfterInput ?? ""
+        let copy = suggestions.pasteboard()
+        switch e {
+        case .wordNext, .wordEnd, .wordBack:
+            let n = e == .wordBack ? -Self.toWordEdge(before.reversed())
+                : e == .wordEnd ? Self.toWordEdge(after) : Self.toNextWord(after)
+            if n != 0 { keyboard.caret(n) }
+        case .deleteWord:
+            deleteBack(doc, limit: Self.toWordEdge(before.reversed()))
+            edited()
+        case .deleteToStart:
+            deleteBack(doc, Self.toLineStart)
+            edited()
+        case .deleteToEnd:
+            walk(1, { Self.toLineEnd($1) }) { [weak self] crossed in
+                guard let self, let doc = self.keyboard?.target as? UITextDocumentProxy else { return }
+                self.deleteBack(doc, limit: crossed.count)
+                self.edited()
+            }
+        case .deleteAll:
+            // An after-context that stops at the line's end shows no more: one step blind, which
+            // the host clamps at the text's end.
+            walk(1, { $1.isEmpty ? 1 : $1.count }) { [weak self] _ in
+                guard let self, let doc = self.keyboard?.target as? UITextDocumentProxy else { return }
+                self.deleteBack(doc) { $0.count }
+                self.edited()
+            }
+        case .deleteLine, .cutLine:
+            guard e == .deleteLine || copy != nil else { return }
+            walk(1, { Self.toLineEnd($1) }) { [weak self] _ in self?.deleteLine(into: e == .cutLine ? copy : nil) }
+        case .copyLine:
+            guard let copy else { return }
+            // To the line's start, over it to its end, and back: the caret ends where it was.
+            walk(-1, { b, _ in Self.toLineStart(b) }) { [weak self] head in
+                self?.walk(1, { Self.toLineEnd($1) }) { line in
+                    copy.string = line
+                    if line.count > head.count { self?.keyboard?.caret(head.count - line.count) }
+                }
+            }
+        }
+    }
+
+    /// `dd` from the line's end: its break after it too if the context shows one, else the
+    /// one before it, so the next line or the one before takes its place. The line, without
+    /// a break, goes to `copy`.
+    /// ponytail: a host whose after-context stops at the line's end hides the break after it,
+    /// so the first line leaves an empty one there; step over it blind if that matters.
+    private func deleteLine(into copy: UIPasteboard?) {
+        guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
+        let joins = doc.documentContextAfterInput?.first?.isNewline == true
+        let finish = { [weak self] in
+            guard let self, let doc = self.keyboard?.target as? UITextDocumentProxy else { return }
+            if joins { doc.deleteBackward() }
+            let line = self.deleteBack(doc, Self.toLineStart)
+            if !joins, doc.documentContextBeforeInput?.last?.isNewline == true { doc.deleteBackward() }
+            copy?.string = line
+            self.edited()
+        }
+        if joins { keyboard.caret(1, then: finish) } else { finish() }
+    }
+
+    /// Walks the caret `dir` by `count(before, after)` Characters a leg at a time, each sized
+    /// from the context the last landed in (`TerminalKeyboard.caret(_:then:)`), until `count`
+    /// finds none or the context stops changing (an edge the host clamps at); then `done`
+    /// with the Characters crossed, in order. A touch or a key on the way drops `done`.
+    /// ponytail: 1,000 legs at most; a long run of one character in Safari's windows reads
+    /// the same after a leg and stops there: a second press goes on.
+    private func walk(_ dir: Int, legs: Int = 1_000, crossed: String = "", seen: (String, String)? = nil,
+                      _ count: @escaping (String, String) -> Int, done: @escaping (String) -> Void) {
+        guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
+        let b = doc.documentContextBeforeInput ?? "", a = doc.documentContextAfterInput ?? ""
+        let n = count(b, a)
+        guard n > 0, legs > 0, seen.map({ $0 != (b, a) }) ?? true else { return done(crossed) }
+        let leg = String(dir < 0 ? b.suffix(n) : a.prefix(n))
+        keyboard.caret(dir * n) { [weak self] in
+            self?.walk(dir, legs: legs - 1, crossed: dir < 0 ? leg + crossed : crossed + leg, seen: (b, a),
+                       count, done: done)
+        }
+    }
+
+    /// Deletes back `count(before)` Characters a batch at a time, reading the context again
+    /// after each, since it shows only part of the text, until `count` finds none, `limit`
+    /// is reached or the context stops changing (a host behind still shows what went). The
+    /// Characters deleted, in order.
+    /// ponytail: 10,000 deletes at most; a repeat of the last context (a long run of one
+    /// character, two equal lines a UITextView shows one at a time) stops early, and a host
+    /// one edit behind, its context changed but stale, sizes the next batch past the mark.
+    /// Wait for the host's answer between batches if a device shows that.
+    @discardableResult
+    private func deleteBack(_ doc: UITextDocumentProxy, limit: Int = 10_000,
+                            _ count: (String) -> Int = { $0.count }) -> String {
+        var gone = "", left = limit, seen: String?
+        while left > 0 {
+            let before = doc.documentContextBeforeInput ?? ""
+            let n = min(count(before), left)
+            guard n > 0, before != seen else { break }
+            gone = String(before.suffix(n)) + gone
+            for _ in 0..<n { doc.deleteBackward() }
+            left -= n
+            seen = before
+        }
+        return gone
+    }
+
+    /// After an edit the bar's own: the word and the autocorrect it could undo are gone.
+    private func edited() {
+        keyboard?.resetWord()
+        keyboard?.autoCapitalize()
+        suggestions.caretMoved()
+        refresh()
     }
 
     /// Suggest for `keyboard`'s target: its keys go through `Suggestions.willPress` and
