@@ -23,6 +23,7 @@ final class KeyboardExtensionTests: XCTestCase {
         var hidesContext = false
         var documentContextBeforeInput: String? {
             if hidesContext { return nil }
+            if let h = held { return h.before }
             let s = guess ?? shown
             if let r = s.map({ $0.rest }) ?? rest { return r }
             return context(before: s?.before ?? text)
@@ -55,6 +56,7 @@ final class KeyboardExtensionTests: XCTestCase {
         var after: String? { didSet { units = nil } }
         var documentContextAfterInput: String? {
             if hidesContext { return nil }
+            if let h = held { return h.after }
             let a = (guess ?? shown).map(\.after) ?? after
             let cut = stopsAtLineEnd && !(guessesPastLineEnd && guess != nil) ? a.map { String($0.utf16.prefix { $0 != 0x0A && $0 != 0x0D }) ?? "" } : a
             return window.flatMap { w in cut.map { String(decoding: Array($0.utf16.prefix(w)), as: UTF16.self) } } ?? cut
@@ -74,12 +76,30 @@ final class KeyboardExtensionTests: XCTestCase {
         /// The context shows all but the last edit until `catchUp()`: a host one edit behind,
         /// whose context changes but still shows the last Character deleted.
         var behind = false
-        func insertText(_ s: String) { if lagsEdits || behind { unshown.append((text, after, rest)) }; text += s; calls.append(s) }
+        /// A delete that leaves the caret at the text's start leaves the before-context as it
+        /// was till a caret move, as QA's UITextView's did (#553 QA).
+        var staleAtStart = false
+        /// A host whose main thread is busy: the proxy shows UIKit's guess at once for a move
+        /// and its own copy for an edit, and the host's answer to each move only at a later
+        /// `catchUp()`, one a call, each as the text was right after that move, deletes sent
+        /// after it not in it. No answer follows an edit, so the last move's stays (#553 QA,
+        /// a host blocking 150 ms).
+        var answersLate = false
+        private var held: (before: String, after: String)?
+        private var late: [(before: String, after: String)] = []
+        func insertText(_ s: String) {
+            if lagsEdits || behind { unshown.append((text, after, rest)) }
+            text += s
+            held?.before += s
+            calls.append(s)
+        }
         func deleteBackward() {
+            let was = documentContextBeforeInput
             let left = cutsEdits ? String((rest ?? context(before: text)).dropLast()) : nil
             if lagsEdits || behind { unshown.append((text, after, rest)) }
             _ = text.popLast()
-            rest = left
+            rest = staleAtStart && text.isEmpty ? was : left
+            if let h = held { held = (String(h.before.dropLast()), h.after) }
             calls.append("⌫")
         }
         /// Every caret move, as asked; the caret moves within `text` + `after`.
@@ -104,10 +124,26 @@ final class KeyboardExtensionTests: XCTestCase {
         var guesses = false
         private var guess: (before: String, after: String?, rest: String?)?
         func answer() { guess = nil }
-        func catchUp() { unshown = []; guess = nil }
+        func catchUp() {
+            unshown = []; guess = nil
+            if !late.isEmpty { held = late.removeFirst() }
+        }
         func showNext() { if !unshown.isEmpty { unshown.removeFirst() } }
         func adjustTextPosition(byCharacterOffset offset: Int) {
             moves.append(offset)
+            var guessed: (before: String, after: String)?
+            if answersLate {
+                let b = documentContextBeforeInput ?? "", a = documentContextAfterInput ?? ""
+                let n = offset < 0 ? min(-offset, b.count) : min(offset, a.count)
+                guessed = offset < 0 ? (String(b.dropLast(n)), String(b.suffix(n)) + a) : (b + a.prefix(n), String(a.dropFirst(n)))
+                held = nil
+            }
+            defer {
+                if let guessed {
+                    late.append((documentContextBeforeInput ?? "", documentContextAfterInput ?? ""))
+                    held = guessed
+                }
+            }
             if lags { unshown.append((text, after, rest)) }
             if guesses {
                 let u = units ?? (Array((text + (after ?? "")).utf16), text.utf16.count)

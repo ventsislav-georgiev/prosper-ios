@@ -708,6 +708,42 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
+    /// Hosts whose context is stale when an edit reads it: one still showing the last Character
+    /// deleted at the text's start, on its own (a UITextView's) or answering 0.3 s late (a
+    /// stalling host's), and one answering each move late, without the deletes sent since (a
+    /// blocking host's). The steps that look for a fresh context net nothing at the text's
+    /// start and wait for the host's answer, so nothing past the extent goes (#553 QA).
+    func testEditsNeverActOnAStaleContext() throws {
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+        let first = "first line, long enough to wrap around in the field: a b c d e f g h"
+        let hosts: [(String, Int, (Proxy) -> Void)] = [
+            ("text view", 1, { $0.stopsAtLineEnd = true; $0.lagsEdits = true; $0.staleAtStart = true }),
+            ("stalling", 15, { $0.stopsAtLineEnd = true; $0.lagsEdits = true; $0.lags = true; $0.staleAtStart = true }),
+        ]
+        for (name, every, host) in hosts {
+            let (kb, bar, doc) = rig("first line", after: String(first.dropFirst(10)) + "\nsecond\nthird line")
+            host(doc)
+            bar.suggestions.pasteboard = { pb }
+            try edit("delLine", kb, bar, doc, every: every)
+            XCTAssertEqual(Self.at(doc), "|second\nthird line", "dd: \(name)")
+            doc.text = "first line"; doc.after = String(first.dropFirst(10)) + "\nsecond\nthird line"; doc.catchUp()
+            try edit("cutLine", kb, bar, doc, every: every)
+            XCTAssertEqual(Self.at(doc), "|second\nthird line", "cut line: \(name)")
+            XCTAssertEqual(pb.string, first, "cut line's clip: \(name)")
+            doc.text = "alpha beta mu"; doc.after = "short"; doc.catchUp()
+            try edit("delHome", kb, bar, doc, every: every)
+            XCTAssertEqual(Self.at(doc), "|short", "ctrl-u: \(name)")
+        }
+        let (kb, bar, doc) = rig("alpha beta mu\nfoo", after: "_bar1.baz qux\nshort")
+        doc.stopsAtLineEnd = true; doc.answersLate = true
+        try edit("delEnd", kb, bar, doc, every: 8)
+        XCTAssertEqual(Self.at(doc), "alpha beta mu\nfoo|\nshort", "ctrl-k: blocking")
+        XCTAssertEqual(doc.documentContextBeforeInput, "alpha beta mu\nfoo_bar1.baz qux", "the move's answer, the deletes not in it")
+        try edit("delLine", kb, bar, doc, every: 8)
+        XCTAssertEqual(Self.at(doc), "alpha beta mu\n|short", "dd after ctrl-k: blocking")
+    }
+
     /// A field that shows no context reads as empty: an edit there never steps back to look
     /// for a fresh one, so the caret isn't left a Character back.
     func testEditsTakeNoStepBackInAFieldWithoutContext() throws {

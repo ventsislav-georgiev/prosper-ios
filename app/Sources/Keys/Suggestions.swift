@@ -862,7 +862,7 @@ final class SuggestionBar: UIView {
     /// QA: a stale "" on the empty last line took the line above).
     private func deleteLine(into copy: UIPasteboard?, moved: Bool) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
-        guard moved else { return rewindow { [weak self] in self?.deleteLine(into: copy, moved: true) } }
+        guard moved else { return rewindow(waits: true) { [weak self] in self?.deleteLine(into: copy, moved: true) } }
         let seen = (Self.before(doc), doc.documentContextAfterInput ?? "")
         guard seen.1.isEmpty || seen.1.first?.isNewline == true else { return }   // the walk stopped short
         keyboard.caret(1) { [weak self] in
@@ -916,7 +916,7 @@ final class SuggestionBar: UIView {
     /// After a delete a host shows only what's left of the window it cut the context at, ""
     /// at that window's start, till a move shows a fresh one (#553 QA: UITextView's windows
     /// open at a sentence or a paragraph, Safari's at a row). So such a context is never taken
-    /// for the edge: where `count` reaches its start, the caret steps back and on again
+    /// for the edge: where `count` reaches its start, the caret steps away and back
     /// (`rewindow`) and the next batch is sized from the `fresh` context. So too an empty one at
     /// the start, which an edit before may have left; a fresh empty one is the text's start.
     /// A batch that took the whole context has no anchor to tell its answer by, so one the
@@ -965,20 +965,41 @@ final class SuggestionBar: UIView {
         }
     }
 
-    /// The caret a step back and on again, so a host that cut its context at a delete shows a
-    /// fresh one (`deleteBack`), then `then`. From an empty before-context, a step back the
-    /// host ignores, the context still empty, is the text's start: no step on. A field that
-    /// shows no context at all gets no steps.
-    /// ponytail: a key or a touch before the step back lands drops the step on, the caret then
-    /// a Character back.
-    private func rewindow(then: @escaping () -> Void) {
+    /// The caret a step away and back, so a host that cut its context at a delete shows a
+    /// fresh one (`deleteBack`), then `then`. The step goes on first where the after-context
+    /// shows text, so the two net nothing at the text's start whatever the before-context reads
+    /// (#553 QA: one still showing the Character deleted there took a step back the host
+    /// ignored for a move, and the step on went past the next). Else back first: from an empty
+    /// before-context, a step back the host ignores, the context still empty, is the text's
+    /// start, and no step on. A field that shows no context gets no steps.
+    /// Steps that landed on the context as it was may have landed on UIKit's guess: one that
+    /// `waits` waits up to 0.3 s more for the host's answer, another context with the same
+    /// after-context, as dd's does for a context the last edit may have left stale (#553 QA: a
+    /// busy host's answer to the step back was taken for dd's next step's). The deletes' needn't:
+    /// UIKit's copy shows them.
+    /// ponytail: a key or a touch before the first step lands drops the second, the caret then
+    /// a Character off; a host answering later than 0.3 s is read before it does.
+    private func rewindow(waits: Bool = false, then: @escaping () -> Void) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         guard doc.documentContextBeforeInput != nil || doc.documentContextAfterInput != nil else { return then() }
-        let empty = (doc.documentContextBeforeInput ?? "").isEmpty
-        keyboard.caret(-1) { [weak self] in
+        let was = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? ""), on = !was.1.isEmpty
+        keyboard.caret(on ? 1 : -1) { [weak self] in
             guard let kb = self?.keyboard, let doc = kb.target as? UITextDocumentProxy else { return }
-            if empty, (doc.documentContextBeforeInput ?? "").isEmpty { return then() }
-            kb.caret(1, then: then)
+            if !on, was.0.isEmpty, (doc.documentContextBeforeInput ?? "").isEmpty { return then() }
+            guard waits else { return kb.caret(on ? -1 : 1, then: then) }
+            kb.caret(on ? -1 : 1) { [weak kb] in
+                guard let kb else { return }
+                var last = was, quiet = 0
+                let answered = { [weak kb] () -> Bool in
+                    guard let doc = kb?.target as? UITextDocumentProxy else { return true }
+                    let now = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? "")
+                    if now != was, now.1 == was.1 { return true }
+                    if now != last { last = now; quiet = 0 } else { quiet += 1 }
+                    return quiet > 15
+                }
+                if answered() { return then() }
+                kb.wait { guard answered() else { return false }; then(); return true }
+            }
         }
     }
 
