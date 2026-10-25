@@ -29,10 +29,12 @@ enum TerminalPrefs {
 
 /// Add / remove / reorder a key list (`Shortcuts.Bar`). Persists to the defaults key its
 /// bar reads (`Shortcuts.shared`): the terminal's reloads when the sheet closes, the Prosper
-/// keyboard's toolbar in other apps when it next shows. The terminal's is a sheet with the
-/// text size; the toolbar's is pushed from Settings, and its send can go.
+/// keyboard's toolbar in other apps when it next shows. Both are pushed from Settings; the
+/// terminal screen opens the terminal's as a sheet (`sheet`). The terminal's has the text
+/// size; the toolbar's send can go.
 struct ShortcutEditor: View {
     let bar: Shortcuts.Bar
+    let sheet: Bool
     @AppStorage private var raw: String   // observe-only: triggers refresh
     @State private var keys: [ShortcutKey] = []
     @Environment(\.dismiss) private var dismiss
@@ -41,13 +43,14 @@ struct ShortcutEditor: View {
     /// flush apply to the stepper too — one writer for the one stored size.
     @State private var fontSize = Double(TerminalPrefs.fontSize)
 
-    init(bar: Shortcuts.Bar = .terminal) {
+    init(bar: Shortcuts.Bar = .terminal, sheet: Bool = true) {
         self.bar = bar
+        self.sheet = sheet
         _raw = AppStorage(wrappedValue: "", bar.storageKey, store: Shortcuts.shared())
     }
 
     var body: some View {
-        if bar == .terminal {
+        if sheet {
             NavigationStack {
                 list.toolbar {
                     ToolbarItem(placement: .navigationBarLeading) { reset }

@@ -61,8 +61,6 @@ struct SettingsView: View {
     @State private var confirmDelete = false
     @State private var busy = false
     @State private var error: String?
-    /// The terminal's shortcut editor; the toolbar's is pushed (`Shortcuts.Bar`).
-    @State private var editingShortcuts = false
     // Keyboard, in the App Group the keyboards read (`KeyboardSettings`).
     @AppStorage(KeyboardSettings.Key.autoCapitalization, store: KeyboardSettings.store())
     private var autoCapitalization = KeyboardSettings().autoCapitalization
@@ -188,8 +186,8 @@ struct SettingsView: View {
             }
 
             Section {
-                NavigationLink("System Keyboard Toolbar") { ShortcutEditor(bar: .toolbar) }
-                Button("Terminal Shortcut Keys") { editingShortcuts = true }
+                NavigationLink("System Keyboard Toolbar") { ShortcutEditor(bar: .toolbar, sheet: false) }
+                NavigationLink("Terminal Shortcut Keys") { ShortcutEditor(sheet: false) }
             } footer: {
                 Text("The System Keyboard Toolbar shows above the Prosper keyboard in other apps when you tap the toolbar toggle at the leading edge of its strip. Terminal Shortcut Keys are the bar under the terminal. The toolbar list needs Full Access; without it, the keyboard shows the default keys.")
             }
@@ -200,7 +198,6 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showLogin) { LoginView(account: account) }
-        .sheet(isPresented: $editingShortcuts) { ShortcutEditor() }
         .sheet(isPresented: $confirmDelete) {
             DeleteAccountSheet(busy: $busy) { await delete() }
         }
