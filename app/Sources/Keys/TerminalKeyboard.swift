@@ -866,6 +866,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// Raw bytes to the terminal, past `insertText` (which makes multi-byte control text
     /// a paste). Nil in the extension: return then types "\n".
     var sendBytes: (([UInt8]) -> Void)?
+    /// True while the terminal shows its alternate screen (vim, less, htop).
+    var fullScreen: () -> Bool = { false }
     /// Return's title, from the field's return key (`returnTitle(for:)`); nil draws the
     /// `return.left` arrow. The extension sets it, the app never does.
     var returnTitle: String? { didSet { refreshLabels() } }
@@ -1015,11 +1017,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                Self.periodReplacesSpace(before: doc.documentContextBeforeInput, keyboardType: doc.keyboardType ?? .default) {
                 doc.deleteBackward()
                 doc.insertText(mark + " ")
-            } else if let sendBytes, !mark.isEmpty, Self.spaceDoubles(after: before, now: now) {
+            } else if let sendBytes, !mark.isEmpty, !fullScreen(), Self.spaceDoubles(after: before, now: now) {
                 // DEL, as the delete key sends, then the mark: raw, since the terminal view
                 // turns a ". " after a deleted space back into two spaces.
-                // ponytail: blind to the host. A TUI where DEL doesn't erase (a pager, a
-                // vi normal mode, kitty's all-keys mode) sees a stray DEL and the mark.
+                // Off on the alternate screen, so vi's insert mode loses the shortcut.
+                // ponytail: a primary-screen TUI where DEL doesn't erase (kitty's all-keys
+                // mode) still sees a stray DEL and the mark.
                 sendBytes([0x7f] + Array((mark + " ").utf8))
                 typed = []
             } else {

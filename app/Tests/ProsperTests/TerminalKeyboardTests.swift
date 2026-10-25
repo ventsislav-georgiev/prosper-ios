@@ -770,6 +770,9 @@ final class TerminalKeyboardTests: XCTestCase {
         let third = run { $0.press(.space) }
         XCTAssertEqual(third.calls, ["o", " ", " "], "a third space is a space")
         XCTAssertEqual(third.sent, [[0x7f, 0x21, 0x20]])
+        let vim = run { $0.fullScreen = { true } }
+        XCTAssertEqual(vim.calls, ["o", " ", " "], "the alternate screen")
+        XCTAssertEqual(vim.sent, [])
 
         let ext = TerminalKeyboard(), spy = SpyInput()   // no sendBytes: no terminal to track
         ext.target = spy
