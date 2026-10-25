@@ -33,7 +33,7 @@ final class ImagePasteTests: XCTestCase {
         #if targetEnvironment(macCatalyst)
         UIPasteboard.general.items = borrowedClipboard
         #endif
-        Shortcuts.shared().removeObject(forKey: Shortcuts.storageKey)
+        clearSavedShortcuts()
         super.tearDown()
     }
 

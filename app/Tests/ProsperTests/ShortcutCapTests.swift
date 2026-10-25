@@ -49,7 +49,7 @@ final class ShortcutCapTests: XCTestCase {
 
     /// VoiceOver reads the key's label, not the SF Symbol name of an icon cap.
     func testCapsReadTheirLabels() {
-        Shortcuts.shared().removeObject(forKey: Shortcuts.storageKey)
+        clearSavedShortcuts()
         func caps(_ v: UIView) -> [KeyCapButton] { v.subviews.flatMap { ($0 as? KeyCapButton).map { [$0] } ?? caps($0) } }
         let bar = ShortcutBar()
         bar.layoutIfNeeded()   // the caps join the bar's rows on layout
@@ -93,9 +93,11 @@ final class ShortcutCapTests: XCTestCase {
     @MainActor
     func testTwoRowBarColumnsLineUp() throws {
         let saved = Shortcuts.shared().string(forKey: Shortcuts.storageKey)
+        let old = UserDefaults.standard.string(forKey: Shortcuts.storageKey)   // shared() migrates it into an empty group
         defer {
             if let saved { Shortcuts.shared().set(saved, forKey: Shortcuts.storageKey) }
             else { Shortcuts.shared().removeObject(forKey: Shortcuts.storageKey) }
+            UserDefaults.standard.set(old, forKey: Shortcuts.storageKey)
         }
         let ids = Shortcuts.defaults.map(\.id)
         Shortcuts.save(try ids.map(key))
@@ -219,9 +221,11 @@ final class ShortcutCapTests: XCTestCase {
     @MainActor
     private func makeBar(_ ids: [String], width: CGFloat = 402) throws -> ShortcutBar {
         let saved = Shortcuts.shared().string(forKey: Shortcuts.storageKey)
+        let old = UserDefaults.standard.string(forKey: Shortcuts.storageKey)   // shared() migrates it into an empty group
         addTeardownBlock {
             if let saved { Shortcuts.shared().set(saved, forKey: Shortcuts.storageKey) }
             else { Shortcuts.shared().removeObject(forKey: Shortcuts.storageKey) }
+            UserDefaults.standard.set(old, forKey: Shortcuts.storageKey)
         }
         Shortcuts.save(try ids.map(key))
         let bar = ShortcutBar()
@@ -386,9 +390,11 @@ final class ShortcutCapTests: XCTestCase {
     /// new default. Any other keeps its set and order and gains the send key if missing.
     func testOldDefaultBarMigratesAndSendIsAlwaysThere() throws {
         let saved = Shortcuts.shared().string(forKey: Shortcuts.storageKey)
+        let old = UserDefaults.standard.string(forKey: Shortcuts.storageKey)   // shared() migrates it into an empty group
         defer {
             if let saved { Shortcuts.shared().set(saved, forKey: Shortcuts.storageKey) }
             else { Shortcuts.shared().removeObject(forKey: Shortcuts.storageKey) }
+            UserDefaults.standard.set(old, forKey: Shortcuts.storageKey)
         }
         Shortcuts.save(try ["paste", "pasteImg", "up", "down", "stab", "snl", "enter",
                             "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"].map(key))
@@ -400,7 +406,7 @@ final class ShortcutCapTests: XCTestCase {
         Shortcuts.save(try ["enter", "esc"].map(key))
         XCTAssertEqual(Shortcuts.load().map(\.id), ["enter", "esc"], "a bar with send keeps its order")
 
-        Shortcuts.shared().removeObject(forKey: Shortcuts.storageKey)
+        clearSavedShortcuts()
         XCTAssertEqual(Shortcuts.load().map(\.id), Shortcuts.defaults.map(\.id))
     }
 
@@ -410,4 +416,11 @@ final class ShortcutCapTests: XCTestCase {
         let img = try XCTUnwrap(UIImage(systemName: name, withConfiguration: cfg))
         XCTAssertGreaterThan(img.size.height, img.size.width, "\(name) is not portrait")
     }
+}
+
+/// Back to the default bar: clears the group AND `.standard`, since `Shortcuts.shared()`
+/// copies an older `.standard` bar into a group that has none.
+func clearSavedShortcuts() {
+    Shortcuts.shared().removeObject(forKey: Shortcuts.storageKey)
+    UserDefaults.standard.removeObject(forKey: Shortcuts.storageKey)
 }

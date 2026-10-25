@@ -34,9 +34,12 @@ final class KeyboardViewController: UIInputViewController {
         // The app's editor writes them to the App Group: without Full Access, the defaults.
         bar.addToolbar { [weak self] in Shortcuts.load(self?.hasFullAccess == true ? Shortcuts.shared() : nil) }
         // Contact names and text replacements; needs no Full Access. Once per controller.
-        requestSupplementaryLexicon { [weak self] lexicon in
-            self?.bar.suggestions.load(lexicon.entries.map { ($0.userInput, $0.documentText) })
-            self?.bar.refresh()
+        requestSupplementaryLexicon { lexicon in
+            // The lexicon arrives on a background queue; the bar and its state are main-only.
+            DispatchQueue.main.async { [weak self] in
+                self?.bar.suggestions.load(lexicon.entries.map { ($0.userInput, $0.documentText) })
+                self?.bar.refresh()
+            }
         }
     }
 

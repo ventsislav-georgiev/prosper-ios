@@ -759,6 +759,7 @@ final class SuggestionBar: UIView {
     /// Recompute from the text: after each key, and when the host changes the text or
     /// the selection.
     func refresh() {
+        assert(Thread.isMainThread, "the bar is main-only")   // debug only: an off-main caller trips in tests and QA
         suggestions.pasteFits = traitCollection.verticalSizeClass != .compact
         guard let doc = keyboard?.target as? UITextDocumentProxy else { return }
         show(suggestions.state(doc, shift: keyboard?.shift.mode ?? .off))
