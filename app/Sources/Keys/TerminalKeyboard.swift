@@ -1789,7 +1789,9 @@ extension TerminalKeyboard {
     }()
     /// One checker for every keyboard and language (each lookup names its language).
     /// `init` makes a lookup in its layout's language, so that lexicon loads with the
-    /// keyboard, not on the first ambiguous touch.
+    /// keyboard, not on the first ambiguous touch. It also starts the checker's warm-up: for
+    /// ~0.3 s after its first use in a process, guesses come from a cold list ("hese" →
+    /// "hess" before "here"), so the first word the bar corrects would get those.
     ///
     /// ponytail: that load is ~130 ms on the main thread, once per process, paid when the
     /// session screen builds the keyboard (UITextChecker is main-actor only). Warm it
