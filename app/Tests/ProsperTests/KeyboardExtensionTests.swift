@@ -1199,11 +1199,11 @@ final class KeyboardExtensionTests: XCTestCase {
     /// `s` with `|` at the caret, in a UITextView (`kit`) or Safari, whose after-contexts
     /// stop at the caret line's end (`cut`), after `moves` of (steps, lines), each asked once
     /// the last has landed, or all at once up to a (0, 0) (`fast`), the host catching up
-    /// after every `perRefresh` asks (0: its context never lags): the text with `|` where
-    /// the caret ended. The caret never stops inside a Character but, in a UITextView, for
-    /// a moment between a CR and its LF.
+    /// after every `perRefresh` asks (0: its context never lags), rows of `wrap`: the text
+    /// with `|` where the caret ended. The caret never stops inside a Character but, in a
+    /// UITextView, for a moment between a CR and its LF.
     private func lined(_ s: String, kit: Bool, cut: Bool = true, _ moves: [(Int, Int)], perRefresh: Int = 0,
-                       fast: Bool = false, _ why: String = "", tweak: (FakeProxy) -> Void = { _ in },
+                       fast: Bool = false, wrap: Int? = nil, _ why: String = "", tweak: (FakeProxy) -> Void = { _ in },
                        file: StaticString = #filePath, line: UInt = #line) -> String {
         let parts = s.components(separatedBy: "|"), text = parts.joined()
         let doc = host(kit: kit, parts[0], parts[1])
@@ -1211,6 +1211,7 @@ final class KeyboardExtensionTests: XCTestCase {
         tweak(doc)
         doc.lags = perRefresh > 0
         var walk = CaretWalk(), polls = 0
+        walk.wrap = wrap
         func step(_ m: (Int, Int)) {
             let units = walk.step(m.0, lines: m.1, before: doc.documentContextBeforeInput ?? "",
                                   after: doc.documentContextAfterInput ?? "", settled: polls >= 3)
@@ -1223,7 +1224,7 @@ final class KeyboardExtensionTests: XCTestCase {
             if !fast || m == (0, 0) { settle() }
         }
         settle()
-        let at = "\(why) kit \(kit) cut \(cut) lag \(perRefresh)"
+        let at = "\(why) kit \(kit) cut \(cut) lag \(perRefresh) wrap \(wrap ?? 0)"
         XCTAssertTrue(walk.idle, at, file: file, line: line)
         let u = Array(text.utf16), crlf = u.indices.dropFirst().filter { u[$0 - 1] == 0x0D && u[$0] == 0x0A }
         let bad = doc.stops.filter { !boundaries(text).contains($0) && !(kit && crlf.contains($0)) }
@@ -1233,8 +1234,8 @@ final class KeyboardExtensionTests: XCTestCase {
 
     /// A line move in either host, lagging or not, the break past a line's end shown or
     /// not: it keeps its column through a short line, counts it in Characters, crosses a
-    /// CR LF whole, stops at the text's first and last lines, and lands where a line
-    /// shows only in windows.
+    /// CR LF whole, stops at the text's start and end past its first and last lines, and
+    /// lands where a line shows only in windows. Rows longer than any line change nothing.
     func testLineMovesKeepTheirColumnInEitherHost() {
         let long = String(repeating: "x", count: 150), x30 = String(repeating: "x", count: 30)
         let cases: [(String, [(Int, Int)], String, String)] = [
@@ -1246,10 +1247,10 @@ final class KeyboardExtensionTests: XCTestCase {
             ("abcdef|\nab\nabcdefgh", [(0, 2)], "abcdef\nab\nabcdef|gh", "two lines in one move"),
             ("abcdefgh\nab\nabc|def", [(0, -2)], "abc|defgh\nab\nabcdef", "two lines up"),
             ("abcdefgh\nab\nabc|def", [(0, -1), (0, -1)], "abc|defgh\nab\nabcdef", "up, and up again"),
-            ("a|bc\ndef", [(0, -1)], "a|bc\ndef", "up on the first line: nothing"),
-            ("abc\nd|ef", [(0, 1)], "abc\nd|ef", "down on the last line: nothing"),
-            ("a|b\ncd", [(0, 5)], "ab\nc|d", "more lines than there are: the last"),
-            ("ab\nc|d", [(0, -5)], "a|b\ncd", "and the first"),
+            ("a|bc\ndef", [(0, -1)], "|abc\ndef", "up on the first line: its start, as iOS's ↑"),
+            ("abc\nd|ef", [(0, 1)], "abc\ndef|", "down on the last line: its end, as iOS's ↓"),
+            ("a|b\ncd", [(0, 5)], "ab\ncd|", "more lines than there are: the text's end"),
+            ("ab\nc|d", [(0, -5)], "|ab\ncd", "and its start"),
             ("abc|\n\nabc", [(0, 1)], "abc\n|\nabc", "an empty line"),
             ("abc|\n\nabc", [(0, 2)], "abc\n\nabc|", "past it, the column back"),
             ("abc\n\nab|c", [(0, -1)], "abc\n|\nabc", "up onto an empty line"),
@@ -1277,8 +1278,10 @@ final class KeyboardExtensionTests: XCTestCase {
             for kit in [true, false] {
                 for cut in [true, false] {
                     for perRefresh in [0, 1] {
-                        XCTAssertEqual(lined(s, kit: kit, cut: cut, moves, perRefresh: perRefresh, why), want,
-                                       "\(why) kit \(kit) cut \(cut) lag \(perRefresh)")
+                        for wrap in [nil, 1000] {
+                            XCTAssertEqual(lined(s, kit: kit, cut: cut, moves, perRefresh: perRefresh, wrap: wrap, why), want,
+                                           "\(why) kit \(kit) cut \(cut) lag \(perRefresh) wrap \(wrap ?? 0)")
+                        }
                     }
                 }
             }
@@ -1302,8 +1305,11 @@ final class KeyboardExtensionTests: XCTestCase {
             for kit in [true, false] {
                 for cut in [true, false] {
                     for perRefresh in [0, 1] {
-                        XCTAssertEqual(lined(s, kit: kit, cut: cut, moves, perRefresh: perRefresh, why, tweak: { $0.sentenceBefore = kit }), want,
-                                       "\(why) kit \(kit) cut \(cut) lag \(perRefresh)")
+                        for wrap in [nil, 1000] {
+                            XCTAssertEqual(lined(s, kit: kit, cut: cut, moves, perRefresh: perRefresh, wrap: wrap, why,
+                                                 tweak: { $0.sentenceBefore = kit }), want,
+                                           "\(why) kit \(kit) cut \(cut) lag \(perRefresh) wrap \(wrap ?? 0)")
+                        }
                     }
                 }
                 XCTAssertEqual(lined("ab\nOne. Two. Th|ree.\nabc", kit: kit, [(0, 1), (0, -1)], fast: true,
@@ -1324,8 +1330,11 @@ final class KeyboardExtensionTests: XCTestCase {
         for (s, n, want, why) in cases {
             for cut in [true, false] {
                 for perRefresh in [0, 1] {
-                    XCTAssertEqual(lined(s, kit: false, cut: cut, [(0, n)], perRefresh: perRefresh, why, tweak: { $0.breakSpace = true }),
-                                   want, "\(why) cut \(cut) lag \(perRefresh)")
+                    for wrap in [nil, 1000] {
+                        XCTAssertEqual(lined(s, kit: false, cut: cut, [(0, n)], perRefresh: perRefresh, wrap: wrap, why,
+                                             tweak: { $0.breakSpace = true }),
+                                       want, "\(why) cut \(cut) lag \(perRefresh) wrap \(wrap ?? 0)")
+                    }
                 }
             }
         }
@@ -1452,6 +1461,129 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertNil(kb.walkTimer)
     }
 
+    /// The operator's repro (build 100): one paragraph a chat composer wraps to three rows,
+    /// no break, the toolbar's ↓ from its first row through a host that lags. The walk went
+    /// back to the text's start to count the column, on to its end (its only line's), probed
+    /// past it blind and, 0.3 s after the host went quiet, walked back where it began. Now ↓
+    /// goes a guessed row (`wrapGuess`) at a time, the last to the text's end, where it stays;
+    /// ↑ the same way back to the start. The caret never goes back the way it came.
+    func testTheToolbarsArrowsGoARowAtATimeInAWrappedParagraph() throws {
+        let para = "това е дълъг абзац без нов ред, който полето за писане пренася на три реда, защото не се побира в ширината му"
+        let start = "това е дълъг ".count
+        for kit in [true, false] {
+            let kb = TerminalKeyboard()
+            _ = laidOut(kb)
+            let w = try XCTUnwrap(kb.wrapGuess)
+            let doc = host(kit: kit, String(para.prefix(start)), String(para.dropFirst(start)))
+            kb.target = doc
+            doc.lags = true
+            func press(_ n: Int) -> (Int, [Int]) {
+                let from = doc.stops.count
+                kb.line(n)
+                for i in 0..<120 { if i % 5 == 4 { doc.catchUp() }; kb.pollCaret() }
+                return (doc.text.count, Array(doc.stops[from...]))
+            }
+            let (one, legs) = press(1)
+            XCTAssertEqual(one, start + w, "kit \(kit): one row down, in one move")
+            XCTAssertEqual(legs, [start + w], "kit \(kit)")
+            for _ in 0..<3 { _ = press(1) }
+            XCTAssertEqual(doc.text.count, para.count, "kit \(kit): the last row's ↓ goes to the end and stays")
+            XCTAssertEqual(doc.stops, doc.stops.sorted(), "kit \(kit): never back the way it came")
+            let down = doc.stops.count
+            for _ in 0..<4 { _ = press(-1) }
+            XCTAssertEqual(doc.text.count, 0, "kit \(kit): up to the start")
+            XCTAssertEqual(Array(doc.stops[down...]), doc.stops[down...].sorted(by: >), "kit \(kit)")
+            XCTAssertNil(kb.walkTimer, "kit \(kit)")
+        }
+    }
+
+    /// The row guess at the operator's width: about what a field 20 pt in a side holds of
+    /// body text (the repro's rows held 41 and 49), a little under, as word wrap is.
+    func testTheRowGuessFitsAPhonesField() {
+        let kb = TerminalKeyboard()
+        _ = laidOut(kb, width: 402)
+        XCTAssertNotNil(kb.wrapGuess)
+        XCTAssertTrue((30...50).contains(kb.wrapGuess ?? 0), "\(kb.wrapGuess ?? 0)")
+        kb.frame = .zero
+        XCTAssertNil(kb.wrapGuess, "nothing to guess from")
+    }
+
+    /// Rows of 10 in either host, lagging or not, its after-context cut at the line's end or
+    /// not: a line move goes a row inside a wrapped line, keeps the goal's place in the row
+    /// through a short last row, crosses a break to the next line's first row or the last
+    /// line's last, takes a short line as one row, and stays at the text's edges.
+    func testLineMovesGoARowInAWrappedLine() {
+        let p = "abcdefghijklmnopqrstuvwxy", q = "ABCDEFGHIJKLMNOPQRSTUVWXY"
+        func at(_ s: String, _ i: Int) -> String { String(s.prefix(i)) + "|" + s.dropFirst(i) }
+        let two = p + "\n" + q
+        let cases: [(String, [(Int, Int)], String, String)] = [
+            (at(p, 3), [(0, 1)], at(p, 13), "down a row"),
+            (at(p, 3), [(0, 2)], at(p, 23), "down 2 rows"),
+            (at(p, 23), [(0, -1)], at(p, 13), "up a row"),
+            (at(p, 17), [(0, 1)], at(p, 25), "onto a shorter last row: its end"),
+            (at(p, 23), [(0, 1)], at(p, 25), "down on the last row: the text's end"),
+            (at(p, 3), [(0, -1)], at(p, 0), "up on the first row: the text's start"),
+            (at(p, 13), [(0, 1), (0, -1)], at(p, 13), "down and back"),
+            (at(two, 26 + 3), [(0, -1)], at(two, 23), "up over a break: the last row"),
+            (at(two, 23), [(0, 1)], at(two, 26 + 3), "down over a break: the first row"),
+            (at(two, 13), [(0, 2)], at(two, 26 + 3), "a row, then over the break"),
+            (at(two, 17), [(0, 1), (0, 1)], at(two, 26 + 7), "the place in the row kept past a short row"),
+            (at(two, 26 + 13), [(0, -3)], at(two, 13), "three up, over the break"),
+            ("ab|\n" + p, [(0, 1)], "ab\nab|" + p.dropFirst(2), "a short line is one row"),
+            (p + "\nab|", [(0, -1)], at(p, 22) + "\nab", "up from one: the last row"),
+        ]
+        for (s, moves, want, why) in cases {
+            for kit in [true, false] {
+                for cut in [true, false] {
+                    for perRefresh in [0, 1] {
+                        XCTAssertEqual(lined(s, kit: kit, cut: cut, moves, perRefresh: perRefresh, wrap: 10, why), want,
+                                       "\(why) kit \(kit) cut \(cut) lag \(perRefresh)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fast repeated steps, each asked before the last has landed (a quick drag, a tapped
+    /// arrow), lagging or not: each is one line or row, never more, in logical lines and in
+    /// a wrapped one.
+    func testFastLineStepsGoOneEach() {
+        let lines = "a|bc\nabc\nabc\nabc\nabc", p = String(repeating: "abcdefghij", count: 5)
+        for kit in [true, false] {
+            for perRefresh in [0, 1] {
+                XCTAssertEqual(lined(lines, kit: kit, [(0, 1), (0, 1), (0, 1)], perRefresh: perRefresh, fast: true),
+                               "abc\nabc\nabc\na|bc\nabc", "three lines, kit \(kit) lag \(perRefresh)")
+                XCTAssertEqual(lined("ab|" + p.dropFirst(2), kit: kit, [(0, 1), (0, 1), (0, 1)], perRefresh: perRefresh,
+                                     fast: true, wrap: 10),
+                               String(p.prefix(32)) + "|" + p.dropFirst(32), "three rows, kit \(kit) lag \(perRefresh)")
+            }
+        }
+    }
+
+    /// The toolbar's ↑ through the view, once, on a host whose context lags several polls,
+    /// or shows only a window or the caret's sentence: exactly one line up, at the column,
+    /// with no stop on the line past it.
+    func testOneUpThroughALaggingOrCutContextGoesOneLine() {
+        let models: [(String, Bool, (FakeProxy) -> Void)] = [
+            ("UITextView", true, { _ in }),
+            ("UIKit, cut at a sentence", true, { $0.lineBefore = false; $0.sentenceBefore = true }),
+            ("Safari, small windows", false, { $0.window = 6; $0.stopsAtLineEnd = true }),
+            ("Safari paragraph", false, { $0.breakSpace = true; $0.stopsAtLineEnd = true }),
+        ]
+        for (name, kit, tweak) in models {
+            let kb = TerminalKeyboard(), doc = host(kit: kit, "zero line\nOne. Two words\nAnd. More text h", "ere\nlast")
+            kb.target = doc
+            tweak(doc)
+            doc.lags = true
+            kb.line(-1)
+            for i in 0..<200 { if i % 4 == 3 { doc.catchUp() }; kb.pollCaret() }
+            XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "zero line\nOne. Two words|\nAnd. More text here\nlast", name)
+            XCTAssertTrue(doc.stops.allSatisfy { (10...44).contains($0) },
+                          "\(name): never on another line, stops \(doc.stops)")
+            XCTAssertNil(kb.walkTimer, name)
+        }
+    }
+
     /// A line move with nowhere to go sends nothing and ends nothing: the word touch
     /// correction continues stays open and the suggestions hear of no move (QA's M188).
     /// One that goes ends them once.
@@ -1469,7 +1601,7 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(moved, 0)
         kb.line(1)
         for _ in 0..<40 { kb.pollCaret() }
-        XCTAssertEqual(doc.moves, [2, 1, -2], "to the end, nothing past it, back")
+        XCTAssertEqual(doc.moves, [2, 1], "to the end, nothing past it: stays there")
         XCTAssertEqual(kb.word, "")
         XCTAssertEqual(moved, 1)
     }

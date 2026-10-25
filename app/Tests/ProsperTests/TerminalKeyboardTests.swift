@@ -538,7 +538,7 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(t.moved(1, .space, at: at(0.9, -0.1)), [.caret(-1), .line(-1)])
         XCTAssertEqual(t.moved(1, .space, at: at(0.9, -3.2)), [.line(-3)], "straight up")
         XCTAssertEqual(t.ended(1), [])
-        XCTAssertEqual(KeyTouchTracker.lineStep, 20)
+        XCTAssertEqual(KeyTouchTracker.lineStep, TerminalKeyboard.rowHeight, "a key row per line")
     }
 
     /// Text a cap shows: its title, image or hint.

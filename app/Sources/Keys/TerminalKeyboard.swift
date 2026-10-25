@@ -187,9 +187,10 @@ struct KeyTouchTracker {
     /// ponytail: fixed steps, no acceleration. Tune them on device; add a speed curve if
     /// long moves feel slow.
     static let caretStep: CGFloat = 9
-    /// How far a trackpad finger travels up or down per line: about a line of body text,
-    /// and twice `caretStep` so a sideways drag's wobble rarely changes line.
-    static let lineStep: CGFloat = 20
+    /// How far a trackpad finger travels up or down per line: a key row, four times
+    /// `caretStep`, so a sideways drag's wobble, under a row, never changes line and a drag goes
+    /// a line per row it crosses.
+    static let lineStep: CGFloat = TerminalKeyboard.rowHeight
 
     private struct Touch {
         let id: Int; var key: Key; var done: Bool
@@ -326,9 +327,15 @@ struct KeyTouchTracker {
 /// - A field whose context stays empty after a move gets every step as asked (`blank`).
 /// - Line moves (`lines`) go as legs of such steps (`lineLeg`), each sized from the context
 ///   the last one landed in, so they keep all of the above.
+/// - A keyboard sees only the text, never the host's layout: its lines are the text's, and
+///   a paragraph the host wraps is one of them. With `wrap` set, a line move inside one goes
+///   a row of that many Characters instead.
 struct CaretWalk {
     /// The host counts UTF-16 units; nil until a move shows which.
     var utf16: Bool?
+    /// The Characters a host's row is guessed to hold (the view's `wrapGuess`): a line longer
+    /// than that is rows of it, and a line move goes a row. nil: lines are the text's.
+    var wrap: Int?
     /// Steps asked for and not sent yet, negative left.
     private(set) var queued = 0
     /// The move in flight: the proxy's context it left (`seen`), the context it was sized
@@ -358,11 +365,11 @@ struct CaretWalk {
     private var goal: Int?
     /// The line move under way: the Characters it walked on the line it started on, nil
     /// once it crossed a break, 0 once it landed; whether the leg in flight crosses one;
-    /// and once the last is crossed, its landing: to the line's start while that's out of
-    /// sight, then right.
+    /// and once the last is crossed (with `wrap`, each), its landing: to the line's start
+    /// while that's out of sight, counting the Characters walked there, then right.
     private var walked: Int? = 0, crossing = false
     private var landing: Landing?
-    private enum Landing { case start(Int), right(Int) }
+    private enum Landing { case start(Int, Int), right(Int) }
     /// Sideways steps asked for during a line move: they go once it has landed.
     private var held = 0
     var idle: Bool { sent == nil && queued == 0 && lines == 0 && landing == nil && held == 0 }
@@ -485,7 +492,7 @@ struct CaretWalk {
     ///   own signal if a device shows one.
     mutating func timedOut() {
         guard let s = sent else { believed = nil; return }
-        if s.blind, crossing { crossing = false; sent = nil; edge(); return }   // no break past it
+        if s.blind, crossing { crossing = false; sent = nil; edge(); return }   // no break past it: the text's end
         if s.blind {
             if s.seen.0.isEmpty, s.seen.1.isEmpty { blank = true; sent = nil } else { drop() }
             return
@@ -525,26 +532,51 @@ struct CaretWalk {
     /// column, or the line's end if it's shorter. Then the sideways steps held behind it.
     /// A landing the context already shows goes in one move (`reach`).
     ///
+    /// With `wrap`, one line at a time: a row inside the caret's line if it has one that
+    /// way, at the goal's place in the row (`goal` mod `wrap`), else over the break to the
+    /// next line's first row or the last line's last.
+    ///
     /// ponytail: a host that hides the line's break shows no edge either, so a line move
-    /// from the first line (UIKit) or the last (every host) walks to the edge and back.
+    /// from the first line (UIKit) or the last (every host) walks to the edge, and stays
+    /// there as iOS's own arrows do. A wrapped line's rows are cut every `wrap` Characters,
+    /// not at words as the host wraps, so the column drifts a word's width; one whose start
+    /// is out of sight has it guessed at the context's start, not walked to (a visible jump),
+    /// so a cut context puts the rows elsewhere.
     private mutating func lineLeg(before: [Character], after: [Character]) {
         if crossing { crossing = false; walked = nil }
         let br = before.lastIndex(where: \.isNewline), col = br.map { before.count - $0 - 1 }
         while queued == 0 {
-            if lines != 0 {
+            if lines != 0, wrap == nil || landing == nil {
                 landing = nil
+                let down = lines > 0, rest = after.prefix { !$0.isNewline }.count
+                // A wrapped line's row that way, its start out of sight: `wrap` on.
+                if let w = wrap, walked == 0, col == nil, (down ? rest - 1 : before.count) >= w {
+                    queued = down ? w : -w; lines -= lines.signum()
+                    return
+                }
                 // The column from the line's start, which a host can cut off (a sentence, a
-                // window): walked to it first, counting, if it's out of sight.
-                if goal == nil, col == nil, !before.isEmpty {
+                // window): walked to it first, counting, if it's out of sight. A wrapped line's,
+                // with a row or more in sight, is guessed at the context's start instead.
+                if goal == nil, col == nil, !before.isEmpty, wrap.map({ before.count < $0 }) ?? true {
                     queued = -before.count
                     walked = walked.map { $0 + queued }
                     return
                 }
-                let g = goal ?? (col ?? 0) - (walked ?? 0), down = lines > 0
+                let c = col ?? before.count, g = goal ?? c - (walked ?? 0)
                 goal = g
+                // Its start in sight or guessed: the goal's place in the row that way, or the
+                // line's end.
+                if let w = wrap, let k = walked, col != nil || before.count >= w || before.isEmpty {
+                    let from = c - k, end = c + rest, at = from == end ? max(from - 1, 0) : from
+                    let row = at - at % w + (down ? w : -w)
+                    if down ? end > row : row >= 0 {
+                        queued = min(row + g % w, end) - c; lines -= lines.signum(); walked = 0
+                        return
+                    }
+                }
                 // The line it goes to in sight: there in one move, no stop at a line's end.
-                if let to = Self.reach(lines, column: g, before: before, after: after) {
-                    queued = to; lines = 0; walked = 0
+                if let to = Self.reach(wrap == nil ? lines : lines.signum(), column: g, wrap: wrap, before: before, after: after) {
+                    queued = to; lines = wrap == nil ? 0 : lines - lines.signum(); walked = 0
                     return
                 }
                 if down, let k = after.firstIndex(where: \.isNewline) {
@@ -563,13 +595,18 @@ struct CaretWalk {
                 }
                 crossing = true
                 lines -= lines.signum()
-                if lines == 0 { landing = .start(g) }
+                if lines == 0 || wrap != nil { landing = .start(g, 0) }
                 return
             }
             switch landing {
-            case .start(let g)?:
-                if col == nil, !before.isEmpty { queued = -before.count; return }
-                let c = col ?? 0
+            case .start(let g, let n)?:
+                if col == nil, !before.isEmpty, wrap.map({ before.count < $0 }) ?? true {
+                    queued = -before.count; landing = .start(g, n + before.count); return
+                }
+                let c = col ?? before.count   // a wrapped line's start, guessed as above
+                // Wrapped: the goal's place in the line's last row (up, landed at its end and `n`
+                // back from there), or its first (down, landed at its start).
+                let g = wrap.map { w in max(c + n - 1, 0) / w * w + g % w } ?? g
                 queued = min(g - c, 0)
                 landing = g > c ? .right(g - c) : nil
                 if landing == nil { walked = 0 }
@@ -579,7 +616,7 @@ struct CaretWalk {
                 landing = queued < n && queued == after.count && queued > 0 ? .right(n - queued) : nil
                 if landing == nil { walked = 0 }
             case nil:
-                if walked != 0 { edge(); continue }   // up and down cancelled out before it landed
+                if walked != 0 { edge(back: true); continue }   // up and down cancelled out before it landed
                 if held != 0 { goal = nil }
                 queued = held
                 held = 0
@@ -588,11 +625,16 @@ struct CaretWalk {
         }
     }
 
-    /// The line move met the text's edge, or its lines cancelled out: back where it started,
-    /// or if it crossed a line on the way, landed on the one it reached.
-    private mutating func edge() {
+    /// The line move met the text's edge: it stays there, as iOS's own ↑ on the first line
+    /// and ↓ on the last do, however many lines were left. Its lines cancelling out (`back`)
+    /// goes back where it started instead, or if it crossed a line on the way, lands on the
+    /// one it reached.
+    private mutating func edge(back: Bool = false) {
         lines = 0
-        if let w = walked { queued = -w; walked = 0; landing = nil } else { landing = .start(goal ?? 0) }
+        if back, walked == nil { landing = .start(goal ?? 0, 0); return }
+        queued = back ? -(walked ?? 0) : 0
+        walked = 0
+        landing = nil
     }
 
     /// Where a move of `n` lines (negative up) lands, in Characters from the caret, if the
@@ -601,16 +643,18 @@ struct CaretWalk {
     /// the line's end or the column, as a host can cut the after-context anywhere. Safari's
     /// textarea shows lines above; a UITextView's context, cut at a line or a sentence it
     /// can't be told from, and every after-context, stopping at the line's end, never do.
-    static func reach(_ n: Int, column g: Int, before: [Character], after: [Character]) -> Int? {
+    /// With `wrap`, the column is `g`'s place in the line's first row (down) or last (up).
+    static func reach(_ n: Int, column g: Int, wrap: Int? = nil, before: [Character], after: [Character]) -> Int? {
         let side = n > 0 ? after : before, brs = side.indices.filter { side[$0].isNewline }
         if n > 0 {
             guard brs.count >= n else { return nil }
-            let start = brs[n - 1] + 1, line = after[start...].prefix { !$0.isNewline }
+            let start = brs[n - 1] + 1, line = after[start...].prefix { !$0.isNewline }, g = wrap.map { g % $0 } ?? g
             guard line.count >= g || start + line.count < after.count else { return nil }
             return start + min(g, line.count)
         }
         guard brs.count > -n else { return nil }
         let start = brs[brs.count + n - 1] + 1, end = brs[brs.count + n]
+        let g = wrap.map { w in max(end - start - 1, 0) / w * w + g % w } ?? g
         return start + min(g, end - start) - before.count
     }
 
@@ -1121,6 +1165,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             walkField = doc.documentIdentifier
             walk = CaretWalk()
         }
+        walk.wrap = wrapGuess
         let units = walk.step(steps, lines: lines, before: doc.documentContextBeforeInput ?? "",
                               after: doc.documentContextAfterInput ?? "", settled: walkPolls >= 3)
         if units != 0 {
@@ -1140,6 +1185,23 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             walkTimer = t
         }
     }
+
+    /// A host field's row in Characters, guessed for `walk`, which sees no host layout: the
+    /// keyboard's width less a field's usual margins (`fieldInset`), over the mean Character
+    /// width of body text at the user's text size, a tenth less since word wrap leaves rows
+    /// short. nil while too narrow to mean anything.
+    ///
+    /// ponytail: a narrower field (a chat bubble) or a smaller font gets rows too long, so a
+    /// line move from a row's far end can go two; tune `fieldInset` and the tenth on device.
+    var wrapGuess: Int? {
+        let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
+        let sample = "the quick brown fox jumps over the lazy dog" as NSString
+        let mean = sample.size(withAttributes: [.font: font]).width / CGFloat(sample.length)
+        let n = Int((bounds.width - Self.fieldInset) / mean * 0.9)
+        return n > 8 ? n : nil
+    }
+    /// What a host's text field leaves of the screen's width: about 20 pt a side.
+    static let fieldInset: CGFloat = 40
 
     /// The poll timer's tick; tests call it in place of waiting.
     ///
