@@ -72,8 +72,9 @@ struct SettingsView: View {
     private var predictiveText = KeyboardSettings().predictiveText
     @AppStorage(KeyboardSettings.Key.characterPreview, store: KeyboardSettings.store())
     private var characterPreview = KeyboardSettings().characterPreview
-    @AppStorage(KeyboardSettings.Key.periodShortcut, store: KeyboardSettings.store())
-    private var periodShortcut = KeyboardSettings().periodShortcut
+    // Unwritten, it follows the old "." Shortcut switch (`KeyboardSettings.init(_:)`).
+    @AppStorage(KeyboardSettings.Key.doubleSpace, store: KeyboardSettings.store())
+    private var doubleSpace = KeyboardSettings.current().doubleSpace
     @AppStorage(AgentCommand.key) private var agentCommand = ""
     // Session list rows (`RowDetails`), on this device only.
     @AppStorage(RowDetails.Key.agents) private var rowAgents = RowDetails().agents
@@ -168,12 +169,17 @@ struct SettingsView: View {
                 Toggle("Enable Caps Lock", isOn: $capsLock)
                 Toggle("Predictive Text", isOn: $predictiveText)
                 Toggle("Character Preview", isOn: $characterPreview)
-                Toggle("\u{201C}.\u{201D} Shortcut", isOn: $periodShortcut)
+                Picker("Double-Space Shortcut", selection: $doubleSpace) {
+                    Text("Off").tag("")
+                    Text("Period").tag(".")
+                    Text("Exclamation Mark").tag("!")
+                    Text("Question Mark").tag("?")
+                }
                 NavigationLink("Keys Beside Space") { BottomRowSettings() }
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off and the rest on. In the terminal, Enable Caps Lock, Character Preview and Keys Beside Space apply. Double tapping the space bar will insert a period followed by a space.")
+                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off and the rest on. In the terminal, Enable Caps Lock, Character Preview, Double-Space Shortcut and Keys Beside Space apply. Double tapping the space bar will insert the chosen character followed by a space.")
             }
             #endif
 

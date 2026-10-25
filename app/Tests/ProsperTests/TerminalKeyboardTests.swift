@@ -743,6 +743,50 @@ final class TerminalKeyboardTests: XCTestCase {
 
     // MARK: Routing
 
+    /// The terminal's double space: after a letter or digit the keyboard typed, the second
+    /// space goes out as DEL and the picked character; anything between, or Off, keeps it
+    /// a space.
+    func testDoubleSpaceInTheTerminal() {
+        func run(_ mark: String = "!", _ between: (TerminalKeyboard) -> Void = { _ in }, before: String = "o") -> (calls: [String], sent: [[UInt8]]) {
+            let kb = TerminalKeyboard(), spy = SpyInput()
+            var sent: [[UInt8]] = []
+            kb.target = spy
+            kb.sendBytes = { sent.append($0) }
+            kb.settings.doubleSpace = mark
+            kb.press(.char(before)); kb.press(.space)
+            between(kb)
+            kb.press(.space)
+            return (calls: spy.calls, sent: sent)
+        }
+        XCTAssertEqual(run().calls, ["o", " "])
+        XCTAssertEqual(run().sent, [[0x7f, 0x21, 0x20]], "DEL, then \"! \"")
+        XCTAssertEqual(run(".").sent, [[0x7f, 0x2e, 0x20]])
+        XCTAssertEqual(run(before: "7").sent, [[0x7f, 0x21, 0x20]], "after a digit too")
+        XCTAssertEqual(run("").calls, ["o", " ", " "], "Off")
+        XCTAssertEqual(run(before: ")").calls, [")", " ", " "], "not after a symbol")
+        XCTAssertEqual(run { $0.resetWord() }.calls, ["o", " ", " "], "a shortcut-bar key or a paste between")
+        XCTAssertEqual(run { $0.caret(-1) }.sent, [], "a caret move between")
+        XCTAssertEqual(run { $0.press(.shift) }.sent.count, 1, "shift sends nothing")
+        let third = run { $0.press(.space) }
+        XCTAssertEqual(third.calls, ["o", " ", " "], "a third space is a space")
+        XCTAssertEqual(third.sent, [[0x7f, 0x21, 0x20]])
+
+        let ext = TerminalKeyboard(), spy = SpyInput()   // no sendBytes: no terminal to track
+        ext.target = spy
+        ext.press(.char("o")); ext.press(.space); ext.press(.space)
+        XCTAssertEqual(spy.calls, ["o", " ", " "])
+    }
+
+    /// Only a quick second space doubles.
+    func testDoubleSpaceWindow() {
+        let w = ShiftState.doubleTapWindow
+        let typed: [(key: TerminalKeyboard.Key, at: TimeInterval)] = [(key: .char("a"), at: 0), (key: .space, at: 10)]
+        XCTAssertTrue(TerminalKeyboard.spaceDoubles(after: typed, now: 10 + w / 2))
+        XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: typed, now: 10 + w * 2), "too slow")
+        XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: Array(typed.suffix(1)), now: 10), "nothing before the space")
+        XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: [(key: .space, at: 9), (key: .space, at: 10)], now: 10))
+    }
+
     func testKeysReachTheTextInput() {
         let kb = TerminalKeyboard()
         let spy = SpyInput()

@@ -49,7 +49,9 @@ struct KeyboardSettings: Equatable {
         static let capsLock = "keyboard.capsLock"
         static let predictiveText = "keyboard.predictiveText"
         static let characterPreview = "keyboard.characterPreview"
+        /// The old switch, read only when `doubleSpace` was never written (`init(_:)`).
         static let periodShortcut = "keyboard.periodShortcut"
+        static let doubleSpace = "keyboard.doubleSpace"
         static let bottomOrder = "keyboard.bottomOrder"
         static let bottomHidden = "keyboard.bottomHidden"
     }
@@ -64,8 +66,9 @@ struct KeyboardSettings: Equatable {
     var predictiveText = true
     /// The bubble over a pressed key; a hold's symbol still shows (`refreshPressed`).
     var characterPreview = true
-    /// A double space types ". " (`TerminalKeyboard.doubleSpacePeriod`).
-    var periodShortcut = true
+    /// What a double space types before a space: ".", "!" or "?"; empty is off
+    /// (`TerminalKeyboard.doubleSpacePeriod`, `TerminalKeyboard.spaceDoubles`).
+    var doubleSpace = "."
     /// The keys beside space, space itself as " ", in the bottom row's order (`bottomRow`).
     var bottomOrder = KeyboardSettings.bottomKeys
     /// Those of them that don't show; space always does, and takes their room (`place`).
@@ -83,7 +86,8 @@ struct KeyboardSettings: Equatable {
         read(Key.capsLock, &capsLock)
         read(Key.predictiveText, &predictiveText)
         read(Key.characterPreview, &characterPreview)
-        read(Key.periodShortcut, &periodShortcut)
+        doubleSpace = defaults?.string(forKey: Key.doubleSpace)
+            ?? (defaults?.object(forKey: Key.periodShortcut) as? Bool == false ? "" : doubleSpace)
         bottomOrder = defaults?.string(forKey: Key.bottomOrder) ?? bottomOrder
         bottomHidden = defaults?.string(forKey: Key.bottomHidden) ?? bottomHidden
     }
@@ -692,8 +696,8 @@ struct CaretWalk {
 /// types a real "\n", titled by the field's return key (`returnTitle`); the globe key
 /// shows when iOS asks for one (`showsGlobe`), shift follows the field's
 /// auto-capitalization (`autoCapitalize`) and a second space after a word types ". "
-/// (`doubleSpacePeriod`). The Bulgarian extension's has Bulgarian letters (`Layout`); the
-/// app's is always English.
+/// (`doubleSpacePeriod`), or the character `settings` pick. The Bulgarian extension's has
+/// Bulgarian letters (`Layout`); the app's is always English.
 final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     enum Key: Hashable {
         case char(String), shift, backspace, space, ret
@@ -870,8 +874,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// own under the keyboard). The app never shows it.
     var showsGlobe = false { didSet { if showsGlobe != oldValue { build() } } }
     /// A second space after a word types ". " (`periodReplacesSpace`), like the system
-    /// keyboard, while `settings` allow it. The extension sets it; the terminal never
-    /// wants it.
+    /// keyboard, or the character `settings.doubleSpace` picks. The extension sets it; the
+    /// terminal, with no text to read, goes by its own keys instead (`spaceDoubles`).
     var doubleSpacePeriod = false
     /// The app's Keyboard settings: the extension's controller sets them when it appears,
     /// the terminal when it takes focus. A new bottom row rebuilds the caps.
@@ -895,6 +899,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// continues. Backspace drops one, shift keeps it, any other key clears it. Keys from
     /// the shortcut bar bypass this keyboard, so the host calls `resetWord` for them.
     private(set) var word = ""
+    /// The last two keys typed and when, for the terminal's double space (`spaceDoubles`).
+    /// Emptied, like `word`, by anything else that reaches it and by a caret move.
+    private var typed: [(key: Key, at: TimeInterval)] = []
     /// The words on the terminal now (`screenWords(in:)`), for touch correction: names no
     /// dictionary knows, like hosts, services and branches. In the extension, the user's
     /// learned words and contact names instead (`Suggestions.personalWords`). Read only
@@ -995,16 +1002,26 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .shift: break
         default: word = ""
         }
+        let now = CACurrentMediaTime(), before = typed
+        if key != .shift { typed = Array((typed + [(key: key, at: now)]).suffix(2)) }
         switch key {
         case .char(let c):
             let letter = c.first?.isLetter == true
             target?.insertText(shifted(c))
             if letter, shift.mode == .once { shift.typedLetter(); refreshLabels() }
         case .space:
-            if doubleSpacePeriod, settings.periodShortcut, let doc = target as? UITextDocumentProxy,
+            let mark = settings.doubleSpace
+            if doubleSpacePeriod, !mark.isEmpty, let doc = target as? UITextDocumentProxy,
                Self.periodReplacesSpace(before: doc.documentContextBeforeInput, keyboardType: doc.keyboardType ?? .default) {
                 doc.deleteBackward()
-                doc.insertText(". ")
+                doc.insertText(mark + " ")
+            } else if let sendBytes, !mark.isEmpty, Self.spaceDoubles(after: before, now: now) {
+                // DEL, as the delete key sends, then the mark: raw, since the terminal view
+                // turns a ". " after a deleted space back into two spaces.
+                // ponytail: blind to the host. A TUI where DEL doesn't erase (a pager, a
+                // vi normal mode, kitty's all-keys mode) sees a stray DEL and the mark.
+                sendBytes([0x7f] + Array((mark + " ").utf8))
+                typed = []
             } else {
                 target?.insertText(" ")
             }
@@ -1042,6 +1059,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private func caretMoved() {
         word = ""
+        typed = []
         autoCapitalize()
         didMoveCaret?()
     }
@@ -1123,6 +1141,15 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             return end.isNewline || ".?!".contains(end)
         default: return false
         }
+    }
+
+    /// Whether a space typed `now` in the terminal replaces the one before it, as
+    /// `periodReplacesSpace` would: the keyboard's last keys were a letter or digit, then
+    /// a space within `ShiftState.doubleTapWindow`.
+    static func spaceDoubles(after typed: [(key: Key, at: TimeInterval)], now: TimeInterval) -> Bool {
+        guard typed.count == 2, case .char(let c) = typed[0].key, let first = c.first,
+              first.isLetter || first.isNumber, typed[1].key == .space else { return false }
+        return now - typed[1].at <= ShiftState.doubleTapWindow
     }
 
     /// Whether a space typed now replaces the space before the cursor with ". ": the text
@@ -1322,7 +1349,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     /// Start the next word afresh: a key went to the terminal some other way.
-    func resetWord() { word = "" }
+    func resetWord() { word = ""; typed = [] }
 
     /// 0 inside `r`.
     static func distance(_ p: CGPoint, _ r: CGRect) -> CGFloat {

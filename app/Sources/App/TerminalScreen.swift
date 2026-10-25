@@ -520,6 +520,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// not stale after a reconnect; before a fresh view has fed any host byte the re-arm
     /// can't have landed yet, so it is wrapped regardless. Sanitized either way.
     private func sendText(_ s: String, thenEnter: Bool = false) {
+        (keyboardInputView as? TerminalKeyboard)?.resetWord()   // a paste ends the typed word
         conn.send(ArraySlice(TerminalMath.pasteBytes(s, thenEnter: thenEnter,
                                                      bracketed: fedHostBytes ? tv.getTerminal().bracketedPasteMode : true)))
     }

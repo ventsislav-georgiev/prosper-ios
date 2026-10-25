@@ -378,7 +378,7 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertTrue(d.capsLock)
         XCTAssertTrue(d.predictiveText)
         XCTAssertTrue(d.characterPreview)
-        XCTAssertTrue(d.periodShortcut)
+        XCTAssertEqual(d.doubleSpace, ".")
         XCTAssertEqual(KeyboardSettings(nil), d)
         XCTAssertEqual(TerminalKeyboard().settings, d)
         XCTAssertEqual(Suggestions().settings, d)
@@ -393,19 +393,39 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(KeyboardSettings(defaults), KeyboardSettings(), "nothing written")
         typealias K = KeyboardSettings.Key
         for key in [K.autoCapitalization, K.autoCorrection, K.capsLock, K.predictiveText,
-                    K.characterPreview, K.periodShortcut] {
+                    K.characterPreview] {
             defaults.set(key == K.autoCapitalization, forKey: key)   // each flipped
         }
+        defaults.set("!", forKey: K.doubleSpace)
         var flipped = KeyboardSettings()
         flipped.autoCapitalization = true
         flipped.autoCorrection = false
         flipped.capsLock = false
         flipped.predictiveText = false
         flipped.characterPreview = false
-        flipped.periodShortcut = false
+        flipped.doubleSpace = "!"
         XCTAssertEqual(KeyboardSettings(defaults), flipped)
         defaults.removeObject(forKey: K.capsLock)
         XCTAssertTrue(KeyboardSettings(defaults).capsLock, "unwritten: the default")
+    }
+
+    /// The old "." Shortcut switch carries over until the picker writes: on is ".", off is
+    /// Off. The old key stays, and the new one wins, Off included.
+    func testDoubleSpaceMigratesThePeriodSwitch() throws {
+        let suite = "KeyboardSettings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        typealias K = KeyboardSettings.Key
+        defaults.set(true, forKey: K.periodShortcut)
+        XCTAssertEqual(KeyboardSettings(defaults).doubleSpace, ".")
+        defaults.set(false, forKey: K.periodShortcut)
+        XCTAssertEqual(KeyboardSettings(defaults).doubleSpace, "", "off is Off")
+        defaults.set("?", forKey: K.doubleSpace)
+        XCTAssertEqual(KeyboardSettings(defaults).doubleSpace, "?", "the picker's value wins")
+        defaults.set(true, forKey: K.periodShortcut)
+        defaults.set("", forKey: K.doubleSpace)
+        XCTAssertEqual(KeyboardSettings(defaults).doubleSpace, "", "Off wins over an old on")
+        XCTAssertEqual(defaults.object(forKey: K.periodShortcut) as? Bool, true, "the old key stays")
     }
 
     /// No Full Access, or no suite: the defaults, whatever the app wrote.
@@ -559,15 +579,15 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(plain.text, "ok  ", "the flag is off by default")
     }
 
-    /// "." Shortcut off: the extension's keyboard types two spaces too.
-    func testPeriodShortcutSwitch() {
-        for on in [true, false] {
+    /// The Double-Space Shortcut picks the character; Off types two spaces.
+    func testDoubleSpaceShortcutPicksTheCharacter() {
+        for (mark, text) in [(mark: ".", text: "o. "), (mark: "!", text: "o! "), (mark: "?", text: "o? "), (mark: "", text: "o  ")] {
             let kb = TerminalKeyboard(), doc = FakeProxy()
             kb.target = doc
             kb.doubleSpacePeriod = true
-            kb.settings.periodShortcut = on
+            kb.settings.doubleSpace = mark
             kb.press(.char("o")); kb.press(.space); kb.press(.space)
-            XCTAssertEqual(doc.text, on ? "o. " : "o  ")
+            XCTAssertEqual(doc.text, text, mark)
         }
     }
 

@@ -261,6 +261,10 @@ final class BulgarianKeyboardTests: XCTestCase {
         kb.press(.shift); kb.press(.shift)   // caps lock
         typing(kb, "щ ю")
         XCTAssertEqual(doc.text, "Здравей. Как си. УтЖЩ Ю")
+        kb.press(.shift)   // caps off
+        kb.settings.doubleSpace = "?"
+        typing(kb, "  да")
+        XCTAssertEqual(doc.text, "Здравей. Как си. УтЖЩ Ю? Да", "the picked character")
         withExtendedLifetime(bar) {}
         XCTAssertEqual(laidOut(kb)["БГ"]?.accessibilityLabel, "space")
     }

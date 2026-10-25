@@ -5,6 +5,7 @@ What's new:
 • New compact terminal keyboard on iPhone, with key previews and common symbols one tap away.
 • Holding space in the Prosper keyboard now moves the caret up and down between lines too, not just sideways.
 • Rearrange or hide the keys beside space in Settings, in the Prosper keyboard and the terminal keyboard alike; space widens to fill.
+• Choose what a double space types in Settings: a period, an exclamation mark, a question mark, or nothing; the terminal keyboard does it too.
 • Shortcut bar is always visible, in two aligned rows, with a new default set of keys.
 • The session list can show how many helper tasks are running.
 • The session list shows each session's open pull requests and task progress; press and hold a session's pull request line to open one.
