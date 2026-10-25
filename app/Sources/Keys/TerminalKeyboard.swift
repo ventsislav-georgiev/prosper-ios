@@ -1399,7 +1399,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             if holdTouch?.id == id { holdTouch?.at = point }
         case .ended:
             perform(tracker.moved(id, key(at: point), at: point))
-            perform(tracker.ended(id))
+            // Lifted on a cap that takes its own touches: the key it slid from types nothing.
+            let onOwnCap = caps.joined().contains { takesOwnTouches($0.key) && $0.frame.contains(point) }
+            perform(tracker.ended(id).filter { if case .press = $0 { !onOwnCap } else { true } })
             if holdTouch?.id == id { stopHold() }
         case .cancelled:
             perform(tracker.cancelled(id, at: point))   // only how far it traveled matters

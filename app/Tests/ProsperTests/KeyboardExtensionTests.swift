@@ -869,6 +869,55 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(doc.text, "ab")
     }
 
+    /// A slide onto a cap that takes its own touches types nothing on lift, not the nearest
+    /// key, return (QA's): from ?, from space short of the trackpad, from a held m. One
+    /// lifting on return still types it.
+    func testASlideOntoTheKeyboardListCapTypesNothing() throws {
+        for globe in [false, true] {
+            let kb = TerminalKeyboard()
+            kb.picksEmoji = false
+            kb.showsGlobe = globe
+            kb.settings = KeyboardSettings()
+            let spy = SpyInput()
+            kb.target = spy
+            let caps = laidOut(kb)
+            let own = try XCTUnwrap(caps[globe ? "next keyboard" : "emoji"]).center
+            for from in ["?", "space", "m"] {
+                let p = try XCTUnwrap(caps[from]).center
+                kb.track(.began, id: 1, at: p)
+                if from == "m" { kb.fireHold() }
+                kb.track(.moved, id: 1, at: own)
+                kb.track(.ended, id: 1, at: own)
+                XCTAssertEqual(spy.calls, [], "\(from) globe \(globe)")
+            }
+            let p = try XCTUnwrap(caps["?"]).center, ret = try XCTUnwrap(caps["new line"]).center
+            kb.track(.began, id: 1, at: p)
+            kb.track(.moved, id: 1, at: own)
+            kb.track(.ended, id: 1, at: ret)
+            XCTAssertEqual(spy.calls, ["\n"], "globe \(globe)")
+        }
+    }
+
+    /// A trackpad lifted over the emoji cap keeps its caret walk and ends: a tap types.
+    func testATrackpadLiftedOverTheEmojiCapEnds() throws {
+        let kb = TerminalKeyboard(), doc = host(kit: true, "", "abcdefghijklmnopqrstuvwxyz")
+        kb.picksEmoji = false
+        kb.settings = KeyboardSettings()
+        kb.target = doc
+        let caps = laidOut(kb)
+        let space = try XCTUnwrap(caps["space"]).center, emoji = try XCTUnwrap(caps["emoji"]).center
+        let steps = Int((emoji.x - space.x) / KeyTouchTracker.caretStep)
+        XCTAssertGreaterThan(steps, 0)
+        kb.track(.began, id: 1, at: space)
+        kb.fireHold()
+        kb.track(.moved, id: 1, at: emoji)
+        kb.track(.ended, id: 1, at: emoji)
+        for _ in 0..<20 { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(doc.text, String("abcdefghijklmnopqrstuvwxyz".prefix(steps)))
+        try tap(kb, "z")
+        XCTAssertEqual(doc.text.last, "z", "the trackpad ended")
+    }
+
     /// A key touched before the poll saw a CR LF split first finishes the crossing, so the
     /// letter goes after the line break, not inside it.
     func testATouchFinishesACrossingBeforeTyping() throws {
