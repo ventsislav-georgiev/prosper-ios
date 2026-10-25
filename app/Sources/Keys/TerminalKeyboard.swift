@@ -298,6 +298,13 @@ struct KeyTouchTracker {
     }
 
     mutating func reset() { touches.removeAll() }
+
+    /// A touch's key, how far it has traveled counting `point`, where it began and whether
+    /// it has typed or turned: for `DoubleSpaceLog`, temporary like it.
+    func probe(_ id: Int, at point: CGPoint) -> (key: Key, travel: CGFloat, belowKeys: Bool, done: Bool)? {
+        guard let t = touches.first(where: { $0.id == id }) else { return nil }
+        return (t.key, max(t.travel, hypot(point.x - t.start.x, point.y - t.start.y)), t.belowKeys, t.done)
+    }
 }
 
 /// Trackpad steps through a host field's document proxy, whose `adjustTextPosition` counts
@@ -934,6 +941,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// After each trackpad step, or a line move's first: the extension's suggestions forget
     /// the word they were following, and the bar recomputes. Nil in the app.
     var didMoveCaret: (() -> Void)?
+    /// Where `DoubleSpaceLog` writes; nil writes nothing (the extension without Full Access).
+    /// The first store set logs "attach": a keyboard made afresh starts with no `typed`.
+    ///
+    /// ponytail: temporary, for #540's device run: remove with `DoubleSpaceLog`.
+    var spaceLog: UserDefaults? { didSet { if oldValue == nil { note("attach") } } }
     private(set) var shift = ShiftState()
     /// The letters typed since the last non-letter, lowercase: the prefix touch correction
     /// continues. Backspace drops one, shift keeps it, any other key clears it. Keys from
@@ -1036,7 +1048,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             // ponytail: the text is no longer what the keys typed (an undone autocorrect),
             // so touch correction and the double space start afresh rather than guess it back.
             word = ""
-            typed = []
+            clearTyped("willPress")
             autoCapitalize()
             return
         }
@@ -1059,22 +1071,40 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             // A third space is a space: the second may have doubled from a lagging context
             // that still shows the first, which would read as a word and one space again.
             let third = before.map(\.key) == [.space, .space]
-            if doubleSpacePeriod, !third, !mark.isEmpty, let doc = target as? UITextDocumentProxy,
-               Self.periodReplacesSpace(before: doc.documentContextBeforeInput, typed: doubles ? before[0].key : nil,
-                                        keyboardType: doc.keyboardType ?? .default) {
+            let doc = target as? UITextDocumentProxy, context = doc?.documentContextBeforeInput
+            let period = doc.map {
+                Self.periodReplacesSpace(before: context, typed: doubles ? before[0].key : nil,
+                                         keyboardType: $0.keyboardType ?? .default)
+            } ?? false
+            let full = fullScreen()
+            let branch: String
+            if doubleSpacePeriod, !third, !mark.isEmpty, let doc, period {
                 doc.deleteBackward()
                 doc.insertText(mark + " ")
-            } else if doubles, let sendBytes, !fullScreen() {
+                branch = "period"
+            } else if doubles, let sendBytes, !full {
                 // DEL, as the delete key sends, then the mark: raw, since the terminal view
                 // turns a ". " after a deleted space back into two spaces.
                 // Off in vim and less (`fullScreen`), so vi's insert mode loses the shortcut.
                 // ponytail: a primary-screen TUI where DEL doesn't erase (kitty's all-keys
                 // mode) still sees a stray DEL and the mark.
                 sendBytes([0x7f] + Array((mark + " ").utf8))
-                typed = []
+                branch = "bytes"
             } else {
                 target?.insertText(" ")
+                branch = "plain"
             }
+            if spaceLog != nil {
+                let flag = { (b: Bool) in b ? "1" : "0" }
+                note(["space", before.last.map { "+\(Int(((now - $0.at) * 1000).rounded()))ms" } ?? "-",
+                      "before=" + before.map { DoubleSpaceLog.kind($0.key) }.joined(),
+                      "doubles=" + flag(doubles), "third=" + flag(third), "mark=" + (mark.isEmpty ? "off" : mark),
+                      "dsp=" + flag(doubleSpacePeriod), "doc=" + flag(doc != nil),
+                      "kt=" + (doc.map { String(($0.keyboardType ?? .default).rawValue) } ?? "-"),
+                      "ctx=" + DoubleSpaceLog.shape(context), "period=" + flag(period), "fs=" + flag(full),
+                      "bytes=" + flag(sendBytes != nil), "-> " + branch].joined(separator: " "))
+            }
+            if branch == "bytes" { clearTyped("sent") }
         case .ret: if let sendBytes { sendBytes(Self.newlineBytes) } else { target?.insertText("\n") }
         case .backspace: target?.deleteBackward()
         case .shift:
@@ -1140,7 +1170,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private func caretMoved() {
         word = ""
-        typed = []
+        clearTyped("caretMoved")
         autoCapitalize()
         didMoveCaret?()
     }
@@ -1392,6 +1422,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             feedback()
             let bottomRow = caps.last?.map(\.frame.maxY).max() ?? .infinity
             perform(tracker.began(id, key(at: point), at: point, belowKeys: point.y > bottomRow))
+            noteSpaceTouch("began", id, at: point)
             stopHold()
             if tracker.previewKey != nil || tracker.held.last == .space { startHold(id, at: point) }
         case .moved:
@@ -1399,11 +1430,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             if holdTouch?.id == id { holdTouch?.at = point }
         case .ended:
             perform(tracker.moved(id, key(at: point), at: point))
+            noteSpaceTouch("ended", id, at: point)
             // Lifted on a cap that takes its own touches: the key it slid from types nothing.
             let onOwnCap = caps.joined().contains { takesOwnTouches($0.key) && $0.frame.contains(point) }
             perform(tracker.ended(id).filter { if case .press = $0 { !onOwnCap } else { true } })
             if holdTouch?.id == id { stopHold() }
         case .cancelled:
+            noteSpaceTouch("cancelled", id, at: point)
             perform(tracker.cancelled(id, at: point))   // only how far it traveled matters
             if holdTouch?.id == id { stopHold() }
         default:
@@ -1477,7 +1510,26 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     /// Start the next word afresh: a key went to the terminal some other way.
-    func resetWord() { word = ""; typed = [] }
+    func resetWord() { word = ""; clearTyped("resetWord") }
+
+    /// Empties `typed`, logging a clear that empties something (`spaceLog`).
+    private func clearTyped(_ by: String) {
+        if !typed.isEmpty { note("clear \(by)") }
+        typed = []
+    }
+
+    /// A space touch's phase for `DoubleSpaceLog`: its travel, whether it began under the
+    /// keys, and whether it already typed or turned.
+    private func noteSpaceTouch(_ phase: String, _ id: Int, at point: CGPoint) {
+        guard spaceLog != nil, let t = tracker.probe(id, at: point), t.key == .space else { return }
+        note("touch \(phase) travel=\(Int(t.travel.rounded())) below=\(t.belowKeys ? 1 : 0) done=\(t.done ? 1 : 0)")
+    }
+
+    /// A `DoubleSpaceLog` line, tagged with the keyboard it came from.
+    private func note(_ line: String) {
+        guard spaceLog != nil else { return }
+        DoubleSpaceLog.add((sendBytes == nil ? "ext " : "app ") + line, to: spaceLog)
+    }
 
     /// 0 inside `r`.
     static func distance(_ p: CGPoint, _ r: CGRect) -> CGFloat {
@@ -1599,6 +1651,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         guard let h = holdTouch else { return }
         stopHold()
         if tracker.startTrackpad(h.id, at: h.at) {
+            note("touch trackpad")
             haptics.impactOccurred()
             haptics.prepare()
             refreshLabels()

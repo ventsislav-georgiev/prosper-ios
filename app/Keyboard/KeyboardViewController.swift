@@ -49,6 +49,7 @@ final class KeyboardViewController: UIInputViewController {
         super.viewWillAppear(animated)
         let settings = KeyboardSettings.current(fullAccess: hasFullAccess)
         keyboard.settings = settings
+        keyboard.spaceLog = hasFullAccess ? KeyboardSettings.store() : nil   // ponytail: temporary, #540's `DoubleSpaceLog`
         bar.suggestions.settings = settings
         bar.toolbar?.reload()
         sync()

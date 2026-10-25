@@ -1465,6 +1465,7 @@ private final class DchTerminalView: TerminalView {
         kb.target = self
         kb.inputHost = self   // its height then reaches the input host (`inputHost`)
         kb.sendBytes = { [weak self] in self?.send($0) }   // through the host's send, like any key
+        kb.spaceLog = KeyboardSettings.store()   // ponytail: temporary, #540's `DoubleSpaceLog`
         kb.fullScreen = { [weak self] in self.map { TerminalKeyboard.fullScreen($0.getTerminal()) } ?? false }
         kb.screenWords = { [weak self] in self.map { TerminalKeyboard.screenWords(in: $0.getTerminal()) } ?? [] }
         kb.moveCaret = { [weak self] in   // the space-bar trackpad: arrow keys, like the bar's
