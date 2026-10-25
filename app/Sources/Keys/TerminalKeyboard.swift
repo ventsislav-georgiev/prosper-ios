@@ -910,7 +910,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// continues. Backspace drops one, shift keeps it, any other key clears it. Keys from
     /// the shortcut bar bypass this keyboard, so the host calls `resetWord` for them.
     private(set) var word = ""
-    /// The last two keys typed and when, for the terminal's double space (`spaceDoubles`).
+    /// The last two keys typed and when, for the double space (`spaceDoubles`).
     /// Emptied, like `word`, by anything else that reaches it and by a caret move.
     private var typed: [(key: Key, at: TimeInterval)] = []
     /// The words on the terminal now (`screenWords(in:)`), for touch correction: names no
@@ -1005,8 +1005,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         defer { didPress?() }
         if willPress?(key) == true {
             // ponytail: the text is no longer what the keys typed (an undone autocorrect),
-            // so touch correction starts afresh rather than guess the word back.
+            // so touch correction and the double space start afresh rather than guess it back.
             word = ""
+            typed = []
             autoCapitalize()
             return
         }
@@ -1025,11 +1026,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             if letter, shift.mode == .once { shift.typedLetter(); refreshLabels() }
         case .space:
             let mark = settings.doubleSpace
+            let doubles = !mark.isEmpty && Self.spaceDoubles(after: before, now: now)
             if doubleSpacePeriod, !mark.isEmpty, let doc = target as? UITextDocumentProxy,
-               Self.periodReplacesSpace(before: doc.documentContextBeforeInput, keyboardType: doc.keyboardType ?? .default) {
+               Self.periodReplacesSpace(before: doc.documentContextBeforeInput, typed: doubles ? before[0].key : nil,
+                                        keyboardType: doc.keyboardType ?? .default) {
                 doc.deleteBackward()
                 doc.insertText(mark + " ")
-            } else if let sendBytes, !mark.isEmpty, !fullScreen(), Self.spaceDoubles(after: before, now: now) {
+            } else if doubles, let sendBytes, !fullScreen() {
                 // DEL, as the delete key sends, then the mark: raw, since the terminal view
                 // turns a ". " after a deleted space back into two spaces.
                 // Off on the alternate screen, so vi's insert mode loses the shortcut.
@@ -1187,24 +1190,39 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
     }
 
-    /// Whether a space typed `now` in the terminal replaces the one before it, as
-    /// `periodReplacesSpace` would: the keyboard's last keys were a letter or digit, then
-    /// a space within `ShiftState.doubleTapWindow`.
+    /// How soon after the first space a second one doubles (`spaceDoubles`): a thumb's
+    /// second space often comes 250–450 ms after the first, past shift's 0.3 s. A space
+    /// after a pause stays a space, as does one after a caret move the keyboard never saw
+    /// (a tap in a host field).
+    ///
+    /// ponytail: one fixed window, a guess at a thumb. Tune it on device.
+    static let doubleSpaceWindow: TimeInterval = 0.6
+
+    /// Whether a space typed `now` replaces the one before it: the keyboard's last keys
+    /// were a letter or digit, then a space within `doubleSpaceWindow`.
     static func spaceDoubles(after typed: [(key: Key, at: TimeInterval)], now: TimeInterval) -> Bool {
         guard typed.count == 2, case .char(let c) = typed[0].key, let first = c.first,
               first.isLetter || first.isNumber, typed[1].key == .space else { return false }
-        return now - typed[1].at <= ShiftState.doubleTapWindow
+        return now - typed[1].at <= doubleSpaceWindow
     }
 
     /// Whether a space typed now replaces the space before the cursor with ". ": the text
-    /// ends in a letter or digit and exactly one space. Never in a field where a period
-    /// would break the value: URLs, email, web search, number and phone pads. An emoji
-    /// Swift calls a letter or a digit (Ⓜ️, 1️⃣) isn't one: U+FE0F makes it an emoji.
-    static func periodReplacesSpace(before text: String?, keyboardType: UIKeyboardType) -> Bool {
+    /// ends in a letter or digit and exactly one space, or, from a host whose context hasn't
+    /// shown that space yet (a device's can lag the keyboard's edits), in `typed`: the
+    /// letter or digit the keyboard typed right before it (`spaceDoubles`). Never in a field
+    /// where a period would break the value: URLs, email, web search, number and phone pads.
+    /// An emoji Swift calls a letter or a digit (Ⓜ️, 1️⃣) isn't one: U+FE0F makes it an emoji.
+    static func periodReplacesSpace(before text: String?, typed: Key? = nil, keyboardType: UIKeyboardType) -> Bool {
         if isValueField(keyboardType) { return false }
         let tail = Array((text ?? "").suffix(2))
-        return tail.count == 2 && tail[1] == " " && (tail[0].isLetter || tail[0].isNumber)
-            && !tail[0].unicodeScalars.contains("\u{FE0F}")
+        var end: Character?
+        if tail.last == " " {
+            end = tail.count == 2 ? tail[0] : nil
+        } else if case .char(let c) = typed, let last = tail.last, last.lowercased() == c.lowercased() {
+            end = last
+        }
+        guard let end else { return false }
+        return (end.isLetter || end.isNumber) && !end.unicodeScalars.contains("\u{FE0F}")
     }
 
     /// A field whose value isn't prose, so nothing may rewrite what's typed (no period for

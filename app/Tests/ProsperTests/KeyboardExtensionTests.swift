@@ -23,7 +23,7 @@ final class KeyboardExtensionTests: XCTestCase {
         var hidesContext = false
         var documentContextBeforeInput: String? {
             if hidesContext { return nil }
-            var u = Array(((guess ?? shown)?.before ?? text).utf16)
+            var u = Array(((guess ?? shown)?.before ?? (lagsAnEdit ? beforeEdit ?? "" : text)).utf16)
             if lineBefore, let i = u.lastIndex(of: 0x0A) { u = i == u.count - 1 ? [0x0A] : Array(u[(i + 1)...]) }
             if sentenceBefore, let i = u.indices.dropLast(2).last(where: { u[$0] == 0x2E && u[$0 + 1] == 0x20 }) {
                 u = Array(u[(i + 2)...])
@@ -55,8 +55,11 @@ final class KeyboardExtensionTests: XCTestCase {
         var documentInputMode: UITextInputMode? { nil }
         let documentIdentifier = UUID()
         var hasText: Bool { !text.isEmpty }
-        func insertText(_ s: String) { text += s; calls.append(s) }
-        func deleteBackward() { _ = text.popLast(); calls.append("⌫") }
+        /// The before-context is one edit behind, as a host's out of process can be.
+        var lagsAnEdit = false
+        private var beforeEdit: String?
+        func insertText(_ s: String) { beforeEdit = text; text += s; calls.append(s) }
+        func deleteBackward() { beforeEdit = text; _ = text.popLast(); calls.append("⌫") }
         /// Every caret move, as asked; the caret moves within `text` + `after`.
         var moves: [Int] = []
         /// Where each move left the caret, in UTF-16 units from the start.
@@ -541,12 +544,17 @@ final class KeyboardExtensionTests: XCTestCase {
     // MARK: Double-space period
 
     func testPeriodReplacesSpace() {
-        let period = TerminalKeyboard.periodReplacesSpace
+        func period(_ text: String?, _ type: UIKeyboardType, typed: TerminalKeyboard.Key? = nil) -> Bool {
+            TerminalKeyboard.periodReplacesSpace(before: text, typed: typed, keyboardType: type)
+        }
         XCTAssertTrue(period("word ", .default), "word, space: the second space is a period")
         XCTAssertTrue(period("Up 5 ", .default), "after a digit")
         XCTAssertTrue(period("word ", .asciiCapable))
         XCTAssertFalse(period("word", .default), "the first space after a word is a space")
+        XCTAssertTrue(period("worD", .default, typed: .char("d")), "the keyboard's space the host hasn't shown yet")
+        XCTAssertFalse(period("word", .default, typed: .char("k")), "a word the keyboard didn't just end")
         XCTAssertFalse(period("word. ", .default), "a period already there")
+        XCTAssertFalse(period("On my way! ", .default), "an autocorrect's own mark")
         XCTAssertFalse(period("word, ", .default), "nor after other punctuation")
         XCTAssertFalse(period("word  ", .default), "only exactly one space")
         XCTAssertFalse(period(" ", .default))
@@ -581,6 +589,17 @@ final class KeyboardExtensionTests: XCTestCase {
         plain.text = "ok "
         off.press(.space)
         XCTAssertEqual(plain.text, "ok  ", "the flag is off by default")
+    }
+
+    /// A device's host can show the keyboard's edits a moment late: the second space reads
+    /// a context still without the first, and still doubles (#540).
+    func testDoubleSpacePeriodWhileTheContextLags() {
+        let kb = TerminalKeyboard(), doc = FakeProxy()
+        kb.target = doc
+        kb.doubleSpacePeriod = true
+        doc.lagsAnEdit = true
+        kb.press(.char("o")); kb.press(.char("k")); kb.press(.space); kb.press(.space)
+        XCTAssertEqual(doc.text, "ok. ")
     }
 
     /// The Double-Space Shortcut picks the character; Off types two spaces.

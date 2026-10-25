@@ -780,11 +780,13 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(spy.calls, ["o", " ", " "])
     }
 
-    /// Only a quick second space doubles.
+    /// Only a quick second space doubles, and a thumb's counts as quick: it often comes
+    /// 250–450 ms after the first, past shift's 0.3 s (#540).
     func testDoubleSpaceWindow() {
-        let w = ShiftState.doubleTapWindow
+        let w = TerminalKeyboard.doubleSpaceWindow
         let typed: [(key: TerminalKeyboard.Key, at: TimeInterval)] = [(key: .char("a"), at: 0), (key: .space, at: 10)]
         XCTAssertTrue(TerminalKeyboard.spaceDoubles(after: typed, now: 10 + w / 2))
+        XCTAssertTrue(TerminalKeyboard.spaceDoubles(after: typed, now: 10.45), "a thumb's second space")
         XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: typed, now: 10 + w * 2), "too slow")
         XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: Array(typed.suffix(1)), now: 10), "nothing before the space")
         XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: [(key: .space, at: 9), (key: .space, at: 10)], now: 10))
