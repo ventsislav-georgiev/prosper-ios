@@ -83,15 +83,38 @@ final class EmojiPickerTests: XCTestCase {
                        [.char("/"), .space, .char("?"), .char("."), .char(","), .emoji, .ret], "read back")
     }
 
-    /// The extension's keyboard has no emoji key, though the setting keeps it: the app's has.
-    func testOnlyTheAppsKeyboardOffersEmoji() {
+    /// The extension's emoji key opens the keyboard list, like the globe: its cap takes
+    /// its own touches, the tracker never yields it, and it never opens the picker; where
+    /// the globe shows, it gives way. The app's opens the picker.
+    func testOnlyTheAppsEmojiKeyPicks() throws {
         let kb = TerminalKeyboard()
+        let spy = SpyInput()
+        kb.target = spy
+        kb.picksEmoji = false
+        let caps = laidOut(kb)
+        let key = try XCTUnwrap(caps["emoji"], "kept where the setting has it")
+        XCTAssertTrue(key.isUserInteractionEnabled, "it takes its own touches")
+        XCTAssertEqual(key.actions(forTarget: nil, forControlEvent: .touchDown),
+                       ["handleInputModeListFromView:withEvent:"])
+        XCTAssertFalse(TerminalKeyboard.feeds(kb.hitTest(CGPoint(x: key.frame.midX, y: key.frame.midY), with: nil)))
+        XCTAssertNotNil(key.accessibilityHint)
+        // A touch in the gap beside it goes to the key before, never to it.
+        let p = CGPoint(x: key.frame.minX - 1, y: key.frame.midY)   // nearer emoji than ?
+        kb.track(.began, id: 1, at: p)
+        kb.track(.ended, id: 1, at: p)
+        XCTAssertEqual(spy.calls, ["?"])
+        kb.press(.emoji)
+        XCTAssertNil(kb.emojiPicker, "no picker in the extension")
         kb.showsGlobe = true
-        kb.offersEmoji = false
-        XCTAssertNil(laidOut(kb)["emoji"])
+        XCTAssertNil(laidOut(kb)["emoji"], "the globe does the same")
         XCTAssertTrue(kb.settings.bottomRow.contains(.emoji), "the setting still has it")
-        kb.offersEmoji = true
-        XCTAssertNotNil(laidOut(kb)["emoji"], "the app's")
+        kb.showsGlobe = false
+        kb.picksEmoji = true
+        let apps = try XCTUnwrap(laidOut(kb)["emoji"])
+        XCTAssertFalse(apps.isUserInteractionEnabled, "the app's is the tracker's")
+        XCTAssertNil(apps.accessibilityHint)
+        try tap(kb, apps)
+        XCTAssertTrue(kb.showsEmoji, "the app's opens the picker")
     }
 
     /// The key opens the picker at the caps' height and hides them; ABC brings them back.

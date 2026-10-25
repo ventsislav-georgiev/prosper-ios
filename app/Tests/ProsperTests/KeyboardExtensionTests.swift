@@ -169,7 +169,7 @@ final class KeyboardExtensionTests: XCTestCase {
         for width in [375, 430] as [CGFloat] {
             let kb = TerminalKeyboard()
             kb.showsGlobe = true
-            kb.offersEmoji = false
+            kb.picksEmoji = false
             let caps = laidOut(kb, width: width)
             let globe = try XCTUnwrap(caps["next keyboard"], "at \(width)")
             XCTAssertTrue(globe.isUserInteractionEnabled, "it takes its own touches")
@@ -481,7 +481,7 @@ final class KeyboardExtensionTests: XCTestCase {
             for globe in [false, true] {
                 let kb = TerminalKeyboard(layout: layout)
                 kb.showsGlobe = globe
-                kb.offersEmoji = false
+                kb.picksEmoji = false
                 let wide = try XCTUnwrap(laidOut(kb)["space"]).frame
                 var s = KeyboardSettings()
                 s.bottomOrder = "?/ .,"
@@ -492,7 +492,7 @@ final class KeyboardExtensionTests: XCTestCase {
                 let row = kb.subviews.compactMap { $0 as? UIButton }
                     .filter { $0.frame.midY == space.midY }.sorted { $0.frame.minX < $1.frame.minX }
                 XCTAssertEqual(row.map { $0.accessibilityLabel ?? "" },
-                               (globe ? ["next keyboard"] : []) + ["?", "/", "space", "new line"], "\(layout) \(globe)")
+                               (globe ? ["next keyboard", "?", "/", "space"] : ["?", "/", "space", "emoji"]) + ["new line"], "\(layout) \(globe)")
                 XCTAssertNil(caps["."])
                 XCTAssertEqual(space.width - wide.width, 2 * (caps["?"]!.frame.width + TerminalKeyboard.keyGap),
                                accuracy: 0.001, "two keys' room, gaps included")

@@ -25,7 +25,7 @@ final class KeyboardViewController: UIInputViewController {
         // iPhones), so the app's home-gesture pad would only add an empty band.
         keyboard.bottomInset = 6
         keyboard.doubleSpacePeriod = true
-        keyboard.offersEmoji = false
+        keyboard.picksEmoji = false
         bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
         bar.attach(keyboard)

@@ -2,7 +2,7 @@ import UIKit
 
 /// The emoji most recently typed from the picker: newest first, each once, at most
 /// `limit`. Kept in the App Group beside the Keyboard settings: the picker is the app's
-/// keyboard's only (`TerminalKeyboard.offersEmoji`).
+/// keyboard's only (`TerminalKeyboard.picksEmoji`).
 struct EmojiRecents: Equatable {
     static let key = "keyboard.emojiRecents"
     static let limit = 32
