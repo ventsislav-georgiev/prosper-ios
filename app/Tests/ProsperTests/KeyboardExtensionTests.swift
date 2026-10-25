@@ -55,10 +55,18 @@ final class KeyboardExtensionTests: XCTestCase {
         var documentInputMode: UITextInputMode? { nil }
         let documentIdentifier = UUID()
         var hasText: Bool { !text.isEmpty }
-        /// Edits lag as moves do (`lags`): the context shows them only after `catchUp()`.
+        /// Edits lag as moves do (`lags`): the context shows them only after `catchUp()`, as
+        /// real hosts show none in the runloop turn that sent them.
         var lagsEdits = false
-        func insertText(_ s: String) { if lagsEdits { unshown.append((text, after)) }; text += s; calls.append(s) }
-        func deleteBackward() { if lagsEdits { unshown.append((text, after)) }; _ = text.popLast(); calls.append("⌫") }
+        /// The context shows all but the last edit until `catchUp()`: a host one edit behind,
+        /// whose context changes but still shows the last Character deleted.
+        var behind = false
+        func insertText(_ s: String) { if lagsEdits || behind { unshown.append((text, after)) }; text += s; calls.append(s) }
+        func deleteBackward() {
+            if lagsEdits || behind { unshown.append((text, after)) }
+            _ = text.popLast()
+            calls.append("⌫")
+        }
         /// Every caret move, as asked; the caret moves within `text` + `after`.
         var moves: [Int] = []
         /// Where each move left the caret, in UTF-16 units from the start.
@@ -71,7 +79,7 @@ final class KeyboardExtensionTests: XCTestCase {
         var lags = false
         /// The context before each move not shown yet.
         private var unshown: [(before: String, after: String?)] = []
-        private var shown: (before: String, after: String?)? { unshown.first }
+        private var shown: (before: String, after: String?)? { behind ? unshown.last : unshown.first }
         /// The text and the caret in units, which a split context can't keep.
         private var units: (all: [UInt16], at: Int)?
         /// Right after each move the context shows it taken as Characters until `answer()`

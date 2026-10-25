@@ -1008,8 +1008,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var walkPolls = 0
     /// A line move asked for hasn't sent anything yet (`line`).
     private var lineAsked = false
-    /// What runs once the walk lands (`caret(_:then:)`); a key, a touch or the poll limit drops it.
-    private var landed: (() -> Void)?
+    /// What runs on each poll once the walk is idle, till it returns true: the rest of a toolbar
+    /// edit (`caret(_:then:)`, `wait`). A key, a touch, a move or the poll limit drops it.
+    private var landed: (() -> Bool)?
     private var heightConstraint: NSLayoutConstraint!
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
@@ -1143,8 +1144,41 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// the walk starts afresh after it.
     func caret(_ offset: Int, then: @escaping () -> Void) {
         caret(offset)
-        landed = { [weak self] in self?.walk.drop(); then() }
-        if walk.idle, let f = landed { landed = nil; f() }
+        landed = { [weak self] in self?.walk.drop(); then(); return true }
+        if walk.idle { runLanded() }
+    }
+
+    /// `check` on each poll from the next, while the walk is idle, till it returns true: a
+    /// toolbar edit waiting for the host to show its deletes (`SuggestionBar.deleteBack`).
+    /// Dropped as `landed` is; the poll limit counts from here.
+    func wait(_ check: @escaping () -> Bool) {
+        landed = check
+        walkPolls = 0
+        pollOn()
+    }
+
+    /// `landed`, now the walk is idle, kept while it returns false; the timer polls while
+    /// anything waits.
+    private func runLanded() {
+        if let f = landed {
+            landed = nil
+            if !f() { landed = f }
+        }
+        if landed == nil, walk.idle {
+            walkTimer?.invalidate()
+            walkTimer = nil
+        } else {
+            pollOn()
+        }
+    }
+
+    private func pollOn() {
+        guard walkTimer == nil else { return }
+        let t = Timer(timeInterval: 0.02, repeats: true) { [weak self] t in
+            if let self { self.pollCaret() } else { t.invalidate() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        walkTimer = t
     }
 
     /// A trackpad move of `lines` lines, negative up: in a host field only, through `walk`.
@@ -1179,17 +1213,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             walkPolls = 0
             if lineAsked { lineAsked = false; caretMoved() }
         }
-        if walk.idle {
-            walkTimer?.invalidate()
-            walkTimer = nil
-            if let then = landed { landed = nil; then() }
-        } else if walkTimer == nil {
-            let t = Timer(timeInterval: 0.02, repeats: true) { [weak self] t in
-                if let self { self.pollCaret() } else { t.invalidate() }
-            }
-            RunLoop.main.add(t, forMode: .common)
-            walkTimer = t
-        }
+        if walk.idle { runLanded() } else { pollOn() }
     }
 
     /// A host field's row in Characters, guessed for `walk`, which sees no host layout: the
@@ -1218,8 +1242,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// again, the next touch drops it.
     func pollCaret() {
         walkPolls += 1
-        walk.poll()   // the host clamped at the document's end, or never showed it
-        walkOn()
+        if walk.idle, landed != nil {
+            runLanded()   // an edit waiting on the host (`wait`): no move to step
+        } else {
+            walk.poll()   // the host clamped at the document's end, or never showed it
+            walkOn()
+        }
         guard walkPolls >= 100 else { return }   // 2 s: a move that never shows waits for the next `caret`
         walkPolls = 0
         landed = nil
