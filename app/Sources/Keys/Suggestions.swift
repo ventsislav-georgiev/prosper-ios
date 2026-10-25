@@ -783,11 +783,21 @@ final class SuggestionBar: UIView {
             }
             // An after-context that stops at the line's end shows no more: one step blind over
             // the break, which the host clamps at the text's end, then on from the next line's
-            // start, where `w` has landed unless blanks start it.
+            // start, where `w` has landed unless blanks start it. `e` steps on over empty
+            // lines, as nvim's. ponytail: two empty lines read the same in a UITextView, so `e`
+            // stops on the second; a second press goes on.
+            if e == .wordEnd {
+                return walk(1, { $1.isEmpty ? 1 : 0 }) { [weak self] _ in
+                    guard let kb = self?.keyboard, let a = (kb.target as? UITextDocumentProxy)?.documentContextAfterInput
+                    else { return }
+                    let n = Self.toWordEdge(a)
+                    if n != 0 { kb.caret(n) }
+                }
+            }
             keyboard.caret(1) { [weak self] in
                 guard let kb = self?.keyboard, let a = (kb.target as? UITextDocumentProxy)?.documentContextAfterInput
                 else { return }
-                let n = e == .wordEnd ? Self.toWordEdge(a) : a.first.map(Self.wordClass) == 0 ? Self.toNextWord(a) : 0
+                let n = a.first.map(Self.wordClass) == 0 ? Self.toNextWord(a) : 0
                 if n != 0 { kb.caret(n) }
             }
         case .deleteWord:
@@ -801,12 +811,24 @@ final class SuggestionBar: UIView {
                 self?.deleteBack(left: crossed.count) { b, _ in b.count }
             }
         case .deleteAll:
-            // An after-context that stops at the line's end shows no more: one step blind, which
-            // the host clamps at the text's end.
-            walk(1, { $1.isEmpty ? 1 : $1.count }) { [weak self] _ in self?.deleteBack { b, _ in b.count } }
+            // Back to the text's start at once, so the deletes show at the press (#553 QA: the
+            // walk first took 2 s from mid-text); then to its end, one step blind where the
+            // after-context stops at the line's end, which the host clamps at the text's end,
+            // and back. Only once the host showed the first part gone: one that never shows a
+            // batch would size the rest from what went.
+            let rest: () -> Void = { [weak self] in
+                self?.walk(1, { $1.isEmpty ? 1 : $1.count }) { [weak self] _ in self?.deleteBack { b, _ in b.count } }
+            }
+            guard !before.isEmpty else { return rest() }
+            deleteBack({ b, _ in b.count }) { [weak self] _ in
+                guard let doc = self?.keyboard?.target as? UITextDocumentProxy, Self.before(doc).isEmpty else { return }
+                rest()
+            }
         case .deleteLine, .cutLine:
             guard e == .deleteLine || copy != nil else { return }
-            walk(1, { Self.toLineEnd($1) }) { [weak self] _ in self?.deleteLine(into: e == .cutLine ? copy : nil) }
+            walk(1, { Self.toLineEnd($1) }) { [weak self] crossed in
+                self?.deleteLine(into: e == .cutLine ? copy : nil, moved: !crossed.isEmpty)
+            }
         case .copyLine:
             guard let copy else { return }
             // To the line's start, over it to its end, and back: the caret ends where it was.
@@ -831,8 +853,14 @@ final class SuggestionBar: UIView {
     /// the caret on the next line's start, as nvim's. The last line goes with the break before
     /// it instead, the caret then on the line above's start (nvim's first non-blank). The line,
     /// without a break, goes to `copy` unless it's empty.
-    private func deleteLine(into copy: UIPasteboard?) {
+    ///
+    /// The step crossed a break if the context changed and its before ends in one, which holds only
+    /// for a context a move showed: one an edit left (`deleteBack`) re-windows at the step
+    /// even where the host clamps it. So a walk that `moved` nothing re-windows first (#553
+    /// QA: a stale "" on the empty last line took the line above).
+    private func deleteLine(into copy: UIPasteboard?, moved: Bool) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
+        guard moved else { return rewindow { [weak self] in self?.deleteLine(into: copy, moved: true) } }
         let seen = (Self.before(doc), doc.documentContextAfterInput ?? "")
         guard seen.1.isEmpty || seen.1.first?.isNewline == true else { return }   // the walk stopped short
         keyboard.caret(1) { [weak self] in
@@ -856,13 +884,15 @@ final class SuggestionBar: UIView {
     /// from the context the last landed in (`TerminalKeyboard.caret(_:then:)`), until `count`
     /// finds none or the context stops changing (an edge the host clamps at); then `done`
     /// with the Characters crossed, in order. A touch or a key on the way drops `done`.
+    /// A leg back taking a before-context that opens on a space whole stops short of it: the
+    /// space may be Safari's after a break, not in the text, and the next leg reads on.
     /// ponytail: 1,000 legs at most; a long run of one character in Safari's windows reads
     /// the same after a leg and stops there: a second press goes on.
     private func walk(_ dir: Int, legs: Int = 1_000, crossed: String = "", seen: (String, String)? = nil,
                       _ count: @escaping (String, String) -> Int, done: @escaping (String) -> Void) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         let b = doc.documentContextBeforeInput ?? "", a = doc.documentContextAfterInput ?? ""
-        let n = count(b, a)
+        let n = count(b, a) - (dir < 0 && b.first == " " && count(b, a) == b.count ? 1 : 0)
         guard n > 0, legs > 0, seen.map({ $0 != (b, a) }) ?? true else { return done(crossed) }
         let leg = String(dir < 0 ? b.suffix(n) : a.prefix(n))
         keyboard.caret(dir * n) { [weak self] in
@@ -880,15 +910,27 @@ final class SuggestionBar: UIView {
     /// unlike the batch starts, so a host one edit behind, still showing its first Character,
     /// is never taken for the answer. Then `edited` and `done` with what went, in order.
     /// A key, a touch or a move drops the rest.
-    /// ponytail: 10,000 deletes at most, and 0.3 s without the host showing a batch
-    /// (`CaretWalk.poll`'s wait) ends it there with what went. A context a batch leaves as it
-    /// was ends it so too: rightly at an empty line's break in a UITextView, early in a long
-    /// run of one character in Safari's windows, which goes one at a time; a second press
-    /// goes on.
-    private func deleteBack(left: Int = 10_000, gone: String = "", _ count: @escaping (String, String) -> Int,
-                            done: @escaping (String) -> Void = { _ in }) {
+    ///
+    /// After a delete a host shows only what's left of the window it cut the context at, ""
+    /// at that window's start, till a move shows a fresh one (#553 QA: UITextView's windows
+    /// open at a sentence or a paragraph, Safari's at a row). So such a context is never taken
+    /// for the edge: where `count` reaches its start, the caret steps back and on again
+    /// (`rewindow`) and the next batch is sized from the `fresh` context. So too an empty one at
+    /// the start, which an edit before may have left; a fresh empty one is the text's start.
+    /// A batch that took the whole context has no anchor to tell its answer by, so one the
+    /// context still doesn't show after 0.3 s goes on from a fresh context too: an empty
+    /// line's break in a UITextView, and Safari's at a window's start, read the same after it.
+    /// ponytail: 10,000 deletes at most, and 0.3 s without the host showing a batch that left
+    /// an anchor (`CaretWalk.poll`'s wait) ends it there with what went: a long run of one
+    /// character in Safari's windows, where the moves wait that long each, can stop early; a
+    /// second press goes on.
+    private func deleteBack(left: Int = 10_000, gone: String = "", fresh: Bool = false,
+                            _ count: @escaping (String, String) -> Int, done: @escaping (String) -> Void = { _ in }) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         let b = Self.before(doc), c = Array(b), want = min(count(b, gone), left)
+        if !fresh, want >= c.count, want < left, !gone.isEmpty || c.isEmpty {
+            return rewindow { [weak self] in self?.deleteBack(left: left, gone: gone, fresh: true, count, done: done) }
+        }
         guard want > 0 else { edited(); return done(gone) }
         // A context starting at a space may start at Safari's after a break, not in the text:
         // the anchor goes past it, and is checked without it.
@@ -909,9 +951,32 @@ final class SuggestionBar: UIView {
             }
             if now != last { last = now; quiet = 0 } else { quiet += 1 }
             guard quiet > 15 else { return false }
+            if anchor.isEmpty, left > batch.count {
+                self.rewindow { [weak self] in
+                    self?.deleteBack(left: left - batch.count, gone: batch + gone, fresh: true, count, done: done)
+                }
+                return true
+            }
             self.edited()
             done(batch + gone)
             return true
+        }
+    }
+
+    /// The caret a step back and on again, so a host that cut its context at a delete shows a
+    /// fresh one (`deleteBack`), then `then`. From an empty before-context, a step back the
+    /// host ignores, the context still empty, is the text's start: no step on. A field that
+    /// shows no context at all gets no steps.
+    /// ponytail: a key or a touch before the step back lands drops the step on, the caret then
+    /// a Character back.
+    private func rewindow(then: @escaping () -> Void) {
+        guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
+        guard doc.documentContextBeforeInput != nil || doc.documentContextAfterInput != nil else { return then() }
+        let empty = (doc.documentContextBeforeInput ?? "").isEmpty
+        keyboard.caret(-1) { [weak self] in
+            guard let kb = self?.keyboard, let doc = kb.target as? UITextDocumentProxy else { return }
+            if empty, (doc.documentContextBeforeInput ?? "").isEmpty { return then() }
+            kb.caret(1, then: then)
         }
     }
 
