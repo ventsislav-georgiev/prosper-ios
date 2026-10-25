@@ -153,6 +153,18 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertFalse(kb2.shift.auto)
         withExtendedLifetime(bar2) { typing(kb2, "rkn ") }
         XCTAssertEqual(doc2.text, "Ron ")
+        // Shift tapped off then on over the sentence start's auto-shift is the user's.
+        let (kb3, bar3, doc3) = rig { $0.autocapitalizationType = .sentences }
+        kb3.press(.shift)
+        kb3.press(.shift)
+        XCTAssertFalse(kb3.shift.auto)
+        withExtendedLifetime(bar3) { typing(kb3, "rkn ") }
+        XCTAssertEqual(doc3.text, "Ron ")
+        // A words field capitalizes every word, names among them: N stays off.
+        let (kb4, bar4, doc4) = rig { $0.autocapitalizationType = .words }
+        XCTAssertTrue(kb4.shift.auto)
+        withExtendedLifetime(bar4) { typing(kb4, "rkn ") }
+        XCTAssertEqual(doc4.text, "Ron ")
     }
 
     /// The real checker: "tge" comes out "the".

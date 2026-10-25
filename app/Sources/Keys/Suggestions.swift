@@ -68,7 +68,8 @@ final class Suggestions {
     /// (backspacing into the word before it ends its correction): neither is worth more.
     private var typed = ""
     /// The current word's first letter took auto-capitalization's shift, not the user's:
-    /// rule N (`best`) reads the word lowercase. Set at the word's first letter (`willPress`).
+    /// rule N (`best`) reads the word lowercase. Set at the word's first letter (`willPress`),
+    /// in a sentences field only: a words field capitalizes names too ("Jane Rkn" is Ron).
     private var autoCapital = false
 
     /// The pasteboard to offer, nil without Full Access: a custom keyboard reads it only
@@ -219,7 +220,9 @@ final class Suggestions {
         case .char(let c):
             // Typing over the Paste button dismisses that clip for good.
             if offersPaste(doc) { memory.retiredClip = pasteboard()?.changeCount }
-            if Self.currentWord(doc.documentContextBeforeInput).isEmpty { autoCapital = autoShift }
+            if Self.currentWord(doc.documentContextBeforeInput).isEmpty {
+                autoCapital = autoShift && doc.autocapitalizationType == .sentences
+            }
             type(c)
             return false   // breaks the undo's suffix (`revert`)
         }
