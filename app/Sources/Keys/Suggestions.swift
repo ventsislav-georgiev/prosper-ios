@@ -67,6 +67,9 @@ final class Suggestions {
     /// ponytail: the last 64 characters only, and the double-space period isn't mirrored
     /// (backspacing into the word before it ends its correction): neither is worth more.
     private var typed = ""
+    /// The current word's first letter took auto-capitalization's shift, not the user's:
+    /// rule N (`best`) reads the word lowercase. Set at the word's first letter (`willPress`).
+    private var autoCapital = false
 
     /// The pasteboard to offer, nil without Full Access: a custom keyboard reads it only
     /// with Full Access. The controller's, or a named one in tests.
@@ -202,7 +205,7 @@ final class Suggestions {
     /// The keyboard's hook before each key (`TerminalKeyboard.willPress`). A separator
     /// autocorrects the word it ends and records it; backspace right after an autocorrect
     /// undoes it and returns true: the keyboard then types nothing itself.
-    func willPress(_ key: TerminalKeyboard.Key, in doc: UITextDocumentProxy) -> Bool {
+    func willPress(_ key: TerminalKeyboard.Key, in doc: UITextDocumentProxy, autoShift: Bool = false) -> Bool {
         let separator: String
         switch key {
         case .shift, .globe, .emoji: return false
@@ -216,6 +219,7 @@ final class Suggestions {
         case .char(let c):
             // Typing over the Paste button dismisses that clip for good.
             if offersPaste(doc) { memory.retiredClip = pasteboard()?.changeCount }
+            if Self.currentWord(doc.documentContextBeforeInput).isEmpty { autoCapital = autoShift }
             type(c)
             return false   // breaks the undo's suffix (`revert`)
         }
@@ -291,7 +295,9 @@ final class Suggestions {
             return "I" + word.dropFirst()
         }
         if let phrase = replacements[lower] { return phrase }
-        guard !knows(word), let guess = Self.best(Self.guesses(lower, language: language), for: word,
+        // Rule N: a capital only auto-capitalization put first is lowercase ("Rkn" → "Run").
+        let ruled = autoCapital && word.dropFirst() == lower.dropFirst() ? lower : word
+        guard !knows(word), let guess = Self.best(Self.guesses(lower, language: language), for: ruled,
                                                   rows: layout.letterRows) else { return nil }
         return Self.matchCase(guess, to: word)
     }
@@ -335,17 +341,20 @@ final class Suggestions {
             || Self.spelled(lower, language: language) || Self.spelled(word, language: language)
     }
 
-    /// Of the checker's `guesses` for `word`, the `isConfident` one fewest keys away
+    /// Of the checker's first 3 `guesses` for `word`, the `isConfident` one fewest keys away
     /// (`keyDistance`): "tge" is "the" (h is g's neighbor) before "toe". Ties keep the
-    /// checker's order. Only ever one of `guesses`, and none unless the first is confident:
-    /// a first guess that drops a letter ("iphone" → "phone") says the word is deliberate.
-    /// A word typed lowercase takes a capitalized guess only first: "rkn" is "run", not "Ron".
+    /// checker's order; past the third, a rare word one slip away would beat its right first
+    /// guess ("hese" → "Hess", not "here"). None unless the first is confident: a first
+    /// guess that drops a letter ("iphone" → "phone") says the word is deliberate.
+    /// Rule N: a word typed lowercase takes a capitalized guess only first: "rkn" is "run",
+    /// not "Ron". A sentence start's auto-capital counts as lowercase (`correction` passes
+    /// the word lowercased); a capital the user shifted doesn't: "Rkn" is "Ron".
     ///
     /// ponytail: no frequency weighting; the checker's order is the only tie-break.
     static func best(_ guesses: [String], for word: String, rows: [[Character]]) -> String? {
         guard let first = guesses.first, isConfident(word, guess: first, rows: rows) else { return nil }
         let lower = word.lowercased()
-        let rest = guesses.dropFirst().filter { word != lower || $0.first?.isUppercase != true }
+        let rest = guesses.prefix(3).dropFirst().filter { word != lower || $0.first?.isUppercase != true }
         return ([first] + rest).filter { isConfident(word, guess: $0, rows: rows) }
             .min { keyDistance(lower, $0.lowercased(), rows: rows) < keyDistance(lower, $1.lowercased(), rows: rows) }
     }
@@ -714,7 +723,7 @@ final class SuggestionBar: UIView {
         self.keyboard = keyboard
         keyboard.willPress = { [weak self, weak keyboard] key in
             guard let self, let doc = keyboard?.target as? UITextDocumentProxy else { return false }
-            return self.suggestions.willPress(key, in: doc)
+            return self.suggestions.willPress(key, in: doc, autoShift: keyboard?.shift.auto == true)
         }
         keyboard.didPress = { [weak self] in self?.refresh() }
         keyboard.didMoveCaret = { [weak self] in

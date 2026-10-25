@@ -9,12 +9,15 @@ struct ShiftState: Equatable {
     enum Mode: Equatable { case off, once, locked }
     static let doubleTapWindow: TimeInterval = 0.3
     private(set) var mode: Mode = .off
+    /// The one-shot is auto-capitalization's (`autoShift`), not the user's tap.
+    private(set) var auto = false
     private var lastTap: TimeInterval = -.greatestFiniteMagnitude
 
     var uppercase: Bool { mode != .off }
 
     /// `locks` false: a quick second tap turns it off like a slow one (Enable Caps Lock off).
     mutating func tap(at time: TimeInterval, locks: Bool = true) {
+        auto = false
         switch mode {
         case .off: mode = .once
         case .once: mode = locks && time - lastTap <= Self.doubleTapWindow ? .locked : .off
@@ -24,14 +27,14 @@ struct ShiftState: Equatable {
     }
 
     /// A letter went out: a one-shot shift is spent, caps lock stays.
-    mutating func typedLetter() { if mode == .once { mode = .off } }
+    mutating func typedLetter() { if mode == .once { mode = .off; auto = false } }
 
     /// Auto-capitalization (the keyboard extension only): one-shot on at a sentence start,
     /// off elsewhere. Caps lock is the user's and stays.
     ///
     /// ponytail: off also clears a one-shot the user tapped, so shift then a digit then
     /// a letter types it lowercase. Track who set it if that ever matters.
-    mutating func autoShift(_ on: Bool) { if mode != .locked { mode = on ? .once : .off } }
+    mutating func autoShift(_ on: Bool) { if mode != .locked { mode = on ? .once : .off; auto = on } }
 }
 
 /// The Keyboard section of the app's Settings: Apple's Settings › General › Keyboard

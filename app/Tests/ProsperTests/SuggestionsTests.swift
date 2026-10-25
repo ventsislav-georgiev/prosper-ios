@@ -117,6 +117,14 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(best(["not", "one"], "noe", en), "not", "one is a swap away, but o isn't n's neighbor")
     }
 
+    /// Only the checker's first 3 guesses re-rank: a rare word one slip away further down
+    /// doesn't beat its right first guess (en_US's lists).
+    func testOnlyTheFirstThreeGuessesRerank() {
+        let en = TerminalKeyboard.Layout.english.letterRows, best = Suggestions.best
+        XCTAssertEqual(best(["here", "these", "hehe", "hose", "Hess", "heme", "hess"], "hese", en), "here")
+        XCTAssertEqual(best(["grammar", "grimmer", "rammer", "gammer"], "grammer", en), "grammar")
+    }
+
     /// A word typed lowercase takes a capitalized guess only when it's the first.
     func testALowercaseWordSkipsCapitalizedGuesses() {
         let en = TerminalKeyboard.Layout.english.letterRows, best = Suggestions.best
@@ -126,6 +134,25 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(best(["bean", "Ben", "begin"], "begn", en), "begin")
         XCTAssertEqual(best(["Ron", "run"], "rkn", en), "Ron", "the first guess stays")
         XCTAssertEqual(best(["ran", "Ron", "run"], "Rkn", en), "Ron", "typed capitalized")
+    }
+
+    /// Rule N at a sentence start: the capital auto-capitalization put first is lowercase
+    /// ("Rkn" → "Run"); one the user shifted isn't ("Rkn" → "Ron"). The checker's guesses
+    /// for "rkn" vary by simulator: the test needs "Ron" before "run" in its first 3.
+    func testAnAutoCapitalIsLowercaseForRuleN() throws {
+        let g = Array(Suggestions.guesses("rkn").prefix(3))
+        guard let ron = g.firstIndex(of: "Ron"), let run = g.firstIndex(of: "run"), ron > 0, ron < run else {
+            throw XCTSkip("this checker's guesses for rkn: \(g)")
+        }
+        let (kb, bar, doc) = rig { $0.autocapitalizationType = .sentences }
+        XCTAssertTrue(kb.shift.auto)
+        withExtendedLifetime(bar) { typing(kb, "rkn ") }
+        XCTAssertEqual(doc.text, "Run ")
+        let (kb2, bar2, doc2) = rig()
+        kb2.press(.shift)
+        XCTAssertFalse(kb2.shift.auto)
+        withExtendedLifetime(bar2) { typing(kb2, "rkn ") }
+        XCTAssertEqual(doc2.text, "Ron ")
     }
 
     /// The real checker: "tge" comes out "the".
