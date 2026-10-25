@@ -1199,11 +1199,13 @@ final class KeyboardExtensionTests: XCTestCase {
     /// `s` with `|` at the caret, in a UITextView (`kit`) or Safari, whose after-contexts
     /// stop at the caret line's end (`cut`), after `moves` of (steps, lines), each asked once
     /// the last has landed, or all at once up to a (0, 0) (`fast`), the host catching up
-    /// after every `perRefresh` asks (0: its context never lags), rows of `wrap`: the text
-    /// with `|` where the caret ended. The caret never stops inside a Character but, in a
-    /// UITextView, for a moment between a CR and its LF.
+    /// after every `perRefresh` asks (0: its context never lags), rows of `wrap`, each move a
+    /// new touch's (`touch`: the walk dropped first, as the view's does): the text with `|`
+    /// where the caret ended. The caret never stops inside a Character but, in a UITextView,
+    /// for a moment between a CR and its LF.
     private func lined(_ s: String, kit: Bool, cut: Bool = true, _ moves: [(Int, Int)], perRefresh: Int = 0,
-                       fast: Bool = false, wrap: Int? = nil, _ why: String = "", tweak: (FakeProxy) -> Void = { _ in },
+                       fast: Bool = false, wrap: Int? = nil, touch: Bool = false, _ why: String = "",
+                       tweak: (FakeProxy) -> Void = { _ in },
                        file: StaticString = #filePath, line: UInt = #line) -> String {
         let parts = s.components(separatedBy: "|"), text = parts.joined()
         let doc = host(kit: kit, parts[0], parts[1])
@@ -1219,6 +1221,7 @@ final class KeyboardExtensionTests: XCTestCase {
         }
         func settle() { for _ in 0..<400 where !walk.idle { doc.catchUp(); polls += 1; walk.poll(); step((0, 0)) } }
         for (i, m) in moves.enumerated() {
+            if touch { walk.drop() }
             step(m)
             if perRefresh > 0, (i + 1) % perRefresh == 0 { doc.catchUp(); step((0, 0)) }
             if !fast || m == (0, 0) { settle() }
@@ -1454,9 +1457,9 @@ final class KeyboardExtensionTests: XCTestCase {
         drag([(0, 1.5)])
         XCTAssertEqual(doc.text, "first line\nab", "the short line's end")
         drag([(0, -1)])
-        XCTAssertEqual(doc.text, "fi", "the last hold's column is gone")
+        XCTAssertEqual(doc.text, "first", "a new hold keeps the column, as iOS's arrows do")
         drag([(1, 1), (0, 1)])
-        XCTAssertEqual(doc.text, "first line\nab\nthi", "right and down, then down at that column")
+        XCTAssertEqual(doc.text, "first line\nab\nthird ", "right and down, then down at that column")
         XCTAssertEqual(doc.text + (doc.after ?? ""), "first line\nab\nthird line", "no text typed")
         XCTAssertNil(kb.walkTimer)
     }
@@ -1541,6 +1544,81 @@ final class KeyboardExtensionTests: XCTestCase {
                     }
                 }
             }
+        }
+    }
+
+    /// The goal column outlives a touch, in either host, lagging or not: a line move from a
+    /// short line a new touch began on goes on at the column the last one aimed for, in text
+    /// lines and wrapped rows alike. A sideways step still sets a new one.
+    func testTheGoalColumnOutlivesATouch() {
+        let p = "abcdefghijklmnopqrstuvwxy", q = "ABCDEFGHIJKLMNOPQRSTUVWXY", three = p + "\nab\n" + q
+        func at(_ s: String, _ i: Int) -> String { String(s.prefix(i)) + "|" + s.dropFirst(i) }
+        let cases: [(String, [(Int, Int)], Int?, String, String)] = [
+            ("the long line| one\nmid\nthe long line two", [(0, 1), (0, 1)], nil,
+             "the long line one\nmid\nthe long line| two", "down, a touch, down"),
+            ("the long line one\nmid\nthe long line| two", [(0, -1), (0, -1)], nil,
+             "the long line| one\nmid\nthe long line two", "up, a touch, up"),
+            ("the long line| one\nmid\nthe long line two", [(0, 1), (-1, 0), (0, 1)], nil,
+             "the long line one\nmid\nth|e long line two", "a sideways step between: its column"),
+            (at(three, 17), [(0, 1), (0, 1), (0, 1)], 10, at(three, 36), "wrapped rows through a short line"),
+        ]
+        for (s, moves, wrap, want, why) in cases {
+            for kit in [true, false] {
+                for cut in [true, false] {
+                    for perRefresh in [0, 1] {
+                        XCTAssertEqual(lined(s, kit: kit, cut: cut, moves, perRefresh: perRefresh, wrap: wrap, touch: true, why),
+                                       want, "\(why) kit \(kit) cut \(cut) lag \(perRefresh)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Through the view, long, short, long lines: ↓ by a space-hold drag, then a new hold's
+    /// ↓, lands at the first line's column; so do two toolbar taps.
+    func testTheGoalColumnOutlivesAHoldAndAToolbarTap() throws {
+        let start = "the long line", rest = " one\nmid\nthe long line two"
+        let want = "the long line one\nmid\nthe long line"
+        for kit in [true, false] {
+            let kb = TerminalKeyboard(), doc = host(kit: kit, start, rest)
+            kb.target = doc
+            let space = try XCTUnwrap(laidOut(kb)["space"]).frame
+            func drag() {
+                let p = CGPoint(x: space.midX, y: space.midY)
+                doc.lags = true
+                kb.track(.began, id: 1, at: p)
+                kb.fireHold()
+                let to = CGPoint(x: p.x, y: p.y + KeyTouchTracker.lineStep)
+                kb.track(.moved, id: 1, at: to)
+                kb.track(.ended, id: 1, at: to)
+                for _ in 0..<100 { doc.catchUp(); kb.pollCaret() }
+            }
+            drag()
+            XCTAssertEqual(doc.text, "the long line one\nmid", "kit \(kit)")
+            drag()
+            XCTAssertEqual(doc.text, want, "kit \(kit): the hold's column")
+            let bar = host(kit: kit, start, rest)
+            kb.target = bar
+            for _ in 0..<2 { kb.line(1); for _ in 0..<100 { bar.catchUp(); kb.pollCaret() } }
+            XCTAssertEqual(bar.text, want, "kit \(kit): the taps' column")
+        }
+    }
+
+    /// The host moving the caret between two toolbar taps (the user tapped the field): the
+    /// next ↓ goes from that column, not the one the last tap aimed for.
+    func testAHostCaretMoveDropsTheGoalColumn() {
+        for kit in [true, false] {
+            let kb = TerminalKeyboard()
+            let doc = host(kit: kit, "the long line", " one\nmid\nthe long line two\nthe long line three")
+            kb.target = doc
+            kb.line(1)
+            for _ in 0..<100 { doc.catchUp(); kb.pollCaret() }
+            XCTAssertEqual(doc.text, "the long line one\nmid", "kit \(kit)")
+            doc.text = "the long line one\nmid\nthe "; doc.after = "long line two\nthe long line three"
+            kb.line(1)
+            for _ in 0..<100 { doc.catchUp(); kb.pollCaret() }
+            XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "the long line one\nmid\nthe long line two\nthe |long line three",
+                           "kit \(kit): from the tapped column, moves \(doc.moves)")
         }
     }
 

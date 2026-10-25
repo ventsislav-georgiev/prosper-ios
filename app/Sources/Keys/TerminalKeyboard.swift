@@ -361,8 +361,11 @@ struct CaretWalk {
     private(set) var lines = 0
     /// The column line moves aim for, in Characters from the line's start: kept from line
     /// to line, so a short one on the way doesn't shorten the next, until a sideways step
-    /// goes or `drop`.
+    /// goes. Kept past a touch (`drop`) and an idle walk too, as iOS keeps it from arrow to
+    /// arrow, while the context still reads as where the walk left the caret (`kept`): any
+    /// other (typing, an edit, a tap in the host field) means the caret moved without it.
     private var goal: Int?
+    private var kept: (String, String)?
     /// The line move under way: the Characters it walked on the line it started on, nil
     /// once it crossed a break, 0 once it landed; whether the leg in flight crosses one;
     /// and once the last is crossed (with `wrap`, each), its landing: to the line's start
@@ -387,6 +390,8 @@ struct CaretWalk {
         let changed = shown.map { !Self.same($0, b, a) } ?? false
         if changed { quiet = 0 }
         shown = (b, a)
+        if n != 0, idle, goal != nil, !(kept.map { Self.same($0, b, a) } ?? false) { goal = nil }
+        defer { kept = idle && goal != nil ? (b, a) : nil }
         if blank { defer { queued = 0 }; return queued + steps }   // no lines: nothing to see them by
         if lines != 0 || landing != nil { held += steps } else { queued += steps; if steps != 0 { goal = nil } }
         lines += n
@@ -516,10 +521,11 @@ struct CaretWalk {
     }
 
     /// Forget the move in flight, the steps behind it and what the field showed: a touch
-    /// starts afresh, looking for context again.
+    /// starts afresh, looking for context again. The goal column stays, as long as the
+    /// context still reads as `kept`.
     mutating func drop() {
         sent = nil; reckoned = nil; believed = nil; queued = 0; blank = false
-        lines = 0; goal = nil; walked = 0; crossing = false; landing = nil; held = 0
+        lines = 0; walked = 0; crossing = false; landing = nil; held = 0
     }
 
     /// The next leg of a line move, in Characters, from the context the last one landed in:
