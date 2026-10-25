@@ -1420,11 +1420,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
     }
 
-    /// The key nearest `point`, so the gaps, margins and the strip under the bottom row
-    /// all belong to a key, unless `corrected` moves it to a neighbor that continues the
-    /// word. Began, moved and the preview all ask here, so they agree.
+    /// The key nearest where `point` aims (`aimed`), so the gaps, margins and the strip
+    /// under the bottom row all belong to a key, unless `corrected` moves it to a neighbor
+    /// that continues the word. Began, moved and the preview all ask here, so they agree.
     func key(at point: CGPoint) -> Key {
         let keys = caps.joined().map { ($0.key, $0.frame) }
+        let point = aimed(point)
         return Self.corrected(nearest(at: point), at: point, keys: keys, prefix: word) { s in
             if let known = knownCache[s] { return known }
             var known = Self.dictionaryKnows(s, language: layout.language)
@@ -1443,6 +1444,22 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// keyboard list.
     private func nearest(at point: CGPoint) -> Key {
         caps.joined().filter { $0.key != .globe }.min { Self.distance(point, $0.frame) < Self.distance(point, $1.frame) }?.key ?? .space
+    }
+
+    /// How far above a touch on the letter rows it aims: thumbs land low.
+    ///
+    /// ponytail: one fixed lift, not per side or per size class, no Settings slider; 4 pt
+    /// from the typo harness (`TypoRateTests`). Tune it on a device. Settable for tests.
+    static var tapLift: CGFloat = 4
+
+    /// Where a touch aims: `tapLift` higher, when both the touch and the lifted point are
+    /// nearest a key on the letter rows (shift's included). The digit row, the bottom row
+    /// and the strip under it keep the touch where it is, so a lift never turns space or a
+    /// digit into a letter, nor a letter into a digit.
+    private func aimed(_ point: CGPoint) -> CGPoint {
+        let letters = Set(caps.dropFirst().dropLast().joined().map(\.key))
+        let lifted = CGPoint(x: point.x, y: point.y - Self.tapLift)
+        return letters.contains(nearest(at: point)) && letters.contains(nearest(at: lifted)) ? lifted : point
     }
 
     /// Start the next word afresh: a key went to the terminal some other way.
@@ -1560,8 +1577,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     /// The hold timer's end; tests call it in place of waiting. Space becomes the trackpad;
-    /// any other key converts on the key under the finger now, without correction: a hold
-    /// is deliberate.
+    /// any other key converts on the key the finger aims at now, without correction: a
+    /// hold is deliberate.
     func fireHold() {
         guard let h = holdTouch else { return }
         stopHold()
@@ -1572,7 +1589,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             refreshPressed()
             return
         }
-        guard tracker.hold(h.id, over: nearest(at: h.at), symbols: layout.holdSymbol) else { return }
+        guard tracker.hold(h.id, over: nearest(at: aimed(h.at)), symbols: layout.holdSymbol) else { return }
         haptics.impactOccurred()
         haptics.prepare()
         refreshPressed()

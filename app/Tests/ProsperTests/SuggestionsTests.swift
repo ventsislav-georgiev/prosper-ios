@@ -99,6 +99,31 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertFalse(ok("ab1", "abc"), "letters only")
     }
 
+    /// Of the confident guesses, the fewest keys away wins, at any letter, the first
+    /// included; ties keep the checker's order, and nothing it didn't guess is offered.
+    func testGuessesRankByKeyboardDistance() {
+        let en = TerminalKeyboard.Layout.english.letterRows, bg = TerminalKeyboard.Layout.bulgarian.letterRows
+        let k = Suggestions.keyDistance
+        XCTAssertEqual(k("tge", "the", en), 1, "h is g's neighbor")
+        XCTAssertEqual(k("tge", "toe", en), 2, "o isn't")
+        XCTAssertEqual(k("teh", "the", en), 1, "a swap is one edit")
+        let best = Suggestions.best
+        XCTAssertEqual(best(["toe", "tie", "the"], "tge", en), "the")
+        XCTAssertEqual(best(["toe", "tie"], "tge", en), "toe", "a tie: the checker's order")
+        XCTAssertEqual(best(["gee", "she", "the"], "ghe", en), "the", "the first letter: t is above g")
+        XCTAssertEqual(best(["сол", "дал"], "сал", bg), "дал", "с and д are neighbors")
+        XCTAssertNil(best(["phone", "iphones"], "iphone", en), "the first guess isn't confident")
+        XCTAssertNil(best([], "tge", en))
+    }
+
+    /// The real checker: "tge" comes out "the".
+    func testTgeIsCorrectedToThe() {
+        XCTAssertTrue(Suggestions.guesses("tge").contains("the"))
+        let (kb, bar, doc) = rig()
+        withExtendedLifetime(bar) { typing(kb, "tge ") }
+        XCTAssertEqual(doc.text, "the ")
+    }
+
     func testMatchCase() {
         let m = Suggestions.matchCase
         XCTAssertEqual(m("the", "Teh"), "The")
@@ -289,10 +314,11 @@ final class SuggestionsTests: XCTestCase {
     }
 
     /// What `typed` mirrors, key by key: backspace pops it, a correction and its revert
-    /// replace their word in it, and it holds more than a short word.
+    /// replace their word in it, and it holds more than a short word. ("wrldd" is "weld":
+    /// e is r's neighbor, i in the checker's first guess, "wild", isn't.)
     func testTheTypedMirrorFollowsEveryEdit() {
         for (keys, text) in [("tehx⌫ ", "the "), ("becuase ", "because "),
-                             ("teh x⌫⌫rr ", "there "), ("wrld ⌫d ", "wild ")] {
+                             ("teh x⌫⌫rr ", "there "), ("wrld ⌫d ", "weld ")] {
             let (kb, bar, doc) = rig()
             withExtendedLifetime(bar) { typing(kb, keys) }
             XCTAssertEqual(doc.text, text, keys)

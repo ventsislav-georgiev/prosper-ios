@@ -99,6 +99,34 @@ final class TouchCorrectionTests: XCTestCase {
 
     // MARK: Through the real keyboard
 
+    /// Thumbs land low: a touch 8 pt under t, nearer g, types t, even as a word's first
+    /// letter, where nothing is corrected. A hold there converts t too.
+    func testALowTouchOnALetterAimsUp() {
+        let (kb, f) = laidOut()
+        let t = f["t"]!, g = f["g"]!
+        let low = CGPoint(x: t.midX + 5, y: t.maxY + 8)
+        XCTAssertLessThan(K.distance(low, g), K.distance(low, t), "precondition: g is nearer")
+        XCTAssertEqual(kb.word, "")
+        XCTAssertEqual(kb.key(at: low), .char("t"))
+        let spy = SpyInput()
+        kb.target = spy
+        kb.track(.began, id: 1, at: low)
+        kb.fireHold()
+        kb.track(.ended, id: 1, at: low)
+        XCTAssertEqual(spy.calls, ["["], "t's hold symbol")
+    }
+
+    /// The lift stays on the letter rows: a touch just over space, or just over q's row
+    /// (nearer q than the 1 above), is what it was.
+    func testTheLiftNeverLeavesTheLetterRows() {
+        let (kb, f) = laidOut()
+        let space = f["space"]!, q = f["q"]!
+        XCTAssertEqual(kb.key(at: CGPoint(x: space.midX, y: space.minY - 3)), .space)
+        XCTAssertEqual(kb.key(at: CGPoint(x: space.midX, y: space.maxY + 6)), .space, "under the bottom row")
+        XCTAssertEqual(kb.key(at: CGPoint(x: q.midX, y: q.minY - 3)), .char("q"))
+        XCTAssertEqual(kb.key(at: CGPoint(x: f["1"]!.midX, y: f["1"]!.maxY + 3)), .char("1"))
+    }
+
     /// The real UITextChecker: "tesr" starts no word, "test" does.
     func testRealDictionaryCorrectsTesR() {
         XCTAssertTrue(K.dictionaryKnows("test"))

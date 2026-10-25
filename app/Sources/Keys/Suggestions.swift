@@ -278,8 +278,8 @@ final class Suggestions {
     /// this keyboard typed whole (all after `prefix` ends `typed`), and never mid-word
     /// (letters after the cursor) or glued to what's before it (`glued`). A reverted word stays; "i" and its
     /// contractions get their capital; a text replacement shortcut gives its phrase;
-    /// otherwise the dictionary's first guess, if `confident`, for a word nothing knows
-    /// (`knows`). Anything less sure stays as typed, though the bar still offers the guesses.
+    /// otherwise the dictionary's guess nearest on the keyboard (`best`), for a word nothing
+    /// knows (`knows`). Anything less sure stays as typed, though the bar still offers the guesses.
     func correction(for word: String, after prefix: String, in doc: UITextDocumentProxy) -> String? {
         guard settings.autoCorrection, !word.isEmpty, Self.autocorrects(doc), !Self.glued(prefix),
               typed.hasSuffix((doc.documentContextBeforeInput ?? "").dropFirst(prefix.count).lowercased()),
@@ -291,8 +291,8 @@ final class Suggestions {
             return "I" + word.dropFirst()
         }
         if let phrase = replacements[lower] { return phrase }
-        guard !knows(word), let guess = Self.guesses(lower, language: language).first,
-              Self.isConfident(word, guess: guess, rows: layout.letterRows) else { return nil }
+        guard !knows(word), let guess = Self.best(Self.guesses(lower, language: language), for: word,
+                                                  rows: layout.letterRows) else { return nil }
         return Self.matchCase(guess, to: word)
     }
 
@@ -301,10 +301,7 @@ final class Suggestions {
     /// is as long and starts on a neighboring key ("rhe" → "the"; a guess one letter shorter
     /// or longer is another word: "iphone" isn't "phone"), and the guess at most 2 edits away
     /// (1 for a word of 3 letters or fewer, where 2 edits make another word: "cat"/"dog").
-    ///
-    /// ponytail: adjacency counts only for the first letter, with no other keyboard-distance
-    /// or frequency weighting; the checker's guess order is the only ranking. Weight every
-    /// edit by adjacency if corrections feel random.
+    /// Which of the confident guesses wins is `best`'s.
     static func confident(_ word: String, guess: String) -> Bool {
         isConfident(word, guess: guess, rows: TerminalKeyboard.Layout.english.letterRows)
     }
@@ -338,18 +335,43 @@ final class Suggestions {
             || Self.spelled(lower, language: language) || Self.spelled(word, language: language)
     }
 
+    /// Of the checker's `guesses` for `word`, the `isConfident` one fewest keys away
+    /// (`keyDistance`): "tge" is "the" (h is g's neighbor) before "toe". Ties keep the
+    /// checker's order. Only ever one of `guesses`, and none unless the first is confident:
+    /// a first guess that drops a letter ("iphone" → "phone") says the word is deliberate.
+    ///
+    /// ponytail: no frequency weighting; the checker's order is the only tie-break.
+    static func best(_ guesses: [String], for word: String, rows: [[Character]]) -> String? {
+        guard let first = guesses.first, isConfident(word, guess: first, rows: rows) else { return nil }
+        let lower = word.lowercased()
+        return guesses.filter { isConfident(word, guess: $0, rows: rows) }
+            .min { keyDistance(lower, $0.lowercased(), rows: rows) < keyDistance(lower, $1.lowercased(), rows: rows) }
+    }
+
     /// Edits from `a` to `b`: insert, delete, substitute, and swapping two neighbors
     /// counts one ("teh" → "the", the commonest typo). Optimal string alignment, the
     /// restricted Damerau-Levenshtein.
     static func editDistance(_ a: String, _ b: String) -> Int {
+        distance(a, b, edit: 1) { _, _ in 1 }
+    }
+
+    /// `editDistance` where only a slip to a neighboring key (`neighbors`) is one
+    /// substitution: any other letter for a letter costs two, a delete and an insert.
+    static func keyDistance(_ a: String, _ b: String, rows: [[Character]]) -> Int {
+        distance(a, b, edit: 1) { neighbors($0, $1, rows: rows) ? 1 : 2 }
+    }
+
+    private static func distance(_ a: String, _ b: String, edit: Int,
+                                 substitution: (Character, Character) -> Int) -> Int {
         let a = Array(a), b = Array(b)
-        guard !a.isEmpty, !b.isEmpty else { return max(a.count, b.count) }
-        var d = (0...a.count).map { i in (0...b.count).map { j in i == 0 ? j : j == 0 ? i : 0 } }
+        guard !a.isEmpty, !b.isEmpty else { return edit * max(a.count, b.count) }
+        var d = (0...a.count).map { i in (0...b.count).map { j in edit * (i == 0 ? j : j == 0 ? i : 0) } }
         for i in 1...a.count {
             for j in 1...b.count {
-                d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+                d[i][j] = min(d[i - 1][j] + edit, d[i][j - 1] + edit,
+                              d[i - 1][j - 1] + (a[i - 1] == b[j - 1] ? 0 : substitution(a[i - 1], b[j - 1])))
                 if i > 1, j > 1, a[i - 1] == b[j - 2], a[i - 2] == b[j - 1] {
-                    d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+                    d[i][j] = min(d[i][j], d[i - 2][j - 2] + edit)
                 }
             }
         }
