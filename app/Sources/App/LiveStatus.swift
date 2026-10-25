@@ -129,6 +129,12 @@ struct PushTokenCache {
     mutating func forget(activityId: String) { entries["\(PushKind.laUpdate.rawValue)/\(activityId)"] = nil }
     mutating func clear() { entries = [:] }
 
+    /// The la_update activity ids missing from `live`: cards that ended while the app
+    /// wasn't watching.
+    func stale(live: Set<String>) -> [String] {
+        entries.values.compactMap { $0.kind == .laUpdate ? $0.activityId : nil }.filter { !live.contains($0) }
+    }
+
     func repost(_ client: PushTokens) async {
         for e in entries.values {
             await client.post(e.kind, token: e.token, activityId: e.activityId, macId: e.macId)
@@ -272,6 +278,15 @@ final class LiveStatus: ObservableObject {
         if #available(iOS 16.1, *) { activitiesAllowed = ActivityAuthorizationInfo().areActivitiesEnabled }
         #endif
         guard await notificationsAllowed() else { return await turnOff() }
+        // The Worker rotates cards: it ends one and push-starts the next. A re-posted dead
+        // card's token would make it think the phone still holds that card.
+        #if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
+        if #available(iOS 16.2, *) {
+            let live = Set(Activity<ProsperSessionsAttributes>.activities
+                .filter { $0.activityState == .active || $0.activityState == .stale }.map(\.id))
+            for id in cache.stale(live: live) { await ended(id) }
+        }
+        #endif
         await cache.repost(client)
     }
 

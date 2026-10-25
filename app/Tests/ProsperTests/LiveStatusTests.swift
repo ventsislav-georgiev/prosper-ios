@@ -243,6 +243,18 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(rec.requests.map { $0.url?.path }, ["/push/tokens", "/push/tokens"])
     }
 
+    /// A rotated-away card is stale; alert and la_start never are.
+    func testStaleActivities() {
+        var cache = PushTokenCache()
+        cache.remember(.init(kind: .alert, token: tok))
+        cache.remember(.init(kind: .laStart, token: tok))
+        cache.remember(.init(kind: .laUpdate, token: tok, activityId: "act-1", macId: "mac-a"))
+        cache.remember(.init(kind: .laUpdate, token: tok, activityId: "act-2", macId: "mac-a"))
+        XCTAssertEqual(cache.stale(live: ["act-2"]), ["act-1"])
+        XCTAssertEqual(cache.stale(live: ["act-1", "act-2"]), [])
+        XCTAssertEqual(Set(cache.stale(live: [])), ["act-1", "act-2"])
+    }
+
     /// What a foreground re-posts: the last token per key, each once, with its own body;
     /// nothing once cleared (turnOff and sign-out), and not an ended activity's.
     func testForegroundRepostSet() async {
