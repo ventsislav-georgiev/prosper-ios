@@ -880,6 +880,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// (`needsInputModeSwitchKey`: Touch ID iPhones and iPad; Face ID iPhones draw their
     /// own under the keyboard). The app never shows it.
     var showsGlobe = false { didSet { if showsGlobe != oldValue { build() } } }
+    /// The emoji key, where `settings.bottomRow` has it: the app's keyboard only. The
+    /// extension clears it: its picker's glyphs outgrew an extension's memory (#515), and
+    /// a system keyboard reaches iOS's own emoji through the globe.
+    var offersEmoji = true { didSet { if offersEmoji != oldValue { build() } } }
     /// A second space after a word types ". " (`periodReplacesSpace`), like the system
     /// keyboard, or the character `settings.doubleSpace` picks. The extension sets it; the
     /// terminal, with no text to read, goes by its own keys instead (`spaceDoubles`).
@@ -1250,7 +1254,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         hidePreview()
         caps.joined().forEach { $0.removeFromSuperview() }
         var rows = layout.rows
-        rows[rows.count - 1] = settings.bottomRow
+        rows[rows.count - 1] = settings.bottomRow.filter { offersEmoji || $0 != .emoji }
         if showsGlobe { rows[rows.count - 1].insert(.globe, at: 0) }
         caps = rows.map { $0.map(makeCap) }
         caps.joined().forEach { $0.isHidden = showsEmoji }

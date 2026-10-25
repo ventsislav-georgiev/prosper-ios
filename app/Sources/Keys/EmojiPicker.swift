@@ -1,9 +1,8 @@
 import UIKit
 
 /// The emoji most recently typed from the picker: newest first, each once, at most
-/// `limit`. Kept in the App Group beside the Keyboard settings, so the app's keyboard
-/// and the extensions share them; without Full Access an extension can't reach the
-/// group, and its recents stay its own.
+/// `limit`. Kept in the App Group beside the Keyboard settings: the picker is the app's
+/// keyboard's only (`TerminalKeyboard.offersEmoji`).
 struct EmojiRecents: Equatable {
     static let key = "keyboard.emojiRecents"
     static let limit = 32
@@ -21,11 +20,12 @@ struct EmojiRecents: Equatable {
     func save() { KeyboardSettings.store()?.set(emoji, forKey: Self.key) }
 }
 
-/// The emoji key's page (`TerminalKeyboard.Key.emoji`): iOS won't open its own emoji
-/// keyboard for a custom one. It takes the caps' place at their height: a grid scrolling
-/// sideways through Recents and the nine Unicode groups (`EmojiData`), over a bar of
-/// ABC (back to the letters), a button per group and delete. Its touches stay its own:
-/// the keyboard's tracker ignores every touch while it shows (`TerminalKeyboard.track`).
+/// The emoji key's page (`TerminalKeyboard.Key.emoji`), in the app's keyboard only: the
+/// terminal asks for an ASCII keyboard, which leaves out iOS's own emoji. It takes the
+/// caps' place at their height: a grid scrolling sideways through Recents and the nine
+/// Unicode groups (`EmojiData`), over a bar of ABC (back to the letters), a button per
+/// group and delete. Its touches stay its own: the keyboard's tracker ignores every touch
+/// while it shows (`TerminalKeyboard.track`).
 ///
 /// ponytail: delete doesn't repeat while held, and the bar doesn't follow the scroll to
 /// light the group in view. Add both if the picker sees heavy use.
@@ -77,6 +77,8 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         let b = UIButton(type: .custom)
         b.setTitle(title, for: .normal)
         b.titleLabel?.font = Style.wordFont
+        b.titleLabel?.adjustsFontSizeToFitWidth = true   // ABC in a 30 pt key
+        b.titleLabel?.minimumScaleFactor = 0.6
         b.setImage(image.flatMap { UIImage(systemName: $0, withConfiguration: Style.symbol) }, for: .normal)
         b.tintColor = fill == nil ? Style.hint : .white
         b.backgroundColor = fill

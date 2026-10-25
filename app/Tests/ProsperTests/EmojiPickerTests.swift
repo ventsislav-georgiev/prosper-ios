@@ -83,6 +83,17 @@ final class EmojiPickerTests: XCTestCase {
                        [.char("/"), .space, .char("?"), .char("."), .char(","), .emoji, .ret], "read back")
     }
 
+    /// The extension's keyboard has no emoji key, though the setting keeps it: the app's has.
+    func testOnlyTheAppsKeyboardOffersEmoji() {
+        let kb = TerminalKeyboard()
+        kb.showsGlobe = true
+        kb.offersEmoji = false
+        XCTAssertNil(laidOut(kb)["emoji"])
+        XCTAssertTrue(kb.settings.bottomRow.contains(.emoji), "the setting still has it")
+        kb.offersEmoji = true
+        XCTAssertNotNil(laidOut(kb)["emoji"], "the app's")
+    }
+
     /// The key opens the picker at the caps' height and hides them; ABC brings them back.
     func testEmojiKeyShowsThePickerAndABCReturns() throws {
         let kb = TerminalKeyboard()
@@ -102,6 +113,37 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertFalse(kb.showsEmoji)
         XCTAssertTrue(picker.isHidden)
         XCTAssertTrue(caps.values.allSatisfy { !$0.isHidden })
+    }
+
+    /// A settings change rebuilding the caps under the open picker keeps them hidden.
+    func testNewBottomRowUnderThePickerStaysHidden() throws {
+        let kb = TerminalKeyboard()
+        _ = laidOut(kb)
+        kb.showEmoji(true)
+        var s = KeyboardSettings()
+        s.bottomHidden = "?"
+        kb.settings = s
+        let caps = laidOut(kb)
+        XCTAssertNil(caps["?"], "rebuilt")
+        XCTAssertFalse(caps.isEmpty)
+        XCTAssertTrue(caps.values.allSatisfy(\.isHidden))
+    }
+
+    /// Delete held, the emoji key under a second finger: the picker opens, the delete's lift
+    /// never reaches the tracker, and still the repeat stops.
+    func testOpeningThePickerStopsADeleteRepeat() throws {
+        let kb = TerminalKeyboard()
+        let spy = SpyInput()
+        kb.target = spy
+        let caps = laidOut(kb)
+        let delete = try XCTUnwrap(caps["delete"]).frame
+        kb.track(.began, id: 1, at: CGPoint(x: delete.midX, y: delete.midY))
+        try tap(kb, caps["emoji"], id: 2)
+        XCTAssertTrue(kb.showsEmoji)
+        let typed = spy.calls
+        kb.track(.ended, id: 1, at: CGPoint(x: delete.midX, y: delete.midY))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.7))
+        XCTAssertEqual(spy.calls, typed, "no repeat past the picker opening")
     }
 
     /// While the picker shows, a touch where a letter was types nothing; back on the caps
@@ -167,6 +209,19 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertEqual(spy.calls, ["1️⃣", " ", " ", "Ⓜ️", " ", " ", "😀", " ", " "])
         kb.press(.char("a")); kb.press(.space); kb.press(.space)
         XCTAssertEqual(sent, [[0x7f] + Array(". ".utf8)], "a letter still gets it")
+    }
+
+    /// ABC fits its bar key, on the narrowest iPhone, by shrinking.
+    func testABCFitsItsKey() throws {
+        let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 375, height: TerminalKeyboard.keysHeight))
+        picker.layoutIfNeeded()
+        let abc = try button(picker, "letters")
+        abc.layoutIfNeeded()
+        let label = try XCTUnwrap(abc.titleLabel)
+        XCTAssertTrue(label.adjustsFontSizeToFitWidth)
+        let smallest = label.font.withSize(label.font.pointSize * label.minimumScaleFactor)
+        XCTAssertLessThan(("ABC" as NSString).size(withAttributes: [.font: smallest]).width, abc.bounds.width)
+        XCTAssertGreaterThanOrEqual(smallest.pointSize, 9, "legible")
     }
 
     // MARK: Recents and data
