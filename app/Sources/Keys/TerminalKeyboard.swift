@@ -914,12 +914,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// (`needsInputModeSwitchKey`: Touch ID iPhones and iPad; Face ID iPhones draw their
     /// own under the keyboard). The app never shows it.
     var showsGlobe = false { didSet { if showsGlobe != oldValue { build() } } }
-    /// Whether the emoji key (where `settings.bottomRow` has it) opens the picker: the
-    /// app's keyboard only. The extension clears it, since the picker's glyphs outgrew an
-    /// extension's memory (#515); there the key opens the keyboard list like the globe,
-    /// so iOS's own emoji is a hold away (`takesOwnTouches`), and gives way to the globe
-    /// where that shows (`build`).
-    var picksEmoji = true { didSet { if picksEmoji != oldValue { build() } } }
+    /// The emoji key, where `settings.bottomRow` has it: the app's keyboard only. The
+    /// extension clears it: its picker's glyphs outgrew an extension's memory (#515), and
+    /// a system keyboard reaches iOS's own emoji through the globe or iOS's switcher.
+    var offersEmoji = true { didSet { if offersEmoji != oldValue { build() } } }
     /// A second space after a word types ". " (`periodReplacesSpace`), like the system
     /// keyboard, or the character `settings.doubleSpace` picks. The extension sets it; the
     /// terminal, with no text to read, goes by its own keys instead (`spaceDoubles`).
@@ -1112,9 +1110,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             refreshLabels()
             return   // the user's shift: auto-capitalization doesn't undo it
         case .globe: return   // its cap acts on its own; the tracker never yields it (`nearest`)
-        case .emoji:
-            guard picksEmoji else { return }   // the extension's acts on its own, like the globe's
-            showEmoji(true)
+        case .emoji: showEmoji(true)
         }
         autoCapitalize()
     }
@@ -1336,9 +1332,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         hidePreview()
         caps.joined().forEach { $0.removeFromSuperview() }
         var rows = layout.rows
-        // The extension's emoji key would be a second globe, and both leave space too narrow
-        // on a 375-point iPhone: where the globe shows, it reaches Emoji alone.
-        rows[rows.count - 1] = settings.bottomRow.filter { picksEmoji || !showsGlobe || $0 != .emoji }
+        rows[rows.count - 1] = settings.bottomRow.filter { offersEmoji || $0 != .emoji }
         if showsGlobe { rows[rows.count - 1].insert(.globe, at: 0) }
         caps = rows.map { $0.map(makeCap) }
         caps.joined().forEach { $0.isHidden = showsEmoji }
@@ -1358,8 +1352,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         cap.fill = plain ? Style.key : Style.special
         cap.pressedFill = plain ? Style.keyPressed : Style.specialPressed
         cap.accessibilityTraits = .keyboardKey
-        if takesOwnTouches(key) {
-            // The caps that take their own touches: `handleInputModeList` wants a
+        if key == .globe {
+            // The one cap that takes its own touches: `handleInputModeList` wants a
             // control's touch events, to switch on a tap and list keyboards on a hold.
             // A nil target sends it up the responder chain to the extension's
             // UIInputViewController. VoiceOver's activate falls back to a real tap.
@@ -1391,7 +1385,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// Whether a touch that hit-tested to `view` is the tracker's. Not `=== self`: UIKit
     /// puts its own content views inside a UIInputView, so key touches land on those. Only
-    /// a control (`takesOwnTouches`) takes its own touches.
+    /// a control (the globe cap) takes its own touches.
     static func feeds(_ view: UIView?) -> Bool { !(view is UIControl) }
 
     private func feed(_ touches: Set<UITouch>, _ phase: UITouch.Phase) {
@@ -1431,8 +1425,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .ended:
             perform(tracker.moved(id, key(at: point), at: point))
             noteSpaceTouch("ended", id, at: point)
-            // Lifted on a cap that takes its own touches: the key it slid from types nothing.
-            let onOwnCap = caps.joined().contains { takesOwnTouches($0.key) && $0.frame.contains(point) }
+            // Lifted on the globe, which takes its own touches: the key it slid from types nothing.
+            let onOwnCap = caps.joined().contains { $0.key == .globe && $0.frame.contains(point) }
             perform(tracker.ended(id).filter { if case .press = $0 { !onOwnCap } else { true } })
             if holdTouch?.id == id { stopHold() }
         case .cancelled:
@@ -1480,15 +1474,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
     }
 
-    /// The globe, and the extension's emoji key: they open the keyboard list, so a tap
-    /// switches keyboards and a hold lists them, Emoji among them.
-    private func takesOwnTouches(_ key: Key) -> Bool { key == .globe || (key == .emoji && !picksEmoji) }
-
-    /// The key nearest `point`, uncorrected: what a hold converts. Never a key that takes
-    /// its own touches: a touch beside its cap goes to the next key over, since only the
-    /// cap can open the keyboard list.
+    /// The key nearest `point`, uncorrected: what a hold converts. Never the globe: a
+    /// touch beside its cap goes to the next key over, since only the cap can open the
+    /// keyboard list.
     private func nearest(at point: CGPoint) -> Key {
-        caps.joined().filter { !takesOwnTouches($0.key) }.min { Self.distance(point, $0.frame) < Self.distance(point, $1.frame) }?.key ?? .space
+        caps.joined().filter { $0.key != .globe }.min { Self.distance(point, $0.frame) < Self.distance(point, $1.frame) }?.key ?? .space
     }
 
     /// How far above a touch on the letter rows it aims: thumbs land low.
@@ -1586,8 +1576,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             case .globe: image = "globe"; label = "next keyboard"
             case .emoji: image = "face.smiling"; label = "emoji"
             }
-            cap.accessibilityHint = cap.key == .emoji && !picksEmoji
-                ? "Switches to the next keyboard. Hold to list keyboards." : nil
             if blanked { title = nil; image = nil }
             cap.hint.isHidden = blanked
             cap.titleLabel?.font = title?.count == 1 ? Style.letterFont : Style.wordFont

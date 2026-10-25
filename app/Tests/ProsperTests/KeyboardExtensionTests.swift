@@ -169,7 +169,7 @@ final class KeyboardExtensionTests: XCTestCase {
         for width in [375, 430] as [CGFloat] {
             let kb = TerminalKeyboard()
             kb.showsGlobe = true
-            kb.picksEmoji = false
+            kb.offersEmoji = false
             let caps = laidOut(kb, width: width)
             let globe = try XCTUnwrap(caps["next keyboard"], "at \(width)")
             XCTAssertTrue(globe.isUserInteractionEnabled, "it takes its own touches")
@@ -481,7 +481,7 @@ final class KeyboardExtensionTests: XCTestCase {
             for globe in [false, true] {
                 let kb = TerminalKeyboard(layout: layout)
                 kb.showsGlobe = globe
-                kb.picksEmoji = false
+                kb.offersEmoji = false
                 let wide = try XCTUnwrap(laidOut(kb)["space"]).frame
                 var s = KeyboardSettings()
                 s.bottomOrder = "?/ .,"
@@ -492,7 +492,7 @@ final class KeyboardExtensionTests: XCTestCase {
                 let row = kb.subviews.compactMap { $0 as? UIButton }
                     .filter { $0.frame.midY == space.midY }.sorted { $0.frame.minX < $1.frame.minX }
                 XCTAssertEqual(row.map { $0.accessibilityLabel ?? "" },
-                               (globe ? ["next keyboard", "?", "/", "space"] : ["?", "/", "space", "emoji"]) + ["new line"], "\(layout) \(globe)")
+                               (globe ? ["next keyboard"] : []) + ["?", "/", "space", "new line"], "\(layout) \(globe)")
                 XCTAssertNil(caps["."])
                 XCTAssertEqual(space.width - wide.width, 2 * (caps["?"]!.frame.width + TerminalKeyboard.keyGap),
                                accuracy: 0.001, "two keys' room, gaps included")
@@ -869,51 +869,50 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(doc.text, "ab")
     }
 
-    /// A slide onto a cap that takes its own touches types nothing on lift, not the nearest
-    /// key, return (QA's): from ?, from space short of the trackpad, from a held m. One
-    /// lifting on return still types it.
-    func testASlideOntoTheKeyboardListCapTypesNothing() throws {
-        for globe in [false, true] {
-            let kb = TerminalKeyboard()
-            kb.picksEmoji = false
-            kb.showsGlobe = globe
-            kb.settings = KeyboardSettings()
-            let spy = SpyInput()
-            kb.target = spy
-            let caps = laidOut(kb)
-            let own = try XCTUnwrap(caps[globe ? "next keyboard" : "emoji"]).center
-            for from in ["?", "space", "m"] {
-                let p = try XCTUnwrap(caps[from]).center
-                kb.track(.began, id: 1, at: p)
-                if from == "m" { kb.fireHold() }
-                kb.track(.moved, id: 1, at: own)
-                kb.track(.ended, id: 1, at: own)
-                XCTAssertEqual(spy.calls, [], "\(from) globe \(globe)")
-            }
-            let p = try XCTUnwrap(caps["?"]).center, ret = try XCTUnwrap(caps["new line"]).center
+    /// A slide onto the globe, which takes its own touches, types nothing on lift, not the
+    /// nearest key, return (QA's): from ?, from space short of the trackpad, from a held m.
+    /// One lifting on return still types it.
+    func testASlideOntoTheGlobeTypesNothing() throws {
+        let kb = TerminalKeyboard()
+        kb.offersEmoji = false
+        kb.showsGlobe = true
+        kb.settings = KeyboardSettings()
+        let spy = SpyInput()
+        kb.target = spy
+        let caps = laidOut(kb)
+        let own = try XCTUnwrap(caps["next keyboard"]).center
+        for from in ["?", "space", "m"] {
+            let p = try XCTUnwrap(caps[from]).center
             kb.track(.began, id: 1, at: p)
+            if from == "m" { kb.fireHold() }
             kb.track(.moved, id: 1, at: own)
-            kb.track(.ended, id: 1, at: ret)
-            XCTAssertEqual(spy.calls, ["\n"], "globe \(globe)")
+            kb.track(.ended, id: 1, at: own)
+            XCTAssertEqual(spy.calls, [], from)
         }
+        let p = try XCTUnwrap(caps["?"]).center, ret = try XCTUnwrap(caps["new line"]).center
+        kb.track(.began, id: 1, at: p)
+        kb.track(.moved, id: 1, at: own)
+        kb.track(.ended, id: 1, at: ret)
+        XCTAssertEqual(spy.calls, ["\n"])
     }
 
-    /// A trackpad lifted over the emoji cap keeps its caret walk and ends: a tap types.
-    func testATrackpadLiftedOverTheEmojiCapEnds() throws {
-        let kb = TerminalKeyboard(), doc = host(kit: true, "", "abcdefghijklmnopqrstuvwxyz")
-        kb.picksEmoji = false
+    /// A trackpad lifted over the globe keeps its caret walk and ends: a tap types.
+    func testATrackpadLiftedOverTheGlobeEnds() throws {
+        let kb = TerminalKeyboard(), doc = host(kit: true, "abcdefghijklmnopqrstuvwxyz")
+        kb.offersEmoji = false
+        kb.showsGlobe = true
         kb.settings = KeyboardSettings()
         kb.target = doc
         let caps = laidOut(kb)
-        let space = try XCTUnwrap(caps["space"]).center, emoji = try XCTUnwrap(caps["emoji"]).center
-        let steps = Int((emoji.x - space.x) / KeyTouchTracker.caretStep)
+        let space = try XCTUnwrap(caps["space"]).center, globe = try XCTUnwrap(caps["next keyboard"]).center
+        let steps = Int((space.x - globe.x) / KeyTouchTracker.caretStep)
         XCTAssertGreaterThan(steps, 0)
         kb.track(.began, id: 1, at: space)
         kb.fireHold()
-        kb.track(.moved, id: 1, at: emoji)
-        kb.track(.ended, id: 1, at: emoji)
+        kb.track(.moved, id: 1, at: globe)
+        kb.track(.ended, id: 1, at: globe)
         for _ in 0..<20 { doc.catchUp(); kb.pollCaret() }
-        XCTAssertEqual(doc.text, String("abcdefghijklmnopqrstuvwxyz".prefix(steps)))
+        XCTAssertEqual(doc.text, String("abcdefghijklmnopqrstuvwxyz".dropLast(steps)))
         try tap(kb, "z")
         XCTAssertEqual(doc.text.last, "z", "the trackpad ended")
     }

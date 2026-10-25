@@ -242,7 +242,7 @@ struct BottomRowSettings: View {
                     order = String(moved)
                 }
             } footer: {
-                Text("Space widens to take a hidden key's place. Only / is also a hold (on m), so hiding another key takes its character off the keyboard. In other apps, emoji or the globe opens the keyboard list: tap for the last keyboard, hold to pick Emoji.")
+                Text("Space widens to take a hidden key's place. Only / is also a hold (on m), so hiding another key takes its character off the keyboard. Emoji is on this app's keyboard only; in other apps, the globe reaches iOS's own emoji.")
             }
         }
         .environment(\.editMode, .constant(.active))   // keep .onMove handles visible
