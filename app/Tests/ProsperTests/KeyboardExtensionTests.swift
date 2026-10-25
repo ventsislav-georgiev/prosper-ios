@@ -174,14 +174,15 @@ final class KeyboardExtensionTests: XCTestCase {
             let row = kb.subviews.compactMap { $0 as? UIButton }
                 .filter { $0.frame.midY == globe.frame.midY }.sorted { $0.frame.minX < $1.frame.minX }
             XCTAssertEqual(row.map { $0.accessibilityLabel ?? "" },
-                           ["next keyboard", ".", ",", "/", "space", "?", "new line"], "at \(width)")
+                           ["next keyboard", ".", ",", "/", "space", "?", "emoji", "new line"], "at \(width)")
             XCTAssertGreaterThanOrEqual(row.first!.frame.minX, 0)
             XCTAssertLessThanOrEqual(row.last!.frame.maxX, width)
             for (a, b) in zip(row, row.dropFirst()) {
                 XCTAssertGreaterThanOrEqual(b.frame.minX - a.frame.maxX, TerminalKeyboard.keyGap - 0.001,
                                             "\(a.accessibilityLabel!) overlaps \(b.accessibilityLabel!) at \(width)")
             }
-            XCTAssertGreaterThanOrEqual(try XCTUnwrap(caps["space"]).frame.width, 80, "space stays wide at \(width)")
+            // 61 pt at 375 with the emoji key (#515); hiding a key beside space widens it.
+            XCTAssertGreaterThanOrEqual(try XCTUnwrap(caps["space"]).frame.width, 60, "space stays wide at \(width)")
             // A touch in the gap beside the globe goes to the next key over, never to the globe.
             let spy = SpyInput()
             kb.target = spy
@@ -452,12 +453,12 @@ final class KeyboardExtensionTests: XCTestCase {
         var s = KeyboardSettings()
         XCTAssertEqual(s.bottomRow, TerminalKeyboard.rows.last!, "the default")
         s.bottomOrder = ".,? /"
-        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .char("?"), .space, .char("/"), .ret], "/ and ? swapped")
+        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .char("?"), .space, .char("/"), .emoji, .ret], "/ and ? swapped")
         s.bottomHidden = "?/ "
-        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .space, .ret], "space stays")
+        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .space, .emoji, .ret], "space stays")
         s.bottomOrder = "x??"
         s.bottomHidden = ""
-        XCTAssertEqual(s.bottomRow, [.char("?"), .char("."), .char(","), .char("/"), .space, .ret])
+        XCTAssertEqual(s.bottomRow, [.char("?"), .char("."), .char(","), .char("/"), .space, .emoji, .ret])
         XCTAssertEqual(KeyboardSettings.order(""), Array(KeyboardSettings.bottomKeys))
     }
 
@@ -467,7 +468,7 @@ final class KeyboardExtensionTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("/ ?.,", forKey: KeyboardSettings.Key.bottomOrder)
         defaults.set(",", forKey: KeyboardSettings.Key.bottomHidden)
-        XCTAssertEqual(KeyboardSettings(defaults).bottomRow, [.char("/"), .space, .char("?"), .char("."), .ret])
+        XCTAssertEqual(KeyboardSettings(defaults).bottomRow, [.char("/"), .space, .char("?"), .char("."), .emoji, .ret])
     }
 
     /// Both layouts, globe or not, lay the row out from the setting, rebuilt when it
@@ -487,7 +488,7 @@ final class KeyboardExtensionTests: XCTestCase {
                 let row = kb.subviews.compactMap { $0 as? UIButton }
                     .filter { $0.frame.midY == space.midY }.sorted { $0.frame.minX < $1.frame.minX }
                 XCTAssertEqual(row.map { $0.accessibilityLabel ?? "" },
-                               (globe ? ["next keyboard"] : []) + ["?", "/", "space", "new line"], "\(layout) \(globe)")
+                               (globe ? ["next keyboard"] : []) + ["?", "/", "space", "emoji", "new line"], "\(layout) \(globe)")
                 XCTAssertNil(caps["."])
                 XCTAssertEqual(space.width - wide.width, 2 * (caps["?"]!.frame.width + TerminalKeyboard.keyGap),
                                accuracy: 0.001, "two keys' room, gaps included")
@@ -549,6 +550,8 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertFalse(period("word  ", .default), "only exactly one space")
         XCTAssertFalse(period(" ", .default))
         XCTAssertFalse(period(nil, .default))
+        XCTAssertFalse(period("1️⃣ ", .default), "an emoji Swift calls a digit")
+        XCTAssertFalse(period("Ⓜ️ ", .default), "or a letter")
         for type in [UIKeyboardType.URL, .emailAddress, .webSearch, .numberPad, .asciiCapableNumberPad,
                      .decimalPad, .phonePad, .namePhonePad] {
             XCTAssertFalse(period("word ", type), "\(type.rawValue)")

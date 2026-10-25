@@ -73,7 +73,10 @@ struct KeyboardSettings: Equatable {
     var bottomOrder = KeyboardSettings.bottomKeys
     /// Those of them that don't show; space always does, and takes their room (`place`).
     var bottomHidden = ""
-    static let bottomKeys = ".,/ ?"
+    static let bottomKeys = ".,/ ?" + String(emojiKey)
+    /// The emoji key's stand-in in `bottomOrder` and `bottomHidden` (#515). An order or a
+    /// hidden set stored before it existed lacks it, so it shows, last before return (`order`).
+    static let emojiKey: Character = "😀"
 
     init() {}
     /// What `defaults` holds, the default for anything it doesn't; nil is all defaults.
@@ -102,7 +105,7 @@ struct KeyboardSettings: Equatable {
     /// Both keyboards' bottom row, before the extension's globe: the shown keys, then return.
     var bottomRow: [TerminalKeyboard.Key] {
         Self.order(bottomOrder).filter { $0 == " " || !bottomHidden.contains($0) }
-            .map { $0 == " " ? .space : .char(String($0)) } + [.ret]
+            .map { $0 == " " ? .space : $0 == Self.emojiKey ? .emoji : .char(String($0)) } + [.ret]
     }
 
     /// The shared values. Without Full Access an extension can't reach the group: defaults.
@@ -703,6 +706,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case char(String), shift, backspace, space, ret
         /// Next keyboard; the extension's only. Its cap takes its own touches (`makeCap`).
         case globe
+        /// Opens the emoji picker in place of the caps (`EmojiPicker`).
+        case emoji
     }
 
     static let rowHeight: CGFloat = 38
@@ -763,15 +768,15 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private static func chars(_ s: String) -> [Key] { s.map { .char(String($0)) } }
 
-    /// Digits lead (shift doesn't change them), then qwerty, then `. , / ?` beside space
-    /// for prose and paths, as Settings arranges them (`KeyboardSettings.bottomRow`). Every
-    /// other symbol is a hold (`holdSymbol`).
+    /// Digits lead (shift doesn't change them), then qwerty, then `. , / ?` and the emoji
+    /// key beside space for prose and paths, as Settings arranges them
+    /// (`KeyboardSettings.bottomRow`). Every other symbol is a hold (`holdSymbol`).
     static let rows: [[Key]] = [
         chars("1234567890"),
         chars("qwertyuiop"),
         chars("asdfghjkl"),
         [.shift] + chars("zxcvbnm") + [.backspace],
-        [.char("."), .char(","), .char("/"), .space, .char("?"), .ret],
+        [.char("."), .char(","), .char("/"), .space, .char("?"), .emoji, .ret],
     ]
 
     /// What holding a letter or digit types, shown in its corner: the digits' US shift
@@ -917,6 +922,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private var caps: [[Cap]] = []
     private let keysArea = UILayoutGuide()
+    /// Built the first time the emoji key opens it; showing, it hides the caps.
+    private(set) var emojiPicker: EmojiPicker?
+    var showsEmoji: Bool { emojiPicker?.isHidden == false }
     /// One generator, kept warm — same pattern as `ShortcutBar`.
     private let haptics = UIImpactFeedbackGenerator(style: .light)
     private var repeatTimer: Timer?
@@ -1035,8 +1043,37 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             refreshLabels()
             return   // the user's shift: auto-capitalization doesn't undo it
         case .globe: return   // its cap acts on its own; the tracker never yields it (`nearest`)
+        case .emoji: showEmoji(true)
         }
         autoCapitalize()
+    }
+
+    /// The picker in place of the caps, or the caps back. Whatever touch the caps were
+    /// tracking is dropped, so none types after the swap.
+    func showEmoji(_ on: Bool) {
+        if on, emojiPicker == nil {
+            let picker = EmojiPicker()
+            picker.pick = { [weak self] e in self?.typeEmoji(e) }
+            picker.delete = { [weak self] in self?.feedback(); self?.press(.backspace) }
+            picker.letters = { [weak self] in self?.feedback(); self?.showEmoji(false) }
+            addSubview(picker)
+            emojiPicker = picker
+        }
+        if on { emojiPicker?.reload() }
+        stopRepeat(); stopHold(); tracker.reset(); refreshPressed()
+        if blanked { refreshLabels() }
+        emojiPicker?.isHidden = !on
+        caps.joined().forEach { $0.isHidden = on }
+        setNeedsLayout()
+    }
+
+    /// A picker cell: typed the way a `.char` key types, then the word and the double
+    /// space's history start afresh, so no emoji ever counts as a letter or a digit
+    /// (Swift calls Ⓜ️ a letter and 1️⃣ a number).
+    private func typeEmoji(_ e: String) {
+        feedback()
+        press(.char(e))
+        resetWord()
     }
 
     /// A trackpad step of `offset` characters, negative left: in a host field, through
@@ -1157,11 +1194,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// Whether a space typed now replaces the space before the cursor with ". ": the text
     /// ends in a letter or digit and exactly one space. Never in a field where a period
-    /// would break the value: URLs, email, web search, number and phone pads.
+    /// would break the value: URLs, email, web search, number and phone pads. An emoji
+    /// Swift calls a letter or a digit (Ⓜ️, 1️⃣) isn't one: U+FE0F makes it an emoji.
     static func periodReplacesSpace(before text: String?, keyboardType: UIKeyboardType) -> Bool {
         if isValueField(keyboardType) { return false }
         let tail = Array((text ?? "").suffix(2))
         return tail.count == 2 && tail[1] == " " && (tail[0].isLetter || tail[0].isNumber)
+            && !tail[0].unicodeScalars.contains("\u{FE0F}")
     }
 
     /// A field whose value isn't prose, so nothing may rewrite what's typed (no period for
@@ -1214,6 +1253,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         rows[rows.count - 1] = settings.bottomRow
         if showsGlobe { rows[rows.count - 1].insert(.globe, at: 0) }
         caps = rows.map { $0.map(makeCap) }
+        caps.joined().forEach { $0.isHidden = showsEmoji }
         refreshLabels()
         setNeedsLayout()
     }
@@ -1282,6 +1322,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// One touch event, `at` in this view's coordinates. The UIKit overrides call it;
     /// so do the tests, which can't make UITouches.
     func track(_ phase: UITouch.Phase, id: Int, at point: CGPoint) {
+        // The picker's touches are its own; the hidden caps under them type nothing.
+        if showsEmoji { return }
         switch phase {
         case .began:
             if tracker.isTrackpad { return }   // a second finger on the trackpad: ignored
@@ -1407,6 +1449,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             case .ret:
                 if let returnTitle { title = returnTitle; label = returnTitle } else { image = "return.left"; label = "new line" }
             case .globe: image = "globe"; label = "next keyboard"
+            case .emoji: image = "face.smiling"; label = "emoji"
             }
             if blanked { title = nil; image = nil }
             cap.hint.isHidden = blanked
@@ -1520,6 +1563,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         super.layoutSubviews()
         let area = keysArea.layoutFrame.insetBy(dx: Self.sideMargin, dy: 0)
         let m = Self.metrics(compact: compact)
+        emojiPicker?.frame = area
         for (r, row) in caps.enumerated() {
             let y = area.minY + m.top + CGFloat(r) * (m.row + m.gap)
             // The bottom row clears the screen's rounded corners (a no-op in landscape).
@@ -1547,7 +1591,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
         func w(_ k: Key) -> CGFloat {
             switch k {
-            case .char, .globe: return u
+            case .char, .globe, .emoji: return u
             case .ret: return 2.25 * u
             default: return 1.5 * u
             }

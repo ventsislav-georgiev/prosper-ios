@@ -209,7 +209,7 @@ struct BottomRowSettings: View {
     @AppStorage(KeyboardSettings.Key.bottomHidden, store: KeyboardSettings.store())
     private var hidden = KeyboardSettings().bottomHidden
     private static let names: [Character: String] =
-        [".": "Period", ",": "Comma", "/": "Slash", "?": "Question Mark"]
+        [".": "Period", ",": "Comma", "/": "Slash", "?": "Question Mark", KeyboardSettings.emojiKey: "Emoji"]
 
     var body: some View {
         let keys = KeyboardSettings.order(order)
@@ -237,7 +237,7 @@ struct BottomRowSettings: View {
                     order = String(moved)
                 }
             } footer: {
-                Text("Space widens to take a hidden key's place. Only / is also a hold (on m), so hiding another key takes its character off the keyboard.")
+                Text("Space widens to take a hidden key's place. Only / is also a hold (on m), so hiding another key takes its character off the keyboard, and hiding Emoji its picker.")
             }
         }
         .environment(\.editMode, .constant(.active))   // keep .onMove handles visible

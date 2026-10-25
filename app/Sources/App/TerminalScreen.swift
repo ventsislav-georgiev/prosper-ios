@@ -1455,7 +1455,8 @@ private final class DchTerminalView: TerminalView {
     /// `.default` and doesn't mark it `open`, so a Swift override won't compile —
     /// but UIKit reads the trait by selector, so claiming the selector on this
     /// subclass wins. `.asciiCapable` drops non-Latin keyboards and Emoji from the
-    /// switcher; with one Latin keyboard left, iOS hides the globe and emoji keys.
+    /// switcher; with one Latin keyboard left, iOS hides the globe and emoji keys. (The
+    /// compact keyboard has an emoji key of its own, `TerminalKeyboard.Key.emoji`.)
     @objc(keyboardType) var asciiKeyboardType: UIKeyboardType { .asciiCapable }
 
     /// Built on first need, and only on devices that use it.

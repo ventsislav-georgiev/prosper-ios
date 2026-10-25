@@ -72,13 +72,13 @@ final class BulgarianKeyboardTests: XCTestCase {
 
     func testRowsAreApplesBulgarianQwerty() {
         let bg = Layout.bulgarian.rows
-        XCTAssertEqual(bg.map(chars), ["1234567890", "явертъуиопю", "асдфгхйклшщ", "|зьцжбнмч|", ".,/|?|"])
+        XCTAssertEqual(bg.map(chars), ["1234567890", "явертъуиопю", "асдфгхйклшщ", "|зьцжбнмч|", ".,/|?||"])
         XCTAssertEqual(bg[3].first, .shift)
         XCTAssertEqual(bg[3].last, .backspace)
         XCTAssertEqual(bg[0], TerminalKeyboard.rows[0], "Prosper's digits")
         XCTAssertEqual(bg[4], TerminalKeyboard.rows[4], "Prosper's bottom row")
         XCTAssertEqual(Layout.english.rows.map(chars),
-                       ["1234567890", "qwertyuiop", "asdfghjkl", "|zxcvbnm|", ".,/|?|"], "English unchanged")
+                       ["1234567890", "qwertyuiop", "asdfghjkl", "|zxcvbnm|", ".,/|?||"], "English unchanged")
         XCTAssertEqual(Layout.bulgarian.letterRows.map { String($0) }, ["явертъуиопю", "асдфгхйклшщ", "зьцжбнмч"])
         XCTAssertEqual(Layout.english.letterRows.map { String($0) }, ["qwertyuiop", "asdfghjkl", "zxcvbnm"])
         XCTAssertEqual(Set(Layout.bulgarian.letterRows.joined()).count, 30, "30 letters, none twice")
@@ -189,7 +189,7 @@ final class BulgarianKeyboardTests: XCTestCase {
             let caps = laidOut(kb, width: width)
             let rows = Dictionary(grouping: kb.subviews.compactMap { $0 as? UIButton }, by: \.frame.minY)
                 .sorted { $0.key < $1.key }.map { $0.value.sorted { $0.frame.minX < $1.frame.minX } }
-            XCTAssertEqual(rows.map(\.count), [10, 11, 11, 10, 6], "at \(width)")
+            XCTAssertEqual(rows.map(\.count), [10, 11, 11, 10, 7], "at \(width)")
             for row in rows {
                 XCTAssertGreaterThanOrEqual(row.first!.frame.minX, 0)
                 XCTAssertLessThanOrEqual(row.last!.frame.maxX, width)

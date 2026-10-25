@@ -216,7 +216,7 @@ final class TerminalKeyboardTests: XCTestCase {
 
     func testBottomRow() {
         XCTAssertEqual(TerminalKeyboard.rows.last!,
-                       [.char("."), .char(","), .char("/"), .space, .char("?"), .ret])
+                       [.char("."), .char(","), .char("/"), .space, .char("?"), .emoji, .ret])
     }
 
     /// The home-indicator inset is not reserved under the keys, only a pad that keeps
@@ -233,7 +233,7 @@ final class TerminalKeyboardTests: XCTestCase {
             let (_, caps) = laidOut(width: width)
             let space = try XCTUnwrap(caps["space"]), ret = try XCTUnwrap(caps["new line"])
             let dot = try XCTUnwrap(caps["."])
-            XCTAssertGreaterThanOrEqual(space.frame.width, 110, "at \(width)")
+            XCTAssertGreaterThanOrEqual(space.frame.width, 90, "at \(width)")   // 94.65 at 375 with the emoji key (#515)
             XCTAssertEqual(dot.frame.minX, TerminalKeyboard.bottomRowInset, accuracy: 0.001)
             XCTAssertEqual(ret.frame.maxX, width - TerminalKeyboard.bottomRowInset, accuracy: 0.001)
             XCTAssertEqual(space.frame.maxY, TerminalKeyboard.height - TerminalKeyboard.bottomPadding,

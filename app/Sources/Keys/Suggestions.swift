@@ -205,7 +205,7 @@ final class Suggestions {
     func willPress(_ key: TerminalKeyboard.Key, in doc: UITextDocumentProxy) -> Bool {
         let separator: String
         switch key {
-        case .shift, .globe: return false
+        case .shift, .globe, .emoji: return false
         case .backspace:
             if revert(doc) { return true }
             _ = typed.popLast()
