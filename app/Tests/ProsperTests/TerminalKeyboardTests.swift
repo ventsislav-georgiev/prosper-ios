@@ -1,4 +1,5 @@
 import XCTest
+import SwiftTerm
 import UIKit
 @testable import Prosper
 
@@ -780,6 +781,32 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(spy.calls, ["o", " ", " "])
     }
 
+    /// The double space is off only where the keys are commands: vim, less and man take the
+    /// alternate screen with application cursor keys; Claude Code's full-screen prompt (and
+    /// nano) the alternate screen alone, with mouse modes, and keep it.
+    func testDoubleSpaceOffOnlyInVimAndLess() {
+        let tv = TerminalView(frame: CGRect(x: 0, y: 0, width: 390, height: 700), font: TerminalFont.mono(size: 12))
+        let t = tv.getTerminal()
+        let kb = TerminalKeyboard(), spy = SpyInput()
+        var sent: [[UInt8]] = []
+        kb.target = spy
+        kb.sendBytes = { sent.append($0) }
+        kb.fullScreen = { TerminalKeyboard.fullScreen(t) }
+        func doubles() -> Bool {
+            sent = []
+            kb.press(.char("o")); kb.press(.space); kb.press(.space)
+            return !sent.isEmpty
+        }
+        XCTAssertTrue(doubles(), "the shell")
+        tv.feed(text: "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1006h")
+        XCTAssertTrue(t.isCurrentBufferAlternate, "precondition: alternate screen")
+        XCTAssertTrue(doubles(), "Claude Code's full-screen prompt")
+        tv.feed(text: "\u{1b}[?1h")
+        XCTAssertFalse(doubles(), "vim")
+        tv.feed(text: "\u{1b}[?1049l")
+        XCTAssertTrue(doubles(), "back at the shell with ?1h left on")
+    }
+
     /// Only a quick second space doubles, and a thumb's counts as quick: it often comes
     /// 250–450 ms after the first, past shift's 0.3 s (#540).
     func testDoubleSpaceWindow() {
@@ -788,6 +815,7 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertTrue(TerminalKeyboard.spaceDoubles(after: typed, now: 10 + w / 2))
         XCTAssertTrue(TerminalKeyboard.spaceDoubles(after: typed, now: 10.45), "a thumb's second space")
         XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: typed, now: 10 + w * 2), "too slow")
+        XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: typed, now: 10.7), "a pause, whatever the window")
         XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: Array(typed.suffix(1)), now: 10), "nothing before the space")
         XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: [(key: .space, at: 9), (key: .space, at: 10)], now: 10))
     }

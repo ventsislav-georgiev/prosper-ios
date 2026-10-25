@@ -1465,7 +1465,7 @@ private final class DchTerminalView: TerminalView {
         kb.target = self
         kb.inputHost = self   // its height then reaches the input host (`inputHost`)
         kb.sendBytes = { [weak self] in self?.send($0) }   // through the host's send, like any key
-        kb.fullScreen = { [weak self] in self?.getTerminal().isCurrentBufferAlternate == true }
+        kb.fullScreen = { [weak self] in self.map { TerminalKeyboard.fullScreen($0.getTerminal()) } ?? false }
         kb.screenWords = { [weak self] in self.map { TerminalKeyboard.screenWords(in: $0.getTerminal()) } ?? [] }
         kb.moveCaret = { [weak self] in   // the space-bar trackpad: arrow keys, like the bar's
             guard let self else { return }
@@ -1522,6 +1522,16 @@ private final class DchTerminalView: TerminalView {
 /// SwiftTerm stays out of the shared key core (Sources/Keys): the keyboard extension
 /// doesn't link it.
 extension TerminalKeyboard {
+    /// What the host hands `fullScreen`: the alternate screen with the cursor keys in
+    /// application mode (DECCKM), as vim, less and man set. Claude Code's full-screen
+    /// prompt and nano take the alternate screen alone, so they keep the double space.
+    ///
+    /// ponytail: a curses program that never calls keypad(), or vim with t_ks emptied,
+    /// gets the shortcut back. A setting to turn it off in the terminal is the fallback.
+    static func fullScreen(_ term: Terminal) -> Bool {
+        term.isCurrentBufferAlternate && term.applicationCursor
+    }
+
     /// The lowercase runs of three or more letters in the visible rows and up to
     /// `scrollback` lines above them: what the host hands `screenWords`.
     static func screenWords(in term: Terminal, scrollback: Int = 200) -> Set<String> {

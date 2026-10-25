@@ -896,7 +896,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// Raw bytes to the terminal, past `insertText` (which makes multi-byte control text
     /// a paste). Nil in the extension: return then types "\n".
     var sendBytes: (([UInt8]) -> Void)?
-    /// True while the terminal shows its alternate screen (vim, less, htop).
+    /// True while a full-screen program reads the keys as commands (vim, less): the
+    /// alternate screen with application cursor keys (`fullScreen(_:)`), not just the
+    /// alternate screen, which Claude Code's prompt takes too.
     var fullScreen: () -> Bool = { false }
     /// Return's title, from the field's return key (`returnTitle(for:)`); nil draws the
     /// `return.left` arrow. The extension sets it, the app never does.
@@ -1052,7 +1054,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .space:
             let mark = settings.doubleSpace
             let doubles = !mark.isEmpty && Self.spaceDoubles(after: before, now: now)
-            if doubleSpacePeriod, !mark.isEmpty, let doc = target as? UITextDocumentProxy,
+            // A third space is a space: the second may have doubled from a lagging context
+            // that still shows the first, which would read as a word and one space again.
+            let third = before.map(\.key) == [.space, .space]
+            if doubleSpacePeriod, !third, !mark.isEmpty, let doc = target as? UITextDocumentProxy,
                Self.periodReplacesSpace(before: doc.documentContextBeforeInput, typed: doubles ? before[0].key : nil,
                                         keyboardType: doc.keyboardType ?? .default) {
                 doc.deleteBackward()
@@ -1060,7 +1065,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             } else if doubles, let sendBytes, !fullScreen() {
                 // DEL, as the delete key sends, then the mark: raw, since the terminal view
                 // turns a ". " after a deleted space back into two spaces.
-                // Off on the alternate screen, so vi's insert mode loses the shortcut.
+                // Off in vim and less (`fullScreen`), so vi's insert mode loses the shortcut.
                 // ponytail: a primary-screen TUI where DEL doesn't erase (kitty's all-keys
                 // mode) still sees a stray DEL and the mark.
                 sendBytes([0x7f] + Array((mark + " ").utf8))

@@ -23,7 +23,7 @@ final class KeyboardExtensionTests: XCTestCase {
         var hidesContext = false
         var documentContextBeforeInput: String? {
             if hidesContext { return nil }
-            var u = Array(((guess ?? shown)?.before ?? (lagsAnEdit ? beforeEdit ?? "" : text)).utf16)
+            var u = Array(((guess ?? shown)?.before ?? (lagsEdits > 0 ? (edits.count >= lagsEdits ? edits[edits.count - lagsEdits] : "") : text)).utf16)
             if lineBefore, let i = u.lastIndex(of: 0x0A) { u = i == u.count - 1 ? [0x0A] : Array(u[(i + 1)...]) }
             if sentenceBefore, let i = u.indices.dropLast(2).last(where: { u[$0] == 0x2E && u[$0 + 1] == 0x20 }) {
                 u = Array(u[(i + 2)...])
@@ -55,11 +55,11 @@ final class KeyboardExtensionTests: XCTestCase {
         var documentInputMode: UITextInputMode? { nil }
         let documentIdentifier = UUID()
         var hasText: Bool { !text.isEmpty }
-        /// The before-context is one edit behind, as a host's out of process can be.
-        var lagsAnEdit = false
-        private var beforeEdit: String?
-        func insertText(_ s: String) { beforeEdit = text; text += s; calls.append(s) }
-        func deleteBackward() { beforeEdit = text; _ = text.popLast(); calls.append("⌫") }
+        /// The before-context is this many edits behind, as a host's out of process can be.
+        var lagsEdits = 0
+        private var edits: [String] = []
+        func insertText(_ s: String) { edits.append(text); text += s; calls.append(s) }
+        func deleteBackward() { edits.append(text); _ = text.popLast(); calls.append("⌫") }
         /// Every caret move, as asked; the caret moves within `text` + `after`.
         var moves: [Int] = []
         /// Where each move left the caret, in UTF-16 units from the start.
@@ -592,14 +592,18 @@ final class KeyboardExtensionTests: XCTestCase {
     }
 
     /// A device's host can show the keyboard's edits a moment late: the second space reads
-    /// a context still without the first, and still doubles (#540).
+    /// a context still without the first, and still doubles; a third space then reads
+    /// the first again, and stays a space (#540).
     func testDoubleSpacePeriodWhileTheContextLags() {
         let kb = TerminalKeyboard(), doc = FakeProxy()
         kb.target = doc
         kb.doubleSpacePeriod = true
-        doc.lagsAnEdit = true
+        doc.lagsEdits = 1
         kb.press(.char("o")); kb.press(.char("k")); kb.press(.space); kb.press(.space)
         XCTAssertEqual(doc.text, "ok. ")
+        doc.lagsEdits = 2   // ~700 ms behind: the context still shows "ok "
+        kb.press(.space)
+        XCTAssertEqual(doc.text, "ok.  ", "a third space is a space, not a second mark")
     }
 
     /// The Double-Space Shortcut picks the character; Off types two spaces.

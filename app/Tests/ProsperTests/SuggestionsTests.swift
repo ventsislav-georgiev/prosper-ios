@@ -222,6 +222,14 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(doc.text, "teh ", "a learned word")
     }
 
+    /// A quick space after backspace undid an autocorrect is a plain space: the keys
+    /// before it typed "the ", not "teh", so the double space can't take the "h" (#540).
+    func testASpaceRightAfterAnUndoneAutocorrectIsASpace() {
+        let (kb, bar, doc) = rig()
+        withExtendedLifetime(bar) { typing(kb, "teh ⌫ ") }
+        XCTAssertEqual(doc.text, "teh ")
+    }
+
     func testBackspaceRightAfterAnAutocorrectRevertsIt() {
         let (kb, bar, doc) = rig()
         typing(kb, "teh ")
