@@ -1,4 +1,5 @@
 import UIKit
+import UniformTypeIdentifiers
 
 /// One key on the shortcut bar above the keyboard. `bytes` are sent verbatim to the
 /// remote pty; `.ctrl`, `.alt` and `.shift` are sticky modifiers (tap: the next key,
@@ -18,8 +19,8 @@ struct ShortcutKey: Codable, Hashable, Identifiable {
 }
 
 /// Shortcut-bar config: catalog of available keys, the user's chosen set (persisted
-/// as JSON in the App Group, `shared`), and the default set. The app's bar and the
-/// system keyboard's toolbar (`SuggestionBar.addToolbar`) both read it.
+/// as JSON in the App Group, `shared`), and the default set. The system keyboard's
+/// toolbar (`SuggestionBar.addToolbar`) keeps its own list there (`Bar.toolbar`).
 enum Shortcuts {
     static let storageKey = "shortcutKeys"
 
@@ -69,7 +70,7 @@ enum Shortcuts {
         ShortcutKey(id: "redraw",  label: "redraw", kind: .redraw, systemImage: "arrow.clockwise"),
     ]
 
-    /// The send key: every bar has it, and the editor can't remove it.
+    /// The send key: every terminal bar has it, and the editor can't remove it there.
     static let sendID = "enter"
 
     /// Two rows of eight on a phone, columns paired: paste/esc, paste img/ctrl, ↑/←, ↓/→,
@@ -99,11 +100,7 @@ enum Shortcuts {
 
     /// The saved bar from `store`; nil (the extension without Full Access) is the default set.
     static func load(_ store: UserDefaults? = shared()) -> [ShortcutKey] {
-        guard let raw = store?.string(forKey: storageKey),
-              let data = raw.data(using: .utf8),
-              let keys = try? JSONDecoder().decode([ShortcutKey].self, from: data),
-              !keys.isEmpty
-        else { return defaults }
+        guard let keys = decode(store?.string(forKey: storageKey)), !keys.isEmpty else { return defaults }
         if keys.map(\.id) == previousDefaultIDs { return defaults }
         // Keep the user's SET and ORDER, but take each key's definition from the
         // catalog: a saved bar from an older build otherwise pins the old bytes/kind
@@ -116,10 +113,55 @@ enum Shortcuts {
         return loaded
     }
 
-    static func save(_ keys: [ShortcutKey], to store: UserDefaults = shared()) {
+    static func save(_ keys: [ShortcutKey], to store: UserDefaults = shared(), key: String = storageKey) {
         guard let data = try? JSONEncoder().encode(keys),
               let s = String(data: data, encoding: .utf8) else { return }
-        store.set(s, forKey: storageKey)
+        store.set(s, forKey: key)
+    }
+
+    private static func decode(_ raw: String?) -> [ShortcutKey]? {
+        guard let data = raw?.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode([ShortcutKey].self, from: data)
+    }
+
+    /// The two lists the editor edits: the terminal's bar, and the system keyboards' toolbar,
+    /// which keeps its own in the same store under its own key.
+    enum Bar {
+        case terminal, toolbar
+
+        var storageKey: String { self == .terminal ? Shortcuts.storageKey : "toolbarKeys" }
+        /// What the editor offers: on the toolbar, the keys a text field can use (`hostKey`).
+        var catalog: [ShortcutKey] {
+            self == .terminal ? Shortcuts.catalog : Shortcuts.catalog.filter { hostKey($0.id) != nil }
+        }
+        /// The toolbar's: the default bar's keys it can use, in order, less send.
+        var defaults: [ShortcutKey] {
+            self == .terminal ? Shortcuts.defaults
+                : Shortcuts.defaults.filter { $0.id != sendID && hostKey($0.id) != nil }
+        }
+        /// Only the terminal's: there it is the only way to submit.
+        var sendMandatory: Bool { self == .terminal }
+
+        /// The toolbar's saved keys, as the catalog defines them; nil (no Full Access) is the
+        /// default. None saved yet: seeded once, and saved, from a customised terminal bar's
+        /// keys a text field can use, plus paste; else the default.
+        func load(_ store: UserDefaults? = shared()) -> [ShortcutKey] {
+            guard self == .toolbar else { return Shortcuts.load(store) }
+            guard let store else { return defaults }
+            if let keys = decode(store.string(forKey: storageKey)) {
+                return keys.compactMap { saved in catalog.first { $0.id == saved.id } }
+            }
+            let bar = Shortcuts.load(store)
+            var seeded = defaults
+            if bar.map(\.id) != Shortcuts.defaults.map(\.id) {
+                seeded = bar.filter { hostKey($0.id) != nil }
+                if !seeded.contains(where: { $0.id == "paste" }), let paste = catalog.first(where: { $0.id == "paste" }) {
+                    seeded.insert(paste, at: 0)
+                }
+            }
+            save(seeded, to: store, key: storageKey)
+            return seeded
+        }
     }
 
     /// What a key does on the system keyboard's toolbar, in another app's text field.
@@ -132,12 +174,14 @@ enum Shortcuts {
         case line(Int)
         /// To the line's start (-1) or end (1), as far as the context shows it.
         case lineEdge(Int)
+        /// The clip, through the system's Paste control (`ShortcutBar`'s `oneRow`), only with
+        /// Full Access.
+        case paste
     }
 
     /// The toolbar's action for a catalog id; nil hides the key there. The terminal-only
     /// ones (escape sequences, modifiers, control keys, image paste, insert, redraw) mean
-    /// nothing in a text field. Paste is the bar's own (`Suggestions.State.paste`), which
-    /// shows the suggestions whenever a fresh clip waits.
+    /// nothing in a text field.
     static func hostKey(_ id: String) -> HostKey? {
         switch id {
         case "left": return .caret(-1)
@@ -150,6 +194,7 @@ enum Shortcuts {
         case "slash": return .key(.char("/"))
         case "pipe": return .key(.char("|"))
         case "snl", sendID: return .key(.ret)
+        case "paste": return .paste
         default: return nil
         }
     }
@@ -161,12 +206,15 @@ enum Shortcuts {
 /// input window swallowed touches there). One row when the keys fit, else two rows that
 /// scroll horizontally together. Reads its keys from `keys` (`Shortcuts.load()`); call
 /// `reload()` after the editor changes them. `oneRow`: one row that scrolls, never two
-/// (the keyboard extension's toolbar, whose strip has a fixed height).
+/// (the keyboard extension's toolbar, whose strip has a fixed height), its paste key the
+/// system's Paste control, which pastes into the bar (`onPaste`) with no Allow Paste prompt.
 final class ShortcutBar: UIView {
     private static let inset: CGFloat = 4       // above and below the caps
     private static let capHeight: CGFloat = 36
     private static let spacing: CGFloat = 6     // between caps, and between the rows
     var onKey: ((ShortcutKey) -> Void)?
+    /// The Paste control's clip (`oneRow`).
+    var onPaste: (([NSItemProvider]) -> Void)?
     /// Each sticky modifier's state, set by the owner; a missing kind is off.
     var modes: [ShortcutKey.Kind: ShiftState.Mode] = [:] { didSet { refreshModifiers() } }
     var ctrlArmed: Bool { (modes[.ctrl] ?? .off) != .off }
@@ -200,11 +248,14 @@ final class ShortcutBar: UIView {
             blur.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         self.container = blur.contentView
+        if oneRow { pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.plainText.identifier]) }
         build()
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func reload() { build() }
+
+    override func paste(itemProviders: [NSItemProvider]) { onPaste?(itemProviders) }
 
     /// 1 row = 44 (4 + 36 + 4), 2 rows = 86 (4 + 36 + 6 + 36 + 4).
     override var intrinsicContentSize: CGSize {
@@ -336,12 +387,17 @@ final class ShortcutBar: UIView {
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
         ])
 
-        caps = keys().map { key in
+        caps = []
+        for key in keys() {
+            if oneRow, key.kind == .pasteText {
+                rows[0].addArrangedSubview(makePasteControl())
+                continue
+            }
             let b = makeButton(key)
             if [.ctrl, .alt, .shift].contains(key.kind) { modifierCaps[key.kind] = b }
-            return b
+            caps.append(b)
+            if oneRow { rows[0].addArrangedSubview(b) }   // `layoutSubviews` splits only two
         }
-        if oneRow { caps.forEach(rows[0].addArrangedSubview) }   // `layoutSubviews` splits only two
         arrangedWidth = -1        // new caps → split again on the next layout pass
         setNeedsLayout()
         refreshModifiers()
@@ -442,6 +498,23 @@ final class ShortcutBar: UIView {
             b.idleGlow = 0.85
         }
         return b
+    }
+
+    /// The system's secure Paste as a cap: a tap hands the clip to `paste(itemProviders:)`,
+    /// where reading `UIPasteboard.string` raises Allow Paste on every tap. It draws blank
+    /// under about 36 pt, or above Large text.
+    private func makePasteControl() -> UIPasteControl {
+        let config = UIPasteControl.Configuration()
+        config.displayMode = .iconOnly
+        config.baseForegroundColor = Neon.blueBright
+        config.baseBackgroundColor = Neon.card
+        config.cornerStyle = .fixed
+        config.cornerRadius = 7
+        let control = UIPasteControl(configuration: config)
+        control.maximumContentSizeCategory = .large
+        control.target = self
+        control.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        return control
     }
 
     /// once = solid cyan fill + dark glyph; locked = the once look plus the dark bar under

@@ -685,9 +685,14 @@ final class SuggestionBar: UIView {
 
     /// The toolbar: `keys` (read again on `toolbar.reload()`) less those a text field
     /// can't use (`Shortcuts.hostKey`), in one row that scrolls, and the toggle before it.
+    /// Paste only where the bar's own would show: with Full Access, and not in landscape.
     func addToolbar(_ keys: @escaping () -> [ShortcutKey]) {
-        let tools = ShortcutBar(keys: { keys().filter { Shortcuts.hostKey($0.id) != nil } }, oneRow: true)
+        let tools = ShortcutBar(keys: { [weak self] in
+            let pastes = self?.suggestions.pasteFits == true && self?.suggestions.pasteboard() != nil
+            return keys().filter { Shortcuts.hostKey($0.id) != nil && (pastes || $0.id != "paste") }
+        }, oneRow: true)
         tools.onKey = { [weak self] in self?.press($0) }
+        tools.onPaste = { [weak self] in self?.load($0, fromToolbar: true) }
         addSubview(tools)
         toolbar = tools
         let t = UIButton(configuration: .plain())
@@ -704,6 +709,7 @@ final class SuggestionBar: UIView {
               let action = Shortcuts.hostKey(key.id) else { return }
         UIDevice.current.playInputClick()
         switch action {
+        case .paste: break   // the toolbar's Paste control (`onPaste`), never a read
         case .key(let k): keyboard.press(k)
         case .caret(let n): keyboard.caret(n)
         case .line(let n): keyboard.line(n)
@@ -760,11 +766,13 @@ final class SuggestionBar: UIView {
         ])
     }
 
-    /// The height follows the size class, like the keyboard's (rotation), and so does Paste.
+    /// The height follows the size class, like the keyboard's (rotation), and so do Paste
+    /// and the toolbar's.
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
         heightConstraint?.constant = Self.height(compact: traitCollection.verticalSizeClass == .compact)
         refresh()
+        toolbar?.reload()
     }
 
     /// Recompute from the text: after each key, and when the host changes the text or
@@ -786,20 +794,27 @@ final class SuggestionBar: UIView {
         refresh()
     }
 
-    /// The Paste control's tap (`pasteControl`, whose target is the bar). The clip loads
-    /// off the main thread; it goes in on it, while Paste still shows. A late tap (a double
-    /// tap's second) loads nothing: loading raises Allow Paste once Paste is gone.
-    override func paste(itemProviders: [NSItemProvider]) {
-        guard state == .paste else { return }
-        guard let provider = itemProviders.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return }
+    /// The Paste control's tap (`pasteControl`, whose target is the bar).
+    override func paste(itemProviders: [NSItemProvider]) { load(itemProviders, fromToolbar: false) }
+
+    /// A Paste control's clip, the bar's or the toolbar's. It loads off the main thread and
+    /// goes in on it, while that control still shows. A late tap (a double tap's second)
+    /// loads nothing: loading raises Allow Paste once its control is gone.
+    private func load(_ providers: [NSItemProvider], fromToolbar: Bool) {
+        guard shows(fromToolbar),
+              let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return }
         _ = provider.loadObject(ofClass: NSString.self) { [weak self] clip, _ in
             guard let clip = clip as? String else { return }
-            DispatchQueue.main.async { self?.insert(clip) }
+            DispatchQueue.main.async { self?.insert(clip, fromToolbar: fromToolbar) }
         }
     }
 
-    private func insert(_ clip: String) {
-        guard state == .paste, let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
+    private func shows(_ fromToolbar: Bool) -> Bool {
+        fromToolbar ? toolbar?.isHidden == false : state == .paste
+    }
+
+    private func insert(_ clip: String, fromToolbar: Bool) {
+        guard shows(fromToolbar), let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         UIDevice.current.playInputClick()
         suggestions.paste(clip, in: doc)
         keyboard.resetWord()

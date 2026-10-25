@@ -61,7 +61,7 @@ struct SettingsView: View {
     @State private var confirmDelete = false
     @State private var busy = false
     @State private var error: String?
-    /// The shortcut editor, here for the keyboard's toolbar (`Shortcuts.hostKey`).
+    /// The terminal's shortcut editor; the toolbar's is pushed (`Shortcuts.Bar`).
     @State private var editingShortcuts = false
     // Keyboard, in the App Group the keyboards read (`KeyboardSettings`).
     @AppStorage(KeyboardSettings.Key.autoCapitalization, store: KeyboardSettings.store())
@@ -169,11 +169,17 @@ struct SettingsView: View {
                 Toggle("Predictive Text", isOn: $predictiveText)
                 Toggle("Character Preview", isOn: $characterPreview)
                 NavigationLink("Keys Beside Space") { BottomRowSettings() }
-                Button("Toolbar Keys") { editingShortcuts = true }
             } header: {
                 Text("Keyboard")
             } footer: {
                 Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off and the rest on. In the terminal, Enable Caps Lock, Character Preview and Keys Beside Space apply.")
+            }
+
+            Section {
+                NavigationLink("System Keyboard Toolbar") { ShortcutEditor(bar: .toolbar) }
+                Button("Terminal Shortcut Keys") { editingShortcuts = true }
+            } footer: {
+                Text("The System Keyboard Toolbar shows above the Prosper keyboard in other apps when you tap the toolbar toggle at the leading edge of its strip. Terminal Shortcut Keys are the bar under the terminal.")
             }
             #endif
 

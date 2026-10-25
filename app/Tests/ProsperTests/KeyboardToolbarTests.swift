@@ -1,10 +1,12 @@
 import XCTest
 import UIKit
+import UniformTypeIdentifiers
 @testable import Prosper
 
 /// The app's shortcut keys as the system keyboard's toolbar (`SuggestionBar.addToolbar`):
 /// what each key does in a host field, the toggle and its pick, AutoFill and Paste over
-/// the toolbar, and the keys' move to the App Group (`Shortcuts.shared`).
+/// the toolbar, its Paste key, its own key list (`Shortcuts.Bar.toolbar`), and the keys'
+/// move to the App Group (`Shortcuts.shared`).
 @MainActor
 final class KeyboardToolbarTests: XCTestCase {
     typealias Proxy = KeyboardExtensionTests.FakeProxy
@@ -25,7 +27,8 @@ final class KeyboardToolbarTests: XCTestCase {
 
     /// A keyboard on a fake field, the bar attached with the default keys as its toolbar.
     /// Keep all three: the keyboard holds the proxy and the bar weakly.
-    private func rig(_ text: String = "", after: String = "") -> (TerminalKeyboard, SuggestionBar, Proxy) {
+    private func rig(_ text: String = "", after: String = "",
+                     keys: [ShortcutKey] = Shortcuts.defaults) -> (TerminalKeyboard, SuggestionBar, Proxy) {
         let doc = Proxy()
         doc.text = text; doc.after = after
         doc.autocapitalizationType = .none
@@ -33,7 +36,7 @@ final class KeyboardToolbarTests: XCTestCase {
         kb.target = doc
         let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: defaults)))
         bar.attach(kb)
-        bar.addToolbar { Shortcuts.defaults }
+        bar.addToolbar { keys }
         return (kb, bar, doc)
     }
 
@@ -52,14 +55,14 @@ final class KeyboardToolbarTests: XCTestCase {
             ("shift", nil), ("ctlc", nil), ("ctld", nil), ("ctlr", nil),
             ("up", .line(-1)), ("down", .line(1)), ("left", .caret(-1)), ("right", .caret(1)),
             ("home", .lineEdge(-1)), ("end", .lineEdge(1)), ("pgup", nil), ("pgdn", nil),
-            ("slash", .key(.char("/"))), ("pipe", .key(.char("|"))), ("paste", nil), ("pasteImg", nil),
+            ("slash", .key(.char("/"))), ("pipe", .key(.char("|"))), ("paste", .paste), ("pasteImg", nil),
             ("insert", nil), ("snl", .key(.ret)), ("enter", .key(.ret)), ("redraw", nil),
         ]
         XCTAssertEqual(Shortcuts.catalog.map(\.id), want.map(\.0), "a new catalog key needs a mapping here")
         for (id, action) in want { XCTAssertEqual(Shortcuts.hostKey(id), action, id) }
         let (_, bar, _) = rig()
         XCTAssertEqual(Self.caps(try XCTUnwrap(bar.toolbar)).compactMap(\.accessibilityLabel),
-                       ["↑", "↓", "tab", "home", "←", "→", "end", "send"], "the hidden ones aren't caps")
+                       ["↑", "↓", "tab", "home", "←", "→", "end", "send"], "the hidden ones aren't caps, nor Paste without Full Access")
     }
 
     /// The keys in the field: sideways and to the line's ends through the caret walk, ↑
@@ -165,5 +168,103 @@ final class KeyboardToolbarTests: XCTestCase {
         Shortcuts.save(try ["slash", "enter"].map(key))
         XCTAssertEqual(Shortcuts.load(group).map(\.id), ["slash", "enter"], "the editor writes the group")
         XCTAssertEqual(Shortcuts.load(nil).map(\.id), Shortcuts.defaults.map(\.id))
+    }
+
+    private func suiteStore(_ name: String) throws -> UserDefaults {
+        let store = try XCTUnwrap(UserDefaults(suiteName: suite + name))
+        addTeardownBlock { store.removePersistentDomain(forName: self.suite + name) }
+        return store
+    }
+
+    private static func pasteControls(_ v: UIView) -> [UIPasteControl] {
+        v.subviews.flatMap { ($0 as? UIPasteControl).map { [$0] } ?? pasteControls($0) }
+    }
+
+    /// Nothing saved, terminal bar untouched: the default bar's keys a text field can use, in
+    /// its order, less send, Paste first; saved, so the terminal bar no longer feeds it. No
+    /// group (no Full Access): the same default.
+    func testToolbarListDefaultsToTheHostKeysWithPasteAndNoSend() throws {
+        let store = try suiteStore(".default")
+        let want = ["paste", "up", "down", "tab", "home", "left", "right", "end"]
+        XCTAssertEqual(Shortcuts.Bar.toolbar.defaults.map(\.id), want)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), want)
+        XCTAssertNotNil(store.string(forKey: Shortcuts.Bar.toolbar.storageKey), "seeded once")
+        Shortcuts.save(try ["pipe", "enter"].map(key), to: store)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), want, "a later terminal edit doesn't reach it")
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(nil).map(\.id), want)
+        XCTAssertNotEqual(Shortcuts.Bar.toolbar.storageKey, Shortcuts.storageKey)
+    }
+
+    /// A customised terminal bar seeds the toolbar once: its keys a text field can use, in
+    /// its order, send included, plus Paste (first, or where the bar had it).
+    func testToolbarListSeedsOnceFromACustomisedTerminalBar() throws {
+        let store = try suiteStore(".custom")
+        Shortcuts.save(try ["esc", "left", "enter", "ctlc", "pipe"].map(key), to: store)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["paste", "left", "enter", "pipe"])
+        Shortcuts.save(try ["slash", "enter"].map(key), to: store)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["paste", "left", "enter", "pipe"], "once")
+
+        let had = try suiteStore(".hadPaste")
+        Shortcuts.save(try ["tab", "paste", "insert", "enter"].map(key), to: had)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(had).map(\.id), ["tab", "paste", "enter"])
+    }
+
+    /// Send is an ordinary key on the toolbar: a list without it stays without it, an empty
+    /// one stays empty. The terminal's still gets send back, and its editor can't drop it.
+    func testSendlessToolbarStaysSendlessAndTheTerminalForcesSend() throws {
+        let store = try suiteStore(".send")
+        Shortcuts.save(try ["left", "right"].map(key), to: store, key: Shortcuts.Bar.toolbar.storageKey)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["left", "right"])
+        Shortcuts.save([], to: store, key: Shortcuts.Bar.toolbar.storageKey)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), [], "emptied stays empty")
+        Shortcuts.save(try ["esc", "esc", "paste"].map(key), to: store, key: Shortcuts.Bar.toolbar.storageKey)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["paste"], "terminal-only keys dropped")
+        XCTAssertFalse(Shortcuts.Bar.toolbar.sendMandatory)
+        XCTAssertTrue(Shortcuts.Bar.toolbar.catalog.contains { $0.id == Shortcuts.sendID }, "send can come back")
+
+        Shortcuts.save(try ["esc", "tab"].map(key), to: store)
+        XCTAssertEqual(Shortcuts.Bar.terminal.load(store).map(\.id), ["esc", "tab", "enter"])
+        XCTAssertTrue(Shortcuts.Bar.terminal.sendMandatory)
+        XCTAssertEqual(Shortcuts.Bar.terminal.catalog.map(\.id), Shortcuts.catalog.map(\.id))
+    }
+
+    /// The toolbar's Paste is the system's control, pasting into the toolbar: its clip goes
+    /// in as is and is retired, like the bar's. Never a pasteboard read (`press` does nothing).
+    /// No Full Access or landscape: no control; a hidden toolbar loads nothing.
+    func testToolbarPasteInsertsTheClipThroughTheSystemControl() throws {
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+        pb.string = "clip"
+        let (kb, bar, doc) = rig("say h", keys: Shortcuts.Bar.toolbar.defaults)   // mid-word: no bar Paste
+        let toolbar = try XCTUnwrap(bar.toolbar)
+        XCTAssertTrue(Self.pasteControls(toolbar).isEmpty, "no Full Access")
+        bar.suggestions.pasteboard = { pb }
+        toolbar.reload()
+        bar.showsToolbar = true
+        bar.refresh()
+        XCTAssertNotEqual(bar.state, .paste)
+        XCTAssertFalse(toolbar.isHidden)
+        let control = try XCTUnwrap(Self.pasteControls(toolbar).first)
+        XCTAssertTrue(control.target === toolbar)
+        XCTAssertEqual(toolbar.pasteConfiguration?.acceptableTypeIdentifiers, [UTType.plainText.identifier])
+        XCTAssertEqual(control.maximumContentSizeCategory, .large, "larger draws blank")
+
+        bar.press(try key("paste"))
+        XCTAssertEqual(doc.text, "say h", "the key itself never reads the pasteboard")
+        toolbar.paste(itemProviders: [NSItemProvider(object: "clip" as NSString)])
+        let deadline = Date() + 2
+        while doc.text == "say h", Date() < deadline { RunLoop.main.run(until: Date() + 0.01) }
+        XCTAssertEqual(doc.text, "say hclip")
+        XCTAssertEqual(bar.suggestions.memory.retiredClip, pb.changeCount)
+
+        bar.showsToolbar = false
+        toolbar.paste(itemProviders: [NSItemProvider(object: "late" as NSString)])
+        RunLoop.main.run(until: Date() + 0.2)
+        XCTAssertEqual(doc.text, "say hclip", "a hidden toolbar's control loads nothing")
+
+        bar.suggestions.pasteFits = false
+        toolbar.reload()
+        XCTAssertTrue(Self.pasteControls(toolbar).isEmpty, "landscape: blank under 36 pt")
+        withExtendedLifetime(kb) {}
     }
 }

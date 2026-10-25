@@ -27,11 +27,13 @@ enum TerminalPrefs {
     static func clamp(_ v: CGFloat) -> CGFloat { min(max(v, range.lowerBound), range.upperBound) }
 }
 
-/// Add / remove / reorder the shortcut-bar keys. Persists to the same defaults key the
-/// bar reads (`Shortcuts.shared`), so the bar reloads with the new set when the sheet
-/// closes, and the Prosper keyboard's toolbar in other apps when it next shows.
+/// Add / remove / reorder a key list (`Shortcuts.Bar`). Persists to the defaults key its
+/// bar reads (`Shortcuts.shared`): the terminal's reloads when the sheet closes, the Prosper
+/// keyboard's toolbar in other apps when it next shows. The terminal's is a sheet with the
+/// text size; the toolbar's is pushed from Settings, and its send can go.
 struct ShortcutEditor: View {
-    @AppStorage(Shortcuts.storageKey, store: Shortcuts.shared()) private var raw = ""   // observe-only: triggers refresh
+    let bar: Shortcuts.Bar
+    @AppStorage private var raw: String   // observe-only: triggers refresh
     @State private var keys: [ShortcutKey] = []
     @Environment(\.dismiss) private var dismiss
 
@@ -39,9 +41,29 @@ struct ShortcutEditor: View {
     /// flush apply to the stepper too — one writer for the one stored size.
     @State private var fontSize = Double(TerminalPrefs.fontSize)
 
+    init(bar: Shortcuts.Bar = .terminal) {
+        self.bar = bar
+        _raw = AppStorage(wrappedValue: "", bar.storageKey, store: Shortcuts.shared())
+    }
+
     var body: some View {
-        NavigationStack {
-            List {
+        if bar == .terminal {
+            NavigationStack {
+                list.toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) { reset }
+                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                }
+            }
+        } else {
+            list.toolbar { ToolbarItem(placement: .navigationBarTrailing) { reset } }
+        }
+    }
+
+    private var reset: some View { Button("Reset") { keys = bar.defaults; persist() } }
+
+    private var list: some View {
+        List {
+            if bar == .terminal {
                 Section("Text size") {
                     Stepper(value: $fontSize,
                             in: Double(TerminalPrefs.range.lowerBound)...Double(TerminalPrefs.range.upperBound),
@@ -51,42 +73,37 @@ struct ShortcutEditor: View {
                     Button("Reset text size") { fontSize = Double(TerminalPrefs.defaultSize) }
                 }
                 .onChange(of: fontSize) { v in TerminalPrefs.fontSize = CGFloat(v) }
-                Section {
-                    ForEach(keys) { k in
-                        Text(k.label).font(.body.monospaced())
-                            .deleteDisabled(k.id == Shortcuts.sendID)   // send is mandatory
-                    }
-                        .onMove { keys.move(fromOffsets: $0, toOffset: $1); persist() }
-                        .onDelete { keys.remove(atOffsets: $0); persist() }
-                } header: {
-                    Text("Active (drag to reorder, swipe to remove)")
-                } footer: {
-                    // `Shortcuts.hostKey`: the keys a text field can't use stay off it.
-                    Text("The Prosper keyboard's toolbar in other apps shows these too, except the terminal-only keys.")
+            }
+            Section {
+                ForEach(keys) { k in
+                    Text(k.label).font(.body.monospaced())
+                        .deleteDisabled(bar.sendMandatory && k.id == Shortcuts.sendID)
                 }
-                let avail = Shortcuts.catalog.filter { c in !keys.contains { $0.id == c.id } }
-                if !avail.isEmpty {
-                    Section("Add") {
-                        ForEach(avail) { c in
-                            Button { keys.append(c); persist() } label: {
-                                Label(c.label, systemImage: "plus.circle")
-                            }
+                    .onMove { keys.move(fromOffsets: $0, toOffset: $1); persist() }
+                    .onDelete { keys.remove(atOffsets: $0); persist() }
+            } header: {
+                Text("Active (drag to reorder, swipe to remove)")
+            } footer: {
+                Text(bar == .terminal
+                     ? "The Prosper keyboard's toolbar in other apps has its own keys, in Settings."
+                     : "Above the Prosper keyboard in other apps, at the toggle on its strip's leading edge. Paste needs Full Access.")
+            }
+            let avail = bar.catalog.filter { c in !keys.contains { $0.id == c.id } }
+            if !avail.isEmpty {
+                Section("Add") {
+                    ForEach(avail) { c in
+                        Button { keys.append(c); persist() } label: {
+                            Label(c.label, systemImage: "plus.circle")
                         }
                     }
                 }
             }
-            .navigationTitle("Shortcut Keys")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Reset") { keys = Shortcuts.defaults; persist() }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) { EditButton() }
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
         }
-        .onAppear { keys = Shortcuts.load() }
+        .navigationTitle(bar == .terminal ? "Terminal Shortcut Keys" : "System Keyboard Toolbar")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .navigationBarTrailing) { EditButton() } }
+        .onAppear { keys = bar.load() }
     }
 
-    private func persist() { Shortcuts.save(keys) }
+    private func persist() { Shortcuts.save(keys, key: bar.storageKey) }
 }

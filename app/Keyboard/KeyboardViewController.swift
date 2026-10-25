@@ -6,11 +6,11 @@ import UIKit
 ///
 /// Above the keys, `SuggestionBar`: suggestions, autocorrect and learning as iOS's own
 /// keyboard has them, which a custom keyboard doesn't get (Sources/Keys/Suggestions.swift),
-/// or at its toggle the app's shortcut keys that work in a text field (`addToolbar`).
+/// or at its toggle the toolbar, keys from the app's own list for it (`addToolbar`).
 ///
 /// Launched by the system under a tight memory cap: two views, no network, the pasteboard
-/// only with Full Access (the bar's Paste), nothing held beyond the keyboard, the shared
-/// spell checker and what it learned.
+/// only with Full Access (the bar's and the toolbar's Paste), nothing held beyond the
+/// keyboard, the shared spell checker and what it learned.
 ///
 /// Two extensions run this controller, both "Prosper", English and Bulgarian: each takes
 /// its letters and dictionary from its own Info.plist's `PrimaryLanguage`.
@@ -31,7 +31,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.attach(keyboard)
         bar.host(keyboard, in: view)
         // The app's editor writes them to the App Group: without Full Access, the defaults.
-        bar.addToolbar { [weak self] in Shortcuts.load(self?.hasFullAccess == true ? Shortcuts.shared() : nil) }
+        bar.addToolbar { [weak self] in Shortcuts.Bar.toolbar.load(self?.hasFullAccess == true ? Shortcuts.shared() : nil) }
         // Contact names and text replacements; needs no Full Access. Once per controller.
         requestSupplementaryLexicon { lexicon in
             // The lexicon arrives on a background queue; the bar and its state are main-only.
