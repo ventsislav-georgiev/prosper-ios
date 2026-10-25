@@ -535,19 +535,52 @@ final class ShortcutBar: UIView {
 
     /// The system's secure Paste as a cap: a tap hands the clip to `paste(itemProviders:)`,
     /// where reading `UIPasteboard.string` raises Allow Paste on every tap. It draws blank
-    /// under about 36 pt, or above Large text.
-    private func makePasteControl() -> UIPasteControl {
+    /// under its content's size, or above Large text. With nothing on the pasteboard it takes, the
+    /// system draws it disabled — a dimmed glyph on a faded fill, the base colours ignored —
+    /// so the cap's frame is a view of ours behind it (`pasteCap`), the same either way.
+    private func makePasteControl() -> UIView {
         let config = UIPasteControl.Configuration()
         config.displayMode = .iconOnly
         config.baseForegroundColor = Neon.blueBright
         config.baseBackgroundColor = Neon.card
         config.cornerStyle = .fixed
-        config.cornerRadius = 7
+        config.cornerRadius = 6      // concentric inside the cap's 7, 1 pt in
         let control = UIPasteControl(configuration: config)
         control.maximumContentSizeCategory = .large
         control.target = self
-        control.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        return control
+        return pasteCap(around: control)
+    }
+
+    /// A cap like `makeButton`'s (fill, 1 pt border, radius, halo) with `control` inside it,
+    /// 1 pt in at the sides and as near 1 pt as its own height allows above and below, so
+    /// the border shows. Nothing goes over the control: the secure control refuses taps
+    /// when covered. Its intrinsic height (34.3 pt at Large) is required — under its
+    /// content the control draws blank. 44 pt wide.
+    private func pasteCap(around control: UIView) -> UIView {
+        let cap = UIView()
+        cap.backgroundColor = Neon.card
+        cap.layer.cornerRadius = 7
+        cap.layer.borderWidth = 1
+        cap.layer.borderColor = Neon.blue.withAlphaComponent(0.55).cgColor
+        cap.layer.shadowColor = Neon.blue.cgColor
+        cap.layer.shadowOpacity = 0.5
+        cap.layer.shadowRadius = 5
+        cap.layer.shadowOffset = .zero
+        cap.layer.masksToBounds = false
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.setContentCompressionResistancePriority(.required, for: .vertical)
+        cap.addSubview(control)
+        let inset = control.topAnchor.constraint(equalTo: cap.topAnchor, constant: 1)
+        inset.priority = .defaultHigh       // gives way to the control's height
+        NSLayoutConstraint.activate([
+            cap.widthAnchor.constraint(equalToConstant: 44),
+            control.leadingAnchor.constraint(equalTo: cap.leadingAnchor, constant: 1),
+            control.trailingAnchor.constraint(equalTo: cap.trailingAnchor, constant: -1),
+            control.centerYAnchor.constraint(equalTo: cap.centerYAnchor),
+            control.topAnchor.constraint(greaterThanOrEqualTo: cap.topAnchor),
+            inset,
+        ])
+        return cap
     }
 
     /// once = solid cyan fill + dark glyph; locked = the once look plus the dark bar under

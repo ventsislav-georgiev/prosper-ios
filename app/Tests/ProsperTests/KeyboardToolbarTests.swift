@@ -275,6 +275,25 @@ final class KeyboardToolbarTests: XCTestCase {
         withExtendedLifetime(kb) {}
     }
 
+    /// The Paste cap looks like the others whatever the system draws the control as: a
+    /// container with a cap's fill, border, radius and halo, the control inside it (#558).
+    func testToolbarPasteSitsInACapStyledContainer() throws {
+        let toolbar = ShortcutBar(keys: { Shortcuts.Bar.toolbar.defaults }, oneRow: true)
+        let control = try XCTUnwrap(Self.pasteControls(toolbar).first)
+        XCTAssertTrue(control.target === toolbar)
+        let box = try XCTUnwrap(control.superview), cap = try XCTUnwrap(Self.caps(toolbar).first)
+        let bg = try XCTUnwrap(cap.configuration?.background)
+        XCTAssertEqual(box.backgroundColor, bg.backgroundColor)
+        XCTAssertEqual(box.layer.borderColor, bg.strokeColor?.cgColor)
+        XCTAssertEqual(box.layer.borderWidth, bg.strokeWidth)
+        XCTAssertEqual(box.layer.cornerRadius, bg.cornerRadius)
+        XCTAssertEqual(box.layer.shadowColor, cap.layer.shadowColor)
+        XCTAssertEqual(box.layer.shadowOpacity, cap.layer.shadowOpacity)
+        XCTAssertEqual(box.layer.shadowRadius, cap.layer.shadowRadius)
+        XCTAssertEqual(box.layer.shadowOffset, cap.layer.shadowOffset)
+        XCTAssertEqual(box.subviews, [control], "nothing over the control")
+    }
+
     /// Rotating rebuilds the toolbar: Paste leaves in landscape and comes back in portrait,
     /// with nothing else reloading it.
     func testRotatingDropsAndRestoresTheToolbarPaste() throws {
