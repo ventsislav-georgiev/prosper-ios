@@ -61,6 +61,8 @@ struct SettingsView: View {
     @State private var confirmDelete = false
     @State private var busy = false
     @State private var error: String?
+    /// The shortcut editor, here for the keyboard's toolbar (`Shortcuts.hostKey`).
+    @State private var editingShortcuts = false
     // Keyboard, in the App Group the keyboards read (`KeyboardSettings`).
     @AppStorage(KeyboardSettings.Key.autoCapitalization, store: KeyboardSettings.store())
     private var autoCapitalization = KeyboardSettings().autoCapitalization
@@ -176,6 +178,7 @@ struct SettingsView: View {
                     Text("Question Mark").tag("?")
                 }
                 NavigationLink("Keys Beside Space") { BottomRowSettings() }
+                Button("Toolbar Keys") { editingShortcuts = true }
             } header: {
                 Text("Keyboard")
             } footer: {
@@ -188,6 +191,7 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showLogin) { LoginView(account: account) }
+        .sheet(isPresented: $editingShortcuts) { ShortcutEditor() }
         .sheet(isPresented: $confirmDelete) {
             DeleteAccountSheet(busy: $busy) { await delete() }
         }

@@ -1,4 +1,3 @@
-import SwiftUI
 import UIKit
 
 /// One key on the shortcut bar above the keyboard. `bytes` are sent verbatim to the
@@ -18,35 +17,9 @@ struct ShortcutKey: Codable, Hashable, Identifiable {
     var systemImage: String? = nil
 }
 
-/// Terminal text size, nudged from the shortcut editor sheet. Stored as a point
-/// size; changing it reflows the grid (fewer/more cols+rows) and resizes the pty.
-enum TerminalPrefs {
-    static let sizeKey = "terminalFontSize"
-    /// 10% below the original hard-coded 13 pt — more of the remote screen fits.
-    static let defaultSize: CGFloat = 11.7
-    static let range: ClosedRange<CGFloat> = 8...20
-    static let step: CGFloat = 0.5
-
-    static var fontSize: CGFloat {
-        get {
-            let v = CGFloat(UserDefaults.standard.double(forKey: sizeKey))
-            return v > 0 ? clamp(v) : defaultSize
-        }
-        set {
-            UserDefaults.standard.set(Double(clamp(newValue)), forKey: sizeKey)
-            // Flush now. UserDefaults writes back on its own schedule, and the size is
-            // typically changed and then the app is put away or force-quit within
-            // seconds — exactly the window where an unflushed write is lost and the
-            // terminal comes back at the default size next launch.
-            UserDefaults.standard.synchronize()
-        }
-    }
-
-    static func clamp(_ v: CGFloat) -> CGFloat { min(max(v, range.lowerBound), range.upperBound) }
-}
-
 /// Shortcut-bar config: catalog of available keys, the user's chosen set (persisted
-/// as JSON in UserDefaults), and the default set.
+/// as JSON in the App Group, `shared`), and the default set. The app's bar and the
+/// system keyboard's toolbar (`SuggestionBar.addToolbar`) both read it.
 enum Shortcuts {
     static let storageKey = "shortcutKeys"
 
@@ -112,8 +85,21 @@ enum Shortcuts {
     static let previousDefaultIDs = ["paste", "pasteImg", "up", "down", "stab", "snl", "enter",
                                      "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"]
 
-    static func load() -> [ShortcutKey] {
-        guard let raw = UserDefaults.standard.string(forKey: storageKey),
+    /// The App Group's defaults (`KeyboardSettings.store`), so the keyboard extension reads
+    /// what the editor wrote. A bar the app kept in its own defaults before is copied over,
+    /// once (the group's then wins), and left where it was for an older build; the app's
+    /// own defaults if there's no group.
+    static func shared() -> UserDefaults {
+        guard let group = KeyboardSettings.store() else { return .standard }
+        if group.string(forKey: storageKey) == nil, let old = UserDefaults.standard.string(forKey: storageKey) {
+            group.set(old, forKey: storageKey)
+        }
+        return group
+    }
+
+    /// The saved bar from `store`; nil (the extension without Full Access) is the default set.
+    static func load(_ store: UserDefaults? = shared()) -> [ShortcutKey] {
+        guard let raw = store?.string(forKey: storageKey),
               let data = raw.data(using: .utf8),
               let keys = try? JSONDecoder().decode([ShortcutKey].self, from: data),
               !keys.isEmpty
@@ -130,10 +116,42 @@ enum Shortcuts {
         return loaded
     }
 
-    static func save(_ keys: [ShortcutKey]) {
+    static func save(_ keys: [ShortcutKey], to store: UserDefaults = shared()) {
         guard let data = try? JSONEncoder().encode(keys),
               let s = String(data: data, encoding: .utf8) else { return }
-        UserDefaults.standard.set(s, forKey: storageKey)
+        store.set(s, forKey: storageKey)
+    }
+
+    /// What a key does on the system keyboard's toolbar, in another app's text field.
+    enum HostKey: Equatable {
+        /// Pressed on the keyboard, as its own key would be.
+        case key(TerminalKeyboard.Key)
+        /// Characters sideways, negative left (`TerminalKeyboard.caret`).
+        case caret(Int)
+        /// Lines, negative up (`TerminalKeyboard.line`, the space bar's walk).
+        case line(Int)
+        /// To the line's start (-1) or end (1), as far as the context shows it.
+        case lineEdge(Int)
+    }
+
+    /// The toolbar's action for a catalog id; nil hides the key there. The terminal-only
+    /// ones (escape sequences, modifiers, control keys, image paste, insert, redraw) mean
+    /// nothing in a text field. Paste is the bar's own (`Suggestions.State.paste`), which
+    /// shows the suggestions whenever a fresh clip waits.
+    static func hostKey(_ id: String) -> HostKey? {
+        switch id {
+        case "left": return .caret(-1)
+        case "right": return .caret(1)
+        case "up": return .line(-1)
+        case "down": return .line(1)
+        case "home": return .lineEdge(-1)
+        case "end": return .lineEdge(1)
+        case "tab": return .key(.char("\t"))
+        case "slash": return .key(.char("/"))
+        case "pipe": return .key(.char("|"))
+        case "snl", sendID: return .key(.ret)
+        default: return nil
+        }
     }
 }
 
@@ -141,8 +159,9 @@ enum Shortcuts {
 /// keyboard down, riding its top when it's up. Owned by the terminal view controller
 /// and pinned in its own hierarchy (NOT an `inputAccessoryView` — the keyboard's remote
 /// input window swallowed touches there). One row when the keys fit, else two rows that
-/// scroll horizontally together. Reads its keys from `Shortcuts.load()`; call `reload()`
-/// after the editor changes them.
+/// scroll horizontally together. Reads its keys from `keys` (`Shortcuts.load()`); call
+/// `reload()` after the editor changes them. `oneRow`: one row that scrolls, never two
+/// (the keyboard extension's toolbar, whose strip has a fixed height).
 final class ShortcutBar: UIView {
     private static let inset: CGFloat = 4       // above and below the caps
     private static let capHeight: CGFloat = 36
@@ -156,7 +175,9 @@ final class ShortcutBar: UIView {
     private var modifierCaps: [ShortcutKey.Kind: KeyCapButton] = [:]
     private weak var container: UIView?
     private var caps: [KeyCapButton] = []
-    private var rows: [UIStackView] = []        // [top, bottom]
+    private var rows: [UIStackView] = []        // [top, bottom], or [top] for `oneRow`
+    private let keys: () -> [ShortcutKey]
+    private let oneRow: Bool
     private var arrangedWidth: CGFloat = -1     // width the caps were last split for
     /// The bar's height IS its row count, so the owner never needs a number: flipping
     /// it re-asks Auto Layout for `intrinsicContentSize`.
@@ -164,7 +185,9 @@ final class ShortcutBar: UIView {
         didSet { if rowCount != oldValue { invalidateIntrinsicContentSize() } }
     }
 
-    init() {
+    init(keys: @escaping () -> [ShortcutKey] = { Shortcuts.load() }, oneRow: Bool = false) {
+        self.keys = keys
+        self.oneRow = oneRow
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.inset * 2 + Self.capHeight))
         // Match the iOS keyboard chrome so the strip reads as part of it.
         let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
@@ -286,7 +309,7 @@ final class ShortcutBar: UIView {
 
         // Both rows live in ONE scroll view, so they scroll together as a block. The
         // column is as wide as its longer row (.leading, not .fill).
-        rows = (0..<2).map { _ in
+        rows = (0..<(oneRow ? 1 : 2)).map { _ in
             let row = UIStackView()
             row.axis = .horizontal
             row.spacing = Self.spacing
@@ -313,11 +336,12 @@ final class ShortcutBar: UIView {
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
         ])
 
-        caps = Shortcuts.load().map { key in
+        caps = keys().map { key in
             let b = makeButton(key)
             if [.ctrl, .alt, .shift].contains(key.kind) { modifierCaps[key.kind] = b }
             return b
         }
+        if oneRow { caps.forEach(rows[0].addArrangedSubview) }   // `layoutSubviews` splits only two
         arrangedWidth = -1        // new caps → split again on the next layout pass
         setNeedsLayout()
         refreshModifiers()
@@ -524,62 +548,4 @@ private extension UIColor {
                   blue:  CGFloat( hex        & 0xff) / 255,
                   alpha: 1)
     }
-}
-
-/// Add / remove / reorder the shortcut-bar keys. Persists to the same UserDefaults
-/// key the bar reads, so the bar reloads with the new set when the sheet closes.
-struct ShortcutEditor: View {
-    @AppStorage(Shortcuts.storageKey) private var raw = ""   // observe-only: triggers refresh
-    @State private var keys: [ShortcutKey] = []
-    @Environment(\.dismiss) private var dismiss
-
-    /// Written through `TerminalPrefs` rather than @AppStorage so the clamp and the
-    /// flush apply to the stepper too — one writer for the one stored size.
-    @State private var fontSize = Double(TerminalPrefs.fontSize)
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("Text size") {
-                    Stepper(value: $fontSize,
-                            in: Double(TerminalPrefs.range.lowerBound)...Double(TerminalPrefs.range.upperBound),
-                            step: Double(TerminalPrefs.step)) {
-                        Text("\(fontSize, specifier: "%.1f") pt").font(.body.monospaced())
-                    }
-                    Button("Reset text size") { fontSize = Double(TerminalPrefs.defaultSize) }
-                }
-                .onChange(of: fontSize) { v in TerminalPrefs.fontSize = CGFloat(v) }
-                Section("Active (drag to reorder, swipe to remove)") {
-                    ForEach(keys) { k in
-                        Text(k.label).font(.body.monospaced())
-                            .deleteDisabled(k.id == Shortcuts.sendID)   // send is mandatory
-                    }
-                        .onMove { keys.move(fromOffsets: $0, toOffset: $1); persist() }
-                        .onDelete { keys.remove(atOffsets: $0); persist() }
-                }
-                let avail = Shortcuts.catalog.filter { c in !keys.contains { $0.id == c.id } }
-                if !avail.isEmpty {
-                    Section("Add") {
-                        ForEach(avail) { c in
-                            Button { keys.append(c); persist() } label: {
-                                Label(c.label, systemImage: "plus.circle")
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Shortcut Keys")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Reset") { keys = Shortcuts.defaults; persist() }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) { EditButton() }
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
-        }
-        .onAppear { keys = Shortcuts.load() }
-    }
-
-    private func persist() { Shortcuts.save(keys) }
 }

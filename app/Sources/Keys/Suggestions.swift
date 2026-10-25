@@ -564,7 +564,8 @@ final class TypingMemory {
 /// QuickType, or in a login field one key button toward Apple's keyboard (AutoFill, SMS
 /// codes: a tap hops past the sibling Prosper keyboard, a hold lists the keyboards), or
 /// at a word start with a fresh clip one Paste button. `attach` also wires `Suggestions`
-/// into the keyboard. Extension-only: the terminal keeps its shortcut bar.
+/// into the keyboard. Extension-only: the terminal keeps its shortcut bar, which the
+/// extension can show here in the slots' place (`addToolbar`).
 ///
 /// 44 pt, and never under 42: a top-row press bubble rises 48 pt above a key whose top
 /// is 6 pt below the keyboard's, and a custom keyboard can't draw above its own view, so
@@ -591,6 +592,18 @@ final class SuggestionBar: UIView {
     private(set) var slotButtons: [UIButton] = []
     private var heightConstraint: NSLayoutConstraint?
     private var hairlines: [UIView] = []
+    /// The app's shortcut keys in the slots' place (`addToolbar`), and the toggle at the
+    /// leading edge that picks them or the slots; both nil until then.
+    private(set) var toolbar: ShortcutBar?
+    private(set) var toggle: UIButton?
+    /// The toggle's pick, in the extension's own defaults (the suggestions' memory's), so it
+    /// holds without Full Access. AutoFill and Paste show over the toolbar whatever it says
+    /// (`show`), and never change it.
+    static let toolbarKey = "keyboard.showsToolbar"
+    var showsToolbar: Bool {
+        get { suggestions.memory.defaults.bool(forKey: Self.toolbarKey) }
+        set { suggestions.memory.defaults.set(newValue, forKey: Self.toolbarKey); show(state) }
+    }
     let autofillButton = UIButton(configuration: .plain())
     /// The system's secure Paste (it draws its own icon and "Paste"): a tap hands the clip
     /// to `paste(itemProviders:)` with no Allow Paste prompt, where reading
@@ -655,6 +668,41 @@ final class SuggestionBar: UIView {
 
     @objc private func modeListTouch(_ sender: UIView, event: UIEvent?) {
         if let event { inputModeList?(sender, event) }
+    }
+
+    /// The toolbar: `keys` (read again on `toolbar.reload()`) less those a text field
+    /// can't use (`Shortcuts.hostKey`), in one row that scrolls, and the toggle before it.
+    func addToolbar(_ keys: @escaping () -> [ShortcutKey]) {
+        let tools = ShortcutBar(keys: { keys().filter { Shortcuts.hostKey($0.id) != nil } }, oneRow: true)
+        tools.onKey = { [weak self] in self?.press($0) }
+        addSubview(tools)
+        toolbar = tools
+        let t = UIButton(configuration: .plain())
+        t.configuration?.baseForegroundColor = .white
+        t.addAction(UIAction { [weak self] _ in self?.showsToolbar.toggle() }, for: .touchUpInside)
+        addSubview(t)
+        toggle = t
+        show(state)
+    }
+
+    /// A toolbar key, in the keyboard's target (`Shortcuts.hostKey`).
+    func press(_ key: ShortcutKey) {
+        guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy,
+              let action = Shortcuts.hostKey(key.id) else { return }
+        UIDevice.current.playInputClick()
+        switch action {
+        case .key(let k): keyboard.press(k)
+        case .caret(let n): keyboard.caret(n)
+        case .line(let n): keyboard.line(n)
+        case .lineEdge(let dir):
+            let before = doc.documentContextBeforeInput ?? ""
+            var n = dir < 0 ? before.reversed().prefix { !$0.isNewline }.count
+                : (doc.documentContextAfterInput ?? "").prefix { !$0.isNewline }.count
+            // Safari's space after a break that isn't in the text, as `CaretWalk.step` reads it.
+            // ponytail: only as far as the context shows the line; a second press goes on.
+            if dir < 0, before.hasPrefix("\n "), n == before.count - 1 { n -= 1 }
+            if n > 0 { keyboard.caret(dir * n) }
+        }
     }
 
     /// Suggest for `keyboard`'s target: its keys go through `Suggestions.willPress` and
@@ -750,10 +798,18 @@ final class SuggestionBar: UIView {
         let slots: [Suggestions.Slot?]
         if case .slots(let s) = new { slots = s } else { slots = [nil, nil, nil] }
         let single = new == .autofill || new == .paste   // one full-width button
+        let tools = toolbar != nil && !single && showsToolbar
         autofillButton.isHidden = new != .autofill
         pasteControl.isHidden = new != .paste
+        toolbar?.isHidden = !tools
+        if let toggle {
+            toggle.isHidden = single
+            toggle.configuration?.image = UIImage(systemName: tools ? "ellipsis.bubble" : "command")
+            toggle.accessibilityLabel = tools ? "Show suggestions" : "Show toolbar"
+            setNeedsLayout()
+        }
         for (b, slot) in zip(slotButtons, slots) {
-            b.isHidden = single
+            b.isHidden = single || tools
             b.isEnabled = slot != nil
             b.setTitle(slot.map { $0.quoted ? "“\($0.word)”" : $0.word }, for: .normal)
             b.accessibilityLabel = slot?.word
@@ -761,14 +817,19 @@ final class SuggestionBar: UIView {
         }
         // Like iOS, no hairline beside the highlighted slot.
         for (i, line) in hairlines.enumerated() {
-            line.isHidden = single || slots[i]?.highlighted == true || slots[i + 1]?.highlighted == true
+            line.isHidden = single || tools || slots[i]?.highlighted == true || slots[i + 1]?.highlighted == true
         }
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        let area = bounds.inset(by: UIEdgeInsets(top: 4, left: safeAreaInsets.left + 3, bottom: 4,
+        var area = bounds.inset(by: UIEdgeInsets(top: 4, left: safeAreaInsets.left + 3, bottom: 4,
                                                  right: safeAreaInsets.right + 3))
+        if let toggle, !toggle.isHidden {
+            toggle.frame = CGRect(x: area.minX, y: area.minY, width: 36, height: area.height)
+            area = area.inset(by: UIEdgeInsets(top: 0, left: 40, bottom: 0, right: 0))
+        }
+        toolbar?.frame = CGRect(x: area.minX, y: 0, width: bounds.width - area.minX, height: bounds.height)
         let w = area.width / 3
         for (i, b) in slotButtons.enumerated() {
             b.frame = CGRect(x: area.minX + CGFloat(i) * w, y: area.minY, width: w, height: area.height).insetBy(dx: 2, dy: 0)

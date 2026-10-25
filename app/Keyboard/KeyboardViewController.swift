@@ -5,7 +5,8 @@ import UIKit
 /// `textDocumentProxy`. No `sendBytes`, so return types "\n".
 ///
 /// Above the keys, `SuggestionBar`: suggestions, autocorrect and learning as iOS's own
-/// keyboard has them, which a custom keyboard doesn't get (Sources/Keys/Suggestions.swift).
+/// keyboard has them, which a custom keyboard doesn't get (Sources/Keys/Suggestions.swift),
+/// or at its toggle the app's shortcut keys that work in a text field (`addToolbar`).
 ///
 /// Launched by the system under a tight memory cap: two views, no network, the pasteboard
 /// only with Full Access (the bar's Paste), nothing held beyond the keyboard, the shared
@@ -30,6 +31,8 @@ final class KeyboardViewController: UIInputViewController {
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
         bar.attach(keyboard)
         bar.host(keyboard, in: view)
+        // The app's editor writes them to the App Group: without Full Access, the defaults.
+        bar.addToolbar { [weak self] in Shortcuts.load(self?.hasFullAccess == true ? Shortcuts.shared() : nil) }
         // Contact names and text replacements; needs no Full Access. Once per controller.
         requestSupplementaryLexicon { [weak self] lexicon in
             self?.bar.suggestions.load(lexicon.entries.map { ($0.userInput, $0.documentText) })
@@ -44,6 +47,7 @@ final class KeyboardViewController: UIInputViewController {
         let settings = KeyboardSettings.current(fullAccess: hasFullAccess)
         keyboard.settings = settings
         bar.suggestions.settings = settings
+        bar.toolbar?.reload()
         sync()
     }
 
