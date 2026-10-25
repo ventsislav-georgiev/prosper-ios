@@ -744,80 +744,29 @@ final class TerminalKeyboardTests: XCTestCase {
 
     // MARK: Routing
 
-    /// The terminal's double space: after a letter or digit the keyboard typed, the second
-    /// space goes out as DEL and the picked character; anything between, or Off, keeps it
-    /// a space.
-    func testDoubleSpaceInTheTerminal() {
-        func run(_ mark: String = "!", _ between: (TerminalKeyboard) -> Void = { _ in }, before: String = "o") -> (calls: [String], sent: [[UInt8]]) {
-            let kb = TerminalKeyboard(), spy = SpyInput()
-            var sent: [[UInt8]] = []
-            kb.target = spy
-            kb.sendBytes = { sent.append($0) }
-            kb.settings.doubleSpace = mark
-            kb.press(.char(before)); kb.press(.space)
-            between(kb)
-            kb.press(.space)
-            return (calls: spy.calls, sent: sent)
+    /// The terminal's double space: two quick spaces after a word go out as two 0x20,
+    /// through SwiftTerm's typed path as in the app, with no DEL and no mark.
+    func testTwoQuickSpacesInTheTerminalSendTwo0x20() {
+        final class Sink: TerminalViewDelegate {
+            var bytes: [UInt8] = []
+            func send(source: TerminalView, data: ArraySlice<UInt8>) { bytes += data }
+            func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
+            func setTerminalTitle(source: TerminalView, title: String) {}
+            func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+            func scrolled(source: TerminalView, position: Double) {}
+            func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
+            func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
         }
-        XCTAssertEqual(run().calls, ["o", " "])
-        XCTAssertEqual(run().sent, [[0x7f, 0x21, 0x20]], "DEL, then \"! \"")
-        XCTAssertEqual(run(".").sent, [[0x7f, 0x2e, 0x20]])
-        XCTAssertEqual(run(before: "7").sent, [[0x7f, 0x21, 0x20]], "after a digit too")
-        XCTAssertEqual(run("").calls, ["o", " ", " "], "Off")
-        XCTAssertEqual(run(before: ")").calls, [")", " ", " "], "not after a symbol")
-        XCTAssertEqual(run { $0.resetWord() }.calls, ["o", " ", " "], "a shortcut-bar key or a paste between")
-        XCTAssertEqual(run { $0.caret(-1) }.sent, [], "a caret move between")
-        XCTAssertEqual(run { $0.press(.shift) }.sent.count, 1, "shift sends nothing")
-        let third = run { $0.press(.space) }
-        XCTAssertEqual(third.calls, ["o", " ", " "], "a third space is a space")
-        XCTAssertEqual(third.sent, [[0x7f, 0x21, 0x20]])
-        let vim = run { $0.fullScreen = { true } }
-        XCTAssertEqual(vim.calls, ["o", " ", " "], "the alternate screen")
-        XCTAssertEqual(vim.sent, [])
-
-        let ext = TerminalKeyboard(), spy = SpyInput()   // no sendBytes: no terminal to track
-        ext.target = spy
-        ext.press(.char("o")); ext.press(.space); ext.press(.space)
-        XCTAssertEqual(spy.calls, ["o", " ", " "])
-    }
-
-    /// The double space is off only where the keys are commands: vim, less and man take the
-    /// alternate screen with application cursor keys; Claude Code's full-screen prompt (and
-    /// nano) the alternate screen alone, with mouse modes, and keep it.
-    func testDoubleSpaceOffOnlyInVimAndLess() {
         let tv = TerminalView(frame: CGRect(x: 0, y: 0, width: 390, height: 700), font: TerminalFont.mono(size: 12))
-        let t = tv.getTerminal()
-        let kb = TerminalKeyboard(), spy = SpyInput()
-        var sent: [[UInt8]] = []
-        kb.target = spy
-        kb.sendBytes = { sent.append($0) }
-        kb.fullScreen = { TerminalKeyboard.fullScreen(t) }
-        func doubles() -> Bool {
-            sent = []
-            kb.press(.char("o")); kb.press(.space); kb.press(.space)
-            return !sent.isEmpty
-        }
-        XCTAssertTrue(doubles(), "the shell")
-        tv.feed(text: "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1006h")
-        XCTAssertTrue(t.isCurrentBufferAlternate, "precondition: alternate screen")
-        XCTAssertTrue(doubles(), "Claude Code's full-screen prompt")
-        tv.feed(text: "\u{1b}[?1h")
-        XCTAssertFalse(doubles(), "vim")
-        tv.feed(text: "\u{1b}[?1049l")
-        XCTAssertTrue(doubles(), "back at the shell with ?1h left on")
-    }
-
-    /// Only a quick second space doubles, and a thumb's counts as quick: it often comes
-    /// 250–450 ms after the first, past shift's 0.3 s (#540).
-    func testDoubleSpaceWindow() {
-        let w = TerminalKeyboard.doubleSpaceWindow
-        let typed: [(key: TerminalKeyboard.Key, at: TimeInterval)] = [(key: .char("a"), at: 0), (key: .space, at: 10)]
-        XCTAssertTrue(TerminalKeyboard.spaceDoubles(after: typed, now: 10 + w / 2))
-        XCTAssertTrue(TerminalKeyboard.spaceDoubles(after: typed, now: 10.45), "a thumb's second space")
-        XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: typed, now: 10 + w * 2), "too slow")
-        XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: typed, now: 10.7), "a pause, whatever the window")
-        XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: Array(typed.suffix(1)), now: 10), "nothing before the space")
-        XCTAssertFalse(TerminalKeyboard.spaceDoubles(after: [(key: .space, at: 9), (key: .space, at: 10)], now: 10))
+        let sink = Sink()
+        tv.terminalDelegate = sink
+        let kb = TerminalKeyboard()
+        kb.target = tv
+        kb.sendBytes = { sink.bytes += $0 }
+        kb.press(.char("o"))
+        sink.bytes = []
+        kb.press(.space); kb.press(.space)
+        XCTAssertEqual(sink.bytes, [0x20, 0x20])
     }
 
     func testKeysReachTheTextInput() {

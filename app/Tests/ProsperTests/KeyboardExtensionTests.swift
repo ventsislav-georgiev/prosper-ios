@@ -23,7 +23,7 @@ final class KeyboardExtensionTests: XCTestCase {
         var hidesContext = false
         var documentContextBeforeInput: String? {
             if hidesContext { return nil }
-            var u = Array(((guess ?? shown)?.before ?? (lagsEdits > 0 ? (edits.count >= lagsEdits ? edits[edits.count - lagsEdits] : "") : text)).utf16)
+            var u = Array(((guess ?? shown)?.before ?? text).utf16)
             if lineBefore, let i = u.lastIndex(of: 0x0A) { u = i == u.count - 1 ? [0x0A] : Array(u[(i + 1)...]) }
             if sentenceBefore, let i = u.indices.dropLast(2).last(where: { u[$0] == 0x2E && u[$0 + 1] == 0x20 }) {
                 u = Array(u[(i + 2)...])
@@ -55,11 +55,8 @@ final class KeyboardExtensionTests: XCTestCase {
         var documentInputMode: UITextInputMode? { nil }
         let documentIdentifier = UUID()
         var hasText: Bool { !text.isEmpty }
-        /// The before-context is this many edits behind, as a host's out of process can be.
-        var lagsEdits = 0
-        private var edits: [String] = []
-        func insertText(_ s: String) { edits.append(text); text += s; calls.append(s) }
-        func deleteBackward() { edits.append(text); _ = text.popLast(); calls.append("⌫") }
+        func insertText(_ s: String) { text += s; calls.append(s) }
+        func deleteBackward() { _ = text.popLast(); calls.append("⌫") }
         /// Every caret move, as asked; the caret moves within `text` + `after`.
         var moves: [Int] = []
         /// Where each move left the caret, in UTF-16 units from the start.
@@ -382,7 +379,6 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertTrue(d.capsLock)
         XCTAssertTrue(d.predictiveText)
         XCTAssertTrue(d.characterPreview)
-        XCTAssertEqual(d.doubleSpace, ".")
         XCTAssertEqual(KeyboardSettings(nil), d)
         XCTAssertEqual(TerminalKeyboard().settings, d)
         XCTAssertEqual(Suggestions().settings, d)
@@ -400,36 +396,15 @@ final class KeyboardExtensionTests: XCTestCase {
                     K.characterPreview] {
             defaults.set(key == K.autoCapitalization, forKey: key)   // each flipped
         }
-        defaults.set("!", forKey: K.doubleSpace)
         var flipped = KeyboardSettings()
         flipped.autoCapitalization = true
         flipped.autoCorrection = false
         flipped.capsLock = false
         flipped.predictiveText = false
         flipped.characterPreview = false
-        flipped.doubleSpace = "!"
         XCTAssertEqual(KeyboardSettings(defaults), flipped)
         defaults.removeObject(forKey: K.capsLock)
         XCTAssertTrue(KeyboardSettings(defaults).capsLock, "unwritten: the default")
-    }
-
-    /// The old "." Shortcut switch carries over until the picker writes: on is ".", off is
-    /// Off. The old key stays, and the new one wins, Off included.
-    func testDoubleSpaceMigratesThePeriodSwitch() throws {
-        let suite = "KeyboardSettings.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        typealias K = KeyboardSettings.Key
-        defaults.set(true, forKey: K.periodShortcut)
-        XCTAssertEqual(KeyboardSettings(defaults).doubleSpace, ".")
-        defaults.set(false, forKey: K.periodShortcut)
-        XCTAssertEqual(KeyboardSettings(defaults).doubleSpace, "", "off is Off")
-        defaults.set("?", forKey: K.doubleSpace)
-        XCTAssertEqual(KeyboardSettings(defaults).doubleSpace, "?", "the picker's value wins")
-        defaults.set(true, forKey: K.periodShortcut)
-        defaults.set("", forKey: K.doubleSpace)
-        XCTAssertEqual(KeyboardSettings(defaults).doubleSpace, "", "Off wins over an old on")
-        XCTAssertEqual(defaults.object(forKey: K.periodShortcut) as? Bool, true, "the old key stays")
     }
 
     /// No Full Access, or no suite: the defaults, whatever the app wrote.
@@ -541,81 +516,19 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertNil(KeyboardSettings.takeHop(), "no suite: nothing")
     }
 
-    // MARK: Double-space period
+    // MARK: Space
 
-    func testPeriodReplacesSpace() {
-        func period(_ text: String?, _ type: UIKeyboardType, typed: TerminalKeyboard.Key? = nil) -> Bool {
-            TerminalKeyboard.periodReplacesSpace(before: text, typed: typed, keyboardType: type)
-        }
-        XCTAssertTrue(period("word ", .default), "word, space: the second space is a period")
-        XCTAssertTrue(period("Up 5 ", .default), "after a digit")
-        XCTAssertTrue(period("word ", .asciiCapable))
-        XCTAssertFalse(period("word", .default), "the first space after a word is a space")
-        XCTAssertTrue(period("worD", .default, typed: .char("d")), "the keyboard's space the host hasn't shown yet")
-        XCTAssertFalse(period("word", .default, typed: .char("k")), "a word the keyboard didn't just end")
-        XCTAssertFalse(period("word. ", .default), "a period already there")
-        XCTAssertFalse(period("On my way! ", .default), "an autocorrect's own mark")
-        XCTAssertFalse(period("word, ", .default), "nor after other punctuation")
-        XCTAssertFalse(period("word  ", .default), "only exactly one space")
-        XCTAssertFalse(period(" ", .default))
-        XCTAssertFalse(period(nil, .default))
-        XCTAssertFalse(period("1️⃣ ", .default), "an emoji Swift calls a digit")
-        XCTAssertFalse(period("Ⓜ️ ", .default), "or a letter")
-        for type in [UIKeyboardType.URL, .emailAddress, .webSearch, .numberPad, .asciiCapableNumberPad,
-                     .decimalPad, .phonePad, .namePhonePad] {
-            XCTAssertFalse(period("word ", type), "\(type.rawValue)")
-        }
-    }
-
-    /// Through the keyboard: with the flag, two spaces after a word give ". " and the next
-    /// letter is capitalized; without it (the app's default), two spaces.
-    func testDoubleSpacePeriodThroughTheProxy() {
-        let kb = TerminalKeyboard()
-        let doc = FakeProxy()
+    /// Two quick spaces after a word are two spaces through the proxy, the next letter
+    /// still lowercase: no shortcut turns them into ". ".
+    func testTwoQuickSpacesAreTwoSpacesThroughTheProxy() {
+        let kb = TerminalKeyboard(), doc = FakeProxy()
         kb.target = doc
-        kb.doubleSpacePeriod = true
         kb.settings.autoCapitalization = true
         for k in ["o", "k"] { kb.press(.char(k)) }
         kb.press(.space); kb.press(.space)
         kb.press(.char("s"))
-        XCTAssertEqual(doc.text, "ok. S")
-        XCTAssertEqual(doc.calls.suffix(4), [" ", "⌫", ". ", "S"], "through deleteBackward and insertText")
-        doc.text = "a@b "; doc.keyboardType = .emailAddress
-        kb.press(.space)
-        XCTAssertEqual(doc.text, "a@b  ", "not in an email field")
-
-        let off = TerminalKeyboard(), plain = FakeProxy()
-        off.target = plain
-        plain.text = "ok "
-        off.press(.space)
-        XCTAssertEqual(plain.text, "ok  ", "the flag is off by default")
-    }
-
-    /// A device's host can show the keyboard's edits a moment late: the second space reads
-    /// a context still without the first, and still doubles; a third space then reads
-    /// the first again, and stays a space (#540).
-    func testDoubleSpacePeriodWhileTheContextLags() {
-        let kb = TerminalKeyboard(), doc = FakeProxy()
-        kb.target = doc
-        kb.doubleSpacePeriod = true
-        doc.lagsEdits = 1
-        kb.press(.char("o")); kb.press(.char("k")); kb.press(.space); kb.press(.space)
-        XCTAssertEqual(doc.text, "ok. ")
-        doc.lagsEdits = 2   // ~700 ms behind: the context still shows "ok "
-        kb.press(.space)
-        XCTAssertEqual(doc.text, "ok.  ", "a third space is a space, not a second mark")
-    }
-
-    /// The Double-Space Shortcut picks the character; Off types two spaces.
-    func testDoubleSpaceShortcutPicksTheCharacter() {
-        for (mark, text) in [(mark: ".", text: "o. "), (mark: "!", text: "o! "), (mark: "?", text: "o? "), (mark: "", text: "o  ")] {
-            let kb = TerminalKeyboard(), doc = FakeProxy()
-            kb.target = doc
-            kb.doubleSpacePeriod = true
-            kb.settings.doubleSpace = mark
-            kb.press(.char("o")); kb.press(.space); kb.press(.space)
-            XCTAssertEqual(doc.text, text, mark)
-        }
+        XCTAssertEqual(doc.text, "ok  s")
+        XCTAssertEqual(doc.calls.suffix(3), [" ", " ", "s"], "no deleteBackward")
     }
 
     // MARK: Trackpad in a host field

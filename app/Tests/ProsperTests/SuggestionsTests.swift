@@ -35,7 +35,6 @@ final class SuggestionsTests: XCTestCase {
         configure(doc)
         let kb = TerminalKeyboard()
         kb.target = doc
-        kb.doubleSpacePeriod = true
         kb.settings.autoCapitalization = true
         let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: defaults)))
         bar.attach(kb)
@@ -298,8 +297,7 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(doc.text, "teh ", "a learned word")
     }
 
-    /// A quick space after backspace undid an autocorrect is a plain space: the keys
-    /// before it typed "the ", not "teh", so the double space can't take the "h" (#540).
+    /// A quick space after backspace undid an autocorrect is a plain space.
     func testASpaceRightAfterAnUndoneAutocorrectIsASpace() {
         let (kb, bar, doc) = rig()
         withExtendedLifetime(bar) { typing(kb, "teh ⌫ ") }
@@ -523,9 +521,8 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertTrue(slots(bar).allSatisfy { $0?.highlighted != true })
     }
 
-    /// Quick taps on the space bar still type spaces, and the second one after a word
-    /// still makes ". "; no hold timer is left to fire.
-    func testSpaceTapsAndTheDoubleSpacePeriodAreUnchanged() throws {
+    /// Quick taps on the space bar type a space each; no hold timer is left to fire.
+    func testSpaceTapsAreUnchanged() throws {
         let (kb, _, doc) = rig()
         let space = try XCTUnwrap(caps(kb)["space"]).frame, p = CGPoint(x: space.midX, y: space.midY)
         typing(kb, "hi")
@@ -534,10 +531,10 @@ final class SuggestionsTests: XCTestCase {
             kb.track(.ended, id: id, at: p)
         }
         RunLoop.main.run(until: Date().addingTimeInterval(KeyTouchTracker.holdDelay + 0.1))
-        XCTAssertEqual(doc.text, "hi. ")
+        XCTAssertEqual(doc.text, "hi  ")
         kb.track(.began, id: 3, at: p)
         kb.track(.ended, id: 3, at: p)
-        XCTAssertEqual(doc.text, "hi.  ")
+        XCTAssertEqual(doc.text, "hi   ")
         XCTAssertEqual(doc.moves, [])
     }
 

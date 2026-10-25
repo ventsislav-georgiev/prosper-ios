@@ -195,8 +195,8 @@ final class EmojiPickerTests: XCTestCase {
     }
 
     /// In the terminal, a double space after an emoji is two spaces, even after one Swift
-    /// calls a digit (1️⃣) or a letter (Ⓜ️); after a letter it's still the mark.
-    func testDoubleSpaceAfterAnEmojiSendsNoMark() throws {
+    /// calls a digit (1️⃣) or a letter (Ⓜ️).
+    func testTwoSpacesAfterAnEmojiAreTwoSpaces() throws {
         let kb = TerminalKeyboard()
         let spy = SpyInput()
         kb.target = spy
@@ -213,8 +213,6 @@ final class EmojiPickerTests: XCTestCase {
         }
         XCTAssertEqual(sent, [])
         XCTAssertEqual(spy.calls, ["1️⃣", " ", " ", "Ⓜ️", " ", " ", "😀", " ", " "])
-        kb.press(.char("a")); kb.press(.space); kb.press(.space)
-        XCTAssertEqual(sent, [[0x7f] + Array(". ".utf8)], "a letter still gets it")
     }
 
     /// ABC fits its bar key, on the narrowest iPhone, by shrinking.

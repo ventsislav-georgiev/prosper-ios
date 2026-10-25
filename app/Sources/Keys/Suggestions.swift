@@ -64,8 +64,7 @@ final class Suggestions {
     /// saw each key: the end of the text before the cursor, while nothing else changed it.
     /// Compared with that text, not trusted: hosts don't reliably report a cursor move.
     ///
-    /// ponytail: the last 64 characters only, and the double-space period isn't mirrored
-    /// (backspacing into the word before it ends its correction): neither is worth more.
+    /// ponytail: the last 64 characters only: more isn't worth it.
     private var typed = ""
     /// The current word's first letter took auto-capitalization's shift, not the user's:
     /// rule N (`best`) reads the word lowercase. Set at the word's first letter (`willPress`),

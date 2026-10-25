@@ -25,7 +25,6 @@ final class KeyboardViewController: UIInputViewController {
         // iOS keeps its own strip under a custom keyboard (globe and dictation on Face ID
         // iPhones), so the app's home-gesture pad would only add an empty band.
         keyboard.bottomInset = 6
-        keyboard.doubleSpacePeriod = true
         keyboard.offersEmoji = false
         bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
@@ -49,7 +48,6 @@ final class KeyboardViewController: UIInputViewController {
         super.viewWillAppear(animated)
         let settings = KeyboardSettings.current(fullAccess: hasFullAccess)
         keyboard.settings = settings
-        keyboard.spaceLog = hasFullAccess ? KeyboardSettings.store() : nil   // ponytail: temporary, #540's `DoubleSpaceLog`
         bar.suggestions.settings = settings
         bar.toolbar?.reload()
         sync()

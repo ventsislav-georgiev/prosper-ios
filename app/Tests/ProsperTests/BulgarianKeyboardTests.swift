@@ -41,7 +41,6 @@ final class BulgarianKeyboardTests: XCTestCase {
         configure(doc)
         let kb = TerminalKeyboard(layout: .bulgarian)
         kb.target = doc
-        kb.doubleSpacePeriod = true
         kb.settings.autoCapitalization = true   // the field's type decides
         let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: defaults), layout: .bulgarian))
         bar.attach(kb)
@@ -244,7 +243,7 @@ final class BulgarianKeyboardTests: XCTestCase {
 
     // MARK: Typing
 
-    /// Shift capitals, a capital after ". ", the double-space period and backspace, in
+    /// Shift capitals, a capital after ". ", two spaces and backspace, in
     /// Cyrillic; the space bar carries the БГ tag.
     func testTypingCyrillic() throws {
         let (kb, bar, doc) = rig { $0.autocapitalizationType = .sentences }
@@ -252,19 +251,15 @@ final class BulgarianKeyboardTests: XCTestCase {
         typing(kb, "здравей. как си")
         XCTAssertEqual(doc.text, "Здравей. Как си")
         typing(kb, "  утре")
-        XCTAssertEqual(doc.text, "Здравей. Как си. Утре", "two spaces are a period")
+        XCTAssertEqual(doc.text, "Здравей. Как си  утре", "two spaces are two spaces")
         typing(kb, "⌫⌫")
-        XCTAssertEqual(doc.text, "Здравей. Как си. Ут")
+        XCTAssertEqual(doc.text, "Здравей. Как си  ут")
         kb.press(.shift)
         typing(kb, "ж")
-        XCTAssertEqual(doc.text, "Здравей. Как си. УтЖ")
+        XCTAssertEqual(doc.text, "Здравей. Как си  утЖ")
         kb.press(.shift); kb.press(.shift)   // caps lock
         typing(kb, "щ ю")
-        XCTAssertEqual(doc.text, "Здравей. Как си. УтЖЩ Ю")
-        kb.press(.shift)   // caps off
-        kb.settings.doubleSpace = "?"
-        typing(kb, "  да")
-        XCTAssertEqual(doc.text, "Здравей. Как си. УтЖЩ Ю? Да", "the picked character")
+        XCTAssertEqual(doc.text, "Здравей. Как си  утЖЩ Ю")
         withExtendedLifetime(bar) {}
         XCTAssertEqual(laidOut(kb)["БГ"]?.accessibilityLabel, "space")
     }

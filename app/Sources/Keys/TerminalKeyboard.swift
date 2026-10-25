@@ -52,9 +52,6 @@ struct KeyboardSettings: Equatable {
         static let capsLock = "keyboard.capsLock"
         static let predictiveText = "keyboard.predictiveText"
         static let characterPreview = "keyboard.characterPreview"
-        /// The old switch, read only when `doubleSpace` was never written (`init(_:)`).
-        static let periodShortcut = "keyboard.periodShortcut"
-        static let doubleSpace = "keyboard.doubleSpace"
         static let bottomOrder = "keyboard.bottomOrder"
         static let bottomHidden = "keyboard.bottomHidden"
     }
@@ -69,9 +66,6 @@ struct KeyboardSettings: Equatable {
     var predictiveText = true
     /// The bubble over a pressed key; a hold's symbol still shows (`refreshPressed`).
     var characterPreview = true
-    /// What a double space types before a space: ".", "!" or "?"; empty is off
-    /// (`TerminalKeyboard.doubleSpacePeriod`, `TerminalKeyboard.spaceDoubles`).
-    var doubleSpace = "."
     /// The keys beside space, space itself as " ", in the bottom row's order (`bottomRow`).
     var bottomOrder = KeyboardSettings.bottomKeys
     /// Those of them that don't show; space always does, and takes their room (`place`).
@@ -92,8 +86,6 @@ struct KeyboardSettings: Equatable {
         read(Key.capsLock, &capsLock)
         read(Key.predictiveText, &predictiveText)
         read(Key.characterPreview, &characterPreview)
-        doubleSpace = defaults?.string(forKey: Key.doubleSpace)
-            ?? (defaults?.object(forKey: Key.periodShortcut) as? Bool == false ? "" : doubleSpace)
         bottomOrder = defaults?.string(forKey: Key.bottomOrder) ?? bottomOrder
         bottomHidden = defaults?.string(forKey: Key.bottomHidden) ?? bottomHidden
     }
@@ -301,13 +293,6 @@ struct KeyTouchTracker {
     }
 
     mutating func reset() { touches.removeAll() }
-
-    /// A touch's key, how far it has traveled counting `point`, where it began and whether
-    /// it has typed or turned: for `DoubleSpaceLog`, temporary like it.
-    func probe(_ id: Int, at point: CGPoint) -> (key: Key, travel: CGFloat, belowKeys: Bool, done: Bool)? {
-        guard let t = touches.first(where: { $0.id == id }) else { return nil }
-        return (t.key, max(t.travel, hypot(point.x - t.start.x, point.y - t.start.y)), t.belowKeys, t.done)
-    }
 }
 
 /// Trackpad steps through a host field's document proxy, whose `adjustTextPosition` counts
@@ -733,8 +718,7 @@ struct CaretWalk {
 /// There `target` is the host's `UITextDocumentProxy` and `sendBytes` is nil, so return
 /// types a real "\n", titled by the field's return key (`returnTitle`); the globe key
 /// shows when iOS asks for one (`showsGlobe`), shift follows the field's
-/// auto-capitalization (`autoCapitalize`) and a second space after a word types ". "
-/// (`doubleSpacePeriod`), or the character `settings` pick. The Bulgarian extension's has
+/// auto-capitalization (`autoCapitalize`). The Bulgarian extension's has
 /// Bulgarian letters (`Layout`); the app's is always English.
 final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     enum Key: Hashable {
@@ -906,10 +890,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// Raw bytes to the terminal, past `insertText` (which makes multi-byte control text
     /// a paste). Nil in the extension: return then types "\n".
     var sendBytes: (([UInt8]) -> Void)?
-    /// True while a full-screen program reads the keys as commands (vim, less): the
-    /// alternate screen with application cursor keys (`fullScreen(_:)`), not just the
-    /// alternate screen, which Claude Code's prompt takes too.
-    var fullScreen: () -> Bool = { false }
     /// Return's title, from the field's return key (`returnTitle(for:)`); nil draws the
     /// `return.left` arrow. The extension sets it, the app never does.
     var returnTitle: String? { didSet { refreshLabels() } }
@@ -921,10 +901,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// extension clears it: its picker's glyphs outgrew an extension's memory (#515), and
     /// a system keyboard reaches iOS's own emoji through the globe or iOS's switcher.
     var offersEmoji = true { didSet { if offersEmoji != oldValue { build() } } }
-    /// A second space after a word types ". " (`periodReplacesSpace`), like the system
-    /// keyboard, or the character `settings.doubleSpace` picks. The extension sets it; the
-    /// terminal, with no text to read, goes by its own keys instead (`spaceDoubles`).
-    var doubleSpacePeriod = false
     /// The app's Keyboard settings: the extension's controller sets them when it appears,
     /// the terminal when it takes focus. A new bottom row rebuilds the caps.
     var settings = KeyboardSettings() {
@@ -942,19 +918,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// After each trackpad step, or a line move's first: the extension's suggestions forget
     /// the word they were following, and the bar recomputes. Nil in the app.
     var didMoveCaret: (() -> Void)?
-    /// Where `DoubleSpaceLog` writes; nil writes nothing (the extension without Full Access).
-    /// The first store set logs "attach": a keyboard made afresh starts with no `typed`.
-    ///
-    /// ponytail: temporary, for #540's device run: remove with `DoubleSpaceLog`.
-    var spaceLog: UserDefaults? { didSet { if oldValue == nil { note("attach") } } }
     private(set) var shift = ShiftState()
     /// The letters typed since the last non-letter, lowercase: the prefix touch correction
     /// continues. Backspace drops one, shift keeps it, any other key clears it. Keys from
     /// the shortcut bar bypass this keyboard, so the host calls `resetWord` for them.
     private(set) var word = ""
-    /// The last two keys typed and when, for the double space (`spaceDoubles`).
-    /// Emptied, like `word`, by anything else that reaches it and by a caret move.
-    private var typed: [(key: Key, at: TimeInterval)] = []
     /// The words on the terminal now (`screenWords(in:)`), for touch correction: names no
     /// dictionary knows, like hosts, services and branches. In the extension, the user's
     /// learned words and contact names instead (`Suggestions.personalWords`). Read only
@@ -1047,9 +1015,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         defer { didPress?() }
         if willPress?(key) == true {
             // ponytail: the text is no longer what the keys typed (an undone autocorrect),
-            // so touch correction and the double space start afresh rather than guess it back.
+            // so touch correction starts afresh rather than guess it back.
             word = ""
-            clearTyped("willPress")
             autoCapitalize()
             return
         }
@@ -1059,53 +1026,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .shift: break
         default: word = ""
         }
-        let now = CACurrentMediaTime(), before = typed
-        if key != .shift { typed = Array((typed + [(key: key, at: now)]).suffix(2)) }
         switch key {
         case .char(let c):
             let letter = c.first?.isLetter == true
             target?.insertText(shifted(c))
             if letter, shift.mode == .once { shift.typedLetter(); refreshLabels() }
-        case .space:
-            let mark = settings.doubleSpace
-            let doubles = !mark.isEmpty && Self.spaceDoubles(after: before, now: now)
-            // A third space is a space: the second may have doubled from a lagging context
-            // that still shows the first, which would read as a word and one space again.
-            let third = before.map(\.key) == [.space, .space]
-            let doc = target as? UITextDocumentProxy, context = doc?.documentContextBeforeInput
-            let period = doc.map {
-                Self.periodReplacesSpace(before: context, typed: doubles ? before[0].key : nil,
-                                         keyboardType: $0.keyboardType ?? .default)
-            } ?? false
-            let full = fullScreen()
-            let branch: String
-            if doubleSpacePeriod, !third, !mark.isEmpty, let doc, period {
-                doc.deleteBackward()
-                doc.insertText(mark + " ")
-                branch = "period"
-            } else if doubles, let sendBytes, !full {
-                // DEL, as the delete key sends, then the mark: raw, since the terminal view
-                // turns a ". " after a deleted space back into two spaces.
-                // Off in vim and less (`fullScreen`), so vi's insert mode loses the shortcut.
-                // ponytail: a primary-screen TUI where DEL doesn't erase (kitty's all-keys
-                // mode) still sees a stray DEL and the mark.
-                sendBytes([0x7f] + Array((mark + " ").utf8))
-                branch = "bytes"
-            } else {
-                target?.insertText(" ")
-                branch = "plain"
-            }
-            if spaceLog != nil {
-                let flag = { (b: Bool) in b ? "1" : "0" }
-                note(["space", before.last.map { "+\(Int(((now - $0.at) * 1000).rounded()))ms" } ?? "-",
-                      "before=" + before.map { DoubleSpaceLog.kind($0.key) }.joined(),
-                      "doubles=" + flag(doubles), "third=" + flag(third), "mark=" + (mark.isEmpty ? "off" : mark),
-                      "dsp=" + flag(doubleSpacePeriod), "doc=" + flag(doc != nil),
-                      "kt=" + (doc.map { String(($0.keyboardType ?? .default).rawValue) } ?? "-"),
-                      "ctx=" + DoubleSpaceLog.shape(context), "period=" + flag(period), "fs=" + flag(full),
-                      "bytes=" + flag(sendBytes != nil), "-> " + branch].joined(separator: " "))
-            }
-            if branch == "bytes" { clearTyped("sent") }
+        case .space: target?.insertText(" ")
         case .ret: if let sendBytes { sendBytes(Self.newlineBytes) } else { target?.insertText("\n") }
         case .backspace: target?.deleteBackward()
         case .shift:
@@ -1169,7 +1095,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private func caretMoved() {
         word = ""
-        clearTyped("caretMoved")
         autoCapitalize()
         didMoveCaret?()
     }
@@ -1253,43 +1178,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
     }
 
-    /// How soon after the first space a second one doubles (`spaceDoubles`): a thumb's
-    /// second space often comes 250–450 ms after the first, past shift's 0.3 s. A space
-    /// after a pause stays a space, as does one after a caret move the keyboard never saw
-    /// (a tap in a host field).
-    ///
-    /// ponytail: one fixed window, a guess at a thumb. Tune it on device.
-    static let doubleSpaceWindow: TimeInterval = 0.6
-
-    /// Whether a space typed `now` replaces the one before it: the keyboard's last keys
-    /// were a letter or digit, then a space within `doubleSpaceWindow`.
-    static func spaceDoubles(after typed: [(key: Key, at: TimeInterval)], now: TimeInterval) -> Bool {
-        guard typed.count == 2, case .char(let c) = typed[0].key, let first = c.first,
-              first.isLetter || first.isNumber, typed[1].key == .space else { return false }
-        return now - typed[1].at <= doubleSpaceWindow
-    }
-
-    /// Whether a space typed now replaces the space before the cursor with ". ": the text
-    /// ends in a letter or digit and exactly one space, or, from a host whose context hasn't
-    /// shown that space yet (a device's can lag the keyboard's edits), in `typed`: the
-    /// letter or digit the keyboard typed right before it (`spaceDoubles`). Never in a field
-    /// where a period would break the value: URLs, email, web search, number and phone pads.
-    /// An emoji Swift calls a letter or a digit (Ⓜ️, 1️⃣) isn't one: U+FE0F makes it an emoji.
-    static func periodReplacesSpace(before text: String?, typed: Key? = nil, keyboardType: UIKeyboardType) -> Bool {
-        if isValueField(keyboardType) { return false }
-        let tail = Array((text ?? "").suffix(2))
-        var end: Character?
-        if tail.last == " " {
-            end = tail.count == 2 ? tail[0] : nil
-        } else if case .char(let c) = typed, let last = tail.last, last.lowercased() == c.lowercased() {
-            end = last
-        }
-        guard let end else { return false }
-        return (end.isLetter || end.isNumber) && !end.unicodeScalars.contains("\u{FE0F}")
-    }
-
-    /// A field whose value isn't prose, so nothing may rewrite what's typed (no period for
-    /// a double space, no autocorrect): URLs, email, web search, number and phone pads.
+    /// A field whose value isn't prose, so nothing may rewrite what's typed (no
+    /// autocorrect): URLs, email, web search, number and phone pads.
     static func isValueField(_ type: UIKeyboardType) -> Bool {
         switch type {
         case .URL, .emailAddress, .webSearch, .numberPad, .asciiCapableNumberPad, .decimalPad,
@@ -1419,7 +1309,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             feedback()
             let bottomRow = caps.last?.map(\.frame.maxY).max() ?? .infinity
             perform(tracker.began(id, key(at: point), at: point, belowKeys: point.y > bottomRow))
-            noteSpaceTouch("began", id, at: point)
             stopHold()
             if tracker.previewKey != nil || tracker.held.last == .space { startHold(id, at: point) }
         case .moved:
@@ -1427,13 +1316,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             if holdTouch?.id == id { holdTouch?.at = point }
         case .ended:
             perform(tracker.moved(id, key(at: point), at: point))
-            noteSpaceTouch("ended", id, at: point)
             // Lifted on the globe, which takes its own touches: the key it slid from types nothing.
             let onOwnCap = caps.joined().contains { $0.key == .globe && $0.frame.contains(point) }
             perform(tracker.ended(id).filter { if case .press = $0 { !onOwnCap } else { true } })
             if holdTouch?.id == id { stopHold() }
         case .cancelled:
-            noteSpaceTouch("cancelled", id, at: point)
             perform(tracker.cancelled(id, at: point))   // only how far it traveled matters
             if holdTouch?.id == id { stopHold() }
         default:
@@ -1503,26 +1390,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     /// Start the next word afresh: a key went to the terminal some other way.
-    func resetWord() { word = ""; clearTyped("resetWord") }
-
-    /// Empties `typed`, logging a clear that empties something (`spaceLog`).
-    private func clearTyped(_ by: String) {
-        if !typed.isEmpty { note("clear \(by)") }
-        typed = []
-    }
-
-    /// A space touch's phase for `DoubleSpaceLog`: its travel, whether it began under the
-    /// keys, and whether it already typed or turned.
-    private func noteSpaceTouch(_ phase: String, _ id: Int, at point: CGPoint) {
-        guard spaceLog != nil, let t = tracker.probe(id, at: point), t.key == .space else { return }
-        note("touch \(phase) travel=\(Int(t.travel.rounded())) below=\(t.belowKeys ? 1 : 0) done=\(t.done ? 1 : 0)")
-    }
-
-    /// A `DoubleSpaceLog` line, tagged with the keyboard it came from.
-    private func note(_ line: String) {
-        guard spaceLog != nil else { return }
-        DoubleSpaceLog.add((sendBytes == nil ? "ext " : "app ") + line, to: spaceLog)
-    }
+    func resetWord() { word = "" }
 
     /// 0 inside `r`.
     static func distance(_ p: CGPoint, _ r: CGRect) -> CGFloat {
@@ -1642,7 +1510,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         guard let h = holdTouch else { return }
         stopHold()
         if tracker.startTrackpad(h.id, at: h.at) {
-            note("touch trackpad")
             haptics.impactOccurred()
             haptics.prepare()
             refreshLabels()

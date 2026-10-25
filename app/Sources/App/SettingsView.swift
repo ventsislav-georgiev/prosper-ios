@@ -74,9 +74,6 @@ struct SettingsView: View {
     private var predictiveText = KeyboardSettings().predictiveText
     @AppStorage(KeyboardSettings.Key.characterPreview, store: KeyboardSettings.store())
     private var characterPreview = KeyboardSettings().characterPreview
-    // Unwritten, it follows the old "." Shortcut switch (`KeyboardSettings.init(_:)`).
-    @AppStorage(KeyboardSettings.Key.doubleSpace, store: KeyboardSettings.store())
-    private var doubleSpace = KeyboardSettings.current().doubleSpace
     @AppStorage(AgentCommand.key) private var agentCommand = ""
     // Session list rows (`RowDetails`), on this device only.
     @AppStorage(RowDetails.Key.agents) private var rowAgents = RowDetails().agents
@@ -171,19 +168,12 @@ struct SettingsView: View {
                 Toggle("Enable Caps Lock", isOn: $capsLock)
                 Toggle("Predictive Text", isOn: $predictiveText)
                 Toggle("Character Preview", isOn: $characterPreview)
-                Picker("Double-Space Shortcut", selection: $doubleSpace) {
-                    Text("Off").tag("")
-                    Text("Period").tag(".")
-                    Text("Exclamation Mark").tag("!")
-                    Text("Question Mark").tag("?")
-                }
                 NavigationLink("Keys Beside Space") { BottomRowSettings() }
-                NavigationLink("Double-Space Log") { DoubleSpaceLogView() }
                 Button("Toolbar Keys") { editingShortcuts = true }
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off and the rest on. In the terminal, Enable Caps Lock, Character Preview, Double-Space Shortcut and Keys Beside Space apply. Double tapping the space bar will insert the chosen character followed by a space.")
+                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off and the rest on. In the terminal, Enable Caps Lock, Character Preview and Keys Beside Space apply.")
             }
             #endif
 
@@ -248,38 +238,6 @@ struct BottomRowSettings: View {
         .environment(\.editMode, .constant(.active))   // keep .onMove handles visible
         .navigationTitle("Keys Beside Space")
         .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-/// What the keyboards logged for each space (`DoubleSpaceLog`), newest first, to copy
-/// into a report.
-///
-/// ponytail: temporary, for #540's device run: remove with `DoubleSpaceLog`.
-struct DoubleSpaceLogView: View {
-    @State private var lines = DoubleSpaceLog.lines(in: KeyboardSettings.store())
-
-    var body: some View {
-        List {
-            Section {
-                Text(lines.isEmpty ? "Nothing logged yet." : lines.joined(separator: "\n"))
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
-            } footer: {
-                Text("Records the kinds of keys and the timings around each space, never what you type. Temporary, to fix the double-space shortcut. Prosper keyboards in other apps need Full Access to write it.")
-            }
-        }
-        .navigationTitle("Double-Space Log")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            Button("Copy") { UIPasteboard.general.string = lines.joined(separator: "\n") }
-                .disabled(lines.isEmpty)
-            Button("Clear", role: .destructive) {
-                DoubleSpaceLog.clear(KeyboardSettings.store())
-                lines = []
-            }
-            .disabled(lines.isEmpty)
-        }
-        .onAppear { lines = DoubleSpaceLog.lines(in: KeyboardSettings.store()) }
     }
 }
 
