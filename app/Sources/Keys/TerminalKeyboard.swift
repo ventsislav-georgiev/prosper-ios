@@ -190,6 +190,10 @@ struct KeyTouchTracker {
     /// How far a trackpad finger travels up or down per line: a key row, four times
     /// `caretStep`, so a sideways drag's wobble, under a row, never changes line and a drag goes
     /// a line per row it crosses.
+    ///
+    /// ponytail: the space bar sits about 100 pt over the screen's bottom (874 pt tall), so a
+    /// hold goes at most 2 lines down; a second hold goes on. Kept a row, not shorter, since
+    /// shorter steps read as jumps.
     static let lineStep: CGFloat = TerminalKeyboard.rowHeight
 
     private struct Touch {
@@ -355,15 +359,19 @@ struct CaretWalk {
     private var shown: (String, String)?
     private var quiet = 0
     /// Polls since the last move, and the most polls after a move the host has been seen
-    /// to change its context (`step`), 0 while it answers by the next poll.
+    /// to change its context (`step`), 0 while it answers by the next poll, at most 40 (0.8 s)
+    /// so the walk stops waiting (`poll`) well inside the view's 2 s.
     private var age = 0, lag = 0
     /// Line moves asked for and not crossed yet, negative up.
     private(set) var lines = 0
     /// The column line moves aim for, in Characters from the line's start: kept from line
     /// to line, so a short one on the way doesn't shorten the next, until a sideways step
     /// goes. Kept past a touch (`drop`) and an idle walk too, as iOS keeps it from arrow to
-    /// arrow, while the context still reads as where the walk left the caret (`kept`): any
-    /// other (typing, an edit, a tap in the host field) means the caret moved without it.
+    /// arrow, while the context still reads as where the walk left the caret (`kept`, `kin`):
+    /// any other (typing, an edit, a tap in the host field) means the caret moved without it.
+    ///
+    /// ponytail: a letter typed and deleted again reads as where the walk left it, and keeps the
+    /// goal; so does typing a run's own Character where the context showed only that run.
     private var goal: Int?
     private var kept: (String, String)?
     /// The line move under way: the Characters it walked on the line it started on, nil
@@ -390,7 +398,7 @@ struct CaretWalk {
         let changed = shown.map { !Self.same($0, b, a) } ?? false
         if changed { quiet = 0 }
         shown = (b, a)
-        if n != 0, idle, goal != nil, !(kept.map { Self.same($0, b, a) } ?? false) { goal = nil }
+        if n != 0, idle, goal != nil, !(kept.map { Self.kin($0, b, a) } ?? false) { goal = nil }
         defer { kept = idle && goal != nil ? (b, a) : nil }
         if blank { defer { queued = 0 }; return queued + steps }   // no lines: nothing to see them by
         if lines != 0 || landing != nil { held += steps } else { queued += steps; if steps != 0 { goal = nil } }
@@ -402,8 +410,9 @@ struct CaretWalk {
             // leg is sized from UIKit's guess, whose emptied side is no line's start or end.
             // ponytail: the lag is learned, not known: a field's first line move on a host slower
             // than the view's settle can still size a leg from a guess, and one host stall sets
-            // the most for the field. Time the host's answers if that shows.
-            if changed, age > 1 { lag = max(lag, age) }
+            // the most for the field (a backlog of guessed legs answered one by one sets more).
+            // Time the host's answers if that shows.
+            if changed, age > 1 { lag = min(max(lag, age), 40) }
             if lines != 0 || landing != nil, lag > 0, age <= lag, !s.late { return 0 }
             if Self.same(s.seen, b, a) {
                 // Nothing shown when the view stopped waiting: UIKit's proxy shows at least its
@@ -513,11 +522,16 @@ struct CaretWalk {
     }
 
     /// One tick of the view's 20 ms poll: past 15 since the move or since the host last
-    /// showed a new context (it's still answering older moves), the view stops waiting.
+    /// showed a new context (it's still answering older moves), or past the host's `lag` if
+    /// it has shown more, the view stops waiting.
+    ///
+    /// ponytail: a host answering later than that (a stall past 0.3 s it hasn't shown yet) has
+    /// UIKit's guess believed, whose emptied side reads as a line's start or the text's: the
+    /// move ends a line or a column short. Wait on the host's own signal if a device shows one.
     mutating func poll() {
         quiet += 1
         age += 1
-        if quiet > 15 { timedOut() }
+        if quiet > max(15, lag) { timedOut() }
     }
 
     /// Forget the move in flight, the steps behind it and what the field showed: a touch
@@ -547,7 +561,9 @@ struct CaretWalk {
     /// there as iOS's own arrows do. A wrapped line's rows are cut every `wrap` Characters,
     /// not at words as the host wraps, so the column drifts a word's width; one whose start
     /// is out of sight has it guessed at the context's start, not walked to (a visible jump),
-    /// so a cut context puts the rows elsewhere.
+    /// so a cut context puts the rows elsewhere. A row move with no line's start in sight at all
+    /// (UIKit's context, cut at the line) goes `wrap` Characters, keeping the caret's place in
+    /// the row, not the goal's, once a short row clamped it.
     private mutating func lineLeg(before: [Character], after: [Character]) {
         if crossing { crossing = false; walked = nil }
         let br = before.lastIndex(where: \.isNewline), col = br.map { before.count - $0 - 1 }
@@ -674,6 +690,15 @@ struct CaretWalk {
 
     private static func same(_ seen: (String, String), _ before: String, _ after: String) -> Bool {
         seen.0.utf16.elementsEqual(before.utf16) && seen.1.utf16.elementsEqual(after.utf16)
+    }
+
+    /// The caret `kept` read at, as a host can show it later: UIKit's guess when the walk went
+    /// idle and the host's late answer cut their windows apart (a UITextView's after-context
+    /// at a line's end is empty), so both sides agree as far as both reach, and the before,
+    /// which typing changes, is empty in both or neither.
+    private static func kin(_ kept: (String, String), _ before: String, _ after: String) -> Bool {
+        kept.0.isEmpty == before.isEmpty
+            && agree(Array(kept.0.utf16)[...], Array(kept.1.utf16)[...], Array(before.utf16), Array(after.utf16))
     }
 
     /// How well the context a host shows now fits a move of `units` (sign `dir`) over
@@ -1218,13 +1243,21 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// A host field's row in Characters, guessed for `walk`, which sees no host layout: the
     /// keyboard's width less a field's usual margins (`fieldInset`), over the mean Character
-    /// width of body text at the user's text size, a tenth less since word wrap leaves rows
-    /// short. nil while too narrow to mean anything.
+    /// width of body text at the user's text size but never one under the default (`.large`),
+    /// a tenth less since word wrap leaves rows short. nil while too narrow to mean anything.
     ///
-    /// ponytail: a narrower field (a chat bubble) or a smaller font gets rows too long, so a
-    /// line move from a row's far end can go two; tune `fieldInset` and the tenth on device.
+    /// ponytail: unsure, it guesses short, as a move staying on its row beats one skipping a
+    /// row: a field whose rows hold more (Dynamic Type under large, a fixed font under a size
+    /// above it) keeps a move from a row's near end on its row. One holding fewer gets rows too
+    /// long, so a move from a row's far end can go two: a font smaller than body, or a field
+    /// narrower than the screen less `fieldInset`, as a chat composer with buttons beside it
+    /// (Messages' 262 pt, rows of ~31 against 41; the operator's chat app's held 41 and 49).
+    /// `fieldInset` and the tenth are the knobs; tune them on device.
     var wrapGuess: Int? {
-        let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
+        let size = traitCollection.preferredContentSizeCategory
+        let at = UITraitCollection(traitsFrom: [traitCollection, UITraitCollection(
+            preferredContentSizeCategory: size == .unspecified ? .large : max(size, .large))])
+        let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: at)
         let sample = "the quick brown fox jumps over the lazy dog" as NSString
         let mean = sample.size(withAttributes: [.font: font]).width / CGFloat(sample.length)
         let n = Int((bounds.width - Self.fieldInset) / mean * 0.9)

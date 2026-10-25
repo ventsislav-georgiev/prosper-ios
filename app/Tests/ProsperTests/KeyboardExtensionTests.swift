@@ -46,11 +46,14 @@ final class KeyboardExtensionTests: XCTestCase {
         var documentContextAfterInput: String? {
             if hidesContext { return nil }
             let a = (guess ?? shown).map(\.after) ?? after
-            let cut = stopsAtLineEnd ? a.map { String($0.utf16.prefix { $0 != 0x0A && $0 != 0x0D }) ?? "" } : a
+            let cut = stopsAtLineEnd && !(guessesPastLineEnd && guess != nil) ? a.map { String($0.utf16.prefix { $0 != 0x0A && $0 != 0x0D }) ?? "" } : a
             return window.flatMap { w in cut.map { String(decoding: Array($0.utf16.prefix(w)), as: UTF16.self) } } ?? cut
         }
         /// The after-context stops at the caret line's end, as a host's does.
         var stopsAtLineEnd = false
+        /// UIKit's guess (`guesses`) shows the after-context on past the line's end where the
+        /// host's own answer stops (`stopsAtLineEnd`), as QA's UITextView's did.
+        var guessesPastLineEnd = false
         var selectedText: String? { nil }
         var documentInputMode: UITextInputMode? { nil }
         let documentIdentifier = UUID()
@@ -1519,6 +1522,22 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertNil(kb.wrapGuess, "nothing to guess from")
     }
 
+    /// QA's M3: unsure, the guess goes short rather than skip rows: a text size under large
+    /// guesses as large does, one above it shorter, as a Dynamic Type host's rows are.
+    func testTheRowGuessNeverGrowsPastLargeTexts() throws {
+        guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
+        let kb = TerminalKeyboard()
+        _ = laidOut(kb, width: 402)
+        func guess(_ size: UIContentSizeCategory) -> Int {
+            kb.traitOverrides.preferredContentSizeCategory = size
+            kb.updateTraitsIfNeeded()
+            return kb.wrapGuess ?? 0
+        }
+        let large = guess(.large)
+        XCTAssertEqual(guess(.extraSmall), large, "under large: as large")
+        XCTAssertLessThan(guess(.accessibilityMedium), large, "above: shorter")
+    }
+
     /// Rows of 10 in either host, lagging or not, its after-context cut at the line's end or
     /// not: a line move goes a row inside a wrapped line, keeps the goal's place in the row
     /// through a short last row, crosses a break to the next line's first row or the last
@@ -1553,6 +1572,29 @@ final class KeyboardExtensionTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// A wrapped line's rows go by the goal's place in them, not the caret's: ↓ from column 9
+    /// clamped at a 45-Character line's end, then ↑, is back at 9, not 45's place, 4 (QA's
+    /// M849), where the line's start shows. ↑ into a line whose start the context cuts, in pieces shorter than a row, counts
+    /// what it walked back to that start (`.start`), so it lands in the line's last row, not
+    /// its first (M853). `reach` into a line shown whole lands in its last row too (M852).
+    func testWrappedRowsGoByTheGoalsPlace() {
+        let x45 = String(repeating: "x", count: 45), l0 = "The first sentence is here. And the second one goes on for a while"
+        for kit in [true, false] {
+            for perRefresh in [0, 1] {
+                let at = "kit \(kit) lag \(perRefresh)"
+                XCTAssertEqual(lined("ab\nxxxxxxxxx|" + x45.dropFirst(9), kit: kit, [(0, 1), (0, -1)], perRefresh: perRefresh,
+                                     wrap: 41, tweak: { $0.lineBefore = false }),
+                               "ab\nxxxxxxxxx|" + x45.dropFirst(9), "M849 \(at)")
+                XCTAssertEqual(lined(l0 + "\nmi|d", kit: kit, [(0, -1)], perRefresh: perRefresh, wrap: 41,
+                                     tweak: { kit ? ($0.sentenceBefore = true) : ($0.window = 20) }),
+                               String(l0.prefix(43)) + "|" + l0.dropFirst(43) + "\nmid", "M853 \(at)")
+            }
+        }
+        let long = String(repeating: "abcdefghij", count: 13) + "abc", before = Array("\n" + long + "\nmid")
+        XCTAssertEqual(CaretWalk.reach(-1, column: 50, wrap: 41, before: before, after: []), 1 + 132 - before.count,
+                       "M852: column 132, the goal's place (9) in the last row")
     }
 
     /// The goal column outlives a touch, in either host, lagging or not: a line move from a
@@ -1628,6 +1670,55 @@ final class KeyboardExtensionTests: XCTestCase {
             XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "the long line one\nmid\nthe long line two\nthe |long line three",
                            "kit \(kit): from the tapped column, moves \(doc.moves)")
         }
+    }
+
+    /// QA's M1: a UITextView the walk went idle on before it answered, UIKit's guess showing
+    /// the after-context past the line's end where the host's answer, later, shows none. Long
+    /// line, "x", long line: ↑ from column 20 lands at "x|", and once the host has answered,
+    /// the next ↑ goes on at column 20, not 1. A typed letter or a sideways step between them
+    /// still sets the column (as a host tap does, `testAHostCaretMoveDropsTheGoalColumn`).
+    func testAHostsLateAnswerKeepsTheGoalColumn() {
+        let top = "the first line of text, long", low = "and here is another long line"
+        func landed() -> (TerminalKeyboard, FakeProxy) {
+            let kb = TerminalKeyboard(), doc = host(kit: true, top + "\nx\n" + low.prefix(20), String(low.dropFirst(20)))
+            doc.guessesPastLineEnd = true
+            kb.target = doc
+            kb.line(-1)
+            for _ in 0..<100 { kb.pollCaret() }   // the host answers none of it yet
+            XCTAssertEqual(doc.text, top + "\nx")
+            doc.answer()
+            return (kb, doc)
+        }
+        func up(_ kb: TerminalKeyboard, _ doc: FakeProxy) -> String {
+            kb.line(-1)
+            for _ in 0..<100 { kb.pollCaret() }
+            return doc.text + "|" + (doc.after ?? "")
+        }
+        let (kb, doc) = landed()
+        XCTAssertEqual(up(kb, doc), top.prefix(20) + "|" + top.dropFirst(20) + "\nx\n" + low, "moves \(doc.moves)")
+        let typed = landed()
+        typed.0.press(.char("y"))
+        XCTAssertEqual(up(typed.0, typed.1), "th|" + top.dropFirst(2) + "\nxy\n" + low, "a typed letter: its column")
+        let stepped = landed()
+        stepped.0.caret(-1)
+        for _ in 0..<100 { stepped.1.catchUp(); stepped.0.pollCaret() }
+        XCTAssertEqual(up(stepped.0, stepped.1), "|" + top + "\nx\n" + low, "a sideways step: its column")
+    }
+
+    /// QA's BLOCK finding: a UITextView answering 240 ms late whose first ↓ went in legs sized
+    /// from UIKit's guesses, answered one by one, shows a lag past 0.3 s. The walk waits that
+    /// long from then on, so the next ↓'s blind crossing past a short line's end, answered
+    /// inside it, is no text's end: it lands at the column, not the next line's start.
+    func testALineMoveWaitsOutTheLagAHostShowed() {
+        let text = ["the first line of text here, a long one with words", "x", "and here is another long line of words to go on"]
+        func at(_ line: Int, _ col: Int) -> String {
+            var lines = text
+            lines[line].insert("|", at: lines[line].index(lines[line].startIndex, offsetBy: col))
+            return lines.joined(separator: "\n")
+        }
+        var walk = CaretWalk()
+        XCTAssertEqual(slow(at(0, 30), lines: 1, delay: 12, walk: &walk).0, at(1, 1))
+        XCTAssertEqual(slow(at(1, 1), lines: 1, delay: 12, walk: &walk).0, at(2, 30))
     }
 
     /// Fast repeated steps, each asked before the last has landed (a quick drag, a tapped
