@@ -468,6 +468,7 @@ final class ShortcutBar: UIView {
         }
         cfg.background.backgroundColor = Neon.card
         cfg.background.cornerRadius = 7
+        cfg.cornerStyle = .fixed     // .dynamic grows the radius with the text size; Paste's stays 7
         cfg.background.strokeColor = Neon.blue.withAlphaComponent(0.55)
         cfg.background.strokeWidth = 1
         if key.id == Shortcuts.sendID {                 // the send key's outer stroke, brighter

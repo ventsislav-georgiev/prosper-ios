@@ -294,6 +294,72 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(box.subviews, [control], "nothing over the control")
     }
 
+    /// A toolbar shown in a window at `size`, Full Access on so Paste is in it, laid out.
+    @available(iOS 17, *)
+    private func shown(at size: UIContentSizeCategory) throws -> (UIWindow, SuggestionBar, TerminalKeyboard) {
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+        let (kb, bar, _) = rig("say h", keys: Shortcuts.Bar.toolbar.defaults)
+        bar.suggestions.pasteboard = { pb }
+        try XCTUnwrap(bar.toolbar).reload()
+        bar.showsToolbar = true
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        window.traitOverrides.preferredContentSizeCategory = size
+        bar.frame = CGRect(x: 0, y: 0, width: 402, height: 44)
+        window.addSubview(bar)
+        window.isHidden = false
+        addTeardownBlock { window.isHidden = true }
+        window.layoutIfNeeded()
+        return (window, bar, kb)
+    }
+
+    /// QA's #559: at accessibility-large every cap keeps the Paste cap's radius, 7, not
+    /// UIButton's dynamic one, which grows with the text (the button draws its
+    /// background at its layer's radius).
+    func testCapsKeepThePasteCapsRadiusAtAccessibilitySizes() throws {
+        guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
+        let (_, bar, kb) = try shown(at: .accessibilityLarge)
+        let toolbar = try XCTUnwrap(bar.toolbar)
+        let paste = try XCTUnwrap(Self.pasteControls(toolbar).first?.superview)
+        for cap in Self.caps(toolbar) {
+            XCTAssertEqual(cap.layer.cornerRadius, paste.layer.cornerRadius, cap.accessibilityLabel ?? "")
+        }
+        withExtendedLifetime(kb) {}
+    }
+
+    /// QA's #559: the Show toolbar / Show suggestions glyph fits its button, and the button
+    /// the bar, at every text size, accessibility-large too.
+    func testTheToggleGlyphFitsAtAccessibilitySizes() throws {
+        guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
+        for size in [UIContentSizeCategory.large, .accessibilityLarge, .accessibilityExtraExtraExtraLarge] {
+            for tools in [false, true] {
+                let (_, bar, kb) = try shown(at: size)
+                bar.showsToolbar = tools
+                bar.layoutIfNeeded()
+                let toggle = try XCTUnwrap(bar.toggle), image = try XCTUnwrap(toggle.imageView)
+                toggle.layoutIfNeeded()
+                XCTAssertTrue(toggle.bounds.contains(image.frame), "\(size) \(tools): \(image.frame) in \(toggle.bounds)")
+                XCTAssertTrue(bar.bounds.contains(toggle.convert(image.frame, to: bar)), "\(size) \(tools)")
+                withExtendedLifetime(kb) {}
+            }
+        }
+    }
+
+    /// M893: the Paste control is never squeezed under its own height in a laid-out
+    /// toolbar (below it, the control draws blank).
+    func testThePasteControlKeepsItsHeightInALaidOutToolbar() throws {
+        guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
+        let (window, bar, kb) = try shown(at: .large)
+        let control = try XCTUnwrap(Self.pasteControls(try XCTUnwrap(bar.toolbar)).first)
+        // The control learns its size from the system a runloop turn after it's shown.
+        let deadline = Date() + 2
+        while control.intrinsicContentSize.height == 0, Date() < deadline { RunLoop.main.run(until: Date() + 0.05) }
+        window.layoutIfNeeded()
+        XCTAssertGreaterThan(control.intrinsicContentSize.height, 0)
+        XCTAssertGreaterThanOrEqual(control.bounds.height, control.intrinsicContentSize.height)
+        withExtendedLifetime(kb) {}
+    }
+
     /// Rotating rebuilds the toolbar: Paste leaves in landscape and comes back in portrait,
     /// with nothing else reloading it.
     func testRotatingDropsAndRestoresTheToolbarPaste() throws {

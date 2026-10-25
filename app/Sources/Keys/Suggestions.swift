@@ -705,6 +705,8 @@ final class SuggestionBar: UIView {
         toolbar = tools
         let t = UIButton(configuration: .plain())
         t.configuration?.baseForegroundColor = .white
+        // Body's size at Large, fixed: a glyph growing with the text clips in the 36 pt slot.
+        t.configuration?.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 17)
         t.addAction(UIAction { [weak self] _ in self?.showsToolbar.toggle() }, for: .touchUpInside)
         addSubview(t)
         toggle = t

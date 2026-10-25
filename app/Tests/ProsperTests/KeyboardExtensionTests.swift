@@ -1717,6 +1717,28 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(up(stepped.0, stepped.1), "|" + top + "\nx\n" + low, "a sideways step: its column")
     }
 
+    /// A letter typed where a line move left the caret at a line's start sets the column as
+    /// any typing does: the next ↓ goes from "q|", not the old goal. At the text's start (↑
+    /// on the first line) the before-context goes from nothing to "q", which agrees with
+    /// nothing as far as both reach: only its emptiness tells them apart (M881). On an empty
+    /// line further down it goes from its break to "q".
+    func testALetterTypedAtALinesStartDropsTheGoalColumn() {
+        for kit in [true, false] {
+            for (start, rest, first) in [("the long line", " one\n\nthe long line three", 1),
+                                         ("the l", "ong line one\nthe long line two", -1)] {
+                let kb = TerminalKeyboard(), doc = host(kit: kit, start, rest)
+                kb.target = doc
+                kb.line(first)
+                for _ in 0..<100 { doc.catchUp(); kb.pollCaret() }
+                XCTAssertEqual(doc.after?.first.map { $0.isNewline || $0 == "t" }, true, "kit \(kit) \(first): a line's start")
+                kb.press(.char("q"))   // no polling: the walk's timer stopped with the move
+                kb.line(1)
+                for _ in 0..<100 { doc.catchUp(); kb.pollCaret() }
+                XCTAssertEqual(doc.after?.first, "h", "kit \(kit) \(first): column 1, moves \(doc.moves)")
+            }
+        }
+    }
+
     /// QA's BLOCK finding: a UITextView answering 240 ms late whose first ↓ went in legs sized
     /// from UIKit's guesses, answered one by one, shows a lag past 0.3 s. The walk waits that
     /// long from then on, so the next ↓'s blind crossing past a short line's end, answered
@@ -1731,6 +1753,28 @@ final class KeyboardExtensionTests: XCTestCase {
         var walk = CaretWalk()
         XCTAssertEqual(slow(at(0, 30), lines: 1, delay: 12, walk: &walk).0, at(1, 1))
         XCTAssertEqual(slow(at(1, 1), lines: 1, delay: 12, walk: &walk).0, at(2, 30))
+    }
+
+    /// The lag the walk waits out is learned up to 40 polls (0.8 s), no more. A ↓ whose legs
+    /// were answered one by one 12 polls apart shows a lag of 36: the next ↓, answered 30
+    /// polls late, is still waited for and lands at the column past the short line (a cap of
+    /// 15 crosses it blind as the text's end). One answered 15 apart shows 45: a crossing that
+    /// never shows (the last line's) times out at 40, not 45.
+    func testTheLagWaitedOutIsCappedAt40Polls() {
+        let text = ["the first line of text here, a long one with words", "x", "and here is another long line of words to go on"]
+        func at(_ line: Int, _ col: Int) -> String {
+            var lines = text
+            lines[line].insert("|", at: lines[line].index(lines[line].startIndex, offsetBy: col))
+            return lines.joined(separator: "\n")
+        }
+        var walk = CaretWalk()
+        _ = slow(at(0, 30), lines: 1, delay: 12, walk: &walk)
+        XCTAssertEqual(slow(at(1, 1), lines: 1, delay: 30, walk: &walk).0, at(2, 30), "30 polls late: waited for")
+        var lagged = CaretWalk()
+        _ = slow(at(0, 30), lines: 1, delay: 15, walk: &lagged)
+        let (got, _, wait) = slow(at(2, 30), lines: 1, delay: 0, walk: &lagged)
+        XCTAssertEqual(got, at(2, text[2].count), "the last line: its end")
+        XCTAssertEqual(wait, 41, "timed out past 40 polls, not 45")
     }
 
     /// Fast repeated steps, each asked before the last has landed (a quick drag, a tapped
