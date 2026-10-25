@@ -40,4 +40,23 @@ final class SidekickSplitTests: XCTestCase {
         XCTAssertEqual(names(r.primary), ["b", "a"])
         XCTAssertEqual(names(r.sidekicks), ["z-qa", "a-qa"])
     }
+
+    func testAllSidekicksShowsSidekicks() {
+        let r = DchSession.split([s("a-qa"), s("b-qa")], pattern: "-qa")
+        XCTAssertTrue(DchSession.showsSidekicks(r, tab: false))
+        XCTAssertTrue(DchSession.showsSidekicks(r, tab: true))
+    }
+
+    func testChosenTabShowsWhenBothHaveSessions() {
+        let r = DchSession.split([s("a"), s("a-qa")], pattern: "-qa")
+        XCTAssertFalse(DchSession.showsSidekicks(r, tab: false))
+        XCTAssertTrue(DchSession.showsSidekicks(r, tab: true))
+    }
+
+    func testNoSidekicksShowsPrimary() {
+        let r = DchSession.split([s("a"), s("b")], pattern: "-qa")
+        XCTAssertFalse(DchSession.showsSidekicks(r, tab: false))
+        XCTAssertFalse(DchSession.showsSidekicks(r, tab: true))
+        XCTAssertFalse(DchSession.showsSidekicks(DchSession.split([], pattern: "-qa"), tab: true))
+    }
 }

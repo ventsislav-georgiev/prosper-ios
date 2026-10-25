@@ -324,7 +324,9 @@ struct SessionListView: View {
     @State private var creating = false            // new-session alert
     @State private var newName = ""
     @State private var sleeping = false            // sleep round-trip in flight
-    @State private var sidekickTab = false         // the Sidekicks segment is showing
+    // The Sidekicks segment is chosen. Scene storage, so the list an alert or Live Activity
+    // rebuilds (a new `.id`) comes back on the same tab.
+    @SceneStorage("sessions.sidekickTab") private var sidekickTab = false
     @AppStorage(DchSession.sidekickKey) private var sidekickPattern = DchSession.sidekickDefault
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -379,15 +381,22 @@ struct SessionListView: View {
                 Text(line).foregroundStyle(.secondary)
             }
             let split = DchSession.split(DchSession.ordered(sessions), pattern: sidekickPattern)
-            if !split.sidekicks.isEmpty {
-                Picker("Sessions", selection: $sidekickTab) {
-                    Text("Sessions (\(split.primary.count))").tag(false)
-                    Text("Sidekicks (\(split.sidekicks.count))").tag(true)
+            if split.sidekicks.isEmpty {
+                ForEach(split.primary) { s in row(s) }
+            } else {
+                // Own section, picker as its header: the machine card above stays in one piece.
+                let shows = DchSession.showsSidekicks(split, tab: sidekickTab)
+                Section {
+                    ForEach(shows ? split.sidekicks : split.primary) { s in row(s) }
+                } header: {
+                    Picker("Sessions", selection: Binding(get: { shows }, set: { sidekickTab = $0 })) {
+                        Text("Sessions (\(split.primary.count))").tag(false)
+                        Text("Sidekicks (\(split.sidekicks.count))").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .textCase(nil)
                 }
-                .pickerStyle(.segmented)
-                .listRowBackground(Color.clear)
             }
-            ForEach(sidekickTab && !split.sidekicks.isEmpty ? split.sidekicks : split.primary) { s in row(s) }
         }
         // The last sidekick gone (or the split turned off): back to Sessions for good.
         .onChange(of: DchSession.split(sessions, pattern: sidekickPattern).sidekicks.isEmpty) { empty in
@@ -678,6 +687,12 @@ extension DchSession {
         guard !p.isEmpty else { return (list, []) }
         let isSidekick = { (s: DchSession) in s.name.range(of: p, options: .caseInsensitive) != nil }
         return (list.filter { !isSidekick($0) }, list.filter(isSidekick))
+    }
+
+    /// Whether the Sidekicks list shows: never without sidekicks, always when they are all
+    /// there is (an empty Sessions tab reads as a Mac with no sessions), else the chosen tab.
+    static func showsSidekicks(_ split: (primary: [DchSession], sidekicks: [DchSession]), tab: Bool) -> Bool {
+        !split.sidekicks.isEmpty && (tab || split.primary.isEmpty)
     }
 }
 

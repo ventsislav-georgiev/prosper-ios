@@ -58,7 +58,8 @@ struct ShortcutEditor: View {
                 }
             }
         } else {
-            list.toolbar { ToolbarItem(placement: .navigationBarTrailing) { reset } }
+            // Pushed: Back, the title and Edit fill the bar, so Reset moves into the list.
+            list
         }
     }
 
@@ -99,6 +100,11 @@ struct ShortcutEditor: View {
                             Label(c.label, systemImage: "plus.circle")
                         }
                     }
+                }
+            }
+            if !sheet {
+                Section {
+                    Button("Reset to Defaults") { keys = bar.defaults; persist() }
                 }
             }
         }
