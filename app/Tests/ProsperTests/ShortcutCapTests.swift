@@ -466,6 +466,31 @@ final class ShortcutCapTests: XCTestCase {
                           sv.bounds.width / 2)
     }
 
+    /// #562: a row with a fraction of a point to spare keeps natural widths;
+    /// a fraction over, it squeezes to the strip.
+    @MainActor
+    func testToolbarFitBoundary() throws {
+        let keys = try ["up", "down", "tab", "esc"].map(key)
+        let probe = try makeToolbar(keys, width: 402)
+        let span = Self.caps(probe.bar).map(\.naturalWidth).reduce(0, +) + 6 * CGFloat(keys.count - 1)
+        let fits = try makeToolbar(keys, width: span + 43 + 16 + 0.4)
+        for c in Self.caps(fits.bar) { XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.01, "widened or squeezed") }
+        let over = try makeToolbar(keys, width: span + 43 + 16 - 0.4)
+        let caps = Self.caps(over.bar), last = try XCTUnwrap(over.row.arrangedSubviews.last)
+        XCTAssertLessThan(caps.map(\.frame.width).reduce(0, +), caps.map(\.naturalWidth).reduce(0, +), "not squeezed")
+        XCTAssertLessThanOrEqual(last.convert(last.bounds, to: over.scroll).maxX, over.scroll.bounds.width + 0.01, "end clipped")
+    }
+
+    /// #562: the default toolbar plus next word at 402 would need about 0.83 — under
+    /// `minRowScale`, so it keeps natural widths and scrolls.
+    @MainActor
+    func testToolbarJustUnderTheFloorScrolls() throws {
+        let next = try XCTUnwrap(Shortcuts.Bar.toolbar.catalog.first { $0.id == "wordNext" })
+        let (bar, _, sv) = try makeToolbar(Shortcuts.Bar.toolbar.defaults + [next], width: 402)
+        XCTAssertGreaterThan(sv.contentSize.width, sv.bounds.width)
+        for c in Self.caps(bar) { XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.01, "squeezed past the floor") }
+    }
+
     /// Past `minRowScale` the toolbar keeps natural widths and scrolls, and it squeezes again
     /// after `reload()` and a width change once the row is back within reach.
     @MainActor
