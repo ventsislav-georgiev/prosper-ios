@@ -287,8 +287,9 @@ final class Suggestions {
     /// this keyboard typed whole (all after `prefix` ends `typed`), and never mid-word
     /// (letters after the cursor) or glued to what's before it (`glued`). A reverted word stays; "i" and its
     /// contractions get their capital; a text replacement shortcut gives its phrase;
-    /// otherwise the dictionary's guess nearest on the keyboard (`best`), for a word nothing
-    /// knows (`knows`). Anything less sure stays as typed, though the bar still offers the guesses.
+    /// otherwise, for a word nothing knows (`knows`), the two words it ran together (`split`)
+    /// or the dictionary's guess nearest on the keyboard (`best`). Anything less sure stays
+    /// as typed, though the bar still offers the guesses.
     func correction(for word: String, after prefix: String, in doc: UITextDocumentProxy) -> String? {
         guard settings.autoCorrection, !word.isEmpty, Self.autocorrects(doc), !Self.glued(prefix),
               typed.hasSuffix((doc.documentContextBeforeInput ?? "").dropFirst(prefix.count).lowercased()),
@@ -302,9 +303,25 @@ final class Suggestions {
         if let phrase = replacements[lower] { return phrase }
         // Rule N: a capital only auto-capitalization put first is lowercase ("Rkn" → "Run").
         let ruled = autoCapital && word.dropFirst() == lower.dropFirst() ? lower : word
-        guard !knows(word), let guess = Self.best(Self.guesses(lower, language: language), for: ruled,
-                                                  rows: layout.letterRows) else { return nil }
+        guard !knows(word) else { return nil }
+        let guesses = Self.guesses(lower, language: language, spaced: true)
+        if let two = Self.split(guesses, for: word) { return Self.matchCase(two, to: word) }
+        guard let guess = Self.best(guesses.filter(Self.isWord), for: ruled, rows: layout.letterRows) else { return nil }
         return Self.matchCase(guess, to: word)
+    }
+
+    /// Two words run together, the space between them missed ("helloworld"): the checker's
+    /// first guess joins them with a hyphen ("hello-world") and it lists them spaced too, so
+    /// that's what it makes of it, not a one-word guess. Never camelCase ("helloWorld" is
+    /// deliberate), nor a one-letter second word: "irea" is a slip for "idea", not "ire a".
+    /// Lowercase.
+    static func split(_ guesses: [String], for word: String) -> String? {
+        guard let first = guesses.first?.lowercased(), first.filter({ $0 == "-" }).count == 1,
+              first.split(separator: "-").last?.count ?? 0 >= 2,
+              !zip(word, word.dropFirst()).contains(where: { $0.isLowercase && $1.isUppercase }) else { return nil }
+        let spaced = first.replacingOccurrences(of: "-", with: " ")
+        return first.replacingOccurrences(of: "-", with: "") == word.lowercased()
+            && guesses.contains { $0.lowercased() == spaced } ? spaced : nil
     }
 
     /// The confidence rule, kept conservative: at least 2 letters, letters and apostrophes
@@ -482,12 +499,13 @@ final class Suggestions {
             .filter(isWord)
     }
 
-    /// The dictionary's corrections for a misspelled `word`, best first: single words only.
-    static func guesses(_ word: String, language: String? = TerminalKeyboard.language) -> [String] {
+    /// The dictionary's corrections for a misspelled `word`, best first: single words only,
+    /// or with `spaced` the checker's whole list, hyphenated and spaced pairs too (`split`).
+    static func guesses(_ word: String, language: String? = TerminalKeyboard.language, spaced: Bool = false) -> [String] {
         guard let language else { return [] }
         let range = NSRange(location: 0, length: (word as NSString).length)
         return (TerminalKeyboard.checker.guesses(forWordRange: range, in: word, language: language) ?? [])
-            .filter { isWord($0) && $0.lowercased() != word.lowercased() }
+            .filter { (spaced || isWord($0)) && $0.lowercased() != word.lowercased() }
     }
 }
 

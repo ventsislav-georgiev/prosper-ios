@@ -23,8 +23,9 @@ final class KeyboardViewController: UIInputViewController {
         super.viewDidLoad()
         keyboard.target = textDocumentProxy
         // iOS keeps its own strip under a custom keyboard (globe and dictation on Face ID
-        // iPhones), so the app's home-gesture pad would only add an empty band.
-        keyboard.bottomInset = 6
+        // iPhones), so the app's home-gesture pad would only add an empty band; this one
+        // catches the space taps that land low (`extensionBottomInset`).
+        keyboard.bottomInset = TerminalKeyboard.extensionBottomInset
         keyboard.offersEmoji = false
         bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }

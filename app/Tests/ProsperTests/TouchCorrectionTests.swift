@@ -97,7 +97,48 @@ final class TouchCorrectionTests: XCTestCase {
                        .char("g"), "kig is known: g stays")
     }
 
+    /// Both continue a word: a touch on r's left edge after "th" is e, "the" far likelier
+    /// than "three". Equally likely, or a centered r, it stays r.
+    func testALikelierNeighborWinsWhereBothContinueAWord() {
+        let (_, f) = laidOut()
+        let r = f["r"]!, edge = CGPoint(x: r.minX + 0.5, y: r.midY)
+        let likely: (String) -> Double = { ["the": 2, "thr": 0.05][$0] ?? 0 }
+        XCTAssertEqual(K.corrected(.char("r"), at: edge, keys: keys(f), prefix: "th", known: { _ in true }, likely: likely),
+                       .char("e"))
+        XCTAssertEqual(K.corrected(.char("r"), at: edge, keys: keys(f), prefix: "th", known: { _ in true },
+                                   likely: { _ in 1 }), .char("r"), "alike: the nearest")
+        XCTAssertEqual(K.corrected(.char("r"), at: CGPoint(x: r.midX - r.width / 4 + 1, y: r.midY), keys: keys(f),
+                                   prefix: "th", known: { _ in true }, likely: { ["the": 1000, "thr": 0.001][$0] ?? 0 }),
+                       .char("r"), "a centered r, however unlikely")
+        XCTAssertEqual(K.corrected(.char("r"), at: CGPoint(x: r.midX - r.width / 4 - 1, y: r.midY), keys: keys(f),
+                                   prefix: "th", known: { _ in true }, likely: likely),
+                       .char("r"), "just off the center: e is too far for its odds")
+    }
+
+    /// The same in Bulgarian, whose checker the simulator lacks: "т" and a touch on р's
+    /// left edge is е when "те" is the likelier.
+    func testALikelierNeighborInBulgarian() {
+        let kb = K(layout: .bulgarian)
+        kb.frame = CGRect(x: 0, y: 0, width: 402, height: K.height)
+        kb.layoutIfNeeded()
+        var f: [String: CGRect] = [:]
+        for case let b as UIButton in kb.subviews { if let t = b.title(for: .normal) { f[t.lowercased()] = b.frame } }
+        let r = f["р"]!
+        XCTAssertEqual(K.corrected(.char("р"), at: CGPoint(x: r.minX + 0.5, y: r.midY), keys: keys(f), prefix: "т",
+                                   known: { _ in true }, likely: { ["те": 3, "тр": 0.05][$0] ?? 0 }), .char("е"))
+    }
+
     // MARK: Through the real keyboard
+
+    /// The real dictionary's odds: "th" and a touch on r's left edge types e.
+    func testRealDictionaryOddsTypeTheOverThr() {
+        let (kb, f) = laidOut()
+        let r = f["r"]!
+        XCTAssertTrue(K.dictionaryKnows("thr"), "precondition: both continue a word")
+        XCTAssertEqual(type("th", thenTap: CGPoint(x: r.minX + 0.5, y: r.midY), on: kb), "e")
+        let (kb2, _) = laidOut()
+        XCTAssertEqual(type("th", thenTap: CGPoint(x: r.midX, y: r.midY), on: kb2), "r", "a centered r is typed")
+    }
 
     /// Thumbs land low: a touch 8 pt under t, nearer g, types t, even as a word's first
     /// letter, where nothing is corrected. A hold there converts t too.

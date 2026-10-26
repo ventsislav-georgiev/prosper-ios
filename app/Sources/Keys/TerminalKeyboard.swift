@@ -150,7 +150,7 @@ struct KeyboardSettings: Equatable {
 ///
 /// - Shift acts on touch-down; backspace deletes on touch-down, then repeats while held.
 /// - Every other key types on lift, as whatever key is under the finger then, so sliding
-///   to correct works.
+///   to correct works; until the finger has traveled `tapSlop`, the key it landed on.
 /// - A new touch types any earlier one still waiting first, so rolled typing keeps its
 ///   order and a second tap on a key that's still held counts twice.
 /// - A character touch still waiting after `holdDelay` (the view's timer calls `hold`)
@@ -255,6 +255,9 @@ struct KeyTouchTracker {
             return (steps == 0 ? [] : [.caret(steps)]) + (lines == 0 ? [] : [.line(lines)])
         }
         guard !touches[i].done, touches[i].symbol == nil, !Self.actsOnDown(key) else { return [] }
+        // A thumb's lift rolls a few points off where it landed: a tap keeps the key it
+        // landed on till the finger has slid past `tapSlop`.
+        if point != nil, touches[i].travel <= Self.tapSlop { return [] }
         touches[i].key = key
         return []
     }
@@ -813,9 +816,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// Rows, gaps and the top pad: the above, or in a compact vertical size class (iPhone
     /// landscape) shorter ones. The portrait keys on a 402 pt tall landscape screen took
     /// 63% of it and hid the focused field; these come to 149 pt, so the extension
-    /// (32 pt bar + 149 + 6) is about the Apple keyboard's landscape height (QA measured
-    /// the old 36 + 174 + 6 ~30 pt taller). The bar + the 3 pt top pad is the bubble's
-    /// compact rise (`KeyPreview.rise(compact:)`).
+    /// (32 pt bar + 149 + 6) was about the Apple keyboard's landscape height (QA measured
+    /// the old 36 + 174 + 6 ~30 pt taller); `extensionBottomInset` has since added 10.
+    /// The bar + the 3 pt top pad is the bubble's compact rise (`KeyPreview.rise(compact:)`).
     static func metrics(compact: Bool) -> (row: CGFloat, gap: CGFloat, top: CGFloat) {
         compact ? (26, 4, 3) : (rowHeight, rowGap, topPadding)
     }
@@ -834,6 +837,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// gesture does nothing on iPhone; a cancelled touch begun here types nothing, see
     /// the tracker.)
     static let bottomPadding: CGFloat = 28
+    /// The extension's `bottomInset`. A touch under it lands on iOS's own strip and never
+    /// reaches the keyboard, and thumbs land low: at 6 pt about one space tap in 25 was
+    /// lost there (`TypoRateTests`).
+    ///
+    /// ponytail: sized on the typo harness's assumed thumb (11 pt spread, 6 pt low), not
+    /// measured. Tune it on a device.
+    static let extensionBottomInset: CGFloat = 16
     /// This keyboard's pad under the bottom row: `bottomPadding` in the app. The extension
     /// sets a few points, since iOS already keeps its own strip under a custom keyboard.
     var bottomInset = TerminalKeyboard.bottomPadding {
@@ -1005,9 +1015,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     var screenWords: (() -> Set<String>)?
     /// What correction looked up for the current touch, so a finger sliding over an
     /// ambiguous spot doesn't repeat the lookups or the screen read: one is a few ms.
-    /// Cleared when a touch begins.
+    /// Cleared when a touch begins; the completions, when the word changes.
     private var knownCache: [String: Bool] = [:]
     private var screenCache: Set<String>?
+    private var completionsCache: (prefix: String, words: [String])?
 
     private var caps: [[Cap]] = []
     private let keysArea = UILayoutGuide()
@@ -1585,7 +1596,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     func key(at point: CGPoint) -> Key {
         let keys = caps.joined().map { ($0.key, $0.frame) }
         let point = aimed(point)
-        return Self.corrected(nearest(at: point), at: point, keys: keys, prefix: word) { s in
+        func known(_ s: String) -> Bool {
             if let known = knownCache[s] { return known }
             var known = Self.dictionaryKnows(s, language: layout.language)
                 || ShellWords.all.contains { $0.hasPrefix(s) }
@@ -1596,6 +1607,17 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             knownCache[s] = known
             return known
         }
+        // The dictionary's completions of the word, most likely first (it lists 20): each one
+        // `s` starts counts 1 / its rank. One past those, or only the shell or screen's, a little.
+        func likely(_ s: String) -> Double {
+            if completionsCache?.prefix != word {
+                completionsCache = (word, Suggestions.completions(word, language: layout.language).map { $0.lowercased() })
+            }
+            let w = completionsCache!.words.enumerated().filter { $0.element.hasPrefix(s) }
+                .map { 1 / Double($0.offset + 1) }.reduce(0, +)
+            return w > 0 ? w : known(s) ? 0.025 : 0
+        }
+        return Self.corrected(nearest(at: point), at: point, keys: keys, prefix: word, known: known, likely: likely)
     }
 
     /// The key nearest `point`, uncorrected: what a hold converts. Never the globe: a
@@ -1856,18 +1878,24 @@ extension TerminalKeyboard {
     /// What a touch types once the word typed so far is taken into account. With a
     /// `prefix`, a touch off the center of a letter that starts no `known` word after it
     /// goes to the closest letter within half a key width that does: "tes" and a touch
-    /// on r's right edge types t. A centered hit, an empty prefix, a known continuation
-    /// or no known neighbor keeps `nearest`, so only an already ambiguous touch ever
-    /// moves. Only letters are corrected: digits and symbols never. A hold isn't corrected
-    /// at all (`fireHold`). Lowercase in and out; `press` applies shift.
+    /// on r's right edge types t. One that does start a word still goes to a neighbor in
+    /// reach the word is that much likelier to go on with (`likely`, its weight against
+    /// the touch's distance from each key's center): after "th", a touch on r's left edge
+    /// types e, "the" far likelier than "three". A centered hit, an empty prefix or no
+    /// neighbor known or likely enough keeps `nearest`, so only an already ambiguous touch
+    /// ever moves. Only letters are corrected: digits and symbols never. A hold isn't
+    /// corrected at all (`fireHold`). Lowercase in and out; `press` applies shift.
     ///
     /// The center is checked first, so `known` (and the screen it may read) is asked only
     /// for an ambiguous touch.
     ///
+    /// ponytail: the touch's spread is a quarter key, one Gaussian for both axes, tuned on
+    /// the typo harness: a third gained the common words less than it cost the rarer ones.
+    ///
     /// ponytail: a password typed at a prompt is corrected too, at a key's edge, like the
     /// system keyboard's own dynamic hit areas. A secure-entry signal could switch it off.
     static func corrected(_ nearest: Key, at point: CGPoint, keys: [(Key, CGRect)],
-                          prefix: String, known: (String) -> Bool) -> Key {
+                          prefix: String, known: (String) -> Bool, likely: (String) -> Double = { _ in 0 }) -> Key {
         func letter(_ k: Key) -> String? {
             if case .char(let c) = k, c.first?.isLetter == true { return c }
             return nil
@@ -1875,12 +1903,19 @@ extension TerminalKeyboard {
         guard !prefix.isEmpty, let c = letter(nearest),
               let frame = keys.first(where: { $0.0 == nearest })?.1 else { return nearest }
         let center = frame.insetBy(dx: frame.width / 4, dy: frame.height / 4)
-        if center.contains(point) || known(prefix + c) { return nearest }
+        if center.contains(point) { return nearest }
         let reach = frame.width / 2
         let candidates = keys
             .filter { $0.0 != nearest && letter($0.0) != nil && distance(point, $0.1) <= reach }
             .sorted { distance(point, $0.1) < distance(point, $1.1) }
-        return candidates.first { known(prefix + letter($0.0)!) }?.0 ?? nearest
+        guard known(prefix + c) else { return candidates.first { known(prefix + letter($0.0)!) }?.0 ?? nearest }
+        let sigma = frame.width / 4
+        func score(_ k: (Key, CGRect)) -> Double {
+            let d = hypot(point.x - k.1.midX, point.y - k.1.midY)
+            return likely(prefix + letter(k.0)!) * exp(-Double(d * d / (2 * sigma * sigma)))
+        }
+        let mine = score((nearest, frame))
+        return candidates.filter { score($0) > mine }.max { score($0) < score($1) }?.0 ?? nearest
     }
 
     /// English's checker language. Also the extension's suggestions' (`Suggestions`).

@@ -332,6 +332,44 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertNil(t.previewKey)
     }
 
+    /// A thumb's lift rolls a few points: under `tapSlop` from where it landed, a tap types
+    /// the key it landed on, space included; slid further, the key under the finger.
+    func testTrackerALiftThatRollsUnderTheSlopKeepsTheKey() {
+        var t = KeyTouchTracker()
+        let slop = KeyTouchTracker.tapSlop
+        _ = t.began(1, .char("q"), at: CGPoint(x: 20, y: 25))
+        t.moved(1, .char("w"), at: CGPoint(x: 20 + slop, y: 25))
+        XCTAssertEqual(t.previewKey, .char("q"))
+        XCTAssertEqual(t.ended(1), [.press(.char("q"))])
+        _ = t.began(2, .space, at: CGPoint(x: 200, y: 212))
+        t.moved(2, .char("v"), at: CGPoint(x: 202, y: 204))
+        XCTAssertEqual(t.ended(2), [.press(.space)], "space rolled up onto v")
+        _ = t.began(3, .char("q"), at: CGPoint(x: 20, y: 25))
+        t.moved(3, .char("w"), at: CGPoint(x: 21 + slop, y: 25))
+        t.moved(3, .char("q"), at: CGPoint(x: 20, y: 25))
+        t.moved(3, .char("w"), at: CGPoint(x: 28, y: 25))
+        XCTAssertEqual(t.ended(3), [.press(.char("w"))], "once slid, it follows the finger")
+    }
+
+    /// Through the view: a space tap whose lift rolls up into the gap, nearer the bottom
+    /// letter row, types a space; one finger still on a letter as space goes down types
+    /// the letter, then the space.
+    func testASpaceTapThatRollsOrOverlapsStillTypesASpace() throws {
+        let (kb, caps) = laidOut()
+        let spy = SpyInput()
+        kb.target = spy
+        let space = try XCTUnwrap(caps["space"]).frame, a = try XCTUnwrap(caps["a"]).frame
+        let up = CGPoint(x: space.midX, y: space.minY - 7)
+        XCTAssertNotEqual(kb.key(at: up), .space, "precondition: the lift is nearer a letter")
+        kb.track(.began, id: 1, at: CGPoint(x: space.midX, y: space.minY + 2))
+        kb.track(.ended, id: 1, at: up)
+        kb.track(.began, id: 2, at: CGPoint(x: a.midX, y: a.midY))
+        kb.track(.began, id: 3, at: CGPoint(x: space.midX, y: space.midY))
+        kb.track(.ended, id: 2, at: CGPoint(x: a.midX, y: a.midY))
+        kb.track(.ended, id: 3, at: CGPoint(x: space.midX, y: space.midY))
+        XCTAssertEqual(spy.calls, [" ", "a", " "])
+    }
+
     func testTrackerShiftAndBackspaceActOnDown() {
         var t = KeyTouchTracker()
         XCTAssertEqual(t.began(1, .shift), [.press(.shift)])

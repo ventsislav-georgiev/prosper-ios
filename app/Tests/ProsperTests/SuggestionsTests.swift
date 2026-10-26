@@ -321,6 +321,32 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(doc2.text, "the", "only the very next key undoes")
     }
 
+    /// Two words run together, the space missed: space splits them, as the bar showed, and
+    /// backspace puts the run-on back.
+    func testARunOnSplitsIntoTwoWordsAndUndoes() {
+        let (kb, bar, doc) = rig()
+        typing(kb, "helloworld")
+        XCTAssertEqual(slots(bar)[1], Slot(word: "hello world", highlighted: true))
+        typing(kb, " ")
+        XCTAssertEqual(doc.text, "hello world ")
+        typing(kb, "⌫")
+        XCTAssertEqual(doc.text, "helloworld")
+        typing(kb, " Thankyou ")
+        XCTAssertEqual(doc.text, "helloworld Thank you ", "in the typed word's case")
+    }
+
+    /// The split is the checker's: its first guess the run-on hyphenated, and the two words
+    /// spaced among the rest. Bulgarian's guesses are synthetic: the simulator has none.
+    func testSplitTakesTheCheckersHyphenatedFirstGuess() {
+        XCTAssertEqual(Suggestions.split(["hello-world", "hello world"], for: "helloworld"), "hello world")
+        XCTAssertEqual(Suggestions.split(["Добро-утро", "добро утро"], for: "Доброутро"), "добро утро")
+        XCTAssertNil(Suggestions.split(["hello-world"], for: "helloworld"), "not listed spaced")
+        XCTAssertNil(Suggestions.split(["hellos", "hello world"], for: "helloworld"), "a one-word guess first")
+        XCTAssertNil(Suggestions.split(["ire-a", "idea", "ire a"], for: "irea"), "a one-letter second word")
+        XCTAssertNil(Suggestions.split(["hello-world", "hello world"], for: "helloWorld"), "camelCase")
+        XCTAssertNil(Suggestions.split(["hell-world", "hell world"], for: "helloworld"), "not the same letters")
+    }
+
     /// "." waits for a space: "jane.doe" and "example.com" go on past it.
     func testAPeriodDefersTheCorrectionToTheSpace() {
         let (kb, bar, doc) = rig()
