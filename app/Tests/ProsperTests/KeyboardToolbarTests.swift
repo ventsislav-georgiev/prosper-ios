@@ -389,6 +389,19 @@ final class KeyboardToolbarTests: XCTestCase {
 
     // MARK: Edits (#553)
 
+    /// Delete all and cut line, held back until #553 passes QA on real hosts (#560): off the
+    /// toolbar's catalog, and a saved toolbar holding one loads without it; the motions, yank,
+    /// ctrl-u, ctrl-k and delete line stay.
+    func testHeldBackDeletesAreOffTheToolbar() throws {
+        let catalog = Shortcuts.Bar.toolbar.catalog.map(\.id)
+        for id in ["delAll", "cutLine"] { XCTAssertFalse(catalog.contains(id), id) }
+        for id in ["wordNext", "wordEnd", "wordBack", "delWord", "copyLine", "delHome", "delEnd", "delLine"] { XCTAssertTrue(catalog.contains(id), id) }
+        let store = try suiteStore(".heldBack")
+        let delAll = try XCTUnwrap(Shortcuts.hostOnly.first { $0.id == "delAll" })
+        Shortcuts.save([try key("left"), delAll], to: store, key: Shortcuts.Bar.toolbar.storageKey)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["left"])
+    }
+
     /// A toolbar edit pressed, then the walk polling until it lands, the host catching up
     /// every `every` polls.
     private func edit(_ id: String, _ kb: TerminalKeyboard, _ bar: SuggestionBar, _ doc: Proxy,
@@ -435,7 +448,7 @@ final class KeyboardToolbarTests: XCTestCase {
         }
         XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.catalog.map(\.id)))
         XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.Bar.terminal.catalog.map(\.id)))
-        XCTAssertTrue(Set(ids).isSubset(of: Shortcuts.Bar.toolbar.catalog.map(\.id)))
+        XCTAssertTrue(Set(ids).subtracting(Shortcuts.heldBack).isSubset(of: Shortcuts.Bar.toolbar.catalog.map(\.id)))
         XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.Bar.toolbar.defaults.map(\.id)), "added in the editor")
 
         let store = try suiteStore(".edits")
