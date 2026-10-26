@@ -166,7 +166,7 @@ struct SettingsView: View {
             } header: {
                 Text("Sidekicks")
             } footer: {
-                Text("Sessions whose name contains this, ignoring case, go under a Sidekicks tab in the session list. Empty shows every session together.")
+                Text("Sessions whose name or alias contains this, ignoring case, go under a Sidekicks tab in the session list. Empty shows every session together.")
             }
 
             // Apple's Settings › General › Keyboard, in its order, for what Prosper's has.

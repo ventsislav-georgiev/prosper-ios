@@ -679,13 +679,13 @@ extension DchSession {
     static let sidekickKey = "sidekickPattern"
     static let sidekickDefault = "-qa"
 
-    /// Splits `list` into primary sessions and sidekicks: a sidekick's real `name` (not
-    /// its alias) contains `pattern`, case-insensitive. An empty pattern turns the split
-    /// off. Order is kept.
+    /// Splits `list` into primary sessions and sidekicks: a sidekick's real `name` or its
+    /// alias contains `pattern`, case-insensitive (sidekicks are often named by renaming). An
+    /// empty pattern turns the split off. Order is kept.
     static func split(_ list: [DchSession], pattern: String) -> (primary: [DchSession], sidekicks: [DchSession]) {
         let p = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !p.isEmpty else { return (list, []) }
-        let isSidekick = { (s: DchSession) in s.name.range(of: p, options: .caseInsensitive) != nil }
+        let isSidekick = { (s: DchSession) in [s.name, s.alias ?? ""].contains { $0.range(of: p, options: .caseInsensitive) != nil } }
         return (list.filter { !isSidekick($0) }, list.filter(isSidekick))
     }
 

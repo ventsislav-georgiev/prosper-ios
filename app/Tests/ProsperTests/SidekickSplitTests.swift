@@ -1,7 +1,7 @@
 import XCTest
 @testable import Prosper
 
-/// The sessions list's Sessions / Sidekicks split, by the real name containing a pattern.
+/// The sessions list's Sessions / Sidekicks split, by the name or alias containing a pattern.
 final class SidekickSplitTests: XCTestCase {
 
     private func names(_ l: [DchSession]) -> [String] { l.map(\.name) }
@@ -28,11 +28,18 @@ final class SidekickSplitTests: XCTestCase {
         }
     }
 
-    /// The alias is a display label only: neither a matching alias nor a plain one moves a session.
-    func testAliasIgnored() {
-        let r = DchSession.split([s("build", alias: "build-qa"), s("notes-qa", alias: "notes")], pattern: "-qa")
-        XCTAssertEqual(names(r.primary), ["build"])
-        XCTAssertEqual(names(r.sidekicks), ["notes-qa"])
+    /// A renamed session counts by its alias; a matching name still counts under a plain alias.
+    func testAliasOrNameMatches() {
+        let r = DchSession.split([s("build", alias: "build-qa"), s("notes-qa", alias: "notes"),
+                                  s("web", alias: "site"), s("api")], pattern: "-qa")
+        XCTAssertEqual(names(r.primary), ["web", "api"])
+        XCTAssertEqual(names(r.sidekicks), ["build", "notes-qa"])
+    }
+
+    func testAliasCaseInsensitive() {
+        let r = DchSession.split([s("build", alias: "Build-QA"), s("notes")], pattern: "-qa")
+        XCTAssertEqual(names(r.sidekicks), ["build"])
+        XCTAssertEqual(names(r.primary), ["notes"])
     }
 
     func testOrderKept() {
