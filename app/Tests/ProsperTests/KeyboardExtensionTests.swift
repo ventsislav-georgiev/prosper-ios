@@ -72,7 +72,9 @@ final class KeyboardExtensionTests: XCTestCase {
         var selectedText: String? { nil }
         var documentInputMode: UITextInputMode? { nil }
         let documentIdentifier = UUID()
-        var hasText: Bool { !text.isEmpty || after?.isEmpty == false }
+        /// As UIKit's proxy answers it, from the context: false wherever both are nil or
+        /// empty, text or not (#553 QA: a UITextView's nil contexts at its end).
+        var hasText: Bool { documentContextBeforeInput?.isEmpty == false || documentContextAfterInput?.isEmpty == false }
         /// Edits lag as moves do (`lags`): the context shows them only after `catchUp()`, as
         /// real hosts show none in the runloop turn that sent them.
         var lagsEdits = false

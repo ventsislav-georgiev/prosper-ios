@@ -1036,6 +1036,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// What runs on each poll once the walk is idle, till it returns true: the rest of a toolbar
     /// edit (`caret(_:then:)`, `wait`). A key, a touch, a move or the poll limit drops it.
     private var landed: (() -> Bool)?
+    /// A toolbar edit's step pair under way (`caret(away:back:then:)`), till its step back
+    /// lands: the step away, the units the two have sent, and a toolbar press held till then.
+    private var pair: (steps: Int, units: Int, next: (() -> Void)?)?
     private var heightConstraint: NSLayoutConstraint!
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
@@ -1091,6 +1094,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// What a key does. The touch tracker's presses land here; so do the tests'.
     func press(_ key: Key) {
         defer { didPress?() }
+        settle()
         landed = nil
         if willPress?(key) == true {
             // ponytail: the text is no longer what the keys typed (an undone autocorrect),
@@ -1155,6 +1159,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// `walk`, so it never stops inside one. The word touch correction continues ends here,
     /// as it does at an arrow key (`resetWord`).
     func caret(_ offset: Int) {
+        settle()
+        send(offset)
+    }
+
+    private func send(_ offset: Int) {
         landed = nil
         if let moveCaret {
             moveCaret(offset)
@@ -1173,10 +1182,52 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if walk.idle { runLanded() }
     }
 
+    /// A step of `offset` and, once it lands, back unless `back` says no, then `then` once
+    /// that lands: a toolbar edit looking for a fresh context (`SuggestionBar.rewindow`).
+    /// Till then the caret is off where the edit left it, so nothing else may act on it: a
+    /// key, a touch or a move first sends back the units the pair sent (`settle`), which the
+    /// host applies before what follows; a toolbar press, which reads the context, waits for
+    /// the pair to land back and goes in place of `then` (`finish`). (#553 QA: a second
+    /// ctrl-u in Safari dropped the step back and took the space after the caret.)
+    func caret(away offset: Int, back: @escaping () -> Bool, then: @escaping () -> Void) {
+        settle()
+        pair = (offset, 0, nil)
+        send(offset)
+        landed = { [weak self] in
+            guard let self, let p = self.pair else { return true }
+            self.walk.drop()
+            guard back() else { self.pair = nil; (p.next ?? then)(); return true }
+            self.send(-p.steps)
+            self.landed = { [weak self] in
+                let next = self?.pair?.next
+                self?.pair = nil
+                self?.walk.drop()
+                (next ?? then)()
+                return true
+            }
+            return true
+        }
+        if walk.idle { runLanded() }
+    }
+
+    /// `act` now, or once a step pair under way has landed back (`caret(away:back:then:)`).
+    func finish(_ act: @escaping () -> Void) {
+        if pair != nil { pair?.next = act } else { act() }
+    }
+
+    /// A step pair under way is dropped: the units it sent go back first, unseen.
+    private func settle() {
+        guard let p = pair else { return }
+        pair = nil
+        if p.units != 0 { (target as? UITextDocumentProxy)?.adjustTextPosition(byCharacterOffset: -p.units) }
+        walk.drop()
+    }
+
     /// `check` on each poll from the next, while the walk is idle, till it returns true: a
     /// toolbar edit waiting for the host to show its deletes (`SuggestionBar.deleteBack`).
     /// Dropped as `landed` is; the poll limit counts from here.
     func wait(_ check: @escaping () -> Bool) {
+        settle()
         landed = check
         walkPolls = 0
         pollOn()
@@ -1211,6 +1262,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// ends once the move sends something, so one with nowhere to go ends nothing.
     func line(_ lines: Int) {
         guard moveCaret == nil, target is UITextDocumentProxy else { return }
+        settle()
         landed = nil
         lineAsked = true
         walkOn(lines: lines)
@@ -1235,6 +1287,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                               after: doc.documentContextAfterInput ?? "", settled: walkPolls >= 3)
         if units != 0 {
             doc.adjustTextPosition(byCharacterOffset: units)
+            pair?.units += units
             walkPolls = 0
             if lineAsked { lineAsked = false; caretMoved() }
         }
@@ -1283,6 +1336,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
         guard walkPolls >= 100 else { return }   // 2 s: a move that never shows waits for the next `caret`
         walkPolls = 0
+        settle()
         landed = nil
         walkTimer?.invalidate()
         walkTimer = nil
@@ -1447,6 +1501,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         switch phase {
         case .began:
             if tracker.isTrackpad { return }   // a second finger on the trackpad: ignored
+            settle()
             landed = nil
             if !walk.idle { walkOn() }   // a last look for a split before typing
             walk.drop()
