@@ -616,6 +616,38 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(kb.shift.mode, .once)
     }
 
+    /// The extension's pad is no home strip: under space a hold is the trackpad and a tap,
+    /// even a cancelled one, types. The app's strip keeps refusing both.
+    func testPadUnderSpaceIsSpaceOnlyInTheExtension() throws {
+        for ext in [true, false] {
+            let kb = TerminalKeyboard()
+            if ext { kb.bottomInset = TerminalKeyboard.extensionBottomInset }
+            kb.frame = CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight + kb.bottomInset)
+            kb.layoutIfNeeded()
+            let space = try XCTUnwrap(kb.subviews.compactMap { $0 as? UIButton }
+                .first { $0.accessibilityLabel == "space" || $0.title(for: .normal) == "space" }).frame
+            let spy = SpyInput()
+            kb.target = spy
+            var steps: [Int] = []
+            kb.moveCaret = { steps.append($0) }
+            let p = CGPoint(x: space.midX, y: space.maxY + 8)
+            XCTAssertLessThan(p.y, kb.bounds.maxY, "precondition: inside the pad")
+            kb.track(.began, id: 1, at: p)
+            kb.fireHold()
+            kb.track(.moved, id: 1, at: CGPoint(x: p.x - 100, y: p.y))
+            kb.track(.ended, id: 1, at: CGPoint(x: p.x - 100, y: p.y))
+            XCTAssertEqual(steps.isEmpty, !ext, "the hold is a trackpad only in the extension")
+            if ext { XCTAssertLessThan(steps.reduce(0, +), 0); XCTAssertEqual(spy.calls, []) }
+            spy.calls = []
+            kb.track(.began, id: 2, at: p)
+            kb.track(.ended, id: 2, at: p)
+            XCTAssertEqual(spy.calls, [" "], "a tap types a space")
+            kb.track(.began, id: 3, at: p)
+            kb.track(.cancelled, id: 3, at: p)
+            XCTAssertEqual(spy.calls, ext ? [" ", " "] : [" "], "a cancelled tap types only in the extension")
+        }
+    }
+
     /// Character Preview off: a press shows no bubble, a hold still shows its symbol.
     func testCharacterPreviewSwitch() throws {
         for on in [true, false] {

@@ -223,7 +223,7 @@ struct KeyTouchTracker {
 
     private static func actsOnDown(_ key: Key) -> Bool { key == .shift || key == .backspace }
 
-    /// `belowKeys`: the touch began in the strip under the bottom row.
+    /// `belowKeys`: the touch began in the app's strip under the bottom row, over the home gesture.
     mutating func began(_ id: Int, _ key: Key, at point: CGPoint = .zero, belowKeys: Bool = false) -> [Effect] {
         if isTrackpad { return [] }   // a second finger on the trackpad: never tracked
         var out: [Effect] = []
@@ -845,7 +845,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// measured. Tune it on a device.
     static let extensionBottomInset: CGFloat = 16
     /// This keyboard's pad under the bottom row: `bottomPadding` in the app. The extension
-    /// sets a few points, since iOS already keeps its own strip under a custom keyboard.
+    /// sets a few points, since iOS already keeps its own strip under a custom keyboard, so
+    /// a touch on its pad is an ordinary key touch, never the home gesture's.
     var bottomInset = TerminalKeyboard.bottomPadding {
         didSet { fitHeight() }
     }
@@ -1555,7 +1556,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             lineAsked = false
             knownCache = [:]; screenCache = nil
             feedback()
-            let bottomRow = caps.last?.map(\.frame.maxY).max() ?? .infinity
+            // Only the app's pad lies over the home gesture; the extension's is plain keyboard.
+            let bottomRow = bottomInset == Self.bottomPadding ? caps.last?.map(\.frame.maxY).max() ?? .infinity : .infinity
             perform(tracker.began(id, key(at: point), at: point, belowKeys: point.y > bottomRow))
             stopHold()
             if tracker.previewKey != nil || tracker.held.last == .space { startHold(id, at: point) }
