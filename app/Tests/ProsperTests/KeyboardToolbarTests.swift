@@ -418,15 +418,18 @@ final class KeyboardToolbarTests: XCTestCase {
     /// A plain UITextView's proxy: the before-context the caret's line (its LF alone at a
     /// line's start), the after-context stopping at the line's end, edits shown only on a
     /// later poll, and after them only what's left of the window they were cut from, both
-    /// contexts nil where that leaves none either side.
+    /// contexts nil where that leaves none either side, and at an empty first line's start.
     private static func textView(_ d: Proxy) {
         d.lineBefore = true; d.stopsAtLineEnd = true; d.lagsEdits = true; d.cutsEdits = true; d.nilsAtEnd = true
+        d.nilsAtStart = true
     }
     /// Safari's: windows either side, a space after a break that isn't in the text, edits
     /// shown only on a later poll, and after them only what's left of the window, both
-    /// contexts nil at the text's end where that leaves none (#553 QA: `b="" a=nil` there).
+    /// contexts nil at the text's end where that leaves none (#553 QA: `b="" a=nil` there),
+    /// and at an empty first line's start.
     private static func safari(_ d: Proxy) {
         d.window = 6; d.breakSpace = true; d.lagsEdits = true; d.cutsEdits = true; d.nilsAtEnd = true
+        d.nilsAtStart = true
     }
 
     /// The edits are the toolbar's only, each an icon with a spoken label; the terminal's
@@ -675,6 +678,8 @@ final class KeyboardToolbarTests: XCTestCase {
             ("blocking", 8, { $0.stopsAtLineEnd = true; $0.answersLate = true }),
             ("blocking, stale at the start", 8, { $0.stopsAtLineEnd = true; $0.answersLate = true; $0.staleAtStart = true }),
             ("blocking text view", 8, { Self.textView($0); $0.answersLate = true }),
+            ("flipping text view", 8, { Self.textView($0); $0.flipsEdits = true }),
+            ("blocking, flipping", 8, { Self.textView($0); $0.answersLate = true; $0.flipsEdits = true }),
         ]
         for (name, every, host) in hosts {
             let text = name == "sentences" ? all.replacingOccurrences(of: " of", with: ". Of") : all
@@ -685,10 +690,11 @@ final class KeyboardToolbarTests: XCTestCase {
                 bar.press(try key(Shortcuts.hostOnly, "delAll"))
                 XCTAssertTrue(doc.calls.contains("⌫"), "what the context shows goes at the press: \(from) (#553 QA: 2 s)")
                 let after = String(text[cut...])
-                var before = true
+                var before = true, gone = 0
                 for i in 1...12_000 {
                     if i % every == 0 { doc.catchUp() }
                     kb.pollCaret()
+                    if gone == 0, Self.at(doc) == "|" { gone = i }
                     guard before else { continue }
                     let rest = doc.text + (doc.after ?? "")
                     XCTAssertTrue(rest.hasSuffix(after), "the text after the caret kept: \(from), at \(i)")
@@ -696,6 +702,9 @@ final class KeyboardToolbarTests: XCTestCase {
                     if !rest.hasSuffix(after) { break }
                 }
                 XCTAssertEqual(Self.at(doc), "|", from)
+                // A host turning between two contexts goes quiet in 0.3 s a batch (#553 QA: a
+                // blocking host's never did, and the 2 s limit dropped delete all).
+                if name == "flipping text view" { XCTAssertLessThanOrEqual(gone, 2_000, "polls: \(from)") }
                 // A step pair a line, for the line's window: none for its break's (#553 QA: 10 s),
                 // and one at the text's start, which shows none once the text is gone.
                 if name == "text view", cut != mid { XCTAssertLessThanOrEqual(doc.moves.count, 82, from) }
@@ -750,6 +759,26 @@ final class KeyboardToolbarTests: XCTestCase {
             doc.text = ""; doc.after = "\nsecond"
             try edit("delLine", kb, bar, doc)
             XCTAssertEqual(Self.at(doc), "|second", "an empty first line: \(name)")
+            // Both contexts nil there: the step for a fresh one stops at the text's start and
+            // isn't taken back (#553 QA: the step back went down a line and dd deleted nothing).
+            doc.text = ""; doc.after = "\none\n\ntwo\n"
+            for id in ["delHome", "delWord", "delEnd"] {
+                try edit(id, kb, bar, doc)
+                XCTAssertEqual(Self.at(doc), "|\none\n\ntwo\n", "\(id) at an empty first line: \(name)")
+            }
+            try edit("delLine", kb, bar, doc)
+            XCTAssertEqual(Self.at(doc), "|one\n\ntwo\n", "dd at an empty first line: \(name)")
+            doc.text = ""; doc.after = "\none\n\ntwo\n"
+            try edit("delLine", kb, bar, doc)
+            try edit("delLine", kb, bar, doc)
+            XCTAssertEqual(Self.at(doc), "|\ntwo\n", "dd twice at an empty first line: \(name)")
+            // A press while dd's step pair there takes no step back goes after dd, not in its place.
+            for (id, want) in [("delLine", "|\ntwo\n"), ("delHome", "|one\n\ntwo\n"), ("delEnd", "|\n\ntwo\n")] {
+                doc.text = ""; doc.after = "\none\n\ntwo\n"
+                bar.press(try key(Shortcuts.hostOnly, "delLine"))
+                try edit(id, kb, bar, doc)
+                XCTAssertEqual(Self.at(doc), want, "dd, then \(id) at once, at an empty first line: \(name)")
+            }
             doc.text = "one\n"; doc.after = ""
             try edit("delLine", kb, bar, doc)
             XCTAssertEqual(Self.at(doc), "|one", "an empty last line: \(name)")
@@ -825,6 +854,55 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
+    /// A UITextView whose context is the caret's sentence, answering late: from its copy before
+    /// the last batch, moves and all (a stalling host's, 300 or 700 ms), or each move's answer
+    /// later, without the deletes since (a blocking host's). ctrl-u, dd and ctrl-k take their
+    /// extent and no more: no batch crosses a break it hasn't seen, none takes text after the
+    /// caret (#553 QA: the answer after the line's last window was that window, and the next
+    /// batch took the break and the line above).
+    func testLateSentenceHostsTakeTheExtentOnly() throws {
+        let line = "First one is here. Second two is here. Third three is here. Fourth four is here."
+        let hosts: [(String, Int, (Proxy) -> Void)] = [
+            ("stalling 300 ms", 15, { Self.textView($0); $0.sentenceBefore = true; $0.showsOld = true }),
+            ("stalling 700 ms", 35, { Self.textView($0); $0.sentenceBefore = true; $0.showsOld = true }),
+            ("blocking", 8, { Self.textView($0); $0.sentenceBefore = true; $0.answersLate = true }),
+        ]
+        let mid = String(line.prefix(45)), rest = String(line.dropFirst(45))
+        let cases: [(String, String, String, String)] = [
+            ("delHome", "top\n" + mid, rest + "\nend", "top\n|" + rest + "\nend"),
+            ("delHome", "top\n" + line, "\nend", "top\n|\nend"),
+            ("delLine", "top\n" + mid, rest + "\nend", "top\n|end"),
+            ("delEnd", "top\nFirst", String(line.dropFirst(5)) + "\nend", "top\nFirst|\nend"),
+        ]
+        for (name, every, host) in hosts {
+            for (id, text, after, want) in cases {
+                let (kb, bar, doc) = rig(text, after: after)
+                host(doc)
+                try edit(id, kb, bar, doc, every: every)
+                XCTAssertEqual(Self.at(doc), want, "\(id) from \(text.count): \(name)")
+            }
+        }
+        // A blocking host one edit behind, a second press 0.3 s after the first: neither takes
+        // the break a stale answer hides (#553 QA: ctrl-u twice took the run's break, dd twice
+        // emptied the field).
+        let block: (Proxy) -> Void = { Self.textView($0); $0.answersLate = true; $0.behind = true }
+        let quick: [(String, String, String, String)] = [
+            ("delHome", "x\n" + String(repeating: "a", count: 40), " end\ny", "x\n| end\ny"),
+            ("delLine", "one", " two\nthree four\nfive six", "|five six"),
+        ]
+        for (id, text, after, want) in quick {
+            let (kb, bar, doc) = rig(text, after: after)
+            block(doc)
+            bar.press(try key(Shortcuts.hostOnly, id))
+            for i in 1...15 {
+                if i % 8 == 0 { doc.catchUp() }
+                kb.pollCaret()
+            }
+            try edit(id, kb, bar, doc, every: 8)
+            XCTAssertEqual(Self.at(doc), want, "\(id) twice, blocking one edit behind")
+        }
+    }
+
     /// ctrl-u and delete all over a run of one Character: its batches of one leave an anchor,
     /// so they take no steps between them (#553 QA: a step pair a batch, 10-20 times slower).
     func testARunOfOneCharacterGoesWithoutSteps() throws {
@@ -842,31 +920,46 @@ final class KeyboardToolbarTests: XCTestCase {
     }
 
     /// A field that shows no context reads as empty: an edit there deletes nothing, and a step
-    /// back looking for a fresh context comes back, so the caret isn't left a Character back.
-    /// So in an empty one, which shows no context as a field whose window a delete used up
-    /// does (#553 QA): its steps net nothing. One pair a press decides it: dd's deletes after
-    /// its pair take none.
+    /// back looking for a fresh context that shows none either isn't followed by a step on: it
+    /// reads as the text's start, as an empty first line's does (#553 QA: the step on there
+    /// took the caret a line down). So in an empty one, which shows no context as a field whose
+    /// window a delete used up does (#553 QA): its steps net nothing. One pair a press decides
+    /// it: dd's deletes after its pair take none. (Round 7: the caret ends where the press
+    /// found it, the blind step on undone by the step back, not a Character on.)
     func testEditsTakeNoStepBackInAFieldWithoutContext() throws {
         let (kb, bar, doc) = rig("ab", after: "cd")
         doc.hidesContext = true
         try edit("delAll", kb, bar, doc)
-        XCTAssertEqual(Self.at(doc), "abc|d", "where the blind step to the end left it: \(doc.moves)")
+        XCTAssertEqual(Self.at(doc), "ab|cd", "the blind step to the end, and the step back: \(doc.moves)")
         XCTAssertEqual(doc.calls, [], "no deletes")
         doc.text = ""; doc.after = ""; doc.moves = []
         try edit("delAll", kb, bar, doc)
-        XCTAssertEqual(doc.moves, [1, -1, 1], "the blind step to the end, and a step pair that finds none")
+        XCTAssertEqual(doc.moves, [1, -1], "the blind step to the end, and a step back that finds none")
         doc.text = "ab"; doc.after = "cd"; doc.moves = []
         try edit("delLine", kb, bar, doc)
-        XCTAssertEqual(Self.at(doc), "abc|d", "dd: where the blind step over the break left it")
-        XCTAssertEqual(doc.moves, [-1, 1, 1], "dd: one step pair finds none, then no more pairs")
+        XCTAssertEqual(Self.at(doc), "ab|cd", "dd: the step back, and the blind step over the break")
+        XCTAssertEqual(doc.moves, [-1, 1], "dd: one step finds none, then no more steps")
     }
 
     /// A press while an edit's step pair is under way, the step away sent and the step back
     /// not, or the step back sent and not shown: a toolbar edit waits for the caret to come
-    /// back and acts from there in the edit's place, a key, a touch, an arrow, a line move or
-    /// the poll limit gets it back first. None touches the text after the caret but its own
-    /// (#553 QA: a second ctrl-u in Safari dropped the step back and took the space after the
-    /// run).
+    /// back and for the edit to end, and acts from there, a key, a touch, an arrow, a line
+    /// move or the poll limit gets it back first and drops the edit's rest. None touches the
+    /// text after the caret but its own (#553 QA: a second ctrl-u in Safari dropped the step
+    /// back and took the space after the run).
+    /// A key while an edit waits for the host drops the edit and the hold it has on toolbar
+    /// presses: the next goes at once (`TerminalKeyboard.holding`).
+    func testAKeyDuringAnEditFreesTheToolbar() throws {
+        let (kb, bar, doc) = rig("one two")
+        doc.lagsEdits = true   // the deletes show only at `catchUp`: ctrl-w waits for them
+        bar.press(try key(Shortcuts.hostOnly, "delWord"))
+        XCTAssertEqual(Self.at(doc), "one |", "ctrl-w's deletes at the press")
+        kb.press(.char("z"))
+        doc.catchUp()
+        bar.press(try key(Shortcuts.hostOnly, "delWord"))
+        XCTAssertEqual(Self.at(doc), "one |", "the second ctrl-w at once")
+    }
+
     func testAPressDuringAStepPairActsWhereTheEditLeftTheCaret() throws {
         for by in ["toolbar", "ctrl-k", "key", "touch", "arrow", "line", "poll limit", "toolbar on the step back",
                    "key on the step back"] {
@@ -899,7 +992,8 @@ final class KeyboardToolbarTests: XCTestCase {
             }
             // The touch types what it lands nearest, where the caret came back to.
             let typed = by == "touch" ? doc.text.dropFirst(run.count) : ""
-            let want = ["toolbar": "x\n| end\ny", "toolbar on the step back": "x\n| end\ny", "ctrl-k": run + "|\ny",
+            // ctrl-k goes once ctrl-u ended, as a second dd does after the first (#553 QA).
+            let want = ["toolbar": "x\n| end\ny", "toolbar on the step back": "x\n| end\ny", "ctrl-k": "x\n|\ny",
                         "key": run + "z| end\ny", "key on the step back": run + "z| end\ny",
                         "touch": run + typed + "| end\ny", "arrow": run + " |end\ny", "line": run + " end\ny|",
                         "poll limit": run + "| end\ny"][by]

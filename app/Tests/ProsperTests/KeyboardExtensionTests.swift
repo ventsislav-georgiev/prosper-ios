@@ -22,7 +22,11 @@ final class KeyboardExtensionTests: XCTestCase {
         /// Both contexts are nil, as some hosts' fields show none.
         var hidesContext = false
         var documentContextBeforeInput: String? {
-            if hidesContext || blank && shown == nil { return nil }
+            guard let flip, held == nil, let b = before else { return before }
+            return b.dropLast() + (flip ? String(documentContextAfterInput?.prefix(1) ?? "") : "")
+        }
+        private var before: String? {
+            if hidesContext || blank && shown == nil || atStart { return nil }
             if let f = frozen { return f.before }
             if let h = held { return h.before }
             if let o = old { return context(before: o.before) }
@@ -57,7 +61,7 @@ final class KeyboardExtensionTests: XCTestCase {
         private var rest: String?
         var after: String? { didSet { units = nil } }
         var documentContextAfterInput: String? {
-            if hidesContext || blank && shown == nil { return nil }
+            if hidesContext || blank && shown == nil || atStart { return nil }
             if let f = frozen { return f.after }
             if let h = held { return h.after }
             let a = old.map(\.after) ?? (guess ?? shown).map(\.after) ?? after
@@ -99,6 +103,20 @@ final class KeyboardExtensionTests: XCTestCase {
         /// none (`hidesContext`).
         var nilsAtEnd = false
         private var blank = false
+        /// At the text's start on an empty line both contexts are nil, as QA's UITextView's
+        /// and Safari's were at an empty first line (#553 QA: `before="-"`, `after=[]`).
+        var nilsAtStart = false
+        private var atStart: Bool {
+            nilsAtStart && text.isEmpty && guess == nil && held == nil && (after ?? "").first.map(\.isNewline) != false
+        }
+        /// After a delete, till a caret move, the before-context shows a Character fewer than
+        /// the text has, and each `catchUp()` turns the after-context's first on or off after
+        /// it: two contexts in turn, neither ending in what a batch left (#553 QA: a blocking
+        /// host's `…again` and `…againn` 160 ms apart where `…again\nl` was left from the end,
+        /// `""` and `"q"` where `l` was left mid-text). A late answer to a move (`answersLate`)
+        /// shows as the host gave it.
+        var flipsEdits = false
+        private var flip: Bool?
         /// Every this many deletes, the context stops showing them till a caret move, as
         /// Safari's at times kept its old window (#553 QA).
         var stallsEdits = 0
@@ -118,6 +136,7 @@ final class KeyboardExtensionTests: XCTestCase {
             calls.append(s)
         }
         func deleteBackward() {
+            if flipsEdits, flip == nil { flip = false }
             if showsOld, old == nil { old = (text, after ?? "") }
             deletes += 1
             if stallsEdits > 0, deletes % stallsEdits == 0, frozen == nil {
@@ -159,12 +178,14 @@ final class KeyboardExtensionTests: XCTestCase {
         func answer() { guess = nil }
         func catchUp() {
             unshown = []; guess = nil; old = nil
+            flip?.toggle()
             if !late.isEmpty { held = late.removeFirst() }
         }
         func showNext() { if !unshown.isEmpty { unshown.removeFirst() } }
         func adjustTextPosition(byCharacterOffset offset: Int) {
             moves.append(offset)
             frozen = nil
+            flip = nil
             if let o = old {
                 let all = o.before + o.after, to = min(max(o.before.count + offset, 0), all.count)
                 old = (String(all.prefix(to)), String(all.dropFirst(to)))

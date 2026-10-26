@@ -1039,6 +1039,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// A toolbar edit's step pair under way (`caret(away:back:then:)`), till its step back
     /// lands: the step away, the units the two have sent, and a toolbar press held till then.
     private var pair: (steps: Int, units: Int, next: (() -> Void)?)?
+    /// What runs on each poll (`landed`) holds a toolbar press, kept till then (`holding`).
+    private var holds = false, heldPress: (() -> Void)?
     private var heightConstraint: NSLayoutConstraint!
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
@@ -1175,11 +1177,28 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// A step of `offset`, then `then` once the walk has landed it: a toolbar edit's deletes
     /// after its move (`SuggestionBar.edit`). The edit changes the text the walk last saw, so
-    /// the walk starts afresh after it.
+    /// the walk starts afresh after it. A toolbar press till then is held (`holding`).
     func caret(_ offset: Int, then: @escaping () -> Void) {
         caret(offset)
-        landed = { [weak self] in self?.walk.drop(); then(); return true }
+        landed = holding { [weak self] in self?.walk.drop(); then(); return true }
         if walk.idle { runLanded() }
+    }
+
+    /// `check`, a toolbar press held till it passes and going then (`finish`), after what
+    /// `check` sent, so a toolbar edit's walk, steps and deletes all go before the next press's
+    /// (#553 QA: a quick second dd, reading the context mid-way, dropped the first's deletes
+    /// and took the line it left the caret on).
+    private func holding(_ check: @escaping () -> Bool) -> () -> Bool {
+        holds = true
+        return { [weak self] in
+            guard let self else { return true }
+            let next = self.heldPress
+            self.holds = false
+            self.heldPress = nil
+            guard check() else { self.holds = true; self.heldPress = next; return false }
+            self.then({}, next)
+            return true
+        }
     }
 
     /// A step of `offset` and, once it lands, back unless `back` says no, then `then` once
@@ -1187,22 +1206,21 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// Till then the caret is off where the edit left it, so nothing else may act on it: a
     /// key, a touch or a move first sends back the units the pair sent (`settle`), which the
     /// host applies before what follows; a toolbar press, which reads the context, waits for
-    /// the pair to land back and goes in place of `then` (`finish`). (#553 QA: a second
-    /// ctrl-u in Safari dropped the step back and took the space after the caret.)
+    /// the pair to land back and goes after `then` (`finish`). (#553 QA: a second ctrl-u in
+    /// Safari dropped the step back and took the space after the caret.)
     func caret(away offset: Int, back: @escaping () -> Bool, then: @escaping () -> Void) {
-        settle()
-        pair = (offset, 0, nil)
+        pair = (offset, 0, nil)   // none under way: an edit's steps go from what runs on a poll
         send(offset)
         landed = { [weak self] in
             guard let self, let p = self.pair else { return true }
             self.walk.drop()
-            guard back() else { self.pair = nil; (p.next ?? then)(); return true }
+            guard back() else { self.pair = nil; self.then(then, p.next); return true }
             self.send(-p.steps)
             self.landed = { [weak self] in
                 let next = self?.pair?.next
                 self?.pair = nil
                 self?.walk.drop()
-                (next ?? then)()
+                self?.then(then, next)
                 return true
             }
             return true
@@ -1210,13 +1228,23 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if walk.idle { runLanded() }
     }
 
-    /// `act` now, or once a step pair under way has landed back (`caret(away:back:then:)`).
-    func finish(_ act: @escaping () -> Void) {
-        if pair != nil { pair?.next = act } else { act() }
+    /// `then`, and a toolbar press held till then after it, held again by what `then` started.
+    private func then(_ then: () -> Void, _ next: (() -> Void)?) {
+        then()
+        if let next { finish(next) }
     }
 
-    /// A step pair under way is dropped: the units it sent go back first, unseen.
+    /// `act` now, or once a step pair under way has landed back (`caret(away:back:then:)`), or
+    /// what holds it has (`holding`).
+    func finish(_ act: @escaping () -> Void) {
+        if pair != nil { pair?.next = act } else if holds { heldPress = act } else { act() }
+    }
+
+    /// A step pair under way is dropped: the units it sent go back first, unseen. So is a
+    /// press held.
     private func settle() {
+        holds = false
+        heldPress = nil
         guard let p = pair else { return }
         pair = nil
         if p.units != 0 { (target as? UITextDocumentProxy)?.adjustTextPosition(byCharacterOffset: -p.units) }
@@ -1224,11 +1252,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     /// `check` on each poll from the next, while the walk is idle, till it returns true: a
-    /// toolbar edit waiting for the host to show its deletes (`SuggestionBar.deleteBack`).
-    /// Dropped as `landed` is; the poll limit counts from here.
+    /// toolbar edit waiting for the host to show its deletes (`SuggestionBar.deleteBack`), a
+    /// toolbar press held till then (`holding`). Dropped as `landed` is; the poll limit
+    /// counts from here.
     func wait(_ check: @escaping () -> Bool) {
-        settle()
-        landed = check
+        landed = holding(check)   // in place of what ran: no step pair under way
         walkPolls = 0
         pollOn()
     }
