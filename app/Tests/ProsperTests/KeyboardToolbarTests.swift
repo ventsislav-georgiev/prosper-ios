@@ -389,12 +389,13 @@ final class KeyboardToolbarTests: XCTestCase {
 
     // MARK: Edits (#553)
 
-    /// The deletes held back until #553 passes QA on real hosts (#560): off the toolbar's
-    /// catalog, and a saved toolbar holding one loads without it; the motions and yank stay.
+    /// Delete all and cut line, held back until #553 passes QA on real hosts (#560): off the
+    /// toolbar's catalog, and a saved toolbar holding one loads without it; the motions, yank,
+    /// ctrl-u, ctrl-k and delete line stay.
     func testHeldBackDeletesAreOffTheToolbar() throws {
         let catalog = Shortcuts.Bar.toolbar.catalog.map(\.id)
-        for id in ["delHome", "delEnd", "delLine", "delAll", "cutLine"] { XCTAssertFalse(catalog.contains(id), id) }
-        for id in ["wordNext", "wordEnd", "wordBack", "delWord", "copyLine"] { XCTAssertTrue(catalog.contains(id), id) }
+        for id in ["delAll", "cutLine"] { XCTAssertFalse(catalog.contains(id), id) }
+        for id in ["wordNext", "wordEnd", "wordBack", "delWord", "copyLine", "delHome", "delEnd", "delLine"] { XCTAssertTrue(catalog.contains(id), id) }
         let store = try suiteStore(".heldBack")
         let delAll = try XCTUnwrap(Shortcuts.hostOnly.first { $0.id == "delAll" })
         Shortcuts.save([try key("left"), delAll], to: store, key: Shortcuts.Bar.toolbar.storageKey)

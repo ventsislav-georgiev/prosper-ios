@@ -70,9 +70,10 @@ enum Shortcuts {
         ShortcutKey(id: "redraw",  label: "redraw", kind: .redraw, systemImage: "arrow.clockwise"),
     ]
 
-    /// The `hostOnly` deletes kept off the toolbar's catalog (#560): they still fail QA on real
-    /// hosts. Remove this once #553 passes there.
-    static let heldBack: Set<String> = ["delHome", "delEnd", "delLine", "delAll", "cutLine"]
+    /// The `hostOnly` deletes kept off the toolbar's catalog (#560): delete all and cut line
+    /// still fail QA on real hosts (ctrl-u, ctrl-k and delete line ship). Remove this once #553
+    /// passes there.
+    static let heldBack: Set<String> = ["delAll", "cutLine"]
 
     /// The system keyboards' toolbar only (`Bar.toolbar`): text edits a terminal has no use for.
     static let hostOnly: [ShortcutKey] = [
