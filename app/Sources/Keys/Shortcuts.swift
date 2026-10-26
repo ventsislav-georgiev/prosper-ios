@@ -309,8 +309,20 @@ final class ShortcutBar: UIView {
     /// (`filled`) so it spans the bar exactly — one row is kept only when it fits, so it is
     /// only ever widened; a two-row grid overflowing by under 6% is squeezed the same way,
     /// and a wider overflow keeps its widths and scrolls. The split always reads natural widths,
-    /// never the widened or squeezed ones.
+    /// never the widened or squeezed ones. `oneRow` is never widened: it keeps natural widths,
+    /// left-aligned, unless it overflows by under 14% (`minRowScale`), then its caps squeeze
+    /// to fit around the fixed 44 pt Paste cap.
     override func layoutSubviews() {
+        if bounds.width != arrangedWidth, oneRow {
+            arrangedWidth = bounds.width
+            let natural = caps.map(\.naturalWidth)
+            let fixed = CGFloat(rows[0].arrangedSubviews.count - caps.count)   // the Paste caps
+            let available = bounds.width - 16 - fixed * (44 + Self.spacing)
+            let span = natural.reduce(0, +) + Self.spacing * CGFloat(max(0, caps.count - 1))
+            let cols = span <= available ? natural : Self.filled(natural, spacing: Self.spacing,
+                available: available, minScale: Self.minRowScale, pixel: 1 / max(1, traitCollection.displayScale))
+            for (cap, w) in zip(caps, cols) { cap.columnWidth = w }
+        }
         if bounds.width != arrangedWidth, rows.count == 2 {
             arrangedWidth = bounds.width
             let natural = caps.map(\.naturalWidth)
@@ -341,16 +353,19 @@ final class ShortcutBar: UIView {
     /// The narrowest `filled` squeezes a bar instead of scrolling it: the default 8+8 grid
     /// needs 0.943 on a 375 pt phone; a squeezed cap takes it out of its side padding.
     static let minFillScale: CGFloat = 0.94
+    /// `oneRow`'s: the default toolbar with Paste needs 0.873 on a 375 pt phone (an arrow cap
+    /// 31.4 pt). A cap keeps 86% of its glyph plus 16 pt, so a glyph under 98 pt never truncates.
+    static let minRowScale: CGFloat = 0.86
 
-    /// Fits (`sum + spacing` < available), or would at `minFillScale` → scale every width
+    /// Fits (`sum + spacing` < available), or would at `minScale` → scale every width
     /// by one factor so the span equals `available`, edges floored to the `pixel` grid so
     /// rounding never overshoots (a sub-pixel gap at the end is accepted). Overflows by
     /// more → unchanged, so it scrolls.
     static func filled(_ widths: [CGFloat], spacing: CGFloat, available: CGFloat,
-                       pixel: CGFloat = 0.5) -> [CGFloat] {
+                       minScale: CGFloat = minFillScale, pixel: CGFloat = 0.5) -> [CGFloat] {
         let sum = widths.reduce(0, +)
         let gaps = spacing * CGFloat(max(0, widths.count - 1))
-        guard sum > 0, sum * minFillScale + gaps <= available else { return widths }
+        guard sum > 0, sum * minScale + gaps <= available else { return widths }
         let factor = (available - gaps) / sum
         // Floor the running edge, not each width: per-width floors would lose a pixel
         // per column; this loses under one pixel in total.
@@ -649,7 +664,7 @@ final class KeyCapButton: UIButton {
     var ring: UIView?
     /// The width the cap's content wants, ignoring `columnWidth` — never narrower than the
     /// 36pt cap is tall, so a lone arrow or ^C starts square (a squeeze can still take it
-    /// to about 34x36).
+    /// to about 34x36, 31x36 in `oneRow`).
     var naturalWidth: CGFloat { max(contentWidth, 36) }
     /// Content plus full padding, whatever padding a squeeze left on the cap.
     private var contentWidth: CGFloat {

@@ -410,6 +410,84 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(Shortcuts.load().map(\.id), Shortcuts.defaults.map(\.id))
     }
 
+    /// `keys` as the system keyboard's toolbar: `SuggestionBar` places it right of the
+    /// toggle, from x 43 to the edge of a `width` phone.
+    @MainActor
+    private func makeToolbar(_ keys: [ShortcutKey], width: CGFloat) throws -> (bar: ShortcutBar, row: UIStackView, scroll: UIScrollView) {
+        let bar = ShortcutBar(keys: { keys }, oneRow: true)
+        bar.frame = CGRect(x: 0, y: 0, width: width - 43, height: 44)
+        bar.layoutIfNeeded()
+        let row = try XCTUnwrap(Self.caps(bar).first?.superview as? UIStackView)
+        return (bar, row, try XCTUnwrap(row.superview?.superview as? UIScrollView))
+    }
+
+    /// #561: the default toolbar, with Paste and without, fits portrait phones at Large text:
+    /// the end cap sits inside the strip, nothing scrolls or truncates, Paste stays 44, and a
+    /// row that already fits keeps its natural widths.
+    @MainActor
+    func testDefaultToolbarFitsPortraitPhones() throws {
+        for paste in [true, false] {
+            let keys = Shortcuts.Bar.toolbar.defaults.filter { paste || $0.id != "paste" }
+            XCTAssertEqual(keys.first?.id == "paste", paste)
+            for width: CGFloat in [375, 393, 402, 440] {
+                let (bar, row, sv) = try makeToolbar(keys, width: width)
+                let caps = Self.caps(bar)
+                XCTAssertEqual(row.arrangedSubviews.count, keys.count)
+                let last = try XCTUnwrap(row.arrangedSubviews.last)
+                XCTAssertLessThanOrEqual(last.convert(last.bounds, to: sv).maxX, sv.bounds.width + 0.01, "\(width) paste \(paste): end clipped")
+                XCTAssertLessThanOrEqual(sv.contentSize.width, sv.bounds.width + 0.01, "\(width) paste \(paste): scrolls")
+                if paste { XCTAssertEqual(row.arrangedSubviews[0].frame.width, 44, "\(width): Paste") }
+                for c in caps {
+                    if let t = c.titleLabel, !(t.text ?? "").isEmpty {
+                        XCTAssertLessThanOrEqual(t.intrinsicContentSize.width, t.bounds.width + 0.5, "\(width): \(t.text ?? "") truncates")
+                    }
+                    if let v = c.imageView, v.image != nil {
+                        XCTAssertLessThanOrEqual(v.image!.size.width, v.bounds.width + 0.5, "\(width): \(c.accessibilityLabel ?? "") glyph clipped")
+                    }
+                }
+                let natural = caps.map(\.naturalWidth).reduce(0, +), placed = caps.map(\.frame.width).reduce(0, +)
+                let span = natural + (paste ? 44 : 0) + 6 * CGFloat(keys.count - 1)
+                if span <= sv.bounds.width {
+                    for c in caps { XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.01, "\(width): widened") }
+                } else {
+                    XCTAssertLessThan(placed, natural, "\(width): not squeezed")
+                }
+            }
+        }
+    }
+
+    /// A short toolbar is not stretched to the strip: natural widths, left-aligned.
+    @MainActor
+    func testShortToolbarKeepsNaturalWidths() throws {
+        let (bar, row, sv) = try makeToolbar(try ["up", "tab"].map(key), width: 402)
+        for c in Self.caps(bar) { XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.01) }
+        XCTAssertEqual(row.arrangedSubviews[0].convert(row.arrangedSubviews[0].bounds, to: sv).minX, 0, accuracy: 0.01)
+        XCTAssertLessThan(try XCTUnwrap(row.arrangedSubviews.last).convert(row.arrangedSubviews.last!.bounds, to: sv).maxX,
+                          sv.bounds.width / 2)
+    }
+
+    /// Past `minRowScale` the toolbar keeps natural widths and scrolls, and it squeezes again
+    /// after `reload()` and a width change once the row is back within reach.
+    @MainActor
+    func testToolbarPastTheFloorScrolls() throws {
+        var keys = Shortcuts.Bar.toolbar.catalog
+        let long = ShortcutBar(keys: { keys }, oneRow: true)
+        long.frame = CGRect(x: 0, y: 0, width: 375 - 43, height: 44)
+        long.layoutIfNeeded()
+        let sv = try XCTUnwrap(Self.caps(long)[0].superview?.superview?.superview as? UIScrollView)
+        XCTAssertGreaterThan(sv.contentSize.width, sv.bounds.width / ShortcutBar.minRowScale, "past the floor")
+        for c in Self.caps(long) { XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.01, "squeezed past the floor") }
+
+        keys = Shortcuts.Bar.toolbar.defaults
+        long.reload()
+        long.layoutIfNeeded()
+        let caps = Self.caps(long)
+        XCTAssertLessThan(caps.map(\.frame.width).reduce(0, +), caps.map(\.naturalWidth).reduce(0, +), "reload re-fits")
+        long.frame.size.width = 440 - 43
+        long.layoutIfNeeded()
+        for c in Self.caps(long) { XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.01, "width change re-fits") }
+    }
+
     func testPasteImageGlyphIsPortrait() throws {
         let name = try XCTUnwrap(try key("pasteImg").systemImage)
         let cfg = UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
