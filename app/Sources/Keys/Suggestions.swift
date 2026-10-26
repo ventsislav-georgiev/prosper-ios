@@ -837,7 +837,7 @@ final class SuggestionBar: UIView {
         case .deleteLine, .cutLine:
             guard e == .deleteLine || copy != nil else { return }
             walk(1, { Self.toLineEnd($1) }) { [weak self] crossed in
-                self?.deleteLine(into: e == .cutLine ? copy : nil, moved: !crossed.isEmpty)
+                self?.deleteLine(into: e == .cutLine ? copy : nil, moved: !crossed.isEmpty, walked: crossed.count)
             }
         case .copyLine:
             guard let copy else { return }
@@ -868,10 +868,10 @@ final class SuggestionBar: UIView {
     /// for a context a move showed: one an edit left (`deleteBack`) re-windows at the step
     /// even where the host clamps it. So a walk that `moved` nothing re-windows first (#553
     /// QA: a stale "" on the empty last line took the line above).
-    private func deleteLine(into copy: UIPasteboard?, moved: Bool, blind: Bool? = nil) {
+    private func deleteLine(into copy: UIPasteboard?, moved: Bool, walked: Int = 0, blind: Bool? = nil) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         guard moved else {
-            return rewindow(waits: true, blind: Self.shows(doc) ? false : nil) { [weak self] in
+            return rewindow(waits: 15, blind: Self.shows(doc) ? false : nil) { [weak self] in
                 self?.deleteLine(into: copy, moved: true, blind: $0)
             }
         }
@@ -895,7 +895,15 @@ final class SuggestionBar: UIView {
         }
         keyboard.caret(1) { [weak self] in landed {
             guard let self, let doc = self.keyboard?.target as? UITextDocumentProxy else { return }
-            let b = Self.before(doc), joins = (b, doc.documentContextAfterInput ?? "") != seen && b.last?.isNewline == true
+            let b = Self.before(doc), a = doc.documentContextAfterInput ?? ""
+            let joins = (b, a) != seen && b.last?.isNewline == true
+            // Not over a break, the step stopped at the text's end: one showing text on is at a
+            // window's end the walk took for the line's (#553 QA: BLOCK dd took a sentence and
+            // the line above). Then nothing goes, the caret back where the press found it.
+            guard joins || a.isEmpty else {
+                self.keyboard?.caret(-walked - 1)
+                return self.edited()
+            }
             self.deleteBack(blind: blind, { b, gone in
                 let n = Self.toLineStart(b)
                 if joins { return gone.isEmpty && b.last?.isNewline == true ? 1 + Self.toLineStart(String(b.dropLast())) : n }
@@ -926,8 +934,26 @@ final class SuggestionBar: UIView {
         guard n > 0, legs > 0, seen.map({ $0 != (b, a) }) ?? true else { return done(crossed) }
         let leg = String(dir < 0 ? b.suffix(n) : a.prefix(n))
         keyboard.caret(dir * n) { [weak self] in
-            self?.walk(dir, legs: legs - 1, crossed: dir < 0 ? leg + crossed : crossed + leg, seen: (b, a),
-                       count, done: done)
+            let on: () -> Void = {
+                self?.walk(dir, legs: legs - 1, crossed: dir < 0 ? leg + crossed : crossed + leg, seen: (b, a),
+                           count, done: done)
+            }
+            // A leg over all of an after-context cut after a sentence's space lands, in UIKit's
+            // guess, on an empty one: no line's end till the host's answer shows none either
+            // (#553 QA: a blocking host's ctrl-k took a sentence, dd stepped over its next's first).
+            // So too a step blind over a break, whose guess is the context as it was: no text's
+            // end till the host's answer is that too (#553 QA: STALL delete all stopped a line on).
+            // ponytail: a line ending in a space, and the text's end, wait that long.
+            guard dir > 0, a.isEmpty || n == a.count && leg.last?.isWhitespace == true,
+                  let doc = self?.keyboard?.target as? UITextDocumentProxy, doc.documentContextAfterInput ?? "" == "" else { return on() }
+            let guess = (doc.documentContextBeforeInput, doc.documentContextAfterInput)
+            var polls = 0
+            self?.keyboard?.wait {
+                polls += 1
+                guard (doc.documentContextBeforeInput, doc.documentContextAfterInput) == guess, polls <= Self.answerPolls
+                else { on(); return true }
+                return false
+            }
         }
     }
 
@@ -986,7 +1012,7 @@ final class SuggestionBar: UIView {
         let anchor = String(c[(c.first == " " ? min(1, m) : 0)..<m])
         if !fresh, anchor.isEmpty, want >= c.count, want < left, c.isEmpty || !gone.isEmpty && !all {
             // A fresh empty one ends it: from a busy host's answer, not UIKit's guess.
-            return rewindow(waits: c.isEmpty, blind: blind) { [weak self] in
+            return rewindow(waits: c.isEmpty ? Self.answerPolls : 0, settles: !all, blind: blind) { [weak self] in
                 self?.deleteBack(left: left, gone: gone, fresh: true, all: all, after: after, sized: sized, blind: $0, count, done: done)
             }
         }
@@ -1048,7 +1074,7 @@ final class SuggestionBar: UIView {
             guard stale(doc) else { then(true); return true }
             guard quiet.over(read(doc), 15) else { return false }
             guard retry else { then(false); return true }
-            self.rewindow(waits: true, blind: blind) { [weak self] _ in
+            self.rewindow(waits: 15, blind: blind) { [weak self] _ in
                 self?.unstale(gone, after: after, sized: sized, blind: blind, retry: false, then: then)
             }
             return true
@@ -1104,43 +1130,72 @@ final class SuggestionBar: UIView {
     /// ponytail: a field that never shows a context gets no step back where the step went, the
     /// caret then a Character back; a host showing the text after an empty first line once the
     /// step there is clamped gets the step on, a line down.
-    /// `then` gets `blind`, decided by the step away where it wasn't (`shows`).
+    /// `then` gets `blind`, decided by the step away where it wasn't (`shows`), and back first
+    /// from none or a line's start only once the host answered it or `answerPolls` passed:
+    /// UIKit's guess, and a stalled host's none, are no edge (#553 QA: STALL delete all read
+    /// none 320 ms on, in a stall, and stopped).
     /// Steps that landed on the context as it was may have landed on UIKit's guess: one that
-    /// `waits` waits up to 0.3 s more for the host's answer, another context with the same
-    /// after-context, as dd's does for a context the last edit may have left stale (#553 QA: a
-    /// busy host's answer to the step back was taken for dd's next step's), and the deletes'
-    /// from an empty one, which a guess would leave empty. Other deletes' needn't: UIKit's copy
-    /// shows them.
+    /// `waits` waits up to that many polls more for the host's answer, another context with the
+    /// same after-context, as dd's does for a context the last edit may have left stale (#553
+    /// QA: a busy host's answer to the step back was taken for dd's next step's), and the
+    /// deletes' from an empty one, which a guess would leave empty. Other deletes' needn't:
+    /// UIKit's copy shows them. One that `settles`, back first from the edge, waits for a
+    /// context no other followed for `answerGap`.
     /// A key, a touch or a press before the step back lands gets the caret back first
     /// (`TerminalKeyboard.caret(away:back:then:)`).
-    /// ponytail: a host answering later than 0.3 s is read before it does.
-    private func rewindow(waits: Bool = false, blind: Bool?, then: @escaping (_ blind: Bool) -> Void) {
+    /// ponytail: a host answering later than `waits` (1.2 s where it `settles`) is read before
+    /// it does; one leaving more than `answerGap` between two answers has its step away's taken.
+    private func rewindow(waits: Int = 0, settles: Bool = false, blind: Bool?, then: @escaping (_ blind: Bool) -> Void) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         guard blind != true else { return then(true) }
         let none = doc.documentContextBeforeInput == nil && doc.documentContextAfterInput == nil
         let was = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? ""), on = !was.1.isEmpty
-        var back = true, blind = blind
+        var back = true, blind = blind, polls = 0
+        // UIKit's guess for the step back, which shows no host's answer.
+        let guess = (String(was.0.dropLast()), String(was.0.suffix(1)) + was.1)
         keyboard.caret(away: on ? 1 : -1, back: { [weak keyboard] in
             guard let doc = keyboard?.target as? UITextDocumentProxy else { return true }
+            let now = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? "")
+            back = on || !was.0.isEmpty || !now.0.isEmpty || (none ? !now.1.isEmpty : now.1 != was.1)
+            polls += 1
+            // From an empty before-context, the step back's own guess, or none in a stall, is no
+            // edge till the host answered or `answerPolls` passed (#553 QA: STALL delete all
+            // read none 320 ms on and stopped).
+            if !on && was.0.isEmpty && now == guess, polls <= Self.answerPolls { return nil }
             blind = blind ?? !Self.shows(doc)
-            let after = doc.documentContextAfterInput ?? ""
-            back = on || !was.0.isEmpty || doc.documentContextBeforeInput?.isEmpty == false
-                || (none ? !after.isEmpty : after != was.1)
             return back
         }) { [weak self] in
             let then = { then(blind == true) }
-            guard waits, back, let kb = self?.keyboard else { return then() }
-            var quiet = Quiet(was.0 + "\u{0}" + was.1)
+            guard waits > 0, back, let kb = self?.keyboard else { return then() }
+            // Back first from an empty before-context, the host answers the step away, then the
+            // step back, at a line's start both cut at the break the same: only a context no
+            // other followed for a gap a busy host leaves between two answers is the step back's
+            // (#553 QA: BLOCK ctrl-u took the line above its line's start, its step away's
+            // answer taken for its step back's).
+            let gaps = settles && !on && was.0.isEmpty
+            var polls = 0, still = 0, last = was
             let answered = { [weak kb] () -> Bool in
                 guard let doc = kb?.target as? UITextDocumentProxy else { return true }
                 let now = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? "")
-                if now != was, now.1 == was.1 { return true }
-                return quiet.over(now.0 + "\u{0}" + now.1, 15)
+                polls += 1
+                still = now == last ? still + 1 : 0
+                last = now
+                if gaps { return still >= Self.answerGap && now != was || polls > 3 * Self.answerPolls / 2 }
+                return now != was && now.1 == was.1 || polls > waits
             }
             if answered() { return then() }
             kb.wait { guard answered() else { return false }; then(); return true }
         }
     }
+
+    /// Polls, 0.8 s, a host may take to answer a move: QA's STALL host answered 340 ms on,
+    /// a blocking one 150 ms a move behind (#553 QA). Reading none for that long is the
+    /// text's edge; for less, a stall (#553 QA: STALL delete all stopped at the first).
+    static let answerPolls = 40
+
+    /// Polls, 0.4 s, a busy host may leave between two answers: QA's STALL host stalled 300 ms
+    /// (#553 QA).
+    static let answerGap = 20
 
     /// The field shows text before the caret (a step away from the text's start shows some
     /// there too). A field shows none (`blind`, no steps for a fresh one) only if it showed
@@ -1243,8 +1298,10 @@ final class SuggestionBar: UIView {
     override func paste(itemProviders: [NSItemProvider]) { load(itemProviders, fromToolbar: false) }
 
     /// A Paste control's clip, the bar's or the toolbar's. It loads off the main thread and
-    /// goes in on it, while that control still shows. A late tap (a double tap's second)
-    /// loads nothing: loading raises Allow Paste once its control is gone.
+    /// goes in on it, while that control still shows, once a toolbar edit under way has
+    /// landed, as a toolbar press does (`TerminalKeyboard.finish`; #553 QA: a Paste during a
+    /// step pair went in a Character off). A late tap (a double tap's second) loads nothing:
+    /// loading raises Allow Paste once its control is gone.
     private func load(_ providers: [NSItemProvider], fromToolbar: Bool) {
         guard shows(fromToolbar),
               let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return }
@@ -1259,8 +1316,13 @@ final class SuggestionBar: UIView {
     }
 
     private func insert(_ clip: String, fromToolbar: Bool) {
-        guard shows(fromToolbar), let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
+        guard shows(fromToolbar), let keyboard else { return }
         UIDevice.current.playInputClick()
+        keyboard.finish { [weak self] in self?.put(clip) }
+    }
+
+    private func put(_ clip: String) {
+        guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         suggestions.paste(clip, in: doc)
         keyboard.resetWord()
         keyboard.autoCapitalize()

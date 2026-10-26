@@ -1208,13 +1208,14 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// host applies before what follows; a toolbar press, which reads the context, waits for
     /// the pair to land back and goes after `then` (`finish`). (#553 QA: a second ctrl-u in
     /// Safari dropped the step back and took the space after the caret.)
-    func caret(away offset: Int, back: @escaping () -> Bool, then: @escaping () -> Void) {
+    func caret(away offset: Int, back: @escaping () -> Bool?, then: @escaping () -> Void) {
         pair = (offset, 0, nil)   // none under way: an edit's steps go from what runs on a poll
         send(offset)
         landed = { [weak self] in
             guard let self, let p = self.pair else { return true }
             self.walk.drop()
-            guard back() else { self.pair = nil; self.then(then, p.next); return true }
+            guard let b = back() else { return false }   // asked again on the next poll
+            guard b else { self.pair = nil; self.then(then, p.next); return true }
             self.send(-p.steps)
             self.landed = { [weak self] in
                 let next = self?.pair?.next
@@ -1353,7 +1354,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// none; 0.3 s of nothing new is a guess at the slowest host (`CaretWalk.poll`). A
     /// drag past the document's end waits that long before steps back count. A move that
     /// never shows stops the polling after 2 s, still waited on: the next `caret` polls
-    /// again, the next touch drops it.
+    /// again, the next touch drops it. An edit dropped there goes no further, but a toolbar
+    /// press it held goes then, after the step pair's units came back (#553 QA: a held press
+    /// was dropped with the edit).
     func pollCaret() {
         walkPolls += 1
         if walk.idle, landed != nil {
@@ -1364,10 +1367,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
         guard walkPolls >= 100 else { return }   // 2 s: a move that never shows waits for the next `caret`
         walkPolls = 0
+        let next = pair?.next ?? heldPress
         settle()
         landed = nil
         walkTimer?.invalidate()
         walkTimer = nil
+        next?()
     }
 
     /// Shift on at a sentence start, off elsewhere, when the target is a host app's text

@@ -65,7 +65,8 @@ final class KeyboardExtensionTests: XCTestCase {
             if let f = frozen { return f.after }
             if let h = held { return h.after }
             let a = old.map(\.after) ?? (guess ?? shown).map(\.after) ?? after
-            let cut = stopsAtLineEnd && !(guessesPastLineEnd && guess != nil) ? a.map { String($0.utf16.prefix { $0 != 0x0A && $0 != 0x0D }) ?? "" } : a
+            var cut = stopsAtLineEnd && !(guessesPastLineEnd && guess != nil) ? a.map { String($0.utf16.prefix { $0 != 0x0A && $0 != 0x0D }) ?? "" } : a
+            if sentenceAfter, let c = cut, let r = c.range(of: ". ") { cut = String(c[..<r.upperBound]) }
             return window.flatMap { w in cut.map { String(decoding: Array($0.utf16.prefix(w)), as: UTF16.self) } } ?? cut
         }
         /// The after-context stops at the caret line's end, as a host's does.
@@ -97,6 +98,20 @@ final class KeyboardExtensionTests: XCTestCase {
         /// after it not in it. No answer follows an edit, so the last move's stays (#553 QA,
         /// a host blocking 150 ms).
         var answersLate = false
+        /// With `answersLate`, the host's main thread as QA's test host's is (#553 QA): it takes
+        /// the calls in order, each move costing it `moveCost` polls before it applies it and
+        /// answers (BLOCK 150: 8), an edit none, and it stalls `stalls.for` polls of every
+        /// `stalls.every`, `stalls.at` into the first, doing nothing (STALL 300/700, answering
+        /// 340 ms on: 17 of 35).
+        /// Each `catchUp()` is a poll of its time: the proxy shows the last answer given by then.
+        var moveCost = 0
+        var stalls: (every: Int, for: Int, at: Int)?
+        private var paced: Bool { moveCost > 0 || stalls != nil }
+        private var clock = 0, busy = 0
+        private func stalled(_ t: Int) -> Bool { stalls.map { s in (t + s.at) % s.every >= s.every - s.for } ?? false }
+        /// The after-context stops after the caret's sentence's ". ", as a UITextView's does
+        /// (#553 QA: a walk to the line's end landed on UIKit's guess at a sentence's end).
+        var sentenceAfter = false
         /// Where the after-context shows none (the text's end, or a line's with
         /// `stopsAtLineEnd`), once a delete used up the window (`cutsEdits`), both contexts are
         /// nil till a caret move, as QA's UITextView's are (#553 QA): not a field that shows
@@ -128,7 +143,7 @@ final class KeyboardExtensionTests: XCTestCase {
         var showsOld = false
         private var old: (before: String, after: String)?
         private var held: (before: String, after: String)?
-        private var late: [(before: String, after: String)] = []
+        private var late: [(at: Int, before: String, after: String)] = []
         func insertText(_ s: String) {
             if lagsEdits || behind { unshown.append((text, after, rest)) }
             text += s
@@ -179,7 +194,10 @@ final class KeyboardExtensionTests: XCTestCase {
         func catchUp() {
             unshown = []; guess = nil; old = nil
             flip?.toggle()
-            if !late.isEmpty { held = late.removeFirst() }
+            if paced {
+                clock += 1
+                while let f = late.first, f.at <= clock { held = (f.before, f.after); late.removeFirst() }
+            } else if let f = late.first { held = (f.before, f.after); late.removeFirst() }
         }
         func showNext() { if !unshown.isEmpty { unshown.removeFirst() } }
         func adjustTextPosition(byCharacterOffset offset: Int) {
@@ -199,7 +217,10 @@ final class KeyboardExtensionTests: XCTestCase {
             }
             defer {
                 if let guessed {
-                    late.append((documentContextBeforeInput ?? "", documentContextAfterInput ?? ""))
+                    var t = max(clock, busy), cost = moveCost
+                    while stalled(t) || cost > 0 { if !stalled(t) { cost -= 1 }; t += 1 }
+                    busy = t
+                    late.append((t, documentContextBeforeInput ?? "", documentContextAfterInput ?? ""))
                     held = guessed
                 }
             }
