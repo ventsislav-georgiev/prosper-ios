@@ -1145,6 +1145,22 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(Self.at(doc), "one|\nthree")
     }
 
+    /// So too a toolbar press held by an edit's walk leg (`holding`), not a step pair: the leg
+    /// never shows, the limit drops ctrl-k, and the press goes then, where the leg left the
+    /// caret, nothing deleted.
+    func testThePollLimitDropsAWalkNotThePressItHeld() throws {
+        let (kb, bar, doc) = rig("x\none", after: " two\ny")
+        doc.lags = true   // the leg never shows
+        bar.press(try key(Shortcuts.hostOnly, "delEnd"))
+        XCTAssertEqual(doc.moves, [4], "the leg to the line's end")
+        bar.press(try key("tab"))
+        XCTAssertEqual(doc.calls, [], "the tab held")
+        for _ in 0..<100 { kb.pollCaret() }
+        XCTAssertEqual(doc.calls, ["\t"], "the tab, and no deletes")
+        XCTAssertEqual(doc.moves, [4], "no other move")
+        XCTAssertEqual(Self.at(doc), "x\none two\t|\ny")
+    }
+
     func testAPressDuringAStepPairActsWhereTheEditLeftTheCaret() throws {
         for by in ["toolbar", "ctrl-k", "key", "touch", "arrow", "line", "poll limit", "toolbar on the step back",
                    "key on the step back"] {
