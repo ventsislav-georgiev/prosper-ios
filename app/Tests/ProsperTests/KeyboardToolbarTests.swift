@@ -1015,6 +1015,134 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
+    /// Delete all, cut line and dd on hosts answering a move later than the keyboard waits
+    /// take one run of their extent at most, the caret where it went, and cut line's clip holds
+    /// the run: stopping early there is fine, more, elsewhere or the caret off never (#553
+    /// round 9: the step pair at the text's edge counts its answer's wait from the step).
+    /// ponytail: cut line and dd on a line ending the text or before another aren't covered:
+    /// on a host taking 0.6 s a move they take a slow answer to the step away for their step
+    /// on's, and leave the caret a Character back or clip a Character the deletes left.
+    func testDeleteAllCutLineAndDdOnAHostSlowerThanTheirWaitsTakeOneRunAtMost() throws {
+        // The edit, the text before and after the caret, and what's outside its extent.
+        let cases: [(String, String, String, String, String)] = [
+            ("delAll", "one two", "", "", ""), ("delAll", "one", " two", "", ""), ("delAll", "one", "\ntwo", "", ""),
+            ("delAll", "", "one\ntwo", "", ""), ("delAll", "a\nb c", "", "", ""), ("delAll", "a\nb", "\n", "", ""),
+            ("cutLine", "one", " two", "", ""), ("delLine", "one", "\ntwo", "", "two"),
+        ]
+        for cost in [30, 50] {   // 0.6 s and 1 s a move
+            for (id, text, after, keepHead, keepTail) in cases {
+                let (kb, bar, doc) = rig(text, after: after, keys: Shortcuts.hostOnly)
+                Self.qaHosts()[1].1(doc)
+                doc.moveCost = cost
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                pb.string = "old"
+                bar.suggestions.pasteboard = { pb }
+                bar.toolbar?.reload()
+                bar.press(try key(Shortcuts.hostOnly, id))
+                for _ in 1...3_000 { doc.catchUp(); kb.pollCaret() }
+                let all = text + after, head = doc.text, tail = doc.after ?? ""
+                let what = "\(id) on \(text)|\(after), a move \(cost) polls: \(Self.at(doc))"
+                print("QA-SLOW " + what.debugDescription)
+                XCTAssertTrue(all.hasPrefix(head) && all.hasSuffix(tail) && head.count + tail.count <= all.count, what)
+                XCTAssertTrue(head.hasPrefix(keepHead) && tail.hasSuffix(keepTail), what)
+                let run = String(all.dropFirst(head.count).dropLast(tail.count))
+                // Nothing gone: the caret where it was, or at the line's end the walk went to.
+                XCTAssertTrue(!run.isEmpty || head == text || tail.isEmpty || tail.first?.isNewline == true, what)
+                if id == "cutLine" {
+                    let line = run.trimmingCharacters(in: .newlines)
+                    XCTAssertEqual(pb.string, line.isEmpty ? "old" : line, what)
+                }
+            }
+        }
+    }
+
+    /// On the kit and Safari, the toolbar is free within 1.2 s of delete all's or cut line's
+    /// last delete showing: one step pair at the text's edge, the walk's 0.3 s for the clamped
+    /// step and the 0.8 s a host may take to answer it, then nothing more (#553 QA: delete all
+    /// on two words held it 8.3 s after the text went, two step pairs at none and a walk
+    /// between); from the text's end 0.9 s, the answer's wait counted from the step away. A
+    /// caret left on a line's start past which the after-context stops (the kit's) goes on to
+    /// the text after it. QA's slow hosts end right too.
+    func testLineEditsFreeTheToolbarSoonAfterTheirLastDelete() throws {
+        let cases: [(String, String, String, String)] = [
+            ("delAll", "one two", "", ""), ("delAll", "one", " two", ""), ("delAll", "", "one two", ""),
+            ("delAll", "one", "\ntwo", ""), ("delAll", "a\nb", "\n\nc d", ""), ("delAll", "a\nb c", "", ""),
+            ("cutLine", "one two", "", ""), ("cutLine", "top\none two", "\nend", "top\nend"),
+        ]
+        let fast: [(String, (Proxy) -> Void)] = [("Safari", { Self.safari($0) }), Self.qaHosts()[0]]
+        for (name, host) in fast + Self.qaHosts().dropFirst() {
+            for (id, text, after, left) in cases {
+                let (kb, bar, doc) = rig(text, after: after, keys: Shortcuts.hostOnly)
+                host(doc)
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                bar.suggestions.pasteboard = { pb }
+                bar.toolbar?.reload()
+                bar.press(try key(Shortcuts.hostOnly, id))
+                bar.press(try key("tab"))
+                var gone: Int?, free: Int?
+                for i in 1...3_000 where free == nil {
+                    doc.catchUp()
+                    kb.pollCaret()
+                    if gone == nil, doc.text + (doc.after ?? "") == left { gone = i }
+                    if doc.calls.last == "\t" { free = i }
+                }
+                let what = "\(id) on \(name) from \(text.count): gone at \(gone ?? -1), free at \(free ?? -1)"
+                print("QA-FREE " + what)
+                XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), left == "top\nend" ? "top\n\t|end" : "\t|", what)
+                if fast.contains(where: { $0.0 == name }) {
+                    XCTAssertLessThanOrEqual((free ?? 9_999) - (gone ?? 0), id == "delAll" && after.isEmpty ? 45 : 60, what)
+                }
+            }
+        }
+    }
+
+    /// ctrl-k over a line of sentences on the kit, whose after-context stops after each
+    /// sentence's space: each leg there goes on at the host's answer, 20-160 ms on, not after
+    /// the 0.8 s a stalled host may take (#553 QA: the kit's sentence-windowed line edits took
+    /// 0.7-2.5 s; a walk ignoring the answer there waited each sentence out).
+    func testDeleteToEndGoesOnAtTheKitsAnswerAfterEachSentence() throws {
+        let line = "First one is here. Second two is here. Third three is here. Fourth four is here."
+        for cost in [1, 2, 4, 8] {
+            let (kb, bar, doc) = rig("top\nFirst", after: String(line.dropFirst(5)) + "\nend")
+            Self.qaHosts()[0].1(doc)
+            doc.moveCost = cost
+            bar.press(try key(Shortcuts.hostOnly, "delEnd"))
+            bar.press(try key("tab"))
+            var free: Int?
+            for i in 1...3_000 where free == nil {
+                doc.catchUp()
+                kb.pollCaret()
+                if doc.calls.last == "\t" { free = i }
+            }
+            XCTAssertEqual(Self.at(doc), "top\nFirst\t|\nend", "\(cost)")
+            XCTAssertLessThanOrEqual(free ?? 9_999, 100, "\(cost): the line's end waited out, not its three sentence ends")
+        }
+    }
+
+    /// Cut line writes the clip as its deletes go: a key during the step pairs after them, which
+    /// drops the edit, leaves it written (#553 QA: a key 1.5 s on kept the old clip).
+    func testCutLineWritesTheClipBeforeItsTail() throws {
+        for (name, host) in [("Safari", { Self.safari($0) })] + Self.qaHosts() {
+            let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+            addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+            pb.string = "old"
+            let (kb, bar, doc) = rig("one one", keys: Shortcuts.hostOnly)
+            host(doc)
+            bar.suggestions.pasteboard = { pb }
+            bar.toolbar?.reload()
+            bar.press(try key(Shortcuts.hostOnly, "cutLine"))
+            var i = 0
+            while i < 3_000, Self.at(doc) != "|" { doc.catchUp(); kb.pollCaret(); i += 1 }
+            doc.catchUp(); kb.pollCaret()
+            kb.press(.char("q"))
+            for _ in 1...3_000 { doc.catchUp(); kb.pollCaret() }
+            XCTAssertEqual(pb.string, "one one", name)
+            XCTAssertEqual(Self.at(doc), "q|", name)
+        }
+    }
+
     /// Delete all on QA's slow hosts empties the field from the end and from mid-text, nothing
     /// after the caret going before all before it has (#553 QA: STALL stopped from the end
     /// with 2145 of 2261 left, the caret a Character back, and from a row's fourth Character
@@ -1047,6 +1175,57 @@ final class KeyboardToolbarTests: XCTestCase {
                 XCTAssertEqual(Self.at(doc), "|", from)
                 print("QA-DELALL \(from): \(gone) polls")
             }
+            }
+        }
+    }
+
+    /// Delete all from mid-text on a blocking host that also lays out after each delete, so its
+    /// answers to the walk come late and its legs read the context from two legs back in turn,
+    /// as QA's did (#553 QA: BLOCK's legs went +45, +1, +44, +1 for 101 moves and 1147 were
+    /// left): the walk still reaches the end and the field empties, a leg at a time.
+    /// ponytail: about 100 legs for 20 lines; a host showing that cycle for longer than the
+    /// walk's leg budget stops partway, the text after the caret kept.
+    func testDeleteAllWalksToTheEndOnABusyHost() throws {
+        let rows = (0..<40).map { String(format: "item %02d the tall grey frog hops over the calm ponds again", $0) }
+            .joined(separator: "\n")
+        let cut = rows.index(try XCTUnwrap(rows.range(of: "item 20")).lowerBound, offsetBy: 12)
+        for (name, host) in Self.qaHosts().prefix(2) {
+            let (kb, bar, doc) = rig(String(rows[..<cut]), after: String(rows[cut...]))
+            host(doc)
+            doc.editsPerPoll = 2
+            bar.press(try key(Shortcuts.hostOnly, "delAll"))
+            for _ in 1...12_000 where Self.at(doc) != "|" { doc.catchUp(); kb.pollCaret() }
+            let legs = doc.moves.filter { $0 > 1 }
+            print("QA-LEGS \(name): \(legs.count) \(legs.prefix(12))")
+            XCTAssertEqual(Self.at(doc), "|", name)
+        }
+    }
+
+    /// A tab or a Paste pressed right behind delete all goes once the field is empty, on the
+    /// fakes of QA's slow hosts too. (#553 QA: its STALL with Paste stopped at 406, BLOCK with
+    /// tab at row 27 and with Paste at 581, a step pair never landing before the poll limit, and
+    /// the press went in there; these fakes don't show that.)
+    func testAPressBehindDeleteAllGoesOnceTheFieldIsEmpty() throws {
+        let rows = (10...49).map { "row \($0): a red fox runs past the old dog in the yard" }.joined(separator: "\n")
+        for (name, host) in [("Safari", { Self.safari($0) })] + Self.qaHosts() {
+            for second in ["tab", "paste"] {
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                pb.string = "clip"
+                let (kb, bar, doc) = rig(rows, keys: Shortcuts.Bar.toolbar.defaults)
+                host(doc)
+                bar.suggestions.pasteboard = { pb }
+                let toolbar = try XCTUnwrap(bar.toolbar)
+                toolbar.reload()
+                bar.showsToolbar = true
+                bar.refresh()
+                bar.press(try key(Shortcuts.hostOnly, "delAll"))
+                if second == "tab" { bar.press(try key("tab")) } else {
+                    toolbar.paste(itemProviders: [NSItemProvider(object: "clip" as NSString)])
+                    RunLoop.main.run(until: Date() + 0.2)
+                }
+                for _ in 1...12_000 { doc.catchUp(); kb.pollCaret() }
+                XCTAssertEqual(Self.at(doc), second == "tab" ? "\t|" : "clip|", "\(name), \(second)")
             }
         }
     }

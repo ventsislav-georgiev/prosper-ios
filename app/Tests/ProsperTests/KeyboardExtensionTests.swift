@@ -106,8 +106,21 @@ final class KeyboardExtensionTests: XCTestCase {
         /// Each `catchUp()` is a poll of its time: the proxy shows the last answer given by then.
         var moveCost = 0
         var stalls: (every: Int, for: Int, at: Int)?
+        /// With `answersLate`, edits cost the host a poll every this many, ahead of the moves
+        /// sent after them, as QA's UITextView laying out a long text after each delete (#553
+        /// QA: BLOCK's answers to delete all's walk came seconds late, and each leg read one
+        /// from two legs back). 0: edits cost none.
+        var editsPerPoll = 0
         private var paced: Bool { moveCost > 0 || stalls != nil }
-        private var clock = 0, busy = 0
+        private var clock = 0, busy = 0, edits = 0
+        private func edit() {
+            guard answersLate, editsPerPoll > 0 else { return }
+            edits += 1
+            guard edits % editsPerPoll == 0 else { return }
+            var t = max(clock, busy)
+            while stalled(t) { t += 1 }
+            busy = t + 1
+        }
         private func stalled(_ t: Int) -> Bool { stalls.map { s in (t + s.at) % s.every >= s.every - s.for } ?? false }
         /// The after-context stops after the caret's sentence's ". ", as a UITextView's does
         /// (#553 QA: a walk to the line's end landed on UIKit's guess at a sentence's end).
@@ -149,6 +162,7 @@ final class KeyboardExtensionTests: XCTestCase {
             text += s
             held?.before += s
             calls.append(s)
+            edit()
         }
         func deleteBackward() {
             if flipsEdits, flip == nil { flip = false }
@@ -166,6 +180,7 @@ final class KeyboardExtensionTests: XCTestCase {
             blank = nilsAtEnd && left == "" && documentContextAfterInput?.isEmpty != false
             if let h = held { held = (String(h.before.dropLast()), h.after) }
             calls.append("⌫")
+            edit()
         }
         /// Every caret move, as asked; the caret moves within `text` + `after`.
         var moves: [Int] = []

@@ -1042,6 +1042,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var walkField: UUID?
     private(set) var walkTimer: Timer?
     private var walkPolls = 0
+    /// The polls so far: a toolbar edit times a host's answer from its step by them.
+    private(set) var ticks = 0
     /// A line move asked for hasn't sent anything yet (`line`).
     private var lineAsked = false
     /// What runs on each poll once the walk is idle, till it returns true: the rest of a toolbar
@@ -1370,6 +1372,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// was dropped with the edit).
     func pollCaret() {
         walkPolls += 1
+        ticks += 1
         if walk.idle, landed != nil {
             runLanded()   // an edit waiting on the host (`wait`): no move to step
         } else {

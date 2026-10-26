@@ -841,14 +841,15 @@ final class SuggestionBar: UIView {
             // walk first took 2 s from mid-text); then to its end, one step blind where the
             // after-context stops at the line's end, which the host clamps at the text's end,
             // and back. Only once the host showed the first part gone: one that never shows a
-            // batch would size the rest from what went.
+            // batch would size the rest from what went. None either side after the step pair at
+            // the end is an empty field: no walk (`deleteBack`'s `ends`).
             let rest: () -> Void = { [weak self] in
                 self?.walk(1, { $1.isEmpty ? 1 : $1.count }) { [weak self] _ in
                     self?.deleteBack(all: true) { b, _ in b.count }
                 }
             }
             guard !before.isEmpty else { return rest() }
-            deleteBack(all: true, { b, _ in b.count }) { [weak self] _ in
+            deleteBack(all: true, { b, _ in b.count }, ends: { empty in if !empty { rest() } }) { [weak self] _ in
                 guard let doc = self?.keyboard?.target as? UITextDocumentProxy, Self.before(doc).isEmpty else { return }
                 rest()
             }
@@ -922,15 +923,18 @@ final class SuggestionBar: UIView {
                 self.keyboard?.caret(-walked - 1)
                 return self.edited()
             }
+            // The clip as each batch goes, not once the host shows the last: a key during the
+            // steps after it drops the rest (#553 QA: a key 1.5 s on kept the old clip).
             self.deleteBack(blind: blind, { b, gone in
                 let n = Self.toLineStart(b)
                 if joins { return gone.isEmpty && b.last?.isNewline == true ? 1 + Self.toLineStart(String(b.dropLast())) : n }
                 return gone.first?.isNewline == true ? 0 : n < b.count ? n + 1 : n
-            }, done: { [weak self] gone in
+            }, went: copy.map { copy in { [weak self] gone in
                 var line = Substring(gone)
                 if joins, line.last?.isNewline == true { line.removeLast() }
                 if !joins, line.first?.isNewline == true { line.removeFirst() }
-                if let copy, !line.isEmpty { self?.keep(String(line), in: copy) }
+                if !line.isEmpty { self?.keep(String(line), in: copy) }
+            } }, done: { [weak self] gone in
                 if !joins, gone.first?.isNewline == true { self?.walk(-1, { b, _ in Self.toLineStart(b) }) { _ in } }
             })
         } }
@@ -983,7 +987,12 @@ final class SuggestionBar: UIView {
     /// else it leaves the context's start, the anchor the next context must end in, ending
     /// unlike the batch starts, so a host one edit behind, still showing its first Character,
     /// is never taken for the answer. Then `edited` and `done` with what went, in order.
-    /// A key, a touch or a move drops the rest.
+    /// A key, a touch or a move drops the rest; `went` gets what went so far as each batch is
+    /// sent, so a dropped edit's deletes are still known (cut line's clip).
+    /// One that `ends` has it decide what follows once the text's end shows no text either side
+    /// after the step pair there, `ends(true)` where it's still none (the field is empty) and
+    /// `ends(false)` where text after the caret shows, instead of reading on from it (#553 QA:
+    /// delete all from the end then walked to the end and stepped again, the toolbar held 8 s).
     ///
     /// After a delete a host shows only what's left of the window it cut the context at, ""
     /// at that window's start, till a move shows a fresh one (#553 QA: UITextView's windows
@@ -1008,7 +1017,8 @@ final class SuggestionBar: UIView {
     /// a batch, a poll each.
     private func deleteBack(left: Int = 10_000, gone: String = "", fresh: Bool = false, all: Bool = false,
                             after: String? = nil, sized: String? = nil, blind: Bool? = nil, checked: Bool = false,
-                            _ count: @escaping (String, String) -> Int,
+                            _ count: @escaping (String, String) -> Int, went: ((String) -> Void)? = nil,
+                            ends: ((_ empty: Bool) -> Void)? = nil,
                             done: @escaping (String) -> Void = { _ in }) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         let after = after ?? doc.documentContextAfterInput
@@ -1017,7 +1027,7 @@ final class SuggestionBar: UIView {
             return unstale(gone, after: after, sized: sized, blind: blind) { [weak self] ok in
                 guard ok else { self?.edited(); return done(gone) }
                 self?.deleteBack(left: left, gone: gone, fresh: fresh, all: all, after: after, sized: sized, blind: blind,
-                                 checked: true, count, done: done)
+                                 checked: true, count, went: went, ends: ends, done: done)
             }
         }
         let blind = blind ?? (Self.shows(doc) ? false : nil)
@@ -1030,13 +1040,20 @@ final class SuggestionBar: UIView {
         let anchor = String(c[(c.first == " " ? min(1, m) : 0)..<m])
         if !fresh, anchor.isEmpty, want >= c.count, want < left, c.isEmpty || !gone.isEmpty && !all {
             // A fresh empty one ends it: from a busy host's answer, not UIKit's guess.
-            return rewindow(waits: c.isEmpty ? Self.answerPolls : 0, settles: !all, blind: blind) { [weak self] in
-                self?.deleteBack(left: left, gone: gone, fresh: true, all: all, after: after, sized: sized, blind: $0, count, done: done)
+            let probe = c.isEmpty && (doc.documentContextAfterInput ?? "").isEmpty ? ends : nil
+            return rewindow(waits: c.isEmpty ? Self.answerPolls : 0, settles: !all, ends: probe != nil, blind: blind) { [weak self] in
+                // Delete all's: the press showed a before-context, so never `blind` here.
+                if let probe, let doc = self?.keyboard?.target as? UITextDocumentProxy, Self.before(doc).isEmpty {
+                    self?.edited()
+                    return probe((doc.documentContextAfterInput ?? "").isEmpty)
+                }
+                self?.deleteBack(left: left, gone: gone, fresh: true, all: all, after: after, sized: sized, blind: $0, count, went: went, ends: ends, done: done)
             }
         }
         guard want > 0 else { edited(); return done(gone) }
         let batch = String(c[m...]), sent = min(batch.count + (all && m == 0 ? 1 : 0), left)
         for _ in 0..<sent { doc.deleteBackward() }
+        went?(batch + gone)
         keyboard.resetWord()   // a key before the host answers corrects nothing that went
         suggestions.caretMoved()
         let shown = { (now: String) in
@@ -1050,7 +1067,7 @@ final class SuggestionBar: UIView {
                 guard let self, let doc = self.keyboard?.target as? UITextDocumentProxy else { return true }
                 let now = Self.before(doc)
                 if shown(now) {
-                    self.deleteBack(left: left - sent, gone: batch + gone, all: all, after: after, sized: b, blind: blind, count, done: done)
+                    self.deleteBack(left: left - sent, gone: batch + gone, all: all, after: after, sized: b, blind: blind, count, went: went, ends: ends, done: done)
                     return true
                 }
                 guard quiet.over(now, 15) else { return false }
@@ -1058,7 +1075,7 @@ final class SuggestionBar: UIView {
                 self.rewindow(blind: blind) { [weak self] blind in
                     guard let self, let doc = self.keyboard?.target as? UITextDocumentProxy else { return }
                     if anchor.isEmpty || all || shown(Self.before(doc)) {
-                        self.deleteBack(left: left - sent, gone: batch + gone, fresh: true, all: all, after: after, sized: b, blind: blind, count, done: done)
+                        self.deleteBack(left: left - sent, gone: batch + gone, fresh: true, all: all, after: after, sized: b, blind: blind, count, went: went, ends: ends, done: done)
                     } else if tries > 1 { read(tries - 1) } else { self.edited(); done(batch + gone) }
                 }
                 return true
@@ -1161,29 +1178,50 @@ final class SuggestionBar: UIView {
     /// context no other followed for `answerGap`.
     /// A key, a touch or a press before the step back lands gets the caret back first
     /// (`TerminalKeyboard.caret(away:back:then:)`).
+    /// One that `ends` (delete all's at the text's end) steps on whatever the step away showed,
+    /// so a caret on the start of a line past which the after-context stops shows the next,
+    /// and counts its `waits` from the step away, not from the step on's landing: an empty
+    /// field ends 0.8 s after the press, not 1.1 s (#553 QA: the kit's delete all on two words
+    /// held the toolbar 1.1 s after them). Where it still shows none, a host yet to answer
+    /// may take the step on a line down: a delete then leaves the caret where the deletes stop.
     /// ponytail: a host answering later than `waits` (1.2 s where it `settles`) is read before
     /// it does; one leaving more than `answerGap` between two answers has its step away's taken.
-    private func rewindow(waits: Int = 0, settles: Bool = false, blind: Bool?, then: @escaping (_ blind: Bool) -> Void) {
+    private func rewindow(waits: Int = 0, settles: Bool = false, ends: Bool = false, blind: Bool?,
+                          then: @escaping (_ blind: Bool) -> Void) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         guard blind != true else { return then(true) }
         let none = doc.documentContextBeforeInput == nil && doc.documentContextAfterInput == nil
         let was = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? ""), on = !was.1.isEmpty
-        var back = true, blind = blind, polls = 0
+        var back = true, forced = false, blind = blind, polls = 0
         // UIKit's guess for the step back, which shows no host's answer.
         let guess = (String(was.0.dropLast()), String(was.0.suffix(1)) + was.1)
+        let sent = keyboard.ticks
         keyboard.caret(away: on ? 1 : -1, back: { [weak keyboard] in
             guard let doc = keyboard?.target as? UITextDocumentProxy else { return true }
             let now = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? "")
             back = on || !was.0.isEmpty || !now.0.isEmpty || (none ? !now.1.isEmpty : now.1 != was.1)
+            forced = ends && !back
+            back = back || ends
             polls += 1
             // From an empty before-context, the step back's own guess, or none in a stall, is no
             // edge till the host answered or `answerPolls` passed (#553 QA: STALL delete all
             // read none 320 ms on and stopped).
-            if !on && was.0.isEmpty && now == guess, polls <= Self.answerPolls { return nil }
+            if !on && !ends && was.0.isEmpty && now == guess, polls <= Self.answerPolls { return nil }
             blind = blind ?? !Self.shows(doc)
             return back
         }) { [weak self] in
-            let then = { then(blind == true) }
+            let then = { [weak self] in
+                // A step on at the edge that still shows none either side may yet go a line
+                // down, or back to where the step away left, on a host that hadn't answered: a
+                // delete there leaves the caret where the deletes stop, and in an empty field
+                // takes nothing (#553 round 9: a step back would take the caret a Character off
+                // where the step away went).
+                if forced, let doc = self?.keyboard?.target as? UITextDocumentProxy, Self.before(doc).isEmpty,
+                   (doc.documentContextAfterInput ?? "").isEmpty {
+                    doc.deleteBackward()
+                }
+                then(blind == true)
+            }
             guard waits > 0, back, let kb = self?.keyboard else { return then() }
             // Back first from an empty before-context, the host answers the step away, then the
             // step back, at a line's start both cut at the break the same: only a context no
@@ -1193,13 +1231,13 @@ final class SuggestionBar: UIView {
             let gaps = settles && !on && was.0.isEmpty
             var polls = 0, still = 0, last = was
             let answered = { [weak kb] () -> Bool in
-                guard let doc = kb?.target as? UITextDocumentProxy else { return true }
+                guard let kb, let doc = kb.target as? UITextDocumentProxy else { return true }
                 let now = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? "")
                 polls += 1
                 still = now == last ? still + 1 : 0
                 last = now
                 if gaps { return still >= Self.answerGap && now != was || polls > 3 * Self.answerPolls / 2 }
-                return now != was && now.1 == was.1 || polls > waits
+                return now != was && now.1 == was.1 || (ends ? kb.ticks - sent : polls) > waits
             }
             if answered() { return then() }
             kb.wait { guard answered() else { return false }; then(); return true }
