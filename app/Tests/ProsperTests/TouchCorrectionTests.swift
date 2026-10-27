@@ -233,6 +233,11 @@ final class TouchCorrectionTests: XCTestCase {
         kb.resetWord()
         kb.screenWords = { ["scalefox"] }
         XCTAssertEqual(type("scal", thenTap: CGPoint(x: w.maxX - 1, y: w.midY), on: kb), "e")
+        kb.resetWord()
+        // Only the screen's, a little: the dictionary's "blips" (its second) keeps the touch.
+        kb.screenWords = { ["blipdtok"] }
+        let s = f["s"]!, d = f["d"]!
+        XCTAssertEqual(type("blip", thenTap: CGPoint(x: (s.maxX + d.minX) / 2 - 0.5, y: s.midY), on: kb), "s")
     }
 
     /// The screen is read only for an ambiguous touch, once per touch.

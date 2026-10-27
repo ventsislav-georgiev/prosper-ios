@@ -345,6 +345,15 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertNil(Suggestions.split(["ire-a", "idea", "ire a"], for: "irea"), "a one-letter second word")
         XCTAssertNil(Suggestions.split(["hello-world", "hello world"], for: "helloWorld"), "camelCase")
         XCTAssertNil(Suggestions.split(["hell-world", "hell world"], for: "helloworld"), "not the same letters")
+        XCTAssertNil(Suggestions.split(["up-to-date", "up to date"], for: "uptodate"), "two hyphens")
+    }
+
+    /// A first guess split doesn't take ("ire-a") is no one-word guess either: "irea" is "idea".
+    func testARejectedSplitIsNoGuess() {
+        XCTAssertEqual(Suggestions.guesses("irea", spaced: true).first, "ire-a")
+        let (kb, bar, doc) = rig()
+        withExtendedLifetime(bar) { typing(kb, "irea ") }
+        XCTAssertEqual(doc.text, "idea ")
     }
 
     /// "." waits for a space: "jane.doe" and "example.com" go on past it.
