@@ -245,6 +245,10 @@ final class LiveStatus: ObservableObject {
     private var tracked: Set<String> = []
     private(set) var cache = PushTokenCache()
     private var reposting = false
+    /// Token tries on the wire. forget() waits them out before its DELETE (#577): the
+    /// server may still apply a cancelled one, and a row it commits after the DELETE
+    /// outlives the switch.
+    private var sending: [UUID: Task<Int, Error>] = [:]
     private let signedIn: () -> PushTokens?
     private let notificationsAllowed: () async -> Bool
     private let requestAuthorization: () async -> Bool
@@ -324,7 +328,7 @@ final class LiveStatus: ObservableObject {
     /// Sign-out, while the Bearer still works. Asks again on the next sign-in if it was on.
     func signOut(session: String, email: String) async {
         if enabled { asked = false }
-        await forget(PushTokens(session: session, deviceId: InstallID.get(email: email)))
+        await forget(client() ?? PushTokens(session: session, deviceId: InstallID.get(email: email)))
     }
 
     /// The cards end and the state clears before the device-wide DELETE (#572): a turnOn
@@ -333,6 +337,8 @@ final class LiveStatus: ObservableObject {
     private func forget(_ tokens: PushTokens?) async {
         enabled = false
         await stop()
+        // ponytail: bounded by each try's 10 s timeout, and the tries run side by side.
+        for t in sending.values { _ = try? await t.value }
         await tokens?.delete()
         if enabled, let client = client() { await cache.repost(client) }
     }
@@ -344,7 +350,22 @@ final class LiveStatus: ObservableObject {
     private func client() -> PushTokens? {
         guard var c = signedIn() else { return nil }
         c.live = { [weak self] in self?.enabled == true }
+        let send = c.send
+        c.send = { [weak self] req in
+            guard let self else { return try await send(req) }
+            return try await self.onWire(req, send)
+        }
         return c
+    }
+
+    /// One try, checked against the switch and registered in the same main-actor turn, so
+    /// forget() can't miss a POST that passed live() but isn't on the wire yet.
+    private func onWire(_ req: URLRequest, _ send: @escaping (URLRequest) async throws -> Int) async throws -> Int {
+        guard enabled || req.httpMethod != "POST" else { throw CancellationError() }
+        let id = UUID(), t = Task { try await send(req) }
+        sending[id] = t
+        defer { sending[id] = nil }
+        return try await t.value
     }
 
     func post(_ kind: PushKind, token: String, activityId: String? = nil, macId: String? = nil) async {

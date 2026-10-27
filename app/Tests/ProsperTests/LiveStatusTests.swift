@@ -301,9 +301,11 @@ final class LiveStatusTests: XCTestCase {
 
     // MARK: the switch and the tokens
 
-    /// A send that can hold one request until released, to have a repost in flight.
+    /// A send that can hold one request until released, to have a repost in flight. `rows`
+    /// is the fake Worker's table, changed when a request commits, after any hold.
     private final class Gate: @unchecked Sendable {
         var requests: [URLRequest] = []
+        var rows: Set<String> = []
         var holdNext = false
         private var held: CheckedContinuation<Void, Never>?
         var holding: Bool { held != nil }
@@ -313,6 +315,9 @@ final class LiveStatusTests: XCTestCase {
                 holdNext = false
                 await withCheckedContinuation { held = $0 }
             }
+            let b = (try? JSONSerialization.jsonObject(with: r.httpBody ?? Data())) as? [String: String] ?? [:]
+            if r.httpMethod == "POST" { rows.insert(b["kind"]! + (b["activity_id"] ?? "")) }
+            else if b["kind"] == nil { rows = [] }
             return 204
         }
         func release() { held?.resume(); held = nil }
@@ -353,10 +358,41 @@ final class LiveStatusTests: XCTestCase {
         gate.holdNext = true
         let fg = Task { await ls.foreground() }
         await gate.waitHeld()
-        await ls.turnOff()
+        let off = Task { await ls.turnOff() }
         gate.release()
         await fg.value
+        await off.value
         XCTAssertEqual(gate.methods, ["POST", "POST", "POST", "DELETE"])
+    }
+
+    /// A POST on the wire at switch-off commits before the DELETE, never after it (#577).
+    @MainActor
+    func testTurnOffWaitsOutAPostInFlight() async {
+        await assertPostInFlightIsDeleted { await $0.turnOff() }
+    }
+
+    /// Sign-out goes the same way (#577).
+    @MainActor
+    func testSignOutWaitsOutAPostInFlight() async {
+        await assertPostInFlightIsDeleted { await $0.signOut(session: "b", email: "a@b.test") }
+    }
+
+    @MainActor
+    private func assertPostInFlightIsDeleted(_ off: @escaping @MainActor (LiveStatus) async -> Void,
+                                             line: UInt = #line) async {
+        let gate = Gate()
+        let ls = liveStatus(gate)
+        gate.holdNext = true
+        let post = Task { await ls.post(.laUpdate, token: tok, activityId: "act-1", macId: "mac-a") }
+        await gate.waitHeld()
+        let done = Task { await off(ls) }
+        // Without the wait the DELETE goes out now; give it the chance.
+        for _ in 0..<100 where !gate.methods.contains("DELETE") { try? await Task.sleep(nanoseconds: 2_000_000) }
+        gate.release()
+        await post.value
+        await done.value
+        XCTAssertEqual(gate.methods, ["POST", "DELETE"], line: line)
+        XCTAssertEqual(gate.rows, [], "no row outlives the switch", line: line)
     }
 
     /// The switch back on while turnOff's DELETE is in flight (#572): the old state is
