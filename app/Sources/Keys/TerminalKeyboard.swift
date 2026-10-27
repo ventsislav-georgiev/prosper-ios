@@ -1061,6 +1061,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var pair: (steps: Int, units: Int, next: (() -> Void)?)?
     /// What runs on each poll (`landed`) holds a toolbar press, kept till then (`holding`).
     private var holds = false, heldPress: (() -> Void)?
+    /// The field a toolbar press found (`finish`, `field`): its edit, and every press held
+    /// behind it, writes there only (`writable`).
+    private var editField: UUID?
+    /// A toolbar edit's code is running: a press's, a held one's, or what runs on a poll.
+    private var acting = 0
     private var heightConstraint: NSLayoutConstraint!
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
@@ -1257,19 +1262,67 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// `act` now, or once a step pair under way has landed back (`caret(away:back:then:)`), or
     /// what holds it has (`holding`).
+    /// A press records its field (`editField`); one held goes only in that field.
     func finish(_ act: @escaping () -> Void) {
-        if pair != nil { pair?.next = act } else if holds { heldPress = act } else { act() }
+        if pair != nil { pair?.next = act; return }
+        if holds { heldPress = act; return }
+        if acting == 0 {
+            editField = (target as? UITextDocumentProxy).flatMap(Self.field)
+        } else if !writable() { return }
+        acting += 1
+        act()
+        acting -= 1
+    }
+
+    /// The field's `documentIdentifier`, nil where the host has none, as mid-way through a
+    /// focus change: read through KVC, since UIKit declares it a UUID and Swift traps on the
+    /// nil it then returns (#569 QA: Safari, a tap into another field during delete all).
+    static func field(_ doc: UITextDocumentProxy) -> UUID? {
+        (doc as? NSObject)?.value(forKey: "documentIdentifier") as? UUID
     }
 
     /// A step pair under way is dropped: the units it sent go back first, unseen. So is a
     /// press held.
     private func settle() {
+        if fieldLeft { leave() }
         holds = false
         heldPress = nil
         guard let p = pair else { return }
         pair = nil
         if p.units != 0 { (target as? UITextDocumentProxy)?.adjustTextPosition(byCharacterOffset: -p.units) }
         walk.drop()
+    }
+
+    /// A toolbar edit under way, or a press held, in a field the host no longer serves: another,
+    /// or none, since the press (`editField`; #569 QA: after a tap into another field mid-edit,
+    /// delete all's and dd's deletes, steps and held presses went on there). A poll checks it
+    /// first (`pollCaret`), a key or a move too (`settle`), and each write an edit makes again
+    /// (`writable`).
+    private var fieldLeft: Bool {
+        (acting > 0 || landed != nil || pair != nil || holds)
+            && (target as? UITextDocumentProxy).flatMap(Self.field) != editField
+    }
+
+    /// A toolbar edit's write (a delete, an insert, a move) may go: the host still serves the
+    /// press's field. Else the edit and every press it holds are dropped, and so is every
+    /// write the rest of its code tries, the field being the press's no more.
+    func writable() -> Bool {
+        guard fieldLeft else { return true }
+        leave()
+        return false
+    }
+
+    /// The edit and every press it holds are dropped, nothing sent back: the units a step pair
+    /// sent went to the field the host no longer serves.
+    private func leave() {
+        holds = false
+        heldPress = nil
+        pair = nil
+        landed = nil
+        walk = CaretWalk()
+        walkField = nil
+        walkTimer?.invalidate()
+        walkTimer = nil
     }
 
     /// `check` on each poll from the next, while the walk is idle, till it returns true: a
@@ -1287,7 +1340,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private func runLanded() {
         if let f = landed {
             landed = nil
+            acting += 1
             if !f() { landed = f }
+            acting -= 1
         }
         if landed == nil, walk.idle {
             walkTimer?.invalidate()
@@ -1327,9 +1382,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// `steps` and `lines` more for `walk`, and what it can send now; polls the host's
     /// context until the walk is idle, or 0.3 s pass without a move landing.
     private func walkOn(_ steps: Int = 0, lines: Int = 0) {
-        guard let doc = target as? UITextDocumentProxy else { return }
-        if steps != 0 || lines != 0, doc.documentIdentifier != walkField {
-            walkField = doc.documentIdentifier
+        guard let doc = target as? UITextDocumentProxy, writable() else { return }
+        // Another field, on a poll too, drops the walk: nothing more of it goes there (#569: a
+        // trackpad drag's rest moved the caret from where a tap into the next field put it).
+        if Self.field(doc) != walkField {
+            walkField = Self.field(doc)
             walk = CaretWalk()
         }
         walk.wrap = wrapGuess
@@ -1379,6 +1436,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// press it held goes then, after the step pair's units came back (#553 QA: a held press
     /// was dropped with the edit).
     func pollCaret() {
+        guard !fieldLeft else { return leave() }
         let now = clock?()
         // ponytail: a poll counts 5 ticks at most, so a stalled main thread's first poll after
         // it can't time out a wait before the host's queued answer is read; a host slower
@@ -1400,7 +1458,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         landed = nil
         walkTimer?.invalidate()
         walkTimer = nil
+        acting += 1
         next?()
+        acting -= 1
     }
 
     /// Shift on at a sentence start, off elsewhere, when the target is a host app's text

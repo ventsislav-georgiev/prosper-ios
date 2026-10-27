@@ -1162,6 +1162,132 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
+    /// A tap into another field while a line edit and a second press held behind it are under
+    /// way, at any point of them (a batch sent and not shown, a walk leg, a step pair away,
+    /// the press held), reaches nothing there: no delete, no move, no insert, no clip of its
+    /// text, and a key typed there, at once or later, goes in as typed, nothing sent back
+    /// first; dd there then takes its line. So too where the host serves no field for a moment,
+    /// nil (#569 QA: Safari, dd twice, then a tap into a second textarea: the first dd's
+    /// deletes went on there, the second's took its break).
+    func testAFieldSwitchMidEditReachesNothingInTheNewField() throws {
+        let long = (1...6).map { "Row \($0) has a few words and then more of them." }.joined(separator: "\n")
+        let row = String(repeating: "word ", count: 60)
+        let cases: [(String, String, String)] = [
+            ("delLine", String(row.prefix(150)), String(row.dropFirst(150)) + "\n\nnext"),
+            ("cutLine", String(row.prefix(150)), String(row.dropFirst(150)) + "\nnext"),
+            ("delAll", long, ""), ("delAll", String(long.prefix(100)), String(long.dropFirst(100))),
+        ]
+        let hosts: [(String, (Proxy) -> Void)] = [("Safari", { Self.safari($0) }), Self.qaHosts()[0]]
+        for (name, host) in hosts {
+            for (id, text, after) in cases {
+                for at in stride(from: 16, to: 320, by: 8) {
+                    for mode in ["new", "none first", "typed at once"] {
+                        try switchMidEdit(id, text, after, on: (name, host), at: at, mode, polls: 400)
+                    }
+                }
+            }
+        }
+    }
+
+    /// So too the toolbar's kept keys, on a host taking 0.8 s a move: ctrl-w and ctrl-u twice,
+    /// a tap into another field after the second press, a new one or none first (#569 QA: they
+    /// go through the same deletes, walk and steps).
+    func testAFieldSwitchMidKeptEditOnASlowHostReachesNothingInTheNewField() throws {
+        let line = "First one is here. Second two is here. Third three is here."
+        let slow: (String, (Proxy) -> Void) = ("a host 0.8 s a move", { Self.qaHosts()[1].1($0); $0.moveCost = 40 })
+        for id in ["delWord", "delHome"] {
+            for at in stride(from: 16, to: 700, by: 20) {
+                for mode in ["new", "none first"] {
+                    try switchMidEdit(id, "top\n" + line, "\nend", on: slow, at: at, mode, polls: 1_000, dd: false)
+                }
+            }
+        }
+    }
+
+    /// A walk under way with nothing else pending, a trackpad drag or a word motion twice, on
+    /// a host taking 0.8 s a move, goes no further once the host serves another field, a new
+    /// one or none first: no move there, and a key goes in where the tap put the caret (#569
+    /// review: the walk's rest moved the caret in the next field).
+    func testAWalkUnderWayStopsAtAFieldSwitch() throws {
+        let other = "keep these words\nand this line too"
+        let text = "top\n" + String(repeating: "First one is here. ", count: 4)
+        for motion in ["drag", "wordNext"] {
+            for at in stride(from: motion == "drag" ? 2 : 16, to: 400, by: 12) {   // after the second press
+                for gap in [false, true] {
+                    let (kb, bar, doc) = rig(motion == "drag" ? text : "top\n", after: motion == "drag" ? "\nend" : String(text.dropFirst(4)),
+                                             keys: Shortcuts.hostOnly)
+                    Self.qaHosts()[1].1(doc)
+                    doc.moveCost = 40
+                    bar.toolbar?.reload()
+                    let what = "\(motion), a tap \(at) polls on\(gap ? ", none first" : "")"
+                    if motion == "drag" { kb.caret(-30) } else { bar.press(try key(Shortcuts.hostOnly, "wordNext")) }
+                    for i in 1...600 {
+                        if motion != "drag", i == 15 { bar.press(try key(Shortcuts.hostOnly, "wordNext")) }
+                        if i == at { doc.focus(other, id: gap ? nil : UUID()); doc.moves = [] }
+                        if gap, i == at + 5 { doc.identifier = UUID() }
+                        doc.catchUp()
+                        kb.pollCaret()
+                    }
+                    XCTAssertEqual(doc.moves, [], what)
+                    kb.press(.char("z"))
+                    XCTAssertEqual(Self.at(doc), other + "z|", what)
+                }
+            }
+        }
+    }
+
+    /// `id` twice, 15 polls apart, on `host`, the host serving another field `at` polls on (a
+    /// new one, none first, or a key typed in it at once): nothing of the edits reaches it, and
+    /// dd there then takes its line (not on a host slower than dd's waits, which may stop short).
+    private func switchMidEdit(_ id: String, _ text: String, _ after: String, on host: (String, (Proxy) -> Void),
+                               at: Int, _ mode: String, polls: Int, dd: Bool = true) throws {
+        let other = "keep these words\nand this line too"
+        let (kb, bar, doc) = rig(text, after: after, keys: Shortcuts.hostOnly)
+        host.1(doc)
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        defer { UIPasteboard.remove(withName: pb.name) }
+        bar.suggestions.pasteboard = { pb }
+        bar.toolbar?.reload()
+        let what = "\(id) twice on \(host.0), a tap \(at) polls on, \(mode)"
+        let gap = mode == "none first", typed = mode == "typed at once"
+        bar.press(try key(Shortcuts.hostOnly, id))
+        for i in 1...polls {
+            if i == 15 { bar.press(try key(Shortcuts.hostOnly, id)) }
+            if i == at {
+                doc.focus(other, id: gap ? nil : UUID()); doc.calls = []; doc.moves = []
+                if typed { kb.press(.char("z")) }
+            }
+            if gap, i == at + 5 { doc.identifier = UUID() }
+            doc.catchUp()
+            kb.pollCaret()
+        }
+        XCTAssertEqual(Self.at(doc), other + (typed ? "z|" : "|"), what)
+        XCTAssertEqual(doc.calls, typed ? ["z"] : [], what)
+        XCTAssertEqual(doc.moves, [], what)
+        XCTAssertFalse(["keep", "too"].contains { pb.string?.contains($0) == true }, "\(what): \(pb.string ?? "")")
+        if !typed { kb.press(.char("z")) }
+        XCTAssertEqual(Self.at(doc), other + "z|", what)
+        XCTAssertEqual(doc.moves, [], what)
+        guard dd else { return }
+        for _ in 1...5 { doc.catchUp(); kb.pollCaret() }   // the host shows the key
+        bar.press(try key(Shortcuts.hostOnly, "delLine"))
+        for _ in 1...polls { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(Self.at(doc), "|keep these words", what)
+    }
+
+    /// A field the host serves no identifier for, mid-way through a focus change, takes a
+    /// trackpad move and a toolbar edit as any: nothing traps on the nil (#569 QA: a walk's
+    /// read of it crashed the keyboard).
+    func testAFieldWithNoIdentifierTakesMovesAndEdits() throws {
+        let (kb, bar, doc) = rig("one two", after: " three")
+        doc.identifier = nil
+        kb.caret(-3)
+        for _ in 1...50 { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(Self.at(doc), "one |two three")
+        try edit("delAll", kb, bar, doc)
+        XCTAssertEqual(Self.at(doc), "|")
+    }
+
     /// ctrl-k over a line of sentences on the kit, whose after-context stops after each
     /// sentence's space: each leg there goes on at the host's answer, 20-160 ms on, not after
     /// the 0.8 s a stalled host may take (#553 QA: the kit's sentence-windowed line edits took

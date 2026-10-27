@@ -76,7 +76,13 @@ final class KeyboardExtensionTests: XCTestCase {
         var guessesPastLineEnd = false
         var selectedText: String? { nil }
         var documentInputMode: UITextInputMode? { nil }
-        let documentIdentifier = UUID()
+        /// The field, nil mid-way through a focus change: UIKit's getter traps there as this
+        /// one does, so the keyboard reads it through KVC (`TerminalKeyboard.field`).
+        var identifier: UUID? = UUID()
+        var documentIdentifier: UUID { identifier! }
+        override func value(forKey key: String) -> Any? {
+            key == "documentIdentifier" ? identifier : super.value(forKey: key)
+        }
         /// As UIKit's proxy answers it, from the context: false wherever both are nil or
         /// empty, text or not (#553 QA: a UITextView's nil contexts at its end).
         var hasText: Bool { documentContextBeforeInput?.isEmpty == false || documentContextAfterInput?.isEmpty == false }
@@ -215,6 +221,12 @@ final class KeyboardExtensionTests: XCTestCase {
             } else if let f = late.first { held = (f.before, f.after); late.removeFirst() }
         }
         func showNext() { if !unshown.isEmpty { unshown.removeFirst() } }
+        /// The host serving another field, as on a tap into it: its text and caret, its own
+        /// identifier (nil mid-way through the focus change), no answer owed from the last.
+        func focus(_ text: String, after: String = "", id: UUID? = UUID()) {
+            unshown = []; guess = nil; old = nil; held = nil; late = []; frozen = nil; flip = nil
+            self.text = text; self.after = after; identifier = id
+        }
         func adjustTextPosition(byCharacterOffset offset: Int) {
             moves.append(offset)
             frozen = nil

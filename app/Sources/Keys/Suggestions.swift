@@ -1053,6 +1053,7 @@ final class SuggestionBar: UIView {
         }
         guard want > 0 else { edited(); return done(gone) }
         let batch = String(c[m...]), sent = min(batch.count + (all && m == 0 ? 1 : 0), left)
+        guard keyboard.writable() else { return }   // another field since the press: nothing more
         for _ in 0..<sent { doc.deleteBackward() }
         went?(batch + gone)
         keyboard.resetWord()   // a key before the host answers corrects nothing that went
@@ -1220,7 +1221,7 @@ final class SuggestionBar: UIView {
                 // takes nothing (#553 round 9: a step back would take the caret a Character off
                 // where the step away went).
                 if forced, let doc = self?.keyboard?.target as? UITextDocumentProxy, Self.before(doc).isEmpty,
-                   (doc.documentContextAfterInput ?? "").isEmpty {
+                   (doc.documentContextAfterInput ?? "").isEmpty, self?.keyboard?.writable() == true {
                     doc.deleteBackward()
                 }
                 then(blind == true)
@@ -1381,7 +1382,7 @@ final class SuggestionBar: UIView {
     }
 
     private func put(_ clip: String) {
-        guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
+        guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy, keyboard.writable() else { return }
         suggestions.paste(clip, in: doc)
         keyboard.resetWord()
         keyboard.autoCapitalize()
