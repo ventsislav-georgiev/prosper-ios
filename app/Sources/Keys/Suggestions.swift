@@ -1012,7 +1012,10 @@ final class SuggestionBar: UIView {
     /// anchor, but for `all`, only once a context shows the batch gone, waiting again up to
     /// three times, so no batch is sized from a context that still shows the last one; without
     /// (the batch took the whole context), from any, since an empty line's break in a
-    /// UITextView, and Safari's at a window's start, read the same after it.
+    /// UITextView, and Safari's at a window's start, read the same after it; but for `all`,
+    /// none either side after a batch that took a fresh context whole, maybe UIKit's guess for
+    /// the steps, is no answer for `applyTicks`: a host yet to apply the batch takes it after a
+    /// step sent at once, a Character early (#570 QA: Safari's dd left "…lazy doga").
     /// ponytail: 10,000 deletes at most; a host still not showing a batch after three waits
     /// ends it there with what went, a second press goes on. A run of one Character goes one
     /// a batch, a poll each.
@@ -1058,8 +1061,12 @@ final class SuggestionBar: UIView {
         went?(batch + gone)
         keyboard.resetWord()   // a key before the host answers corrects nothing that went
         suggestions.caretMoved()
-        let shown = { (now: String) in
-            !Self.off(doc, after) && now != b && (anchor.isEmpty || !now.isEmpty && (now.hasSuffix(anchor) || anchor.hasSuffix(now)))
+        let at = keyboard.ticks
+        let shown = { [weak keyboard] (now: String) in
+            !Self.off(doc, after) && now != b && (anchor.isEmpty
+                ? !fresh || all || doc.documentContextBeforeInput != nil || doc.documentContextAfterInput != nil
+                    || (keyboard?.ticks ?? .max) - at > Self.applyTicks
+                : !now.isEmpty && (now.hasSuffix(anchor) || anchor.hasSuffix(now)))
         }
         // Read till the context shows the batch; after 0.3 s without, from a fresh one, and
         // so up to three times.
@@ -1091,18 +1098,29 @@ final class SuggestionBar: UIView {
     /// behind showed the window just deleted, and the next batch took the break and the line
     /// above), no other text after the caret than the deletes started at (`off`), and not the
     /// very context the last batch was `sized` from, which no delete leaves (#553 QA: a
-    /// blocking host's late "a" took the break before it). It waits while the host shows
-    /// other contexts, the answers it owes (#553 QA: a blocking host's came 150 ms apart, each
-    /// to a move), and 0.3 s more, then a step for a fresh one, and `then(false)` where that
+    /// blocking host's late "a" took the break before it), nor one still ending in a batch that
+    /// took that context whole, unless in a run of its Character (#570 QA: Safari's fresh "u"
+    /// and the kit's " t", UIKit's guess for the step pair, went as a batch, then the host's
+    /// late answer to the steps, still ending in it, sized the next, which took one past its
+    /// window: the clip doubled a Character, dd and ctrl-u took the break). It waits while the
+    /// host shows other contexts, the answers it owes (#553 QA: a blocking host's came 150 ms
+    /// apart, each to a move), and 0.3 s more, then a step for a fresh one, and `then(false)` where that
     /// still shows it: the edit stops there, a second press goes on.
     /// ponytail: a window repeating the one a batch took whole ("Hi. Hi."), or text repeating
-    /// across the caret ("haha"), reads as the last, and the edit stops there.
+    /// across the caret ("haha"), reads as the last, and the edit stops there; a late answer
+    /// ending in a doubled Character the batch took ("…ll" after "l") reads as fresh.
     private func unstale(_ gone: String, after: String?, sized: String?, blind: Bool?, retry: Bool = true,
                          then: @escaping (Bool) -> Void) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         let read = { (doc: UITextDocumentProxy) in Self.before(doc) + "\u{0}" + (doc.documentContextAfterInput ?? "") }
+        // The last batch where it took the context it was sized from whole, all but Safari's
+        // space after a break.
+        let whole = sized.map { $0.first == " " && !gone.hasPrefix($0) ? String($0.dropFirst()) : $0 }
+            .flatMap { !$0.isEmpty && gone.hasPrefix($0) ? $0 : nil }
         let stale = { (doc: UITextDocumentProxy) in
-            Self.off(doc, after) || Self.before(doc) == sized || Self.stale(Self.before(doc), gone)
+            let b = Self.before(doc)
+            return Self.off(doc, after) || b == sized || Self.stale(b, gone)
+                || whole.map { b.hasSuffix($0) && Set($0 + b.dropLast($0.count).suffix(1)).count > 1 } == true
         }
         guard stale(doc) else { return then(true) }
         var quiet = Quiet(read(doc), at: keyboard.ticks)
@@ -1252,6 +1270,10 @@ final class SuggestionBar: UIView {
     /// a blocking one 150 ms a move behind (#553 QA). Reading none for that long is the
     /// text's edge; for less, a stall (#553 QA: STALL delete all stopped at the first).
     static let answerPolls = 40
+
+    /// Ticks, 60 ms, a busy host may take to apply a delete it shows none either side after
+    /// (#570 QA: Safari took one after a step sent 20 ms on).
+    static let applyTicks = 3
 
     /// Polls, 0.4 s, a busy host may leave between two answers: QA's STALL host stalled 300 ms
     /// (#553 QA).

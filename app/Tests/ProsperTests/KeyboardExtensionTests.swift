@@ -111,6 +111,9 @@ final class KeyboardExtensionTests: XCTestCase {
         /// 340 ms on: 17 of 35).
         /// Each `catchUp()` is a poll of its time: the proxy shows the last answer given by then.
         var moveCost = 0
+        /// A move of one Character costs this many instead: Safari's steps away and back for a
+        /// fresh window answered late, its walk's long moves on time (#570 QA).
+        var stepCost: Int?
         var stalls: (every: Int, for: Int, at: Int)?
         /// With `answersLate`, edits cost the host a poll every this many, ahead of the moves
         /// sent after them, as QA's UITextView laying out a long text after each delete (#553
@@ -136,6 +139,16 @@ final class KeyboardExtensionTests: XCTestCase {
         /// nil till a caret move, as QA's UITextView's are (#553 QA): not a field that shows
         /// none (`hidesContext`).
         var nilsAtEnd = false
+        /// So too where a delete leaves none of the window cut, text after the caret or not, as
+        /// Safari's mid-line (#570 QA: none either side at a row's start).
+        var nilsAtCut = false
+        /// A delete that leaves none of the before-context shown reaches the text only after
+        /// the next move, or at the third `catchUp()` without one (#570 QA: Safari's dd left
+        /// "doga", the step for a fresh window taken before the delete, which then took the
+        /// Character before the one meant).
+        var defersCutDeletes = false
+        private var parked = 0, parkedFor = 0
+        private func unpark() { for _ in 0..<parked { _ = text.popLast() }; parked = 0; parkedFor = 0 }
         private var blank = false
         /// At the text's start on an empty line both contexts are nil, as QA's UITextView's
         /// and Safari's were at an empty first line (#553 QA: `before="-"`, `after=[]`).
@@ -179,11 +192,16 @@ final class KeyboardExtensionTests: XCTestCase {
             }
             let was = documentContextBeforeInput
             let left = cutsEdits ? String((rest ?? context(before: text)).dropLast()) : nil
+            if defersCutDeletes, was?.count == 1 {
+                parked += 1; rest = ""; blank = nilsAtCut; calls.append("⌫")
+                if let h = held { held = (String(h.before.dropLast()), h.after) }
+                return
+            }
             if lagsEdits || behind { unshown.append((text, after, rest)) }
             _ = text.popLast()
             rest = staleAtStart && text.isEmpty ? was : left
             blank = false
-            blank = nilsAtEnd && left == "" && documentContextAfterInput?.isEmpty != false
+            blank = left == "" && (nilsAtCut || nilsAtEnd && documentContextAfterInput?.isEmpty != false)
             if let h = held { held = (String(h.before.dropLast()), h.after) }
             calls.append("⌫")
             edit()
@@ -213,6 +231,10 @@ final class KeyboardExtensionTests: XCTestCase {
         private var guess: (before: String, after: String?, rest: String?)?
         func answer() { guess = nil }
         func catchUp() {
+            if parked > 0 {
+                parkedFor += 1
+                if parkedFor >= 3 { unpark() }
+            }
             unshown = []; guess = nil; old = nil
             flip?.toggle()
             if paced {
@@ -244,7 +266,7 @@ final class KeyboardExtensionTests: XCTestCase {
             }
             defer {
                 if let guessed {
-                    var t = max(clock, busy), cost = moveCost
+                    var t = max(clock, busy), cost = abs(offset) == 1 ? stepCost ?? moveCost : moveCost
                     while stalled(t) || cost > 0 { if !stalled(t) { cost -= 1 }; t += 1 }
                     busy = t
                     late.append((t, documentContextBeforeInput ?? "", documentContextAfterInput ?? ""))
@@ -271,6 +293,7 @@ final class KeyboardExtensionTests: XCTestCase {
                 after = String(all.dropFirst(at))
             }
             stops.append(text.utf16.count)
+            if parked > 0 { unpark() }
         }
         func setMarkedText(_ markedText: String, selectedRange: NSRange) {}
         func unmarkText() {}

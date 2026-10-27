@@ -1060,6 +1060,53 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
+    /// Each line edit from the start, the middle and the end of a 1,217-Character line takes
+    /// its extent and no more, Character for Character, and cut line's clip is the line, on
+    /// hosts whose window a batch takes whole and that answer the step pair for a fresh one
+    /// late (#570 QA: Safari's fresh "u" and the kit's " t" went as a batch, the host's late
+    /// answer still ending in it sized the next, one past its window: the clip read "laz" and
+    /// "juumps", dd and ctrl-u took the break and "p"). So too where Safari shows none either
+    /// side after such a batch, and takes the delete after a step sent then (#570 QA: dd left
+    /// "…lazy doga", a Character kept past one gone). Delete all there stops part way, as a
+    /// fresh empty context is the text's start: what it leaves is one run of the text.
+    func testLineEditsOnALongLineTakeEachCharacterOnce() throws {
+        let line = String((1...40).map { "The quick brown fox \($0) jumps over the lazy dog." }.joined(separator: " ").prefix(1217))
+        let text = "top\n" + line + "\nnext"
+        let safari = { (d: Proxy) in Self.safari(d); d.window = 100; d.answersLate = true; d.moveCost = 1; d.stepCost = 3 }
+        let hosts: [(String, (Proxy) -> Void)] = [
+            ("Safari", safari), ("Safari, none at a cut", { safari($0); $0.nilsAtCut = true }),
+            ("Safari, deletes after the step", { safari($0); $0.nilsAtCut = true; $0.defersCutDeletes = true }),
+            ("kit", { Self.textView($0); $0.answersLate = true; $0.window = 300; $0.moveCost = 1; $0.stepCost = 3 }),
+            ("BLOCK", Self.qaHosts()[1].1),
+        ]
+        for (name, host) in hosts {
+            for id in ["cutLine", "delLine", "delHome", "delEnd", "delAll"] {
+                for col in [0, 600, 1217] {
+                    let what = "\(id) on \(name) from \(col)"
+                    let (kb, bar, doc) = rig("top\n" + line.prefix(col), after: String(line.dropFirst(col)) + "\nnext",
+                                             keys: Shortcuts.hostOnly)
+                    host(doc)
+                    let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                    addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                    bar.suggestions.pasteboard = { pb }
+                    bar.toolbar?.reload()
+                    try edit(id, kb, bar, doc)
+                    let want = ["cutLine": "top\n|next", "delLine": "top\n|next", "delAll": "|",
+                                "delHome": "top\n|" + line.dropFirst(col) + "\nnext",
+                                "delEnd": "top\n" + line.prefix(col) + "|\nnext"][id]!
+                    let kept = want.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+                    let left = doc.text + (doc.after ?? "")
+                    let head = zip(left, text).prefix { $0 == $1 }.count
+                    let tail = zip(left.reversed(), text.reversed()).prefix { $0 == $1 }.count
+                    XCTAssert(head + tail >= left.count && doc.text.hasPrefix(kept[0]) && (doc.after ?? "").hasSuffix(kept[1]),
+                              "\(what): one run of the text, within the edit's extent: \(Self.at(doc).debugDescription)")
+                    if id != "delAll" || !doc.nilsAtCut { XCTAssertEqual(Self.at(doc), want, what) }
+                    if id == "cutLine" { XCTAssertEqual(pb.string, line, what) }
+                }
+            }
+        }
+    }
+
     /// On the kit and Safari, the toolbar is free within 1.2 s of delete all's or cut line's
     /// last delete showing: one step pair at the text's edge, the walk's 0.3 s for the clamped
     /// step and the 0.8 s a host may take to answer it, then nothing more (#553 QA: delete all
