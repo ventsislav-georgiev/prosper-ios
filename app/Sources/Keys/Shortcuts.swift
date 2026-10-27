@@ -71,9 +71,9 @@ enum Shortcuts {
     ]
 
     /// The `hostOnly` deletes kept off the toolbar's catalog (#560): delete all and cut line
-    /// still fail QA on real hosts (ctrl-u, ctrl-k and delete line ship). Remove this once #553
-    /// passes there.
-    static let heldBack: Set<String> = ["delAll", "cutLine"]
+    /// still fail QA on real hosts, and the line deletes can run on into a field tapped mid-edit
+    /// (#569). Remove this once #569 and #553 pass there.
+    static let heldBack: Set<String> = ["delHome", "delEnd", "delLine", "delAll", "cutLine"]
 
     /// The system keyboards' toolbar only (`Bar.toolbar`): text edits a terminal has no use for.
     static let hostOnly: [ShortcutKey] = [
