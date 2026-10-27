@@ -524,16 +524,16 @@ struct CaretWalk {
         sent = nil
     }
 
-    /// One tick of the view's 20 ms poll: past 15 since the move or since the host last
-    /// showed a new context (it's still answering older moves), or past the host's `lag` if
-    /// it has shown more, the view stops waiting.
+    /// `ticks` of the view's 20 ms poll, one a poll on time: past 15 since the move or since
+    /// the host last showed a new context (it's still answering older moves), or past the
+    /// host's `lag` if it has shown more, the view stops waiting.
     ///
     /// ponytail: a host answering later than that (a stall past 0.3 s it hasn't shown yet) has
     /// UIKit's guess believed, whose emptied side reads as a line's start or the text's: the
     /// move ends a line or a column short. Wait on the host's own signal if a device shows one.
-    mutating func poll() {
-        quiet += 1
-        age += 1
+    mutating func poll(_ ticks: Int = 1) {
+        quiet += ticks
+        age += ticks
         if quiet > max(15, lag) { timedOut() }
     }
 
@@ -1043,8 +1043,14 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var walkField: UUID?
     private(set) var walkTimer: Timer?
     private var walkPolls = 0
-    /// The polls so far: a toolbar edit times a host's answer from its step by them.
+    /// The 20 ms ticks so far, by `clock`: a toolbar edit times a host's answer from its step
+    /// by them, and the walk its wait for one.
     private(set) var ticks = 0
+    /// The time, in seconds, for `ticks`: a poll on a busy main thread comes late and counts
+    /// the ticks it missed (#553 QA: after a long edit the kit polled 3-4 times slower than
+    /// the timer, and waits counted in polls held the toolbar 3-6 s). nil: a tick a poll.
+    var clock: (() -> TimeInterval)?
+    private var polled: TimeInterval?
     /// A line move asked for hasn't sent anything yet (`line`).
     private var lineAsked = false
     /// What runs on each poll once the walk is idle, till it returns true: the rest of a toolbar
@@ -1293,6 +1299,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private func pollOn() {
         guard walkTimer == nil else { return }
+        polled = clock?()
         let t = Timer(timeInterval: 0.02, repeats: true) { [weak self] t in
             if let self { self.pollCaret() } else { t.invalidate() }
         }
@@ -1372,12 +1379,18 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// press it held goes then, after the step pair's units came back (#553 QA: a held press
     /// was dropped with the edit).
     func pollCaret() {
+        let now = clock?()
+        // ponytail: a poll counts 5 ticks at most, so a stalled main thread's first poll after
+        // it can't time out a wait before the host's queued answer is read; a host slower
+        // than 100 ms a poll still waits longer than its time.
+        let n = now.flatMap { now in polled.map { max(1, min(5, Int(((now - $0) / 0.02).rounded()))) } } ?? 1
+        polled = now
         walkPolls += 1
-        ticks += 1
+        ticks += n
         if walk.idle, landed != nil {
             runLanded()   // an edit waiting on the host (`wait`): no move to step
         } else {
-            walk.poll()   // the host clamped at the document's end, or never showed it
+            walk.poll(n)   // the host clamped at the document's end, or never showed it
             walkOn()
         }
         guard walkPolls >= 100 else { return }   // 2 s: a move that never shows waits for the next `caret`

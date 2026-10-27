@@ -904,10 +904,11 @@ final class SuggestionBar: UIView {
             let now = { (Self.before(doc), doc.documentContextAfterInput ?? "") }
             let past = { (n: (String, String)) in n != seen && n.0.last?.isNewline == true }
             guard !past(now()) else { return go() }
-            var quiet = Quiet(seen.0 + "\u{0}" + seen.1)
-            self?.keyboard?.wait({
+            guard let kb = self?.keyboard else { return }
+            var quiet = Quiet(seen.0 + "\u{0}" + seen.1, at: kb.ticks)
+            kb.wait({ [weak kb] in
                 let n = now()
-                guard past(n) || quiet.over(n.0 + "\u{0}" + n.1, 15) else { return false }
+                guard past(n) || quiet.over(n.0 + "\u{0}" + n.1, 15, at: kb?.ticks ?? .max) else { return false }
                 go()
                 return true
             })
@@ -968,11 +969,11 @@ final class SuggestionBar: UIView {
             // ponytail: a line ending in a space, and the text's end, wait that long.
             guard dir > 0, a.isEmpty || n == a.count && leg.last?.isWhitespace == true,
                   let doc = self?.keyboard?.target as? UITextDocumentProxy, doc.documentContextAfterInput ?? "" == "" else { return on() }
-            let guess = (doc.documentContextBeforeInput, doc.documentContextAfterInput)
-            var polls = 0
-            self?.keyboard?.wait {
-                polls += 1
-                guard (doc.documentContextBeforeInput, doc.documentContextAfterInput) == guess, polls <= Self.answerPolls
+            guard let kb = self?.keyboard else { return }
+            let guess = (doc.documentContextBeforeInput, doc.documentContextAfterInput), from = kb.ticks
+            kb.wait { [weak kb] in
+                guard (doc.documentContextBeforeInput, doc.documentContextAfterInput) == guess,
+                      (kb?.ticks ?? .max) - from <= Self.answerPolls
                 else { on(); return true }
                 return false
             }
@@ -1062,15 +1063,15 @@ final class SuggestionBar: UIView {
         // Read till the context shows the batch; after 0.3 s without, from a fresh one, and
         // so up to three times.
         func read(_ tries: Int) {
-            var quiet = Quiet(b)
+            var quiet = Quiet(b, at: keyboard.ticks)
             keyboard.wait { [weak self] in
-                guard let self, let doc = self.keyboard?.target as? UITextDocumentProxy else { return true }
+                guard let self, let kb = self.keyboard, let doc = kb.target as? UITextDocumentProxy else { return true }
                 let now = Self.before(doc)
                 if shown(now) {
                     self.deleteBack(left: left - sent, gone: batch + gone, all: all, after: after, sized: b, blind: blind, count, went: went, ends: ends, done: done)
                     return true
                 }
-                guard quiet.over(now, 15) else { return false }
+                guard quiet.over(now, 15, at: kb.ticks) else { return false }
                 guard left > sent else { self.edited(); done(batch + gone); return true }
                 self.rewindow(blind: blind) { [weak self] blind in
                     guard let self, let doc = self.keyboard?.target as? UITextDocumentProxy else { return }
@@ -1103,11 +1104,11 @@ final class SuggestionBar: UIView {
             Self.off(doc, after) || Self.before(doc) == sized || Self.stale(Self.before(doc), gone)
         }
         guard stale(doc) else { return then(true) }
-        var quiet = Quiet(read(doc))
+        var quiet = Quiet(read(doc), at: keyboard.ticks)
         keyboard.wait { [weak self] in
-            guard let self, let doc = self.keyboard?.target as? UITextDocumentProxy else { return true }
+            guard let self, let kb = self.keyboard, let doc = kb.target as? UITextDocumentProxy else { return true }
             guard stale(doc) else { then(true); return true }
-            guard quiet.over(read(doc), 15) else { return false }
+            guard quiet.over(read(doc), 15, at: kb.ticks) else { return false }
             guard retry else { then(false); return true }
             self.rewindow(waits: 15, blind: blind) { [weak self] _ in
                 self?.unstale(gone, after: after, sized: sized, blind: blind, retry: false, then: then)
@@ -1136,17 +1137,16 @@ final class SuggestionBar: UIView {
         return Set(g[..<k]).count > 1
     }
 
-    /// Polls since the context last read one not read before in this wait: a host turning
-    /// between two goes quiet too (#553 QA: a blocking host's, 160 ms apart, never did and
-    /// the keyboard's 2 s limit dropped delete all). Over 1.2 s of polls, ahead of that limit,
-    /// any is.
+    /// Ticks (`TerminalKeyboard.ticks`) since the context last read one not read before in
+    /// this wait: a host turning between two goes quiet too (#553 QA: a blocking host's, 160 ms
+    /// apart, never did and the keyboard's 2 s limit dropped delete all). Over 1.2 s, ahead of
+    /// that limit, any is.
     private struct Quiet {
-        private var seen: Set<String>, polls = 0, quiet = 0
-        init(_ first: String) { seen = [first] }
-        mutating func over(_ now: String, _ n: Int) -> Bool {
-            polls += 1
-            if seen.insert(now).inserted { quiet = 0 } else { quiet += 1 }
-            return quiet > n || polls > 60
+        private var seen: Set<String>, start: Int, new: Int
+        init(_ first: String, at ticks: Int) { seen = [first]; start = ticks; new = ticks }
+        mutating func over(_ now: String, _ n: Int, at ticks: Int) -> Bool {
+            if seen.insert(now).inserted { new = ticks }
+            return ticks - new > n || ticks - start > 60
         }
     }
 
@@ -1182,31 +1182,34 @@ final class SuggestionBar: UIView {
     /// so a caret on the start of a line past which the after-context stops shows the next,
     /// and counts its `waits` from the step away, not from the step on's landing: an empty
     /// field ends 0.8 s after the press, not 1.1 s (#553 QA: the kit's delete all on two words
-    /// held the toolbar 1.1 s after them). Where it still shows none, a host yet to answer
-    /// may take the step on a line down: a delete then leaves the caret where the deletes stop.
-    /// ponytail: a host answering later than `waits` (1.2 s where it `settles`) is read before
-    /// it does; one leaving more than `answerGap` between two answers has its step away's taken.
+    /// held the toolbar 1.1 s after them). All waits are in `TerminalKeyboard.ticks`, time,
+    /// not polls (#553 QA r9: the kit's polls came 60-80 ms apart after a long edit, and held
+    /// the toolbar 3-6 s).
+    /// Where it still shows none, a host yet to answer may take the step on a line down: a
+    /// delete then leaves the caret where the deletes stop.
+    /// ponytail: a host answering later than `waits` (1.2 s where it `settles`), or a step from
+    /// none either side later than `answerPolls`, is read before it does; one leaving more
+    /// than `answerGap` between two answers has its step away's taken.
     private func rewindow(waits: Int = 0, settles: Bool = false, ends: Bool = false, blind: Bool?,
                           then: @escaping (_ blind: Bool) -> Void) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         guard blind != true else { return then(true) }
         let none = doc.documentContextBeforeInput == nil && doc.documentContextAfterInput == nil
         let was = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? ""), on = !was.1.isEmpty
-        var back = true, forced = false, blind = blind, polls = 0
+        var back = true, forced = false, blind = blind
         // UIKit's guess for the step back, which shows no host's answer.
         let guess = (String(was.0.dropLast()), String(was.0.suffix(1)) + was.1)
         let sent = keyboard.ticks
         keyboard.caret(away: on ? 1 : -1, back: { [weak keyboard] in
-            guard let doc = keyboard?.target as? UITextDocumentProxy else { return true }
+            guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return true }
             let now = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? "")
             back = on || !was.0.isEmpty || !now.0.isEmpty || (none ? !now.1.isEmpty : now.1 != was.1)
             forced = ends && !back
             back = back || ends
-            polls += 1
             // From an empty before-context, the step back's own guess, or none in a stall, is no
-            // edge till the host answered or `answerPolls` passed (#553 QA: STALL delete all
-            // read none 320 ms on and stopped).
-            if !on && !ends && was.0.isEmpty && now == guess, polls <= Self.answerPolls { return nil }
+            // edge till the host answered or `answerPolls` passed since the step (#553 QA: STALL
+            // delete all read none 320 ms on and stopped).
+            if !on && !ends && was.0.isEmpty && now == guess, keyboard.ticks - sent <= Self.answerPolls { return nil }
             blind = blind ?? !Self.shows(doc)
             return back
         }) { [weak self] in
@@ -1229,15 +1232,15 @@ final class SuggestionBar: UIView {
             // (#553 QA: BLOCK ctrl-u took the line above its line's start, its step away's
             // answer taken for its step back's).
             let gaps = settles && !on && was.0.isEmpty
-            var polls = 0, still = 0, last = was
+            let landed = kb.ticks - 1
+            var changed = landed, last = was
             let answered = { [weak kb] () -> Bool in
                 guard let kb, let doc = kb.target as? UITextDocumentProxy else { return true }
                 let now = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? "")
-                polls += 1
-                still = now == last ? still + 1 : 0
-                last = now
-                if gaps { return still >= Self.answerGap && now != was || polls > 3 * Self.answerPolls / 2 }
-                return now != was && now.1 == was.1 || (ends ? kb.ticks - sent : polls) > waits
+                if now != last { changed = kb.ticks; last = now }
+                let polls = kb.ticks - (ends ? sent : landed)
+                if gaps { return kb.ticks - changed >= Self.answerGap && now != was || polls > 3 * Self.answerPolls / 2 }
+                return now != was && now.1 == was.1 || polls > waits
             }
             if answered() { return then() }
             kb.wait { guard answered() else { return false }; then(); return true }

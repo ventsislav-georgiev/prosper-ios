@@ -985,6 +985,9 @@ final class KeyboardToolbarTests: XCTestCase {
     /// their extent at most, one run of it, and never move the caret off what's left: a context
     /// still stale after a step pair stops the edit (#553 QA: a late answer still showing
     /// Characters deleted sized the next batch past the extent).
+    /// ponytail: up to 0.8 s a move, the edge's wait from the step (#553 QA r9: it was 1.1 s,
+    /// and held the toolbar that long after a line edit); a host answering a step from no
+    /// context later than that leaves ctrl-u's caret a Character back.
     func testLineEditsOnAHostSlowerThanTheirWaitsTakeTheirExtentOrLess() throws {
         let line = "First one is here. Second two is here. Third three is here."
         let cut = line.index(line.startIndex, offsetBy: 45)
@@ -995,7 +998,7 @@ final class KeyboardToolbarTests: XCTestCase {
             ("delWord", String(line[..<cut]), String(line[cut...]), 39, 45),
             ("delEnd", String(line[..<cut]), String(line[cut...]), 45, line.count),
         ]
-        for cost in [30, 50] {   // 0.6 s and 1 s a move
+        for cost in [30, 40] {   // 0.6 s and 0.8 s a move
             for (id, before, after, from, to) in cases {
                 let (kb, bar, doc) = rig("top\n" + before, after: after + "\nend")
                 Self.qaHosts()[1].1(doc)
@@ -1095,6 +1098,67 @@ final class KeyboardToolbarTests: XCTestCase {
                     XCTAssertLessThanOrEqual((free ?? 9_999) - (gone ?? 0), id == "delAll" && after.isEmpty ? 45 : 60, what)
                 }
             }
+        }
+    }
+
+    /// On the kit and Safari, the toolbar is free within 1 s of a line edit's field showing
+    /// empty, in time, with each poll 20 ms apart or 60-80 ms, as the kit's came after a long
+    /// edit: delete all from the end, mid-text and the start of a long text, cut line and dd of
+    /// the last line (#553 QA r9: the kit held it 3.1-6 s on a long text, waits counted in
+    /// polls). All three on an empty field, measured from the press, within 2.1 s: one that
+    /// shows no context reads the same till a step's answer is due.
+    func testLineEditsFreeTheToolbarWithinASecondOfTheFieldShowingEmpty() throws {
+        let long = (1...20).map { "Line \($0) holds a few words and then some more." }.joined(separator: "\n")
+        let mid = long.index(long.startIndex, offsetBy: 500)
+        let cases: [(String, String, String)] = [
+            ("delAll", long, ""), ("delAll", String(long[..<mid]), String(long[mid...])), ("delAll", "", long),
+            ("cutLine", "one two", ""), ("delLine", "five six", ""),
+            ("delAll", "", ""), ("cutLine", "", ""), ("delLine", "", ""),
+        ]
+        let hosts: [(String, (Proxy) -> Void)] = [("Safari", { Self.safari($0) }), Self.qaHosts()[0]]
+        for poll in [0.02, 0.06, 0.08] {
+            for (name, host) in hosts {
+                for (id, text, after) in cases {
+                    let (kb, bar, doc) = rig(text, after: after, keys: Shortcuts.hostOnly)
+                    host(doc)
+                    var now = 0.0
+                    kb.clock = { now }
+                    let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                    addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                    bar.suggestions.pasteboard = { pb }
+                    bar.toolbar?.reload()
+                    bar.press(try key(Shortcuts.hostOnly, id))
+                    bar.press(try key("tab"))
+                    var empty: Double?, free: Double?
+                    for _ in 1...20_000 where free == nil {
+                        now += poll
+                        doc.catchUp()
+                        kb.pollCaret()
+                        if empty == nil, doc.text + (doc.after ?? "") == "" { empty = text + after == "" ? 0 : now }
+                        if doc.calls.last == "\t" { free = now }
+                    }
+                    let what = "\(id) on \(name) from \(text.count) of \((text + after).count), polls \(poll) s: "
+                        + "empty at \(empty ?? -1), free at \(free ?? -1)"
+                    print("QA-TIME " + what)
+                    XCTAssertEqual(Self.at(doc), "\t|", what)
+                    XCTAssertLessThanOrEqual((free ?? 999) - (empty ?? 0), text + after == "" ? 2.1 : 1, what)
+                }
+            }
+        }
+    }
+
+    /// A poll counts the 20 ms ticks since the last, but 5 at most: one after a stalled main
+    /// thread can't time a wait out before the host's queued answer is read.
+    func testAPollCountsItsTimeInTicksUpToFive() {
+        let (kb, _, _) = rig("one")
+        var now = 0.0
+        kb.clock = { now }
+        kb.pollCaret()
+        for (gap, n) in [(0.02, 1), (0.06, 3), (0.08, 4), (1.0, 5), (0.001, 1)] {
+            let t = kb.ticks
+            now += gap
+            kb.pollCaret()
+            XCTAssertEqual(kb.ticks - t, n, "a poll \(gap) s on")
         }
     }
 

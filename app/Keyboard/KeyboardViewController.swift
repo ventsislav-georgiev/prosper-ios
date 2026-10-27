@@ -22,6 +22,7 @@ final class KeyboardViewController: UIInputViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         keyboard.target = textDocumentProxy
+        keyboard.clock = { ProcessInfo.processInfo.systemUptime }
         // iOS keeps its own strip under a custom keyboard (globe and dictation on Face ID
         // iPhones), so the app's home-gesture pad would only add an empty band; this one
         // catches the space taps that land low (`extensionBottomInset`).
