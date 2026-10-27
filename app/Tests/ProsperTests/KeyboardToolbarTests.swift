@@ -232,7 +232,8 @@ final class KeyboardToolbarTests: XCTestCase {
         Shortcuts.save(try ["esc", "tab"].map(key), to: store)
         XCTAssertEqual(Shortcuts.Bar.terminal.load(store).map(\.id), ["esc", "tab", "enter"])
         XCTAssertTrue(Shortcuts.Bar.terminal.sendMandatory)
-        XCTAssertEqual(Shortcuts.Bar.terminal.catalog.map(\.id), Shortcuts.catalog.map(\.id))
+        XCTAssertEqual(Shortcuts.Bar.terminal.catalog.map(\.id), Shortcuts.catalog.map(\.id)
+                       + ["wordNext", "wordBack", "delWord", "delHome", "delEnd", "delLine"])
     }
 
     /// The toolbar's Paste is the system's control, pasting into the toolbar: its clip goes
@@ -433,8 +434,8 @@ final class KeyboardToolbarTests: XCTestCase {
         d.nilsAtStart = true
     }
 
-    /// The edits are the toolbar's only, each an icon with a spoken label; the terminal's
-    /// catalog and its saved keys never see them, the toolbar's keep them.
+    /// The edits, each an icon with a spoken label: the toolbar's keep them, and the
+    /// terminal's catalog has those with readline keystrokes (`testTerminalOffersReadlineEdits`).
     func testEditKeysAreToolbarOnlyIconsWithLabels() throws {
         let ids = ["wordNext", "wordEnd", "wordBack", "delWord", "delHome", "delEnd", "delLine", "delAll",
                    "copyLine", "cutLine"]
@@ -447,7 +448,6 @@ final class KeyboardToolbarTests: XCTestCase {
             XCTAssertGreaterThan(k.label.count, 3, "VoiceOver reads it: \(k.id)")
         }
         XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.catalog.map(\.id)))
-        XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.Bar.terminal.catalog.map(\.id)))
         XCTAssertTrue(Set(ids).subtracting(Shortcuts.heldBack).isSubset(of: Shortcuts.Bar.toolbar.catalog.map(\.id)))
         XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.Bar.toolbar.defaults.map(\.id)), "added in the editor")
 
@@ -459,6 +459,39 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(Self.caps(try XCTUnwrap(bar.toolbar)).compactMap(\.accessibilityLabel),
                        Shortcuts.hostOnly.filter { !["copyLine", "cutLine"].contains($0.id) }.map(\.label),
                        "no copy or cut without Full Access")
+    }
+
+    /// The terminal's catalog offers the readline edits as their keystrokes, held back or not;
+    /// word end, delete all, copy and cut line need the text and stay off. The toolbar's catalog
+    /// is as it was, and a terminal bar holding a held-back delete never seeds it with one.
+    func testTerminalOffersReadlineEdits() throws {
+        let want: [(String, [UInt8])] = [("wordNext", [0x1b, 0x66]), ("wordBack", [0x1b, 0x62]), ("delWord", [0x17]),
+                                         ("delHome", [0x15]), ("delEnd", [0x0b]), ("delLine", [0x05, 0x15])]
+        let terminal = Shortcuts.Bar.terminal.catalog
+        for (id, bytes) in want {
+            let k = try XCTUnwrap(terminal.first { $0.id == id }, id)
+            XCTAssertEqual(k.kind, .bytes, id)
+            XCTAssertEqual(k.bytes, bytes, id)
+            XCTAssertEqual(k, try XCTUnwrap(Shortcuts.hostOnly.first { $0.id == id }), "same label and icon: \(id)")
+        }
+        for id in ["wordEnd", "delAll", "copyLine", "cutLine"] { XCTAssertFalse(terminal.contains { $0.id == id }, id) }
+        XCTAssertEqual(Set(terminal.map(\.id)).count, terminal.count, "no duplicate ids")
+        XCTAssertEqual(Shortcuts.Bar.terminal.defaults.map(\.id), Shortcuts.defaults.map(\.id), "not in the defaults")
+
+        let toolbar = Shortcuts.Bar.toolbar.catalog.map(\.id)
+        XCTAssertEqual(toolbar, ["tab", "up", "down", "left", "right", "home", "end", "slash", "pipe", "paste", "snl",
+                                 "enter", "wordNext", "wordEnd", "wordBack", "delWord", "copyLine"])
+        XCTAssertEqual(Set(toolbar).count, toolbar.count, "no duplicate ids")
+
+        let store = try suiteStore(".terminalEdits")
+        let delLine = try XCTUnwrap(terminal.first { $0.id == "delLine" })
+        let stale = ShortcutKey(id: "delWord", label: "old", kind: .bytes)
+        Shortcuts.save([try key("left"), delLine, stale], to: store)
+        let loaded = Shortcuts.Bar.terminal.load(store)
+        XCTAssertEqual(loaded.map(\.id), ["left", "delLine", "delWord", "enter"])
+        XCTAssertEqual(loaded[2].bytes, [0x17], "a saved key takes the catalog's definition")
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["paste", "left", "delWord", "enter"],
+                       "seeded without the held-back delete")
     }
 
     /// nvim's word classes: letters, digits and "_" one, other punctuation another, blanks

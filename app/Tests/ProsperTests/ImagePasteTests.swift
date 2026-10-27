@@ -357,6 +357,19 @@ final class ImagePasteTests: XCTestCase {
         _ = tv.resignFirstResponder()
     }
 
+    /// The readline edits on the terminal bar go out as their keystrokes, one send each.
+    func testBarEditKeysSendTheirKeystrokes() async throws {
+        let (vc, spy) = try await makeVC()
+        let (bar, _) = try barAndTerminal(vc)
+        for id in ["wordNext", "wordBack", "delWord", "delHome", "delEnd", "delLine"] {
+            let k = try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == id }, id)
+            let before = spy.sent.count
+            bar.onKey?(k)
+            XCTAssertEqual(Array(spy.sent[before...]), [k.bytes], id)
+        }
+        XCTAssertEqual(spy.sent.suffix(6), [[0x1b, 0x66], [0x1b, 0x62], [0x17], [0x15], [0x0b], [0x05, 0x15]])
+    }
+
     /// paste and paste img never take the modifiers and never spend them.
     func testPasteKeysDontSpendModifiers() async throws {
         let (vc, spy) = try await makeVC()

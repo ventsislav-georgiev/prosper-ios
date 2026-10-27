@@ -75,15 +75,18 @@ enum Shortcuts {
     /// (#569). Remove this once #569 and #553 pass there.
     static let heldBack: Set<String> = ["delHome", "delEnd", "delLine", "delAll", "cutLine"]
 
-    /// The system keyboards' toolbar only (`Bar.toolbar`): text edits a terminal has no use for.
+    /// The system keyboards' toolbar's text edits (`Bar.toolbar`, by `hostKey`, never the bytes).
+    /// Those with bytes are the terminal's too, as readline keystrokes: word end has none
+    /// (M-f is next word's), and delete all, copy and cut line need the text.
     static let hostOnly: [ShortcutKey] = [
-        ShortcutKey(id: "wordNext", label: "next word",     kind: .bytes, systemImage: "chevron.right.2"),
+        ShortcutKey(id: "wordNext", label: "next word",     kind: .bytes, bytes: [0x1b, 0x66], systemImage: "chevron.right.2"),
         ShortcutKey(id: "wordEnd",  label: "word end",      kind: .bytes, systemImage: "forward.end"),
-        ShortcutKey(id: "wordBack", label: "previous word", kind: .bytes, systemImage: "chevron.left.2"),
-        ShortcutKey(id: "delWord",  label: "delete word",   kind: .bytes, systemImage: "delete.left"),
-        ShortcutKey(id: "delHome",  label: "delete to line start", kind: .bytes, systemImage: "delete.left.fill"),
-        ShortcutKey(id: "delEnd",   label: "delete to line end",   kind: .bytes, systemImage: "delete.right.fill"),
-        ShortcutKey(id: "delLine",  label: "delete line",   kind: .bytes, systemImage: "strikethrough"),
+        ShortcutKey(id: "wordBack", label: "previous word", kind: .bytes, bytes: [0x1b, 0x62], systemImage: "chevron.left.2"),
+        ShortcutKey(id: "delWord",  label: "delete word",   kind: .bytes, bytes: [0x17], systemImage: "delete.left"),
+        // ^U: readline and Claude Code's prompt delete to the line's start; zsh's kills the whole line.
+        ShortcutKey(id: "delHome",  label: "delete to line start", kind: .bytes, bytes: [0x15], systemImage: "delete.left.fill"),
+        ShortcutKey(id: "delEnd",   label: "delete to line end",   kind: .bytes, bytes: [0x0b], systemImage: "delete.right.fill"),
+        ShortcutKey(id: "delLine",  label: "delete line",   kind: .bytes, bytes: [0x05, 0x15], systemImage: "strikethrough"),
         ShortcutKey(id: "delAll",   label: "delete all",    kind: .bytes, systemImage: "trash"),
         ShortcutKey(id: "copyLine", label: "copy line",     kind: .bytes, systemImage: "doc.on.doc"),
         ShortcutKey(id: "cutLine",  label: "cut line",      kind: .bytes, systemImage: "scissors"),
@@ -125,7 +128,7 @@ enum Shortcuts {
         // catalog: a saved bar from an older build otherwise pins the old bytes/kind
         // forever (an image-paste key stuck on plain ctrl-V, say). A bar without the
         // send key gets it at the end — it is the only way to submit.
-        var loaded = keys.map { saved in catalog.first { $0.id == saved.id } ?? saved }
+        var loaded = keys.map { saved in Bar.terminal.catalog.first { $0.id == saved.id } ?? saved }
         if !loaded.contains(where: { $0.id == sendID }), let send = catalog.first(where: { $0.id == sendID }) {
             loaded.append(send)
         }
@@ -149,9 +152,11 @@ enum Shortcuts {
         case terminal, toolbar
 
         var storageKey: String { self == .terminal ? Shortcuts.storageKey : "toolbarKeys" }
-        /// What the editor offers: on the toolbar, the keys a text field can use (`hostKey`).
+        /// What the editor offers: on the terminal, the edits with bytes too, all of them (one
+        /// pty send each, nothing to hold back); on the toolbar, the keys a text field can use (`hostKey`).
         var catalog: [ShortcutKey] {
-            self == .terminal ? Shortcuts.catalog : (Shortcuts.catalog + hostOnly).filter { hostKey($0.id) != nil && !heldBack.contains($0.id) }
+            self == .terminal ? Shortcuts.catalog + hostOnly.filter { !$0.bytes.isEmpty }
+                : (Shortcuts.catalog + hostOnly).filter { hostKey($0.id) != nil && !heldBack.contains($0.id) }
         }
         /// The toolbar's: the default bar's keys it can use, in order, less send.
         var defaults: [ShortcutKey] {
@@ -163,7 +168,7 @@ enum Shortcuts {
 
         /// The toolbar's saved keys, as the catalog defines them; nil (no Full Access) is the
         /// default. None saved yet: seeded once, and saved, from a customised terminal bar's
-        /// keys a text field can use, plus paste; else the default.
+        /// keys in the toolbar's catalog (no held-back deletes), plus paste; else the default.
         func load(_ store: UserDefaults? = shared()) -> [ShortcutKey] {
             guard self == .toolbar else { return Shortcuts.load(store) }
             guard let store else { return defaults }
@@ -173,7 +178,7 @@ enum Shortcuts {
             let bar = Shortcuts.load(store)
             var seeded = defaults
             if bar.map(\.id) != Shortcuts.defaults.map(\.id) {
-                seeded = bar.filter { hostKey($0.id) != nil }
+                seeded = bar.compactMap { k in catalog.first { $0.id == k.id } }
                 if !seeded.contains(where: { $0.id == "paste" }), let paste = catalog.first(where: { $0.id == "paste" }) {
                     seeded.insert(paste, at: 0)
                 }
