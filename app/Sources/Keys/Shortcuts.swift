@@ -70,6 +70,11 @@ enum Shortcuts {
         ShortcutKey(id: "redraw",  label: "redraw", kind: .redraw, systemImage: "arrow.clockwise"),
     ]
 
+    /// The `hostOnly` deletes kept off the toolbar's catalog (#560): delete all and cut line
+    /// still fail QA on real hosts, and the line deletes can run on into a field tapped mid-edit
+    /// (#569). Remove this once #569 and #553 pass there.
+    static let heldBack: Set<String> = ["delHome", "delEnd", "delLine", "delAll", "cutLine"]
+
     /// The system keyboards' toolbar only (`Bar.toolbar`): text edits a terminal has no use for.
     static let hostOnly: [ShortcutKey] = [
         ShortcutKey(id: "wordNext", label: "next word",     kind: .bytes, systemImage: "chevron.right.2"),
@@ -146,7 +151,7 @@ enum Shortcuts {
         var storageKey: String { self == .terminal ? Shortcuts.storageKey : "toolbarKeys" }
         /// What the editor offers: on the toolbar, the keys a text field can use (`hostKey`).
         var catalog: [ShortcutKey] {
-            self == .terminal ? Shortcuts.catalog : (Shortcuts.catalog + hostOnly).filter { hostKey($0.id) != nil }
+            self == .terminal ? Shortcuts.catalog : (Shortcuts.catalog + hostOnly).filter { hostKey($0.id) != nil && !heldBack.contains($0.id) }
         }
         /// The toolbar's: the default bar's keys it can use, in order, less send.
         var defaults: [ShortcutKey] {
