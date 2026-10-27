@@ -60,6 +60,7 @@ struct SettingsView: View {
     @State private var showLogin = false
     @State private var confirmDelete = false
     @State private var busy = false
+    @State private var notificationsOff = false
     @State private var error: String?
     // Keyboard, in the App Group the keyboards read (`KeyboardSettings`).
     @AppStorage(KeyboardSettings.Key.autoCapitalization, store: KeyboardSettings.store())
@@ -107,12 +108,15 @@ struct SettingsView: View {
                             busy = true
                             defer { busy = false }
                             if !on { await live.turnOff() }
-                            else if !(await live.turnOn()) {
-                                error = "Notifications are off for Prosper. Allow them in the Settings app, then try again."
-                            }
+                            else { notificationsOff = !(await live.turnOn()) }
                         }
                     }))
                     .disabled(busy)
+                    if notificationsOff && !live.enabled {
+                        Button("Notifications are off · Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                        }
+                    }
                     // Off in the Settings app: alerts still come, the card can't show.
                     if live.enabled && !live.activitiesAllowed {
                         Button("Live Activities are off · Open Settings") {
