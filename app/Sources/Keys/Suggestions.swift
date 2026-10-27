@@ -1058,6 +1058,7 @@ final class SuggestionBar: UIView {
         let batch = String(c[m...]), sent = min(batch.count + (all && m == 0 ? 1 : 0), left)
         guard keyboard.writable() else { return }   // another field since the press: nothing more
         for _ in 0..<sent { doc.deleteBackward() }
+        keyboard.wrote()
         went?(batch + gone)
         keyboard.resetWord()   // a key before the host answers corrects nothing that went
         suggestions.caretMoved()
@@ -1241,6 +1242,7 @@ final class SuggestionBar: UIView {
                 if forced, let doc = self?.keyboard?.target as? UITextDocumentProxy, Self.before(doc).isEmpty,
                    (doc.documentContextAfterInput ?? "").isEmpty, self?.keyboard?.writable() == true {
                     doc.deleteBackward()
+                    self?.keyboard?.wrote()
                 }
                 then(blind == true)
             }

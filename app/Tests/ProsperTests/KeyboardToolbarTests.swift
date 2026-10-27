@@ -1323,6 +1323,40 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertGreaterThan(afterAnswer, 100)
     }
 
+    /// So too where the edit's writes and its own step pair go out mid-stall, the host showing
+    /// none of them till it is out, its first answer over 200 ms after the first and 100 ms or
+    /// more after the steps: ctrl-u mid-way along one long line, the host's window 300 units
+    /// either side (#575 QA r2, um: ctrl-u on a 2319-Character line, its step pair sent 125 ms
+    /// before the stall's end, the next 300-Character batch 41 ms after the host's answer,
+    /// unheld).
+    func testATapQueuedInAStallReachesNothingAfterTheEditsOwnStepsThere() throws {
+        let other = "keep these words\nand this line too"
+        let line = String((1...500).map { "w\($0) " }.joined().prefix(2319))
+        var afterAnswer = 0
+        for phase in 21...24 {
+            for at in stride(from: 1, to: 100, by: 4) {
+                let (kb, bar, doc) = rig(String(line.prefix(1500)), after: String(line.dropFirst(1500)),
+                                         keys: Shortcuts.hostOnly)
+                Self.qaHosts()[2].1(doc)
+                doc.stalls = (35, 17, phase)
+                doc.window = 300
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                defer { UIPasteboard.remove(withName: pb.name) }
+                bar.suggestions.pasteboard = { pb }
+                bar.toolbar?.reload()
+                bar.press(try key(Shortcuts.hostOnly, "delHome"))
+                for i in 1...(at + 400) {
+                    if i == at { doc.tapQueued(other) }
+                    doc.catchUp()
+                    kb.pollCaret()
+                }
+                if doc.tookAfterAnswer == true { afterAnswer += 1 }
+                XCTAssertEqual(Self.at(doc), other + "|", "stall at \(phase), a tap \(at) polls on")
+            }
+        }
+        XCTAssertGreaterThan(afterAnswer, 40)
+    }
+
     /// So too the toolbar's kept keys, on a host taking 0.8 s a move: ctrl-w and ctrl-u twice,
     /// a tap into another field after the second press, a new one or none first (#569 QA: they
     /// go through the same deletes, walk and steps).
