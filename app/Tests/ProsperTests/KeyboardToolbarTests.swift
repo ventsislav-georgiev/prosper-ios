@@ -1236,6 +1236,60 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
+    /// A tap into another field on a stalling host, which takes it only once out of the stall,
+    /// right after the answers it owed, and shows it to the keyboard a poll later, reaches
+    /// nothing there, at any point of delete all, dd, ctrl-u and ctrl-k; so too one the host
+    /// takes at once, before the first batch shows or between batches (#575 QA: STALL delete
+    /// all, a tap into a second field 1.5 s on; the host took it 1.1 s late, right after its
+    /// last answer in the first, and the batch that answer sized wiped the second).
+    /// ponytail: a tap the host takes at a stall's end owing no answer shows the keyboard
+    /// nothing first; a batch or a step the keyboard sends that very poll, on a wait's timeout
+    /// or its own last batch, still goes there: one batch at most, a sentence on these windows.
+    /// So may one after answers to moves the edit sent mid-stall, on a timeout: dd on the host
+    /// taking 60 ms a move.
+    func testATapQueuedInAStallReachesNothingInTheNewField() throws {
+        let other = "keep these words\nand this line too"
+        let long = (1...20).map { "Line \($0) holds a few words and then some more." }.joined(separator: "\n")
+        let line = "First one is here. Second two is here. Third three is here. Fourth four is here."
+        let cases: [(String, String, String)] = [
+            ("delAll", long, ""), ("delLine", "top\n" + line.prefix(45), String(line.dropFirst(45)) + "\nend"),
+            ("delHome", "top\n" + line, "\nend"), ("delEnd", "top\nFirst", String(line.dropFirst(5)) + "\nend"),
+        ]
+        var afterAnswer = 0, owingNone = 0, reached = 0
+        // Delete all also where each move costs 60 ms: the host answers a few moves in turn
+        // after the stall, then takes the tap.
+        let slower = [0, 14].map { at in ("STALL at \(at), 60 ms a move", { (d: Proxy) in Self.qaHosts()[2].1(d); d.stalls = (35, 17, at); d.moveCost = 3 }) }
+        for (name, host) in Self.qaHosts().dropFirst(2) + slower {
+            for (id, text, after) in cases where slower.allSatisfy({ $0.0 != name }) || id == "delAll" {
+                for at in stride(from: 1, to: id == "delAll" ? 700 : 200, by: id == "delAll" ? 4 : 2) {
+                    let (kb, bar, doc) = rig(text, after: after, keys: Shortcuts.hostOnly)
+                    host(doc)
+                    let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                    defer { UIPasteboard.remove(withName: pb.name) }
+                    bar.suggestions.pasteboard = { pb }
+                    bar.toolbar?.reload()
+                    bar.press(try key(Shortcuts.hostOnly, id))
+                    for i in 1...(at + 300) {
+                        if i == at { doc.tapQueued(other) }
+                        doc.catchUp()
+                        kb.pollCaret()
+                    }
+                    let what = "\(id) on \(name), a tap \(at) polls on"
+                    guard doc.tookAfterAnswer == false else {
+                        if doc.tookAfterAnswer == true { afterAnswer += 1 }
+                        XCTAssertEqual(Self.at(doc), other + "|", what)
+                        continue
+                    }
+                    owingNone += 1
+                    if Self.at(doc) != other + "|" { reached += 1 }
+                    XCTAssertLessThanOrEqual(other.count - (doc.text + (doc.after ?? "")).count, 21, what)
+                }
+            }
+        }
+        print("QA-575 queued after an answer \(afterAnswer), owing none \(owingNone), reached there \(reached)")
+        XCTAssertGreaterThan(afterAnswer, 100)
+    }
+
     /// So too the toolbar's kept keys, on a host taking 0.8 s a move: ctrl-w and ctrl-u twice,
     /// a tap into another field after the second press, a new one or none first (#569 QA: they
     /// go through the same deletes, walk and steps).

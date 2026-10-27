@@ -1066,6 +1066,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var editField: UUID?
     /// A toolbar edit's code is running: a press's, a held one's, or what runs on a poll.
     private var acting = 0
+    /// The context a poll last read, the tick it or the edit's own writes last showed a new
+    /// one at, the tick a poll last read a new one at, and the tick a new one ended a silence
+    /// over `stallTicks` at (`pollCaret`).
+    private var hostShows: [String?] = [], shownAt = 0, answeredAt = 0, woke = Int.min / 2
     private var heightConstraint: NSLayoutConstraint!
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
@@ -1268,6 +1272,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if holds { heldPress = act; return }
         if acting == 0 {
             editField = (target as? UITextDocumentProxy).flatMap(Self.field)
+            shownAt = ticks
         } else if !writable() { return }
         acting += 1
         act()
@@ -1425,6 +1430,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
     /// What a host's text field leaves of the screen's width: about 20 pt a side.
     static let fieldInset: CGFloat = 40
+    /// Ticks, 200 ms, a poll may read no new context for before the next is a host's answer
+    /// after a stall (QA's STALL host: 300 ms; a blocking one answered 150 ms a move behind).
+    static let stallTicks = 10
+    /// Ticks, 100 ms, a toolbar edit holds after it, and after each answer that follows (#575
+    /// QA: the field showed the switch 27 ms after the last).
+    /// ponytail: a host showing the switch later than that may still take one batch.
+    static let wakeTicks = 5
 
     /// The poll timer's tick; tests call it in place of waiting.
     ///
@@ -1445,12 +1457,30 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         polled = now
         walkPolls += 1
         ticks += n
+        let doc = target as? UITextDocumentProxy
+        let shows = { [doc?.documentContextBeforeInput, doc?.documentContextAfterInput] }
+        if shows() != hostShows {
+            if ticks - shownAt > Self.stallTicks { woke = ticks }
+            hostShows = shows(); shownAt = ticks; answeredAt = ticks
+        }
+        // A host answering after a stall may yet take a tap queued in it, after the answers it
+        // owed and ahead of what the edit sends next, before the keyboard sees the field change:
+        // the edit holds till `wakeTicks` pass without another answer, `stallTicks` at most, so
+        // a poll's field check sees it first (#575 QA: STALL, delete all's batch, sized from the
+        // host's answer 8 ms before, went to the field a tap 1.1 s before had switched to).
+        // ponytail: a host taking such a tap at a stall's end owing no answer shows nothing
+        // first, and a write the edit sends right then, on a timeout or after its own last one,
+        // still goes there; so may one after answers to moves the edit sent mid-stall, which
+        // break the silence early. One batch at most: up to a context window, QA's ~300
+        // Characters on a long line. A cap on batch size is the lever if that's too much.
+        if landed != nil || pair != nil, ticks - woke <= Self.stallTicks, ticks - answeredAt < Self.wakeTicks { return }
         if walk.idle, landed != nil {
             runLanded()   // an edit waiting on the host (`wait`): no move to step
         } else {
             walk.poll(n)   // the host clamped at the document's end, or never showed it
             walkOn()
         }
+        if shows() != hostShows { hostShows = shows(); shownAt = ticks }   // its own writes': no answer
         guard walkPolls >= 100 else { return }   // 2 s: a move that never shows waits for the next `caret`
         walkPolls = 0
         let next = pair?.next ?? heldPress

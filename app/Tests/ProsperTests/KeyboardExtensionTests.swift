@@ -239,14 +239,39 @@ final class KeyboardExtensionTests: XCTestCase {
             flip?.toggle()
             if paced {
                 clock += 1
+                let was = [documentContextBeforeInput, documentContextAfterInput]
                 while let f = late.first, f.at <= clock { held = (f.before, f.after); late.removeFirst() }
+                takeTap(was != [documentContextBeforeInput, documentContextAfterInput])
             } else if let f = late.first { held = (f.before, f.after); late.removeFirst() }
+        }
+        /// A tap into another field (`focus`) on a host whose main thread is stalled (`stalls`):
+        /// queued, the host takes it once it is out of the stall and has given every answer it
+        /// owed, before the calls that follow; the proxy shows the switch only at the next
+        /// `catchUp()`, so a call sent in between goes to the new field, the context still the
+        /// last answer (#575 QA: STALL, delete all's batch went there 8 ms after the host's last
+        /// answer in the old one, the tap 1.1 s before). Out of a stall it takes it at once.
+        func tapQueued(_ text: String, after: String = "", id: UUID? = UUID()) {
+            guard stalls != nil, stalled(clock) else { return focus(text, after: after, id: id) }
+            tap = (text, after, id, false)
+        }
+        private var tap: (text: String, after: String, id: UUID?, taken: Bool)?
+        /// Whether the host took a queued tap right after an answer it owed showing a context
+        /// other than the last, as QA's did, or after none; nil where it took none queued.
+        private(set) var tookAfterAnswer: Bool?
+        private func takeTap(_ answered: Bool) {
+            guard let t = tap else { return }
+            if t.taken { tap = nil; return focus(text, after: after ?? "", id: t.id) }
+            guard !stalled(clock), busy <= clock else { return }
+            held = (documentContextBeforeInput ?? "", documentContextAfterInput ?? "")
+            text = t.text; after = t.after
+            tap?.taken = true
+            tookAfterAnswer = answered
         }
         func showNext() { if !unshown.isEmpty { unshown.removeFirst() } }
         /// The host serving another field, as on a tap into it: its text and caret, its own
         /// identifier (nil mid-way through the focus change), no answer owed from the last.
         func focus(_ text: String, after: String = "", id: UUID? = UUID()) {
-            unshown = []; guess = nil; old = nil; held = nil; late = []; frozen = nil; flip = nil
+            unshown = []; guess = nil; old = nil; held = nil; late = []; frozen = nil; flip = nil; tap = nil
             self.text = text; self.after = after; identifier = id
         }
         func adjustTextPosition(byCharacterOffset offset: Int) {
