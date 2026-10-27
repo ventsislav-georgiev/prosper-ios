@@ -637,7 +637,13 @@ final class TerminalKeyboardTests: XCTestCase {
             kb.track(.moved, id: 1, at: CGPoint(x: p.x - 100, y: p.y))
             kb.track(.ended, id: 1, at: CGPoint(x: p.x - 100, y: p.y))
             XCTAssertEqual(steps.isEmpty, !ext, "the hold is a trackpad only in the extension")
-            if ext { XCTAssertLessThan(steps.reduce(0, +), 0); XCTAssertEqual(spy.calls, []) }
+            if ext { XCTAssertLessThan(steps.reduce(0, +), 0); XCTAssertEqual(spy.calls, []) } else {
+                // The refused hold is a slow tap: its lift types the bottom-row key under it, once.
+                let under = try XCTUnwrap(kb.subviews.compactMap { $0 as? UIButton }
+                    .first { $0.frame.minY == space.minY && $0.frame.minX <= p.x - 100 && p.x - 100 < $0.frame.maxX })
+                let key = under.accessibilityLabel ?? under.title(for: .normal) ?? ""
+                XCTAssertEqual(spy.calls, [key], "a home-strip hold types the key under its lift")
+            }
             spy.calls = []
             kb.track(.began, id: 2, at: p)
             kb.track(.ended, id: 2, at: p)
