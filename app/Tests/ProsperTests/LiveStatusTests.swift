@@ -331,7 +331,7 @@ final class LiveStatusTests: XCTestCase {
             c.send = gate.send
             c.retryDelays = [0]
             return c
-        }, notificationsAllowed: { notifications })
+        }, notificationsAllowed: { notifications }, requestAuthorization: { true })
     }
 
     @MainActor
@@ -357,6 +357,27 @@ final class LiveStatusTests: XCTestCase {
         gate.release()
         await fg.value
         XCTAssertEqual(gate.methods, ["POST", "POST", "POST", "DELETE"])
+    }
+
+    /// The switch back on while turnOff's DELETE is in flight (#572): the old state is
+    /// already gone, and what the new turnOn posted is posted again after the DELETE.
+    @MainActor
+    func testTurnOnDuringTurnOffKeepsItsTokens() async {
+        let gate = Gate()
+        let ls = liveStatus(gate)
+        await ls.post(.laUpdate, token: tok, activityId: "act-1", macId: "mac-a")
+        gate.holdNext = true
+        let off = Task { await ls.turnOff() }
+        await gate.waitHeld()
+        XCTAssertTrue(ls.cache.entries.isEmpty, "cleared before the DELETE")
+        let on = await ls.turnOn()
+        XCTAssertTrue(on)
+        await ls.post(.alert, token: tok)
+        gate.release()
+        await off.value
+        XCTAssertTrue(ls.enabled)
+        XCTAssertEqual(gate.methods, ["POST", "DELETE", "POST", "POST"])
+        XCTAssertEqual(ls.cache.entries.values.map(\.kind), [.alert])
     }
 
     /// A foreground while a repost is in flight adds nothing.

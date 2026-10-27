@@ -247,20 +247,25 @@ final class LiveStatus: ObservableObject {
     private var reposting = false
     private let signedIn: () -> PushTokens?
     private let notificationsAllowed: () async -> Bool
+    private let requestAuthorization: () async -> Bool
 
-    /// Tests substitute the defaults, the client and the permission check.
+    /// Tests substitute the defaults, the client and the permission check and request.
     init(defaults: UserDefaults = .standard,
          client: @escaping () -> PushTokens? = {
              Keychain.load().map { PushTokens(session: $0.session, deviceId: InstallID.get(email: $0.email)) }
          },
          notificationsAllowed: @escaping () async -> Bool = {
              await UNUserNotificationCenter.current().notificationSettings().authorizationStatus != .denied
+         },
+         requestAuthorization: @escaping () async -> Bool = {
+             (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false
          }) {
         self.defaults = defaults
         enabled = defaults.bool(forKey: Self.enabledKey)
         asked = defaults.bool(forKey: Self.askedKey)
         signedIn = client
         self.notificationsAllowed = notificationsAllowed
+        self.requestAuthorization = requestAuthorization
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification,
                                                object: nil, queue: .main) { _ in
             Task { @MainActor in await LiveStatus.shared.foreground() }
@@ -301,9 +306,7 @@ final class LiveStatus: ObservableObject {
     @discardableResult
     func turnOn() async -> Bool {
         asked = true
-        let granted = (try? await UNUserNotificationCenter.current()
-            .requestAuthorization(options: [.alert, .sound])) ?? false
-        guard granted else { return false }
+        guard await requestAuthorization() else { return false }
         enabled = true
         launch()
         return true
@@ -313,20 +316,25 @@ final class LiveStatus: ObservableObject {
 
     /// The switch off: the Worker forgets this device, and no card stays behind.
     func turnOff() async {
-        enabled = false
         // ponytail: a DELETE that fails all its tries leaves the Worker alerting until the
         // tokens go invalid; persist a pending delete if that shows up.
-        if let client = client() { await client.delete() }
-        await stop()
+        await forget(client())
     }
 
-    /// Sign-out, while the Bearer still works: tokens first, then the cards. Asks again
-    /// on the next sign-in if it was on.
+    /// Sign-out, while the Bearer still works. Asks again on the next sign-in if it was on.
     func signOut(session: String, email: String) async {
         if enabled { asked = false }
+        await forget(PushTokens(session: session, deviceId: InstallID.get(email: email)))
+    }
+
+    /// The cards end and the state clears before the device-wide DELETE (#572): a turnOn
+    /// during these awaits then tracks from scratch instead of being wiped by a later
+    /// stop(), and what it posted goes again after the DELETE took it.
+    private func forget(_ tokens: PushTokens?) async {
         enabled = false
-        await PushTokens(session: session, deviceId: InstallID.get(email: email)).delete()
         await stop()
+        await tokens?.delete()
+        if enabled, let client = client() { await cache.repost(client) }
     }
 
     func alertToken(_ token: Data) {
