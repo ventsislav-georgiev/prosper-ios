@@ -176,7 +176,8 @@ final class TypoRateTests: XCTestCase {
         let kb = K(layout: layout)
         kb.offersEmoji = emoji
         kb.bottomInset = emoji ? K.bottomPadding : K.extensionBottomInset
-        kb.frame = CGRect(x: 0, y: 0, width: 402, height: K.keysHeight + kb.bottomInset)
+        kb.settings.keySize = Self.keySize
+        kb.frame = CGRect(x: 0, y: 0, width: 402, height: K.keysHeight(compact: false, size: Self.keySize) + kb.bottomInset)
         kb.layoutIfNeeded()
         var centers: [Character: CGPoint] = [:], space = CGRect.zero
         for case let b as UIButton in kb.subviews {
@@ -234,6 +235,11 @@ final class TypoRateTests: XCTestCase {
         return tally
     }
 
+    /// The Key size the prose runs at (#583): Normal, or `TEST_RUNNER_TYPO_KEY_SIZE=large`
+    /// on the xcodebuild line, one step a run.
+    static let keySize = ProcessInfo.processInfo.environment["TYPO_KEY_SIZE"]
+        .flatMap(KeyboardSettings.KeySize.init) ?? .normal
+
     /// The numbers for each thumb model, to see which mode dominates. One gate: the
     /// extension's space taps reach it (`extensionBottomInset`; 6 pt lost 4% of them).
     func testProseWithAThumb() {
@@ -243,7 +249,7 @@ final class TypoRateTests: XCTestCase {
                                              ("BG ext", .bulgarian, Self.bulgarian, false)] {
             for t in Self.thumbs {
                 let tally = prose(layout, words, t, emoji: emoji)
-                print("thumb \(name), \(t.name): \(tally.line)")
+                print("thumb \(name) \(Self.keySize), \(t.name): \(tally.line)")
                 if !emoji, t.name == "wider" { XCTAssertLessThan(tally.pct(tally.space), 1, name) }
             }
         }

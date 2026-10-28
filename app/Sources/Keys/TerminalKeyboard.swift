@@ -54,6 +54,7 @@ struct KeyboardSettings: Equatable {
         static let characterPreview = "keyboard.characterPreview"
         static let bottomOrder = "keyboard.bottomOrder"
         static let bottomHidden = "keyboard.bottomHidden"
+        static let keySize = "keyboard.keySize"
     }
 
     /// Shift on at a sentence start (`TerminalKeyboard.autoCapitalize`). Off by default.
@@ -74,6 +75,19 @@ struct KeyboardSettings: Equatable {
     /// The emoji key's stand-in in `bottomOrder` and `bottomHidden` (#515). An order or a
     /// hidden set stored before it existed lacks it, so it shows, last before return (`order`).
     static let emojiKey: Character = "😀"
+    /// Portrait rows' height and gap (`TerminalKeyboard.metrics`, #583); landscape keeps its own.
+    var keySize = KeySize.normal
+    enum KeySize: String, CaseIterable {
+        case normal, medium, large
+        /// Row height and gap. Every key grows taller only: space keeps its width (`place`).
+        var row: (height: CGFloat, gap: CGFloat) {
+            switch self {
+            case .normal: return (TerminalKeyboard.rowHeight, TerminalKeyboard.rowGap)
+            case .medium: return (42, 15)
+            case .large: return (44, 16)
+            }
+        }
+    }
 
     init() {}
     /// What `defaults` holds, the default for anything it doesn't; nil is all defaults.
@@ -88,6 +102,7 @@ struct KeyboardSettings: Equatable {
         read(Key.characterPreview, &characterPreview)
         bottomOrder = defaults?.string(forKey: Key.bottomOrder) ?? bottomOrder
         bottomHidden = defaults?.string(forKey: Key.bottomHidden) ?? bottomHidden
+        keySize = defaults?.string(forKey: Key.keySize).flatMap(KeySize.init) ?? keySize
     }
 
     /// Every key of `bottomKeys` once, in `stored`'s order: unknown ones dropped, missing
@@ -193,7 +208,8 @@ struct KeyTouchTracker {
     ///
     /// ponytail: the space bar sits about 100 pt over the screen's bottom (874 pt tall), so a
     /// hold goes at most 2 lines down; a second hold goes on. Kept a row, not shorter, since
-    /// shorter steps read as jumps.
+    /// shorter steps read as jumps. A Normal row at every Key size (#583): it measures the
+    /// finger's travel, not the keys, so a taller row doesn't slow the drag.
     static let lineStep: CGFloat = TerminalKeyboard.rowHeight
 
     private struct Touch {
@@ -764,7 +780,7 @@ struct CaretWalk {
 ///
 /// Why it exists: on Face ID iPhones the system keyboard reserves an empty ~73 pt strip
 /// under its keys (globe/dictation) plus padding above them, and an app can't shrink
-/// it. This one is five 38 pt rows with only `bottomPadding` under them, reaching into
+/// it. This one is five 38 pt rows (Key size Normal) with only `bottomPadding` under them, reaching into
 /// the home-indicator strip instead of stopping above it: 276 pt against the system's
 /// 308, with a digit row the system keyboard doesn't have. The bottom row pulls in from
 /// the sides so its outer keys clear the display's rounded corners, and carries `.` `,`
@@ -813,14 +829,14 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static let keyGap: CGFloat = 9
     static let sideMargin: CGFloat = 3
     static let keysHeight = keysHeight(compact: false)
-    /// Rows, gaps and the top pad: the above, or in a compact vertical size class (iPhone
+    /// Rows, gaps and the top pad: the above at `size` (#583), or in a compact vertical size class (iPhone
     /// landscape) shorter ones. The portrait keys on a 402 pt tall landscape screen took
     /// 63% of it and hid the focused field; these come to 149 pt, so the extension
     /// (32 pt bar + 149 + 6) was about the Apple keyboard's landscape height (QA measured
     /// the old 36 + 174 + 6 ~30 pt taller); `extensionBottomInset` has since added 10.
     /// The bar + the 3 pt top pad is the bubble's compact rise (`KeyPreview.rise(compact:)`).
-    static func metrics(compact: Bool) -> (row: CGFloat, gap: CGFloat, top: CGFloat) {
-        compact ? (26, 4, 3) : (rowHeight, rowGap, topPadding)
+    static func metrics(compact: Bool, size: KeyboardSettings.KeySize = .normal) -> (row: CGFloat, gap: CGFloat, top: CGFloat) {
+        compact ? (26, 4, 3) : (size.row.height, size.row.gap, topPadding)
     }
     /// The host window's system gesture gate holds a touch near the left or right edge
     /// until the lift, so an edge key shows no pressed look and its hold fails: let it
@@ -828,8 +844,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static func undelayEdges(_ window: UIWindow?) {
         window?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
     }
-    static func keysHeight(compact: Bool) -> CGFloat {
-        let m = metrics(compact: compact)
+    static func keysHeight(compact: Bool, size: KeyboardSettings.KeySize = .normal) -> CGFloat {
+        let m = metrics(compact: compact, size: size)
         return m.top + 5 * m.row + 4 * m.gap
     }
     /// Under the bottom row, in place of the 34 pt home-indicator inset: enough to keep
@@ -855,6 +871,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// up. Landscape's side safe area already exceeds it.
     static let bottomRowInset: CGFloat = 24
     static let height = keysHeight + bottomPadding
+    /// The frame this view starts with, which the app's input host never sizes it past:
+    /// started at `height`, a Large Key size kept Normal's 276 pt and clipped its bottom
+    /// row (#583). The fitted height is still the constraint's (`fitHeight`).
+    static let tallest = keysHeight(compact: false, size: .large) + bottomPadding
     /// ESC CR, meta-enter: Claude Code's "insert newline, don't submit". Return sends it;
     /// so does the shortcut bar's `snl` key.
     static let newlineBytes: [UInt8] = [0x1b, 0x0d]
@@ -988,9 +1008,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// a system keyboard reaches iOS's own emoji through the globe or iOS's switcher.
     var offersEmoji = true { didSet { if offersEmoji != oldValue { build() } } }
     /// The app's Keyboard settings: the extension's controller sets them when it appears,
-    /// the terminal when it takes focus. A new bottom row rebuilds the caps.
+    /// the terminal when it takes focus. A new bottom row rebuilds the caps; a new key size
+    /// resizes them.
     var settings = KeyboardSettings() {
-        didSet { if settings.bottomRow != oldValue.bottomRow { build() } }
+        didSet {
+            if settings.bottomRow != oldValue.bottomRow { build() }
+            if settings.keySize != oldValue.keySize { fitHeight(); setNeedsLayout() }
+        }
     }
     /// The extension's suggestions (`SuggestionBar.attach`): asked before every key, it
     /// can autocorrect the word a separator ends, or take the key itself (true: backspace
@@ -1079,7 +1103,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     init(layout: Layout = .english) {
         self.layout = layout
-        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.height), inputViewStyle: .keyboard)
+        super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.tallest), inputViewStyle: .keyboard)
         allowsSelfSizing = true
         isMultipleTouchEnabled = true
         overrideUserInterfaceStyle = .dark
@@ -1110,7 +1134,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     private func fitHeight() {
-        keysHeightConstraint.constant = Self.keysHeight(compact: compact)
+        keysHeightConstraint.constant = Self.keysHeight(compact: compact, size: settings.keySize)
         let height = keysHeightConstraint.constant + bottomInset
         guard height != heightConstraint.constant else { return }
         heightConstraint.constant = height
@@ -1940,7 +1964,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     override func layoutSubviews() {
         super.layoutSubviews()
         let area = keysArea.layoutFrame.insetBy(dx: Self.sideMargin, dy: 0)
-        let m = Self.metrics(compact: compact)
+        let m = Self.metrics(compact: compact, size: settings.keySize)
         emojiPicker?.frame = area
         for (r, row) in caps.enumerated() {
             let y = area.minY + m.top + CGFloat(r) * (m.row + m.gap)

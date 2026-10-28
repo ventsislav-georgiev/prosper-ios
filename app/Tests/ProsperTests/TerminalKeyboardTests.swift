@@ -226,7 +226,70 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(TerminalKeyboard.height, TerminalKeyboard.keysHeight + TerminalKeyboard.bottomPadding)
         XCTAssertEqual(TerminalKeyboard.height, 276)
         XCTAssertTrue((26...28).contains(TerminalKeyboard.bottomPadding))
-        XCTAssertEqual(TerminalKeyboard().frame.height, TerminalKeyboard.height)
+        // Started at the tallest Key size's height: the app's input host never sizes the
+        // keyboard past its first frame (#583). The constraint still fits Normal's.
+        XCTAssertEqual(TerminalKeyboard().frame.height, TerminalKeyboard.tallest)
+        XCTAssertEqual(TerminalKeyboard.tallest, 318)
+    }
+
+    /// Key size (#583): each step's portrait row and gap, and the heights they add up to.
+    /// Normal is today's, so the static heights stay Normal's.
+    func testKeySizesMapToTheirMetrics() {
+        let expected: [(KeyboardSettings.KeySize, CGFloat, CGFloat, CGFloat)] =
+            [(.normal, 38, 13, 248), (.medium, 42, 15, 276), (.large, 44, 16, 290)]
+        for (size, row, gap, keys) in expected {
+            let m = TerminalKeyboard.metrics(compact: false, size: size)
+            XCTAssertEqual(m.row, row, "\(size)")
+            XCTAssertEqual(m.gap, gap, "\(size)")
+            XCTAssertEqual(m.top, TerminalKeyboard.topPadding, "\(size)")
+            XCTAssertEqual(TerminalKeyboard.keysHeight(compact: false, size: size), keys, "\(size)")
+        }
+        XCTAssertEqual(TerminalKeyboard.keysHeight, TerminalKeyboard.keysHeight(compact: false, size: .normal))
+        XCTAssertEqual(KeyboardSettings.KeySize.allCases, [.normal, .medium, .large])
+    }
+
+    /// Every step lays out in the app's keyboard: its height follows, five rows a row and a
+    /// gap apart, the keys ending above the home-gesture pad, and space as wide as Normal's
+    /// (taller only). In landscape every step is the compact 26 pt rows and 149 pt.
+    func testKeySizesLayOutWithoutOverlapAndLandscapeIgnoresThem() throws {
+        guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
+        let normalSpace = try XCTUnwrap(laidOut().1["space"]).frame.width
+        for size in KeyboardSettings.KeySize.allCases {
+            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+            window.traitOverrides.verticalSizeClass = .regular
+            let kb = TerminalKeyboard()
+            kb.settings.keySize = size
+            let height = try XCTUnwrap(kb.constraints.first { $0.firstItem === kb && $0.firstAttribute == .height })
+            let m = TerminalKeyboard.metrics(compact: false, size: size)
+            let keys = TerminalKeyboard.keysHeight(compact: false, size: size)
+            XCTAssertEqual(height.constant, keys + TerminalKeyboard.bottomPadding, "\(size)")
+            kb.frame = CGRect(x: 0, y: 0, width: 402, height: height.constant)
+            window.addSubview(kb)
+            window.isHidden = false
+            defer { window.isHidden = true }
+            window.layoutIfNeeded()
+            var caps = kb.subviews.compactMap { $0 as? UIButton }
+            let tops = Set(caps.map(\.frame.minY)).sorted()
+            XCTAssertEqual(tops.count, 5, "\(size)")
+            XCTAssertTrue(caps.allSatisfy { $0.frame.height == m.row }, "\(size)")
+            for (a, b) in zip(tops, tops.dropFirst()) { XCTAssertEqual(b - a, m.row + m.gap, "\(size): rows") }
+            XCTAssertEqual(caps.map(\.frame.maxY).max(), keys, "\(size)")
+            XCTAssertLessThanOrEqual(keys, kb.bounds.maxY - TerminalKeyboard.bottomPadding, "\(size): clipped")
+            let space = try XCTUnwrap(caps.first { $0.accessibilityLabel == "space" })
+            XCTAssertEqual(space.frame.width, normalSpace, accuracy: 0.001, "\(size): space wider")
+            XCTAssertEqual(kb.key(at: CGPoint(x: space.frame.midX, y: space.frame.maxY + 2)), .space)
+
+            window.traitOverrides.verticalSizeClass = .compact
+            window.layoutIfNeeded()
+            XCTAssertEqual(height.constant, TerminalKeyboard.keysHeight(compact: true) + TerminalKeyboard.bottomPadding,
+                           "\(size): landscape")
+            caps = kb.subviews.compactMap { $0 as? UIButton }
+            XCTAssertTrue(caps.allSatisfy { $0.frame.height == 26 }, "\(size): landscape rows")
+            XCTAssertEqual(caps.map(\.frame.maxY).max(), 149, "\(size): landscape")
+            window.traitOverrides.verticalSizeClass = .regular
+            window.layoutIfNeeded()
+            XCTAssertEqual(height.constant, keys + TerminalKeyboard.bottomPadding, "\(size): back to portrait")
+        }
     }
 
     func testBottomRowClearsTheCornersAndSpaceStaysWide() throws {
@@ -995,6 +1058,23 @@ final class TerminalKeyboardTests: XCTestCase {
         rotate(.landscapeRight)
         vc.toggleKeyboard()
         expect(landscape, "first shown in landscape")
+        vc.toggleKeyboard()
+        spin(0.5)
+
+        // Key size (#583): the terminal reads it as the keyboard next rises, and the bar
+        // rides the taller keys; landscape ignores it.
+        let saved = KeyboardSettings.store
+        defer { KeyboardSettings.store = saved }
+        let suite = "KeySize.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(KeyboardSettings.KeySize.large.rawValue, forKey: KeyboardSettings.Key.keySize)
+        KeyboardSettings.store = { defaults }
+        rotate(.portrait)
+        vc.toggleKeyboard()
+        expect(TerminalKeyboard.keysHeight(compact: false, size: .large) + TerminalKeyboard.bottomPadding, "Large")
+        rotate(.landscapeRight)
+        expect(landscape, "Large in landscape")
         vc.toggleKeyboard()
         spin(0.5)
     }

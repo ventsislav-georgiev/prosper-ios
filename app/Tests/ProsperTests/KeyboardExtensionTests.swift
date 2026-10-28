@@ -595,10 +595,32 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertTrue(d.capsLock)
         XCTAssertTrue(d.predictiveText)
         XCTAssertTrue(d.characterPreview)
+        XCTAssertEqual(d.keySize, .normal)
         XCTAssertEqual(KeyboardSettings(nil), d)
         XCTAssertEqual(TerminalKeyboard().settings, d)
         XCTAssertEqual(Suggestions().settings, d)
         XCTAssertEqual(KeyboardSettings.suiteName, "group.eu.illegible.prosperios", "the entitlements' App Group")
+    }
+
+    /// Key size (#583) reads back what the app stored; an empty, unknown or unreachable
+    /// store (an extension without Full Access) is Normal.
+    func testKeySizeReadsTheStoreAndFallsBackToNormal() throws {
+        let saved = KeyboardSettings.store
+        defer { KeyboardSettings.store = saved }
+        let suite = "KeySize.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        KeyboardSettings.store = { defaults }
+        XCTAssertEqual(KeyboardSettings.current().keySize, .normal, "empty")
+        for size in KeyboardSettings.KeySize.allCases {
+            defaults.set(size.rawValue, forKey: KeyboardSettings.Key.keySize)
+            XCTAssertEqual(KeyboardSettings.current().keySize, size)
+        }
+        XCTAssertEqual(KeyboardSettings.current(fullAccess: false).keySize, .normal, "no Full Access")
+        defaults.set("huge", forKey: KeyboardSettings.Key.keySize)
+        XCTAssertEqual(KeyboardSettings.current().keySize, .normal, "unknown")
+        KeyboardSettings.store = { nil }
+        XCTAssertEqual(KeyboardSettings.current().keySize, .normal, "no store")
     }
 
     /// What the app wrote is read back; a key it never wrote keeps its default.

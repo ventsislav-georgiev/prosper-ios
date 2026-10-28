@@ -73,6 +73,8 @@ struct SettingsView: View {
     private var predictiveText = KeyboardSettings().predictiveText
     @AppStorage(KeyboardSettings.Key.characterPreview, store: KeyboardSettings.store())
     private var characterPreview = KeyboardSettings().characterPreview
+    @AppStorage(KeyboardSettings.Key.keySize, store: KeyboardSettings.store())
+    private var keySize = KeyboardSettings().keySize
     @AppStorage(AgentCommand.key) private var agentCommand = ""
     @AppStorage(DchSession.sidekickKey) private var sidekickPattern = DchSession.sidekickDefault
     // Session list rows (`RowDetails`), on this device only.
@@ -183,10 +185,13 @@ struct SettingsView: View {
                 Toggle("Predictive Text", isOn: $predictiveText)
                 Toggle("Character Preview", isOn: $characterPreview)
                 NavigationLink("Keys Beside Space") { BottomRowSettings() }
+                Picker("Key Size", selection: $keySize) {
+                    ForEach(KeyboardSettings.KeySize.allCases, id: \.self) { Text($0.rawValue.capitalized) }
+                }
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off and the rest on. In the terminal, Enable Caps Lock, Character Preview and Keys Beside Space apply.")
+                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows.")
             }
 
             Section {

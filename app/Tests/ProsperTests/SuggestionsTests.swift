@@ -643,6 +643,44 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(doc.text, "!)", "the held symbols typed")
     }
 
+    /// Every Key size (#583) in the extension's view, hosted as `host` does, at its real
+    /// bottom inset: the bar, then the keys a row and a gap apart, the bottom row ending
+    /// `extensionBottomInset` above the view's bottom, and a digit's bubble still inside.
+    func testEveryKeySizeFitsTheExtensionsView() throws {
+        for size in KeyboardSettings.KeySize.allCases {
+            let (kb, bar, _) = rig()
+            kb.bottomInset = TerminalKeyboard.extensionBottomInset
+            kb.settings.keySize = size
+            let keys = TerminalKeyboard.keysHeight(compact: false, size: size)
+            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: SuggestionBar.height + keys
+                                                + TerminalKeyboard.extensionBottomInset))
+            if #available(iOS 17, *) { window.traitOverrides.verticalSizeClass = .regular }
+            let view = UIView(frame: window.bounds)
+            window.addSubview(view)
+            bar.host(kb, in: view)
+            window.isHidden = false
+            defer { window.isHidden = true }
+            window.layoutIfNeeded()
+            // The constraint, not the frame: this window forces the frame, the extension's
+            // controller sizes its view from the constraint.
+            let height = try XCTUnwrap(kb.constraints.first { $0.firstItem === kb && $0.firstAttribute == .height })
+            XCTAssertEqual(height.constant, keys + TerminalKeyboard.extensionBottomInset, "\(size): the extension's height")
+            XCTAssertEqual(bar.frame.height, SuggestionBar.height, "\(size)")
+            XCTAssertEqual(kb.frame, CGRect(x: 0, y: SuggestionBar.height, width: 402,
+                                            height: keys + TerminalKeyboard.extensionBottomInset), "\(size)")
+            let caps = kb.subviews.compactMap { $0 as? UIButton }
+            let m = TerminalKeyboard.metrics(compact: false, size: size)
+            let tops = Set(caps.map(\.frame.minY)).sorted()
+            XCTAssertEqual(tops.count, 5, "\(size)")
+            for (a, b) in zip(tops, tops.dropFirst()) { XCTAssertEqual(b - a, m.row + m.gap, "\(size): rows") }
+            XCTAssertEqual(caps.map(\.frame.maxY).max(), kb.bounds.maxY - TerminalKeyboard.extensionBottomInset, "\(size)")
+            let one = try XCTUnwrap(caps.first { $0.accessibilityLabel == "1" })
+            kb.track(.began, id: 1, at: CGPoint(x: one.frame.midX, y: one.frame.midY))
+            XCTAssertTrue(window.bounds.contains(try XCTUnwrap(kb.previewFrame)), "\(size): \(kb.previewFrame!)")
+            kb.track(.cancelled, id: 1, at: CGPoint(x: one.frame.midX, y: one.frame.midY))
+        }
+    }
+
     /// The same in landscape: a 32 pt bar, the keys' 149 pt and its height constraint
     /// following, the digits' shorter bubbles still inside, and the bar back to 44 pt.
     func testTopRowBubblesFitInTheExtensionsViewInLandscape() throws {
