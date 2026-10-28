@@ -390,19 +390,6 @@ final class KeyboardToolbarTests: XCTestCase {
 
     // MARK: Edits (#553)
 
-    /// The line deletes, held back until #569 and #553 pass QA on real hosts (#560): off the
-    /// toolbar's catalog, and a saved toolbar holding one loads without it; the motions and
-    /// yank stay.
-    func testHeldBackDeletesAreOffTheToolbar() throws {
-        let catalog = Shortcuts.Bar.toolbar.catalog.map(\.id)
-        for id in ["delHome", "delEnd", "delLine", "delAll", "cutLine"] { XCTAssertFalse(catalog.contains(id), id) }
-        for id in ["wordNext", "wordEnd", "wordBack", "delWord", "copyLine"] { XCTAssertTrue(catalog.contains(id), id) }
-        let store = try suiteStore(".heldBack")
-        let held = Shortcuts.hostOnly.filter { ["delAll", "delLine"].contains($0.id) }
-        Shortcuts.save([try key("left")] + held, to: store, key: Shortcuts.Bar.toolbar.storageKey)
-        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["left"])
-    }
-
     /// A toolbar edit pressed, then the walk polling until it lands, the host catching up
     /// every `every` polls.
     private func edit(_ id: String, _ kb: TerminalKeyboard, _ bar: SuggestionBar, _ doc: Proxy,
@@ -448,7 +435,7 @@ final class KeyboardToolbarTests: XCTestCase {
             XCTAssertGreaterThan(k.label.count, 3, "VoiceOver reads it: \(k.id)")
         }
         XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.catalog.map(\.id)))
-        XCTAssertTrue(Set(ids).subtracting(Shortcuts.heldBack).isSubset(of: Shortcuts.Bar.toolbar.catalog.map(\.id)))
+        XCTAssertTrue(Set(ids).isSubset(of: Shortcuts.Bar.toolbar.catalog.map(\.id)))
         XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.Bar.toolbar.defaults.map(\.id)), "added in the editor")
 
         let store = try suiteStore(".edits")
@@ -461,9 +448,9 @@ final class KeyboardToolbarTests: XCTestCase {
                        "no copy or cut without Full Access")
     }
 
-    /// The terminal's catalog offers the readline edits as their keystrokes, held back or not;
-    /// word end, delete all, copy and cut line need the text and stay off. The toolbar's catalog
-    /// is as it was, and a terminal bar holding a held-back delete never seeds it with one.
+    /// The terminal's catalog offers the readline edits as their keystrokes; word end, delete
+    /// all, copy and cut line need the text and stay off. The toolbar's catalog has them all,
+    /// and a terminal bar holding a delete seeds it with that one.
     func testTerminalOffersReadlineEdits() throws {
         let want: [(String, [UInt8])] = [("wordNext", [0x1b, 0x66]), ("wordBack", [0x1b, 0x62]), ("delWord", [0x17]),
                                          ("delHome", [0x15]), ("delEnd", [0x0b]), ("delLine", [0x05, 0x15])]
@@ -480,7 +467,8 @@ final class KeyboardToolbarTests: XCTestCase {
 
         let toolbar = Shortcuts.Bar.toolbar.catalog.map(\.id)
         XCTAssertEqual(toolbar, ["tab", "up", "down", "left", "right", "home", "end", "slash", "pipe", "paste", "snl",
-                                 "enter", "wordNext", "wordEnd", "wordBack", "delWord", "copyLine"])
+                                 "enter", "wordNext", "wordEnd", "wordBack", "delWord", "delHome", "delEnd", "delLine",
+                                 "delAll", "copyLine", "cutLine"])
         XCTAssertEqual(Set(toolbar).count, toolbar.count, "no duplicate ids")
 
         let store = try suiteStore(".terminalEdits")
@@ -490,8 +478,7 @@ final class KeyboardToolbarTests: XCTestCase {
         let loaded = Shortcuts.Bar.terminal.load(store)
         XCTAssertEqual(loaded.map(\.id), ["left", "delLine", "delWord", "enter"])
         XCTAssertEqual(loaded[2].bytes, [0x17], "a saved key takes the catalog's definition")
-        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["paste", "left", "delWord", "enter"],
-                       "seeded without the held-back delete")
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["paste", "left", "delLine", "delWord", "enter"])
     }
 
     /// nvim's word classes: letters, digits and "_" one, other punctuation another, blanks

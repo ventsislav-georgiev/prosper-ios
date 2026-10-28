@@ -70,11 +70,6 @@ enum Shortcuts {
         ShortcutKey(id: "redraw",  label: "redraw", kind: .redraw, systemImage: "arrow.clockwise"),
     ]
 
-    /// The `hostOnly` deletes kept off the toolbar's catalog (#560): delete all and cut line
-    /// still fail QA on real hosts, and the line deletes can run on into a field tapped mid-edit
-    /// (#569). Remove this once #569 and #553 pass there.
-    static let heldBack: Set<String> = ["delHome", "delEnd", "delLine", "delAll", "cutLine"]
-
     /// The system keyboards' toolbar's text edits (`Bar.toolbar`, by `hostKey`, never the bytes).
     /// Those with bytes are the terminal's too, as readline keystrokes: word end has none
     /// (M-f is next word's), and delete all, copy and cut line need the text.
@@ -156,7 +151,7 @@ enum Shortcuts {
         /// pty send each, nothing to hold back); on the toolbar, the keys a text field can use (`hostKey`).
         var catalog: [ShortcutKey] {
             self == .terminal ? Shortcuts.catalog + hostOnly.filter { !$0.bytes.isEmpty }
-                : (Shortcuts.catalog + hostOnly).filter { hostKey($0.id) != nil && !heldBack.contains($0.id) }
+                : (Shortcuts.catalog + hostOnly).filter { hostKey($0.id) != nil }
         }
         /// The toolbar's: the default bar's keys it can use, in order, less send.
         var defaults: [ShortcutKey] {
@@ -168,7 +163,7 @@ enum Shortcuts {
 
         /// The toolbar's saved keys, as the catalog defines them; nil (no Full Access) is the
         /// default. None saved yet: seeded once, and saved, from a customised terminal bar's
-        /// keys in the toolbar's catalog (no held-back deletes), plus paste; else the default.
+        /// keys in the toolbar's catalog, plus paste; else the default.
         func load(_ store: UserDefaults? = shared()) -> [ShortcutKey] {
             guard self == .toolbar else { return Shortcuts.load(store) }
             guard let store else { return defaults }
