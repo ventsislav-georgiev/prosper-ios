@@ -84,6 +84,7 @@ struct SettingsView: View {
     @AppStorage(RowDetails.Key.tasksDone) private var rowTasksDone = RowDetails().tasksDone
     @AppStorage(RowDetails.Key.inProgress) private var rowInProgress = RowDetails().inProgress
     @AppStorage(RowDetails.Key.queued) private var rowQueued = RowDetails().queued
+    @AppStorage(RowDetails.Key.sessionName) private var rowSessionName = RowDetails().sessionName
 
     var body: some View {
         List {
@@ -158,10 +159,11 @@ struct SettingsView: View {
                 Toggle("Tasks done", isOn: $rowTasksDone)
                 Toggle("In progress", isOn: $rowInProgress)
                 Toggle("Queued", isOn: $rowQueued)
+                Toggle("Session name", isOn: $rowSessionName)
             } header: {
                 Text("Session list")
             } footer: {
-                Text("Row details each session shows. Its name and state always show.")
+                Text("Row details each session shows. Its title and state always show.")
             }
 
             Section {

@@ -139,11 +139,11 @@ final class SessionMetaTests: XCTestCase {
         var d = RowDetails(); change(&d); return d
     }
 
-    /// Agents, Open PRs and Merged on; Tasks done, In progress and Queued off, so a
-    /// default row has no task summary.
+    /// Agents, Open PRs and Merged on; Tasks done, In progress, Queued and Session name
+    /// off, so a default row has no task summary and no name under its alias.
     func testRowDetailsDefaults() {
         XCTAssertEqual(RowDetails(), RowDetails(agents: true, openPRs: true, merged: true,
-                                                tasksDone: false, inProgress: false, queued: false))
+                                                tasksDone: false, inProgress: false, queued: false, sessionName: false))
         XCTAssertNil(full.summary(RowDetails()))
     }
 
@@ -255,6 +255,23 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(size(row, .large, 300).height, size(lone, .large, 300).height, "below them the chip sits by the title")
     }
 
+    /// #588: the name under an alias draws only with Session name on; a row without an
+    /// alias keeps its name as the title either way.
+    @MainActor func testSessionNameFollowsToggle() {
+        let store = UserDefaults(suiteName: "SessionMetaTests.name")!
+        store.removePersistentDomain(forName: "SessionMetaTests.name")
+        func height(_ s: DchSession) -> CGFloat {   // at accessibility sizes the name has its own line
+            UIHostingController(rootView: SessionRow(session: s).environment(\.dynamicTypeSize, .accessibility1).defaultAppStorage(store))
+                .sizeThatFits(in: CGSize(width: 300, height: CGFloat.greatestFiniteMagnitude)).height
+        }
+        let aliased = DchSession(name: "api-main-2", alias: "Docs", state: "working")
+        let plain = DchSession(name: "Docs", alias: nil, state: "working")
+        XCTAssertEqual(height(aliased), height(plain), "off by default: no name under the alias")
+        store.set(true, forKey: RowDetails.Key.sessionName)
+        XCTAssertGreaterThan(height(aliased), height(plain), "on: the name shows under the alias")
+        XCTAssertEqual(DchSession(name: "api-main-2", alias: nil).rowAccessibility(RowDetails()), "api-main-2")
+    }
+
     /// #531: a blank title leaves no dangling dash.
     func testMenuLabel() {
         let p = { (t: String) in SessionMeta.PR(url: nil, repo: "o/tab", num: 2, title: t) }
@@ -276,12 +293,12 @@ final class SessionMetaTests: XCTestCase {
     func testRowAccessibilityFollowsToggles() {
         let s = DchSession(name: "sec-1", alias: "Docs", state: "working", agents: 4, meta: full)
         XCTAssertEqual(s.rowAccessibility(RowDetails()),
-                       "Docs, Working, 4 agents, sec-1, open pull requests repo#12, 75 merged")
+                       "Docs, Working, 4 agents, open pull requests repo#12, 75 merged")
         XCTAssertEqual(s.rowAccessibility(.all),
                        "Docs, Working, 4 agents, sec-1, 41 of 68 tasks done, 8 in progress, 19 queued, open pull requests repo#12, 75 merged")
-        XCTAssertEqual(s.rowAccessibility(RowDetails(agents: false, openPRs: false, merged: false)), "Docs, Working, sec-1")
+        XCTAssertEqual(s.rowAccessibility(RowDetails(agents: false, openPRs: false, merged: false, sessionName: true)), "Docs, Working, sec-1")
         XCTAssertEqual(s.rowAccessibility(with { $0.agents = false; $0.queued = true }),
-                       "Docs, Working, sec-1, 19 queued, open pull requests repo#12, 75 merged")
+                       "Docs, Working, 19 queued, open pull requests repo#12, 75 merged")
         XCTAssertEqual(DchSession(name: "a", alias: nil, agents: 1).rowAccessibility(RowDetails()), "a, 1 agent")
     }
 

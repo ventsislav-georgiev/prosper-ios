@@ -163,12 +163,16 @@ struct RowDetails: Equatable {
         static let tasksDone = "sessionRow.tasksDone"
         static let inProgress = "sessionRow.inProgress"
         static let queued = "sessionRow.queued"
+        static let sessionName = "sessionRow.sessionName"
     }
 
     var agents = true, openPRs = true, merged = true
     var tasksDone = false, inProgress = false, queued = false
+    /// The dch name beside the state on an aliased row; a row without an alias keeps it as its title.
+    var sessionName = false
 
-    static let all = RowDetails(agents: true, openPRs: true, merged: true, tasksDone: true, inProgress: true, queued: true)
+    static let all = RowDetails(agents: true, openPRs: true, merged: true, tasksDone: true, inProgress: true, queued: true,
+                                sessionName: true)
 }
 
 extension DchSession {
@@ -178,13 +182,13 @@ extension DchSession {
         let agents: String? = d.agents && n > 0 ? (n == 1 ? "1 agent" : "\(n) agents") : nil
         let prs: String? = d.openPRs ? meta?.prAccessibility : nil
         let merged: String? = d.merged ? meta?.mergedLabel : nil
-        return [title, SessionStateStyle(state)?.label, agents, title != name ? name : nil,
+        return [title, SessionStateStyle(state)?.label, agents, d.sessionName && title != name ? name : nil,
                 meta?.summary(d, spoken: true), prs, merged].compactMap { $0 }.joined(separator: ", ")
     }
 }
 
 /// A session row as the Mac's Agent Island draws it: a state glyph, then line 1 the
-/// title and "+N agents", line 2 the state, the name under an alias and the task
+/// title and "+N agents", line 2 the state, the name under an alias (Session name) and the task
 /// summary, line 3 the PR chips and "N merged". Nothing animates.
 /// The chips are inert, so a tap anywhere opens the session: a Link's 44 pt hit band
 /// covered the name and the task line. A long press on the PR line lists the PRs.
@@ -196,15 +200,16 @@ struct SessionRow: View {
     @AppStorage(RowDetails.Key.tasksDone) private var tasksDone = RowDetails().tasksDone
     @AppStorage(RowDetails.Key.inProgress) private var inProgress = RowDetails().inProgress
     @AppStorage(RowDetails.Key.queued) private var queued = RowDetails().queued
+    @AppStorage(RowDetails.Key.sessionName) private var sessionName = RowDetails().sessionName
     @ScaledMetric(relativeTo: .subheadline) private var glyphWidth: CGFloat = 14
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let d = RowDetails(agents: agents, openPRs: openPRs, merged: merged,
-                           tasksDone: tasksDone, inProgress: inProgress, queued: queued)
+                           tasksDone: tasksDone, inProgress: inProgress, queued: queued, sessionName: sessionName)
         let style = SessionStateStyle(session.state)
-        let alias: String? = session.title != session.name ? session.name : nil
+        let alias: String? = d.sessionName && session.title != session.name ? session.name : nil
         let summary: String? = session.meta?.summary(d)
         let lines: [SessionMeta.PRLine] = session.meta?.prLines(d) ?? []
         let agentsChip: String? = d.agents ? SessionStateStyle.agents(session.agents) : nil
