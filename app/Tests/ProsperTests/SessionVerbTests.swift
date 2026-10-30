@@ -154,4 +154,68 @@ final class SessionVerbTests: XCTestCase {
     func testDemoRefusesTheVerbs() async {
         do { _ = try await DemoTransport().stop(names: ["docs"]); XCTFail("demo must refuse") } catch {}
     }
+
+    // MARK: - #589 History and Resume
+
+    func testEndLabelsMatchTheIsland() {
+        let cases = [
+            "": "vanished", "vanished": "vanished", "killed": "closed", "exit 0": "exited",
+            "signal 15": "ended (signal 15)", "signal 1": "ended (signal 1)", "signal 2": "ended (signal 2)",
+            "signal 9": "crashed (signal 9)", "signal 11": "crashed (signal 11)",
+            "exit 1": "exited (1)", "exit 137": "exited (137)", "stopped": "stopped",
+        ]
+        for (end, label) in cases { XCTAssertEqual(DchHistoryRow.endLabel(end), label, end) }
+    }
+
+    func testResumeInterruptedCountsOnlyTakes() {
+        func row(_ name: String, _ takes: Bool) -> DchHistoryRow {
+            DchHistoryRow(name: name, alias: nil, end: "signal 9", lastSeen: 2, started: 1, runtime: 1,
+                          cwd: nil, command: nil, takes: takes)
+        }
+        XCTAssertNil(DchHistoryRow.resumeAllLabel([]), "nothing to take hides the button")
+        XCTAssertNil(DchHistoryRow.resumeAllLabel([row("docs", false)]), "no record dch takes hides it too")
+        XCTAssertEqual(DchHistoryRow.resumeAllLabel([row("api-main-2", true), row("docs", false), row("web", true)]),
+                       "Resume interrupted (2)")
+    }
+
+    func testResumeSendsTheNameAndResumeAllSendsAll() async throws {
+        let (one, got1, l1) = try await fakeMac(0x14, #"{"names":["docs-2"]}"#)
+        defer { l1.cancel() }
+        let ok = await HistorySheet.resume("docs", on: one)
+        XCTAssertNil(ok, "an ok raises no alert")
+        XCTAssertEqual(sent(got1).0, 0x0c)
+        XCTAssertEqual(sent(got1).1, ["name": "docs"])
+
+        let (all, got2, l2) = try await fakeMac(0x14, #"{"names":[]}"#)
+        defer { l2.cancel() }
+        let none = await HistorySheet.resume(nil, on: all)
+        XCTAssertNil(none)
+        XCTAssertEqual(sent(got2).1, ["all": true])
+    }
+
+    func testResumeErrorsKeepTheMacsWordsUnderTheirTitle() async throws {
+        let (all, _, l1) = try await fakeMac(0x13, #"{"message":"2 resumed, 1 failed"}"#)
+        defer { l1.cancel() }
+        let summary = await HistorySheet.resume(nil, on: all)
+        XCTAssertEqual(summary?.title, "Resume interrupted", "an all-run's alert is named after the action")
+        XCTAssertEqual(summary?.message, "2 resumed, 1 failed")
+
+        let (one, _, l2) = try await fakeMac(0x13, #"{"message":"docs: no history record of that name"}"#)
+        defer { l2.cancel() }
+        let named = await HistorySheet.resume("docs", on: one)
+        XCTAssertEqual(named?.title, "Resume failed")
+        XCTAssertEqual(named?.message, "docs: no history record of that name")
+    }
+
+    func testRestartAllErrorIsTitledRestartAll() async throws {
+        let (mac, got, l) = try await fakeMac(0x13, #"{"message":"1 restarted, 1 failed"}"#)
+        defer { l.cancel() }
+        let f = await SessionListView.attempt(SessionVerb.restart.failTitle(all: true), on: mac) { try await $0.restart(names: nil) }
+        XCTAssertEqual(f?.title, "Restart all")
+        XCTAssertEqual(f?.message, "1 restarted, 1 failed")
+        XCTAssertEqual(sent(got).1, ["all": true])
+        XCTAssertEqual(SessionVerb.restart.failTitle(all: false), "Restart failed")
+        XCTAssertEqual(SessionVerb.stop.failTitle(all: false), "Stop failed")
+        XCTAssertEqual(SessionVerb.revive.failTitle(all: false), "Resume failed")
+    }
 }

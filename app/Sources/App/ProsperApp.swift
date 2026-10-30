@@ -332,6 +332,7 @@ struct SessionListView: View {
     @State private var confirmingRestartAll = false
     @State private var stoppingAll: [String]?      // Stop all's confirm: the tab's names, counted when asked
     @State private var failed: (title: String, message: String)?   // a verb's error 0x13, as written
+    @State private var showingHistory = false      // #589: the ⋯ menu's History sheet
     // The Sidekicks segment is chosen. Scene storage, so the list an alert or Live Activity
     // rebuilds (a new `.id`) comes back on the same tab.
     @SceneStorage("sessions.sidekickTab") private var sidekickTab = false
@@ -465,13 +466,17 @@ struct SessionListView: View {
             Button("Cancel", role: .cancel) { killing = nil }
         } message: { Text("Ends the session and its running program. Can't be undone.") }
         .alert("Restart stale agents?", isPresented: $confirmingRestartAll) {
-            Button("Restart") { run("Restart", "Restarting stale agents…", [""]) { try await $0.restart(names: nil) } }
+            Button("Restart") {
+                run(SessionVerb.restart.failTitle(all: true), "Restarting stale agents…", [""]) { try await $0.restart(names: nil) }
+            }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Each pauses for up to minutes.") }
         .alert("Stop \(stoppingAll?.count ?? 0) session\(stoppingAll?.count == 1 ? "" : "s")?",
                isPresented: Binding(get: { stoppingAll != nil }, set: { if !$0 { stoppingAll = nil } })) {
             Button("Stop", role: .destructive) {
-                if let names = stoppingAll { run("Stop", "Stopping…", names) { try await $0.stop(names: names) } }
+                if let names = stoppingAll {
+                    run(SessionVerb.stop.failTitle(all: true), "Stopping…", names) { try await $0.stop(names: names) }
+                }
                 stoppingAll = nil
             }
             Button("Cancel", role: .cancel) { stoppingAll = nil }
@@ -479,6 +484,9 @@ struct SessionListView: View {
         .alert(failed?.title ?? "", isPresented: Binding(get: { failed != nil }, set: { if !$0 { failed = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(failed?.message ?? "") }
+        .sheet(isPresented: $showingHistory) {
+            HistorySheet(transport: transport, canRevive: ops.contains(.revive)) { await refresh() }
+        }
         .alert("New session", isPresented: $creating) {
             TextField("Name (optional)", text: $newName)
             Button("Create") { startNew() }
@@ -504,14 +512,18 @@ struct SessionListView: View {
                 HStack(spacing: 6) { ProgressView(); Text(text).font(.caption).foregroundStyle(.secondary) }
             } else {
                 if ops.contains(.restart) {
-                    Button { run("Restart", "Restarting…", [s.name]) { try await $0.restart(names: [s.name]) } } label: {
+                    Button {
+                        run(SessionVerb.restart.failTitle(all: false), "Restarting…", [s.name]) { try await $0.restart(names: [s.name]) }
+                    } label: {
                         Image(systemName: "arrow.triangle.2.circlepath")
                     }.buttonStyle(.borderless).accessibilityLabel("Restart agent")
                 }
                 // #590: the Mac's Stop runs unasked (dch records it, so it can be revived);
                 // an older Mac has only kill, which can't be undone, so that one asks.
                 Button(role: .destructive) {
-                    if ops.contains(.stop) { run("Stop", "Stopping…", [s.name]) { try await $0.stop(names: [s.name]) } } else { killing = s }
+                    if ops.contains(.stop) {
+                        run(SessionVerb.stop.failTitle(all: false), "Stopping…", [s.name]) { try await $0.stop(names: [s.name]) }
+                    } else { killing = s }
                 } label: {
                     Image(systemName: "xmark.circle")
                 }.buttonStyle(.borderless).foregroundStyle(.red).accessibilityLabel("Stop")
@@ -525,9 +537,13 @@ struct SessionListView: View {
     }
 
     /// #590: the Mac's ⋯ (Agent Island): Restart all agents and Stop all in <tab>…, each on its op.
+    /// #589: and History, on any of the Mac's verbs.
     @ViewBuilder private var controlsMenu: some View {
-        if ops.contains(.restart) || ops.contains(.stop) {
+        if !ops.isEmpty {
             Menu {
+                if ops.contains(.history) {
+                    Button { showingHistory = true } label: { Label("History", systemImage: "clock.arrow.circlepath") }
+                }
                 if ops.contains(.restart) {
                     Button("Restart all agents") { confirmingRestartAll = true }
                         .disabled(sessions.isEmpty || running[""] != nil)
@@ -550,17 +566,24 @@ struct SessionListView: View {
     }
 
     /// #590: run a verb, `rows` showing `text` until its one reply lands (minutes, for a
-    /// restart), then re-list. Its error goes up as the Mac wrote it.
-    private func run(_ verb: String, _ text: String, _ rows: [String],
+    /// restart), then re-list. Its error goes up as the Mac wrote it, under `title` (#589).
+    private func run(_ title: String, _ text: String, _ rows: [String],
                      _ op: @escaping (SessionTransport) async throws -> [String]) {
         for n in rows { running[n] = text }
         let t = transport
         Task {
-            do { _ = try await op(t) } catch {
-                if !isCancellation(error) { failed = ("\(verb) failed", error.localizedDescription) }
-            }
+            if let f = await Self.attempt(title, on: t, op) { failed = f }
             for n in rows where running[n] == text { running[n] = nil }
             await refresh()
+        }
+    }
+
+    /// #589: one verb's reply as its alert: nil when it went through (or was cancelled),
+    /// else `title` over the Mac's message as written ("2 resumed, 1 failed").
+    static func attempt(_ title: String, on t: SessionTransport,
+                        _ op: (SessionTransport) async throws -> [String]) async -> (title: String, message: String)? {
+        do { _ = try await op(t); return nil } catch {
+            return isCancellation(error) ? nil : (title, error.localizedDescription)
         }
     }
 
@@ -775,6 +798,149 @@ extension DchSession {
     /// there is (an empty Sessions tab reads as a Mac with no sessions), else the chosen tab.
     static func showsSidekicks(_ split: (primary: [DchSession], sidekicks: [DchSession]), tab: Bool) -> Bool {
         !split.sidekicks.isEmpty && (tab || split.primary.isEmpty)
+    }
+}
+
+extension SessionVerb {
+    /// #589: an error alert's title. A named row's verb is "Resume failed", "Restart failed",
+    /// "Stop failed"; an all-run's is the action itself, as the island labels it ("Resume
+    /// interrupted", "Restart all"), over the Mac's summary ("2 resumed, 1 failed").
+    func failTitle(all: Bool) -> String {
+        switch self {
+        case .history: "History"
+        case .revive:  all ? "Resume interrupted" : "Resume failed"
+        case .restart: all ? "Restart all" : "Restart failed"
+        case .stop:    all ? "Stop all" : "Stop failed"
+        }
+    }
+}
+
+extension DchHistoryRow {
+    var title: String { alias ?? name }
+
+    /// #589: the island's end words (#585); nothing the user did on purpose reads as a crash.
+    /// "closed" (dch -k), "exited" / "exited (N)", "ended (signal N)" for TERM, HUP and INT,
+    /// "crashed (signal N)" for any other signal, "vanished" ("" too); else as dch wrote it.
+    static func endLabel(_ end: String) -> String {
+        switch end {
+        case "", "vanished": return "vanished"
+        case "killed": return "closed"
+        case "exit 0": return "exited"
+        case "signal 15", "signal 1", "signal 2": return "ended (\(end))"
+        default:
+            if end.hasPrefix("signal ") { return "crashed (\(end))" }
+            if end.hasPrefix("exit ") { return "exited (\(end.dropFirst(5)))" }
+            return end
+        }
+    }
+
+    /// #589: "Resume interrupted (N)", N the records dch's revive-all takes; nil (no button) at 0.
+    static func resumeAllLabel(_ rows: [DchHistoryRow]) -> String? {
+        let n = rows.filter(\.takes).count
+        return n > 0 ? "Resume interrupted (\(n))" : nil
+    }
+}
+
+/// #589: the Mac's History tab (Agent Island): ended sessions, newest first, each with
+/// Resume (on `.revive`), and Resume interrupted over them. As on the Mac, neither asks
+/// first nor opens the session: the resumed one shows up in the list. After every reply,
+/// an error too, the history reloads and `changed` re-lists the sessions.
+struct HistorySheet: View {
+    let transport: SessionTransport
+    let canRevive: Bool
+    let changed: () async -> Void
+    @State private var rows: [DchHistoryRow]?
+    @State private var error: String?              // the history read's, as written (dch too old)
+    // Names resuming; "" is Resume interrupted. ponytail: lost when the sheet closes (the
+    // revive still runs and the list still re-lists); lift into SessionListView if it matters.
+    @State private var running: Set<String> = []
+    @State private var failed: (title: String, message: String)?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let error {
+                    Text(error).foregroundStyle(.secondary)
+                } else if let rows, rows.isEmpty {
+                    Text("No ended sessions.").foregroundStyle(.secondary)
+                } else if rows == nil {
+                    ProgressView()
+                }
+                if canRevive, let rows {
+                    if running.contains("") {
+                        HStack(spacing: 10) { ProgressView(); Text("Resuming…").foregroundStyle(.secondary) }
+                    } else if let label = DchHistoryRow.resumeAllLabel(rows) {
+                        Button(label) { resume(nil) }
+                            .accessibilityHint("Brings back the sessions that ended abnormally in the last 3 days")
+                    }
+                }
+                ForEach(rows ?? [], id: \.name) { r in row(r) }
+            }
+            .navigationTitle("History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Done") { dismiss() } }
+            .task { await reload() }
+            .refreshable { await reload() }
+            .alert(failed?.title ?? "", isPresented: Binding(get: { failed != nil }, set: { if !$0 { failed = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(failed?.message ?? "") }
+        }
+    }
+
+    private func row(_ r: DchHistoryRow) -> some View {
+        let end = DchHistoryRow.endLabel(r.end)
+        let seen = r.lastSeen > 0
+            ? Date(timeIntervalSince1970: TimeInterval(r.lastSeen)).formatted(.relative(presentation: .named)) : nil
+        let ran = Duration.seconds(r.runtime)
+            .formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .narrow, maximumUnitCount: 2))
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(r.title).lineLimit(1)
+                // #585: only a crash is coloured, the island's orange.
+                (Text(end).foregroundColor(end.hasPrefix("crashed") ? .orange : .secondary)
+                    + Text([seen, "ran \(ran)"].compactMap { $0 }.map { " · \($0)" }.joined()).foregroundColor(.secondary))
+                    .font(.caption).lineLimit(1)
+                if let cwd = r.cwd, !cwd.isEmpty {
+                    Text(cwd).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: 0)
+            if running.contains(r.name) {
+                HStack(spacing: 6) { ProgressView(); Text("Resuming…").font(.caption).foregroundStyle(.secondary) }
+            } else if canRevive {
+                Button("Resume") { resume(r.name) }.buttonStyle(.borderless)
+            }
+        }
+    }
+
+    /// A record's Resume, or Resume interrupted (nil). Minutes, at worst: the row shows
+    /// "Resuming…" meanwhile and every other row stays free.
+    private func resume(_ name: String?) {
+        let key = name ?? ""
+        running.insert(key)
+        let t = transport
+        Task {
+            if let f = await Self.resume(name, on: t) { failed = f }
+            running.remove(key)
+            await reload()
+            await changed()
+        }
+    }
+
+    /// One revive: a record's `{"name"}`, or `{"all":true}` for nil. nil when it went
+    /// through, else its alert ("Resume failed" for a name, "Resume interrupted" for all).
+    static func resume(_ name: String?, on t: SessionTransport) async -> (title: String, message: String)? {
+        await SessionListView.attempt(SessionVerb.revive.failTitle(all: name == nil), on: t) { try await $0.revive(name: name) }
+    }
+
+    private func reload() async {
+        do {
+            rows = try await transport.history()
+            error = nil
+        } catch let e {
+            if !isCancellation(e) { error = e.localizedDescription }
+        }
     }
 }
 
