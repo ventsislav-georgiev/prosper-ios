@@ -9,6 +9,7 @@ struct MachineInfo {
     let deviceId: String
     let hostname: String?
     let wakeId: String?
+    var ops: Set<SessionVerb> = []   // #590: empty from an older Mac
 }
 
 /// Cached remote-wake state for a Machine, mirrored from `GET /wake/:id/meta`

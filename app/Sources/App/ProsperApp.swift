@@ -324,6 +324,14 @@ struct SessionListView: View {
     @State private var creating = false            // new-session alert
     @State private var newName = ""
     @State private var sleeping = false            // sleep round-trip in flight
+    // #590: the Mac's verbs, from the handshake; empty (an older Mac, the demo) hides
+    // Restart, the new Stop and the ⋯ menu.
+    @State private var ops: Set<SessionVerb> = []
+    // #590: name → "Restarting…"/"Stopping…" while its verb runs; "" is Restart all's line.
+    @State private var running: [String: String] = [:]
+    @State private var confirmingRestartAll = false
+    @State private var stoppingAll: [String]?      // Stop all's confirm: the tab's names, counted when asked
+    @State private var failed: (title: String, message: String)?   // a verb's error 0x13, as written
     // The Sidekicks segment is chosen. Scene storage, so the list an alert or Live Activity
     // rebuilds (a new `.id`) comes back on the same tab.
     @SceneStorage("sessions.sidekickTab") private var sidekickTab = false
@@ -380,6 +388,9 @@ struct SessionListView: View {
             } else if let line = error ?? notice {
                 Text(line).foregroundStyle(.secondary)
             }
+            if let line = running[""] {
+                HStack(spacing: 10) { ProgressView(); Text(line).foregroundStyle(.secondary) }
+            }
             let split = DchSession.split(DchSession.ordered(sessions), pattern: sidekickPattern)
             if split.sidekicks.isEmpty {
                 ForEach(split.primary) { s in row(s) }
@@ -414,6 +425,7 @@ struct SessionListView: View {
             }
             Button { newName = ""; notice = nil; creating = true } label: { Image(systemName: "plus") }
                 .disabled(sleeping || unreachable != nil || error != nil || loading)   // no new session on an unreachable Mac
+            controlsMenu
             Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
                 .disabled(sleeping || loading)
         }
@@ -452,6 +464,21 @@ struct SessionListView: View {
             }
             Button("Cancel", role: .cancel) { killing = nil }
         } message: { Text("Ends the session and its running program. Can't be undone.") }
+        .alert("Restart stale agents?", isPresented: $confirmingRestartAll) {
+            Button("Restart") { run("Restart", "Restarting stale agents…", [""]) { try await $0.restart(names: nil) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Each pauses for up to minutes.") }
+        .alert("Stop \(stoppingAll?.count ?? 0) session\(stoppingAll?.count == 1 ? "" : "s")?",
+               isPresented: Binding(get: { stoppingAll != nil }, set: { if !$0 { stoppingAll = nil } })) {
+            Button("Stop", role: .destructive) {
+                if let names = stoppingAll { run("Stop", "Stopping…", names) { try await $0.stop(names: names) } }
+                stoppingAll = nil
+            }
+            Button("Cancel", role: .cancel) { stoppingAll = nil }
+        }
+        .alert(failed?.title ?? "", isPresented: Binding(get: { failed != nil }, set: { if !$0 { failed = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(failed?.message ?? "") }
         .alert("New session", isPresented: $creating) {
             TextField("Name (optional)", text: $newName)
             Button("Create") { startNew() }
@@ -472,14 +499,68 @@ struct SessionListView: View {
             Button { renaming = s; renameText = s.alias ?? "" } label: {
                 Image(systemName: "pencil")
             }.buttonStyle(.borderless)
-            Button(role: .destructive) { killing = s } label: {
-                Image(systemName: "xmark.circle")
-            }.buttonStyle(.borderless).foregroundStyle(.red)
+            if let text = running[s.name] {
+                // #590: its verb runs; the row still opens, and every other row is free.
+                HStack(spacing: 6) { ProgressView(); Text(text).font(.caption).foregroundStyle(.secondary) }
+            } else {
+                if ops.contains(.restart) {
+                    Button { run("Restart", "Restarting…", [s.name]) { try await $0.restart(names: [s.name]) } } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                    }.buttonStyle(.borderless).accessibilityLabel("Restart agent")
+                }
+                // #590: the Mac's Stop runs unasked (dch records it, so it can be revived);
+                // an older Mac has only kill, which can't be undone, so that one asks.
+                Button(role: .destructive) {
+                    if ops.contains(.stop) { run("Stop", "Stopping…", [s.name]) { try await $0.stop(names: [s.name]) } } else { killing = s }
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }.buttonStyle(.borderless).foregroundStyle(.red).accessibilityLabel("Stop")
+            }
         }
         if typeSize.isAccessibilitySize {
             VStack(alignment: .trailing, spacing: 8) { label; buttons }
         } else {
             HStack(spacing: 16) { label; buttons }
+        }
+    }
+
+    /// #590: the Mac's ⋯ (Agent Island): Restart all agents and Stop all in <tab>…, each on its op.
+    @ViewBuilder private var controlsMenu: some View {
+        if ops.contains(.restart) || ops.contains(.stop) {
+            Menu {
+                if ops.contains(.restart) {
+                    Button("Restart all agents") { confirmingRestartAll = true }
+                        .disabled(sessions.isEmpty || running[""] != nil)
+                }
+                if ops.contains(.stop) {
+                    let tab = shownTab, names = tab.sessions.map(\.name).filter { running[$0] == nil }
+                    Button("Stop all in \(tab.name)…", role: .destructive) { stoppingAll = names }
+                        .disabled(names.isEmpty)
+                }
+            } label: { Image(systemName: "ellipsis.circle") }
+                .accessibilityLabel("Session controls")
+                .disabled(sleeping || unreachable != nil || error != nil)
+        }
+    }
+
+    /// #590: the visible tab, for Stop all: its name and its sessions.
+    private var shownTab: (name: String, sessions: [DchSession]) {
+        let split = DchSession.split(sessions, pattern: sidekickPattern)
+        return DchSession.showsSidekicks(split, tab: sidekickTab) ? ("Sidekicks", split.sidekicks) : ("Sessions", split.primary)
+    }
+
+    /// #590: run a verb, `rows` showing `text` until its one reply lands (minutes, for a
+    /// restart), then re-list. Its error goes up as the Mac wrote it.
+    private func run(_ verb: String, _ text: String, _ rows: [String],
+                     _ op: @escaping (SessionTransport) async throws -> [String]) {
+        for n in rows { running[n] = text }
+        let t = transport
+        Task {
+            do { _ = try await op(t) } catch {
+                if !isCancellation(error) { failed = ("\(verb) failed", error.localizedDescription) }
+            }
+            for n in rows where running[n] == text { running[n] = nil }
+            await refresh()
         }
     }
 
@@ -647,6 +728,7 @@ struct SessionListView: View {
     private func handshake() async {
         guard let m = machine, let t = transport as? ProsperTransport else { return }
         guard let info = try? await t.machineInfo() else { return }
+        ops = info.ops
         store.update(m.id) {
             $0.serverDeviceId = info.deviceId
             if let w = info.wakeId { $0.wakeId = w }

@@ -77,6 +77,48 @@ protocol SessionTransport: AnyObject {
     func kill(name: String) async throws
     /// Set (or clear, when nil/empty) a session's display alias.
     func rename(name: String, alias: String?) async throws
+    /// #590: the ended sessions dch recorded, newest first, at most 50.
+    func history() async throws -> [DchHistoryRow]
+    /// #590: bring a recorded session back (`nil` = every one dch can take). Returns the
+    /// names it runs under: a live name comes back as a free `<name>-N`.
+    func revive(name: String?) async throws -> [String]
+    /// #590: restart live sessions' agents (`nil` = all). Every name must be live, or none runs.
+    func restart(names: [String]?) async throws -> [String]
+    /// #590: stop live sessions; dch records them, so `revive` can bring them back.
+    func stop(names: [String]) async throws -> [String]
+}
+
+/// #590: the demo and the test stubs have no dch behind them. Their machine lists no
+/// `ops`, so no control calls these.
+extension SessionTransport {
+    func history() async throws -> [DchHistoryRow] { throw TransportError.server("Not supported here.") }
+    func revive(name: String?) async throws -> [String] { throw TransportError.server("Not supported here.") }
+    func restart(names: [String]?) async throws -> [String] { throw TransportError.server("Not supported here.") }
+    func stop(names: [String]) async throws -> [String] { throw TransportError.server("Not supported here.") }
+}
+
+/// #590: a verb the Mac's server answers beyond the base frames. machineInfo lists them in
+/// `ops`; an older Mac sends no `ops`, and every control needing one stays hidden.
+enum SessionVerb: String {
+    case history, revive, restart, stop
+
+    /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
+    static func offered(_ ops: Any?) -> Set<SessionVerb> {
+        Set((ops as? [String] ?? []).compactMap(SessionVerb.init(rawValue:)))
+    }
+}
+
+/// #590: one ended session from historyResp 0x1b.
+struct DchHistoryRow: Equatable {
+    var name: String
+    var alias: String?
+    var end: String          // dch's raw value: "signal 9", "exit 0", "killed"
+    var lastSeen: Int        // epoch seconds
+    var started: Int         // epoch seconds
+    var runtime: Int         // seconds
+    var cwd: String?
+    var command: [String]?
+    var takes: Bool
 }
 
 enum TransportError: Error, LocalizedError {
@@ -84,6 +126,8 @@ enum TransportError: Error, LocalizedError {
     case hostUnreachable(String)
     case rejected(String)
     case protocolError(String)
+    /// #590: the server's error 0x13 message, written to be shown as is.
+    case server(String)
 
     var errorDescription: String? {
         switch self {
@@ -91,6 +135,7 @@ enum TransportError: Error, LocalizedError {
         case .hostUnreachable(let h):  return "Can't reach \(h) — check Tailscale."
         case .rejected(let r):         return "Connection rejected: \(r)"
         case .protocolError(let m):    return "Protocol error: \(m)"
+        case .server(let m):           return m
         }
     }
 }

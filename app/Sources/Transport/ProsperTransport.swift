@@ -21,9 +21,10 @@ final class ProsperTransport: SessionTransport {
         static let attach: UInt8 = 0x01, create: UInt8 = 0x02, list: UInt8 = 0x03
         static let kill: UInt8 = 0x04, resize: UInt8 = 0x05, rename: UInt8 = 0x06
         static let machineInfo: UInt8 = 0x08, snapshot: UInt8 = 0x09, putClipboard: UInt8 = 0x0a
+        static let history: UInt8 = 0x0b, revive: UInt8 = 0x0c, restart: UInt8 = 0x0d, stop: UInt8 = 0x0e
         static let data: UInt8 = 0x10
         static let listResp: UInt8 = 0x11, exit: UInt8 = 0x12, error: UInt8 = 0x13, ok: UInt8 = 0x14
-        static let machineInfoResp: UInt8 = 0x18, snapshotResp: UInt8 = 0x19
+        static let machineInfoResp: UInt8 = 0x18, snapshotResp: UInt8 = 0x19, historyResp: UInt8 = 0x1b
     }
 
     /// One-shot identity handshake (PLAN §2a). Sends `0x08`, reads the `0x18` reply
@@ -45,12 +46,17 @@ final class ProsperTransport: SessionTransport {
             group.cancelAll()
             return first
         }
-        guard let (type, payload) = reply, type == F.machineInfoResp,
-              let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+        guard let (type, payload) = reply, type == F.machineInfoResp else { return nil }
+        return Self.decodeMachineInfo(payload)
+    }
+
+    static func decodeMachineInfo(_ payload: Data) -> MachineInfo? {
+        guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
               let deviceId = o["device_id"] as? String else { return nil }
         return MachineInfo(deviceId: deviceId,
                            hostname: o["hostname"] as? String,
-                           wakeId: o["wakeId"] as? String)
+                           wakeId: o["wakeId"] as? String,
+                           ops: SessionVerb.offered(o["ops"]))
     }
 
     func listSessions() async throws -> [DchSession] {
@@ -79,6 +85,59 @@ final class ProsperTransport: SessionTransport {
 
     func rename(name: String, alias: String?) async throws {
         _ = try await oneShot(send: F.rename, payload: json(["name": name, "alias": alias ?? ""]))
+    }
+
+    func history() async throws -> [DchHistoryRow] {
+        try Self.decodeHistory(try await verb(F.history, Data(), reply: F.historyResp))
+    }
+
+    func revive(name: String?) async throws -> [String] {
+        try Self.decodeNames(try await verb(F.revive, json(name.map { ["name": $0] as [String: Any] } ?? ["all": true])))
+    }
+
+    func restart(names: [String]?) async throws -> [String] {
+        try Self.decodeNames(try await verb(F.restart, json(names.map { ["names": $0] as [String: Any] } ?? ["all": true])))
+    }
+
+    func stop(names: [String]) async throws -> [String] {
+        try Self.decodeNames(try await verb(F.stop, json(["names": names])))
+    }
+
+    /// #590: one verb, one reply. No read deadline: dch answers a revive within 5 min and a
+    /// restart or stop within 15, and the Mac never drops an idle link, so the connection
+    /// waits as long as it takes (keepalive still ends a dead one). Error 0x13 throws its
+    /// message as written.
+    private func verb(_ type: UInt8, _ payload: Data, reply: UInt8 = F.ok) async throws -> Data {
+        let (t, p) = try await oneShot(send: type, payload: payload)
+        if t == reply { return p }
+        if t == F.error { throw TransportError.server(Self.decodeMessage(p)) }
+        throw TransportError.protocolError("unexpected reply 0x\(String(t, radix: 16))")
+    }
+
+    static func decodeNames(_ payload: Data) throws -> [String] {
+        guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              let names = o["names"] as? [String] else { throw TransportError.protocolError("unreadable reply") }
+        return names
+    }
+
+    static func decodeMessage(_ payload: Data) -> String {
+        ((try? JSONSerialization.jsonObject(with: payload)) as? [String: Any])?["message"] as? String
+            ?? "The Mac refused the request."
+    }
+
+    static func decodeHistory(_ payload: Data) throws -> [DchHistoryRow] {
+        guard let arr = (try? JSONSerialization.jsonObject(with: payload)) as? [[String: Any]] else {
+            throw TransportError.protocolError("unreadable history")
+        }
+        return arr.compactMap { o in
+            (o["name"] as? String).map {
+                DchHistoryRow(name: $0, alias: (o["alias"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                              end: o["end"] as? String ?? "", lastSeen: o["last_seen"] as? Int ?? 0,
+                              started: o["started"] as? Int ?? 0, runtime: o["runtime"] as? Int ?? 0,
+                              cwd: o["cwd"] as? String, command: o["command"] as? [String],
+                              takes: o["takes"] as? Bool ?? false)
+            }
+        }
     }
 
     func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream {
