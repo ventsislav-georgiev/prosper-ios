@@ -132,6 +132,7 @@ final class ProsperTransport: SessionTransport {
         return arr.compactMap { o in
             (o["name"] as? String).map {
                 DchHistoryRow(name: $0, alias: (o["alias"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+                              agentName: (o["agent_name"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                               end: o["end"] as? String ?? "", lastSeen: o["last_seen"] as? Int ?? 0,
                               started: o["started"] as? Int ?? 0, runtime: o["runtime"] as? Int ?? 0,
                               cwd: o["cwd"] as? String, command: o["command"] as? [String],

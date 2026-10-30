@@ -112,6 +112,7 @@ enum SessionVerb: String {
 struct DchHistoryRow: Equatable {
     var name: String
     var alias: String?
+    var agentName: String?   // #593: the agent's session name; older Macs never send it
     var end: String          // dch's raw value: "signal 9", "exit 0", "killed"
     var lastSeen: Int        // epoch seconds
     var started: Int         // epoch seconds

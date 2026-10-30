@@ -55,9 +55,9 @@ final class SessionVerbTests: XCTestCase {
         XCTAssertEqual(got.v?.0, 0x0b)
         XCTAssertEqual(got.v?.1, Data(), "history's request is empty")
         XCTAssertEqual(rows, [
-            DchHistoryRow(name: "api-main-2", alias: "API", end: "signal 9", lastSeen: 1700000300, started: 1700000000,
+            DchHistoryRow(name: "api-main-2", alias: "API", agentName: nil, end: "signal 9", lastSeen: 1700000300, started: 1700000000,
                           runtime: 300, cwd: "/work/api", command: ["claude", "--model", "x"], takes: true),
-            DchHistoryRow(name: "docs", alias: nil, end: "exit 0", lastSeen: 2, started: 1, runtime: 1,
+            DchHistoryRow(name: "docs", alias: nil, agentName: nil, end: "exit 0", lastSeen: 2, started: 1, runtime: 1,
                           cwd: nil, command: nil, takes: false),
         ])
         XCTAssertThrowsError(try ProsperTransport.decodeHistory(Data("{}".utf8)))
@@ -167,9 +167,33 @@ final class SessionVerbTests: XCTestCase {
         for (end, label) in cases { XCTAssertEqual(DchHistoryRow.endLabel(end), label, end) }
     }
 
+    /// #593: agent_name decodes, "" as nil; the title is alias, then agent name, then dch name.
+    func testHistoryAgentNameIsTheTitle() throws {
+        let rows = try ProsperTransport.decodeHistory(Data("""
+            [{"name":"api-main-2","agent_name":"harness","end":"exit 0"},
+             {"name":"docs","agent_name":"","end":"exit 0"}]
+            """.utf8))
+        XCTAssertEqual(rows.map(\.agentName), ["harness", nil])
+        XCTAssertEqual(rows.map(\.title), ["harness", "docs"])
+        var r = rows[0]
+        r.alias = "API"
+        XCTAssertEqual(r.title, "API", "the alias outranks the agent name")
+    }
+
+    /// #593: the dch name shows only with Session name on and when it isn't the title.
+    func testHistoryDchNameGate() {
+        let r = DchHistoryRow(name: "api-main-2", alias: nil, agentName: "harness", end: "exit 0", lastSeen: 2,
+                              started: 1, runtime: 1, cwd: nil, command: nil, takes: false)
+        XCTAssertNil(DchHistoryRow.dchName(r, shown: false), "toggle off hides it")
+        XCTAssertEqual(DchHistoryRow.dchName(r, shown: true), "api-main-2")
+        var plain = r
+        plain.agentName = nil
+        XCTAssertNil(DchHistoryRow.dchName(plain, shown: true), "the name equal to the title hides it")
+    }
+
     func testResumeInterruptedCountsOnlyTakes() {
         func row(_ name: String, _ takes: Bool) -> DchHistoryRow {
-            DchHistoryRow(name: name, alias: nil, end: "signal 9", lastSeen: 2, started: 1, runtime: 1,
+            DchHistoryRow(name: name, alias: nil, agentName: nil, end: "signal 9", lastSeen: 2, started: 1, runtime: 1,
                           cwd: nil, command: nil, takes: takes)
         }
         XCTAssertNil(DchHistoryRow.resumeAllLabel([]), "nothing to take hides the button")
