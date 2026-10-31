@@ -204,6 +204,9 @@ final class SnippetPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate 
         content.secondaryTextProperties.numberOfLines = 1
         content.secondaryTextProperties.color = TerminalKeyboard.Style.hint
         cell.contentConfiguration = content
+        // One VoiceOver label: the name, else the preview (#631).
+        cell.accessibilityLabel = snippet.name.isEmpty ? snippet.preview : snippet.name
+        cell.accessibilityTraits.insert(.button)
         cell.accessibilityHint = off ?? "Types it"
         if off != nil { cell.accessibilityTraits.insert(.notEnabled) }
         return cell

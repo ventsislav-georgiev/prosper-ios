@@ -191,6 +191,9 @@ final class QuicklinkPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
         content.secondaryTextProperties.numberOfLines = 1
         content.secondaryTextProperties.color = TerminalKeyboard.Style.hint
         cell.contentConfiguration = content
+        // One VoiceOver label, the name then the URL's host (#631).
+        cell.accessibilityLabel = [link.name, URL(string: link.url)?.host].compactMap { $0 }.joined(separator: ", ")
+        cell.accessibilityTraits.insert(.button)
         cell.accessibilityHint = off ?? "Types the link"
         if off != nil { cell.accessibilityTraits.insert(.notEnabled) }
         return cell

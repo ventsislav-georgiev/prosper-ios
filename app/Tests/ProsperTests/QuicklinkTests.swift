@@ -207,6 +207,10 @@ final class QuicklinkTests: XCTestCase {
         XCTAssertNotNil(bar.quicklinksPanel)
         XCTAssertEqual((panel.tableView(panel.table, cellForRowAt: IndexPath(row: 0, section: 0))
             .contentConfiguration as? UIListContentConfiguration)?.secondaryText, "https://example.com/docs")
+        // One VoiceOver label, name then host, as a button (#631).
+        let first = panel.tableView(panel.table, cellForRowAt: IndexPath(row: 0, section: 0))
+        XCTAssertEqual(first.accessibilityLabel, "\((first.contentConfiguration as? UIListContentConfiguration)?.text ?? ""), example.com")
+        XCTAssertTrue(first.accessibilityTraits.contains(.button))
         withExtendedLifetime((kb, view)) {}
     }
 
