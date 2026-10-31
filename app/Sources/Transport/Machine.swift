@@ -32,6 +32,8 @@ struct Machine: Codable, Identifiable, Equatable {
     var serverDeviceId: String?
     var wakeId: String?
     var cachedWake: WakeInfo?
+    /// #614: the handshake listed `library`; nil before one, or from an older Mac.
+    var offersLibrary: Bool?
 }
 
 /// Persisted list of Machines (PLAN §3). Replaces the old newline `hostHistory`

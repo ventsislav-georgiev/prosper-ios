@@ -125,7 +125,7 @@ struct HomeView: View {
                 case .sessions(let ref, let open, let tap):
                     sessionList(for: ref, open: open, tap: tap)
                 case .settings:
-                    SettingsView(account: account)
+                    SettingsView(account: account, machines: store)
                 }
             }
         }
@@ -578,7 +578,7 @@ struct SessionListView: View {
     /// #590: the Mac's ⋯ (Agent Island): Restart all agents and Stop all in <tab>…, each on its op.
     /// #589: and History, on any of the Mac's verbs.
     @ViewBuilder private var controlsMenu: some View {
-        if !ops.isEmpty {
+        if !ops.subtracting([.library]).isEmpty {
             Menu {
                 if ops.contains(.history) {
                     Button { showingHistory = true } label: { Label("History", systemImage: "clock.arrow.circlepath") }
@@ -801,7 +801,13 @@ struct SessionListView: View {
         store.update(m.id) {
             $0.serverDeviceId = info.deviceId
             if let w = info.wakeId { $0.wakeId = w }
+            $0.offersLibrary = info.ops.contains(.library)
         }
+        // #614: the Mac's snippets and quicklinks, for the keyboards and the terminal bar; not
+        // on the Mac, which has them already. Its own task: a slow reply never holds the list.
+        #if !targetEnvironment(macCatalyst)
+        if info.ops.contains(.library), let mm = liveMachine { Task { try? await MacLibrary.sync(mm, over: t) } }
+        #endif
         if let session = account.session, let wakeId = info.wakeId {
             let meta = await WakeClient(session: session).meta(wakeId: wakeId)
             store.update(m.id) { mm in
@@ -857,6 +863,7 @@ extension SessionVerb {
         case .revive:  all ? "Resume interrupted" : "Resume failed"
         case .restart: all ? "Restart all" : "Restart failed"
         case .stop:    all ? "Stop all" : "Stop failed"
+        case .library: "Sync from Mac"
         }
     }
 }

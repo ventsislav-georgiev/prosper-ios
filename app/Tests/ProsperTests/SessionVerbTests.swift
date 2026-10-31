@@ -148,11 +148,59 @@ final class SessionVerbTests: XCTestCase {
         XCTAssertEqual(ops(#"{"device_id":"d","ops":["history","revive","restart","stop"]}"#),
                        [.history, .revive, .restart, .stop])
         XCTAssertEqual(ops(#"{"device_id":"d","ops":"stop"}"#), [], "a malformed ops offers nothing")
+        XCTAssertEqual(ops(#"{"device_id":"d","ops":["history","library"]}"#), [.history, .library], "#614")
+        XCTAssertEqual(ops(#"{"device_id":"d","ops":["history"]}"#)?.contains(.library), false, "an older Mac: hidden")
     }
 
     /// The demo and stubs answer no verb; their machine has no ops, so nothing asks.
     func testDemoRefusesTheVerbs() async {
         do { _ = try await DemoTransport().stop(names: ["docs"]); XCTFail("demo must refuse") } catch {}
+        do { _ = try await DemoTransport().library(etag: nil); XCTFail("demo must refuse") } catch {
+            XCTAssertEqual(error.localizedDescription, "Not supported here.")
+        }
+    }
+
+    // MARK: - #614 Library
+
+    /// No etag: an empty request; a full reply, a file's error and a null file decode.
+    func testLibraryFullReply() async throws {
+        let (mac, got, l) = try await fakeMac(0x1c, """
+            {"etag":"ab12","snippets":{"version":1,"collections":[],"snippets":[{"name":"Sign","text":"— me"}]},
+             "quicklinks":null,"errors":{"quicklinks":"too large (over 3 MB)"}}
+            """)
+        defer { l.cancel() }
+        let r = try await mac.library(etag: nil)
+        XCTAssertEqual(got.v?.0, 0x0f)
+        XCTAssertEqual(got.v?.1, Data(), "no etag: an empty request")
+        XCTAssertEqual(r.etag, "ab12")
+        XCTAssertFalse(r.unchanged)
+        XCTAssertEqual(SnippetStore.decode(try XCTUnwrap(r.snippets))?.snippets.map(\.text), ["— me"])
+        XCTAssertNil(r.quicklinks)
+        XCTAssertEqual(r.errors, ["quicklinks": "too large (over 3 MB)"])
+
+        let none = try ProsperTransport.decodeLibrary(Data(#"{"etag":"e3","snippets":null,"quicklinks":null}"#.utf8))
+        XCTAssertEqual(none, LibraryReply(etag: "e3"), "missing files: null, no errors")
+        let links = try ProsperTransport.decodeLibrary(Data(#"{"etag":"e4","snippets":null,"quicklinks":{"version":1,"quicklinks":[{"name":"notes","url":"~/notes"}]}}"#.utf8))
+        XCTAssertEqual(QuicklinkStore.decode(try XCTUnwrap(links.quicklinks))?.quicklinks, [.init(name: "notes", url: "~/notes")])
+        XCTAssertThrowsError(try ProsperTransport.decodeLibrary(Data("{}".utf8)), "no etag is unreadable")
+    }
+
+    /// The stored etag goes back; `unchanged` carries no files.
+    func testLibraryUnchanged() async throws {
+        let (mac, got, l) = try await fakeMac(0x1c, #"{"etag":"ab12","unchanged":true}"#)
+        defer { l.cancel() }
+        let r = try await mac.library(etag: "ab12")
+        XCTAssertEqual(sent(got).0, 0x0f)
+        XCTAssertEqual(sent(got).1, ["etag": "ab12"])
+        XCTAssertEqual(r, LibraryReply(etag: "ab12", unchanged: true))
+    }
+
+    func testLibraryRefusalComesThroughAsWritten() async throws {
+        let (mac, _, l) = try await fakeMac(0x13, #"{"message":"malformed library request"}"#)
+        defer { l.cancel() }
+        do { _ = try await mac.library(etag: nil); XCTFail("an error reply must throw") } catch {
+            XCTAssertEqual(error.localizedDescription, "malformed library request")
+        }
     }
 
     // MARK: - #589 History and Resume

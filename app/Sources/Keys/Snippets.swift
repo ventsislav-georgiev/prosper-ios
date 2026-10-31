@@ -92,10 +92,24 @@ final class SnippetStore {
             let texts = history?.clips.compactMap(\.text) ?? []
             return n < texts.count ? texts[n] : nil
         }
-        let all = load().snippets
+        let all = load().snippets + (fromMac()?.snippets ?? [])
         ctx.snippetByKeyword = { key in all.first { $0.keyword == key || $0.name == key }?.text }
         let (text, cursor) = PlaceholderEngine.render(entry.text, ctx)
         return (text, cursor.map { text.count - $0 } ?? 0)
+    }
+
+    /// The last-synced Mac's (#614), read-only beside these, under its title; nil with none.
+    func fromMac() -> (title: String, snippets: [Entry])? {
+        let root = MacLibrary.root(of: url)
+        guard let lib = MacLibrary.load(root), let data = try? Data(contentsOf: MacLibrary.snippetsURL(root)),
+              let doc = Self.decode(data) else { return nil }
+        return (lib.title, doc.snippets)
+    }
+
+    /// The Mac's grouped as the phone's, each under "From <Mac>", "From <Mac> · <collection>".
+    static func grouped(fromMac mac: (title: String, snippets: [Entry])?) -> [Group] {
+        guard let mac else { return [] }
+        return grouped(mac.snippets).map { Group(title: $0.title.isEmpty ? mac.title : "\(mac.title) · \($0.title)", snippets: $0.snippets) }
     }
 
     /// One collection's snippets, by name; "" is none.
@@ -125,7 +139,12 @@ final class SnippetStore {
         return try? encoder.encode(doc)
     }
 
-    static func decode(_ data: Data) -> Document? { try? JSONDecoder().decode(Document.self, from: data) }
+    /// A missing version is 1, as on the Mac (#614).
+    static func decode(_ data: Data) -> Document? {
+        guard var doc = try? JSONDecoder().decode(Document.self, from: data) else { return nil }
+        doc.version = doc.version ?? 1
+        return doc
+    }
 }
 
 extension SnippetStore.Entry {
@@ -148,13 +167,14 @@ private extension String {
 
 /// The snippets in the keys' place (#609), as the clipboard history's panel: the snippets key
 /// opens it, a pick or the keyboard button closes it. Rows by collection, a name over a one-line
-/// preview; one the phone can't insert is dimmed, with why, and takes no tap.
+/// preview; one the phone can't insert is dimmed, with why, and takes no tap. The Mac's (#614)
+/// follow the phone's, picked as they are.
 final class SnippetPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
     var onPick: ((SnippetStore.Entry) -> Void)?
     let groups: [SnippetStore.Group]
 
     init(store: SnippetStore) {
-        groups = SnippetStore.grouped(store.load().snippets)
+        groups = SnippetStore.grouped(store.load().snippets) + SnippetStore.grouped(fromMac: store.fromMac())
         super.init(title: "Snippets", empty: "Add snippets in Prosper's Settings.")
         table.dataSource = self
         table.delegate = self

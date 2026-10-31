@@ -86,6 +86,8 @@ protocol SessionTransport: AnyObject {
     func restart(names: [String]?) async throws -> [String]
     /// #590: stop live sessions; dch records them, so `revive` can bring them back.
     func stop(names: [String]) async throws -> [String]
+    /// #614: the Mac's snippets and quicklinks, or `unchanged` when `etag` is still theirs.
+    func library(etag: String?) async throws -> LibraryReply
 }
 
 /// #590: the demo and the test stubs have no dch behind them. Their machine lists no
@@ -95,17 +97,28 @@ extension SessionTransport {
     func revive(name: String?) async throws -> [String] { throw TransportError.server("Not supported here.") }
     func restart(names: [String]?) async throws -> [String] { throw TransportError.server("Not supported here.") }
     func stop(names: [String]) async throws -> [String] { throw TransportError.server("Not supported here.") }
+    func library(etag: String?) async throws -> LibraryReply { throw TransportError.server("Not supported here.") }
 }
 
 /// #590: a verb the Mac's server answers beyond the base frames. machineInfo lists them in
 /// `ops`; an older Mac sends no `ops`, and every control needing one stays hidden.
 enum SessionVerb: String {
-    case history, revive, restart, stop
+    case history, revive, restart, stop, library
 
     /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
     static func offered(_ ops: Any?) -> Set<SessionVerb> {
         Set((ops as? [String] ?? []).compactMap(SessionVerb.init(rawValue:)))
     }
+}
+
+/// #614: libraryResp 0x1c. The etag is opaque: kept and sent back. A file is nil when the Mac
+/// has none, or with `unchanged`; `errors` says why one didn't come ("malformed JSON", …).
+struct LibraryReply: Equatable {
+    var etag: String
+    var unchanged = false
+    var snippets: Data?
+    var quicklinks: Data?
+    var errors: [String: String] = [:]
 }
 
 /// #590: one ended session from historyResp 0x1b.

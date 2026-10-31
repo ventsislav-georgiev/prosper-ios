@@ -202,6 +202,28 @@ final class SnippetTests: XCTestCase {
         withExtendedLifetime(kb) {}
     }
 
+    /// #614: the Mac's after the phone's, under "From <Mac>" (and its collections); a name on
+    /// both shows twice, the phone's first; a pick types as a local one, `{snippet}` reaching the
+    /// Mac's keywords too.
+    func testMacSnippetsFollowThePhonesAndPickAsLocalOnes() throws {
+        store.put(.init(name: "Home address", text: "local"), replacing: nil)
+        let mac = #"{"snippets":[{"name":"Home address","text":"mac"},{"name":"Sign","text":"Hi{cursor} {snippet bye}"},"#
+            + #"{"name":"Bye","keyword":"bye","text":"bye","collection":"Work"}]}"#
+        MacLibrary.apply(LibraryReply(etag: "e1", snippets: Data(mac.utf8)), from: Machine(name: "Studio", addresses: []), root: dir)
+        let (kb, bar, doc, view) = rig("x ", store: store)
+        bar.press(Shortcuts.snippets)
+        let panel = try XCTUnwrap(bar.snippetsPanel)
+        XCTAssertEqual(panel.groups.map(\.title), ["", "From Studio", "From Studio · Work"])
+        XCTAssertEqual(panel.groups[0].snippets.map(\.text), ["local"])
+        XCTAssertEqual(panel.groups[1].snippets.map(\.name), ["Home address", "Sign"])
+        XCTAssertEqual(panel.tableView(panel.table, titleForHeaderInSection: 1), "From Studio")
+        panel.tableView(panel.table, didSelectRowAt: IndexPath(row: 1, section: 1))
+        for _ in 1...50 { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "x Hi| bye")
+        XCTAssertNil(bar.snippetsPanel, "a pick closes the panel")
+        withExtendedLifetime((kb, view)) {}
+    }
+
     /// No snippets: the note says where to add them.
     func testEmptyPanelSaysWhereToAddThem() {
         let panel = SnippetPanel(store: store)

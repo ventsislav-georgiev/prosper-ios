@@ -56,6 +56,7 @@ enum AgentCommand {
 /// the agent command (`AgentCommand`) and the session rows' details (`RowDetails`).
 struct SettingsView: View {
     @ObservedObject var account: AccountStore
+    @ObservedObject var machines: MachineStore
     @ObservedObject private var live = LiveStatus.shared
     @State private var showLogin = false
     @State private var confirmDelete = false
@@ -89,6 +90,10 @@ struct SettingsView: View {
     @AppStorage(RowDetails.Key.inProgress) private var rowInProgress = RowDetails().inProgress
     @AppStorage(RowDetails.Key.queued) private var rowQueued = RowDetails().queued
     @AppStorage(RowDetails.Key.sessionName) private var rowSessionName = RowDetails().sessionName
+    // #614: Sync from Mac, and the copy last synced.
+    @AppStorage(MacLibrary.syncKey) private var syncFromMac = true
+    @State private var library = MacLibrary.sharedRoot().flatMap(MacLibrary.load)
+    @State private var syncing = false
 
     var body: some View {
         List {
@@ -236,6 +241,26 @@ struct SettingsView: View {
                 }
             }
 
+            // #614: only once a saved Mac has offered its library.
+            if machines.machines.contains(where: { $0.offersLibrary == true }) {
+                Section {
+                    Toggle("Sync from Mac", isOn: Binding(get: { syncFromMac }, set: { on in
+                        MacLibrary.setSync(on)
+                        syncFromMac = on
+                        if !on { library = nil }
+                    }))
+                    if syncFromMac {
+                        Button(syncing ? "Syncing…" : "Sync Now") { Task { await syncNow() } }
+                            .disabled(syncing)
+                        if let library {
+                            LabeledContent(library.title, value: library.date.formatted(date: .abbreviated, time: .shortened))
+                        }
+                    }
+                } footer: {
+                    Text("Your Mac's snippets and quicklinks are stored on this phone.")
+                }
+            }
+
             // The keyboards' mic key (#598).
             Section {
                 Picker("Keep Mic Ready", selection: $readyPeriod) {
@@ -258,6 +283,23 @@ struct SettingsView: View {
         .sheet(isPresented: $showLogin) { LoginView(account: account) }
         .sheet(isPresented: $confirmDelete) {
             DeleteAccountSheet(busy: $busy) { await delete() }
+        }
+    }
+
+    /// #614: the Mac synced last if it still offers its library, else the first that does.
+    private func syncNow() async {
+        let offering = machines.machines.filter { $0.offersLibrary == true }
+        guard let m = offering.first(where: { $0.id == library?.machine }) ?? offering.first else { return }
+        syncing = true
+        defer { syncing = false }
+        do {
+            let hit = try await connectFirstTransport(m.addresses)
+            try await MacLibrary.sync(m, over: hit.transport, force: true)
+            library = MacLibrary.sharedRoot().flatMap(MacLibrary.load)
+            error = nil
+        } catch {
+            guard !isCancellation(error) else { return }
+            self.error = error.localizedDescription
         }
     }
 
@@ -315,10 +357,12 @@ struct BottomRowSettings: View {
 }
 
 /// Settings › Snippets (#609): the phone's own (`SnippetStore`), by collection; a tap edits
-/// one, a swipe deletes it. A rich one (the Mac's RTF) is listed, never edited here.
+/// one, a swipe deletes it. A rich one (the Mac's RTF) is listed, never edited here. The synced
+/// Mac's (#614) follow, read-only: no edit, no delete.
 struct SnippetList: View {
     let store: SnippetStore
     @State private var doc = SnippetStore.Document()
+    @State private var mac: [SnippetStore.Group] = []   // #614: the Mac's, read-only
 
     var body: some View {
         List {
@@ -344,13 +388,26 @@ struct SnippetList: View {
                     if !group.title.isEmpty { Text(group.title) }
                 }
             }
+            ForEach(mac) { group in
+                Section(group.title) {
+                    ForEach(group.snippets, id: \.name) { snippet in
+                        VStack(alignment: .leading) {
+                            Text(snippet.name)
+                            Text(snippet.unavailable ?? snippet.preview).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                }
+            }
         }
-        .overlay { if doc.snippets.isEmpty { Text("No snippets yet").foregroundStyle(.secondary) } }
+        .overlay { if doc.snippets.isEmpty && mac.isEmpty { Text("No snippets yet").foregroundStyle(.secondary) } }
         .toolbar {
             NavigationLink { SnippetForm(store: store, original: nil) } label: { Image(systemName: "plus") }
                 .accessibilityLabel("Add Snippet")
         }
-        .onAppear { doc = store.load() }   // and back from the form
+        .onAppear {   // and back from the form
+            doc = store.load()
+            mac = SnippetStore.grouped(fromMac: store.fromMac())
+        }
         .navigationTitle("Snippets")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -425,10 +482,12 @@ struct SnippetForm: View {
 }
 
 /// Settings › Quicklinks (#613): the phone's own (`QuicklinkStore`), A–Z; a tap edits one, a
-/// swipe deletes it, Open opens it here, asking for its `{query}` first.
+/// swipe deletes it, Open opens it here, asking for its `{query}` first. The synced Mac's (#614)
+/// follow, read-only: Open only.
 struct QuicklinkList: View {
     let store: QuicklinkStore
     @State private var links: [QuicklinkStore.Entry] = []
+    @State private var mac: (title: String, links: [QuicklinkStore.Entry])?
     @State private var asking: QuicklinkStore.Entry?
     @State private var query = ""
 
@@ -442,10 +501,7 @@ struct QuicklinkList: View {
                             Text(link.url).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
                         Spacer()
-                        Button("Open") {
-                            if QuicklinkStore.takesQuery(link.url) { query = ""; asking = link } else { open(link) }
-                        }
-                        .buttonStyle(.borderless)   // its own tap, not the row's
+                        openButton(link)
                     }
                 }
             }
@@ -453,8 +509,22 @@ struct QuicklinkList: View {
                 rows.forEach { store.delete(links[$0].name) }
                 reload()
             }
+            if let mac, !mac.links.isEmpty {
+                Section(mac.title) {
+                    ForEach(mac.links, id: \.name) { link in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(link.name)
+                                Text(link.url).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer()
+                            openButton(link)
+                        }
+                    }
+                }
+            }
         }
-        .overlay { if links.isEmpty { Text("No quicklinks yet").foregroundStyle(.secondary) } }
+        .overlay { if links.isEmpty && (mac?.links ?? []).isEmpty { Text("No quicklinks yet").foregroundStyle(.secondary) } }
         .alert(asking?.name ?? "", isPresented: Binding { asking != nil } set: { if !$0 { asking = nil } },
                presenting: asking) { link in
             TextField("Query", text: $query)
@@ -472,6 +542,14 @@ struct QuicklinkList: View {
 
     private func reload() {
         links = store.load().quicklinks.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        mac = store.fromMac()
+    }
+
+    private func openButton(_ link: QuicklinkStore.Entry) -> some View {
+        Button("Open") {
+            if QuicklinkStore.takesQuery(link.url) { query = ""; asking = link } else { open(link) }
+        }
+        .buttonStyle(.borderless)   // its own tap, not the row's
     }
 
     /// Filled as the keyboards fill it; a target that isn't a URL (a Mac path) opens nothing.

@@ -245,6 +245,30 @@ final class QuicklinkTests: XCTestCase {
         XCTAssertEqual(store.recents, ["docs"])
     }
 
+    /// #614: the Mac's after the phone's in one "From <Mac>" section, a name on both shown twice;
+    /// a pick fills `{query}` as a local one (a path: never encoded) and counts as recent.
+    func testMacQuicklinksFollowThePhonesAndPickAsLocalOnes() throws {
+        addThree()
+        let mac = #"{"version":1,"quicklinks":[{"name":"docs","url":"~/notes/{query}.md"},{"name":"Tracker","url":"tracker://open"}]}"#
+        MacLibrary.apply(LibraryReply(etag: "e1", quicklinks: Data(mac.utf8)), from: Machine(name: "Studio", addresses: []), root: dir)
+        let (kb, bar, doc, view) = rig("see a b", store: store)
+        bar.press(Shortcuts.quicklinks)
+        var panel = try XCTUnwrap(bar.quicklinksPanel)
+        XCTAssertEqual(panel.sections.map(\.title), [nil, "From Studio"])
+        XCTAssertEqual(panel.sections[1].links.map(\.name), ["docs", "Tracker"])
+        XCTAssertEqual(panel.tableView(panel.table, titleForHeaderInSection: 1), "From Studio")
+        panel.tableView(panel.table, didSelectRowAt: IndexPath(row: 0, section: 1))
+        for _ in 1...50 { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(doc.text, "see a ~/notes/b.md")
+        XCTAssertEqual(store.recents, ["docs"])
+
+        bar.press(Shortcuts.quicklinks)
+        panel = try XCTUnwrap(bar.quicklinksPanel)
+        XCTAssertEqual(panel.sections.map(\.title), ["Recent", "All", "From Studio"])
+        XCTAssertEqual(panel.sections[2].links.map(\.url), ["~/notes/{query}.md", "tracker://open"], "the recent first")
+        withExtendedLifetime((kb, view)) {}
+    }
+
     func testEmptyPanelSaysWhereToAddThem() {
         let panel = QuicklinkPanel(store: store, hasQuery: true)
         XCTAssertFalse(panel.empty.isHidden)

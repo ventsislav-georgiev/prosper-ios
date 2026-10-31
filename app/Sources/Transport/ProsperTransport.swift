@@ -22,9 +22,11 @@ final class ProsperTransport: SessionTransport {
         static let kill: UInt8 = 0x04, resize: UInt8 = 0x05, rename: UInt8 = 0x06
         static let machineInfo: UInt8 = 0x08, snapshot: UInt8 = 0x09, putClipboard: UInt8 = 0x0a
         static let history: UInt8 = 0x0b, revive: UInt8 = 0x0c, restart: UInt8 = 0x0d, stop: UInt8 = 0x0e
+        static let library: UInt8 = 0x0f
         static let data: UInt8 = 0x10
         static let listResp: UInt8 = 0x11, exit: UInt8 = 0x12, error: UInt8 = 0x13, ok: UInt8 = 0x14
         static let machineInfoResp: UInt8 = 0x18, snapshotResp: UInt8 = 0x19, historyResp: UInt8 = 0x1b
+        static let libraryResp: UInt8 = 0x1c
     }
 
     /// One-shot identity handshake (PLAN §2a). Sends `0x08`, reads the `0x18` reply
@@ -101,6 +103,27 @@ final class ProsperTransport: SessionTransport {
 
     func stop(names: [String]) async throws -> [String] {
         try Self.decodeNames(try await verb(F.stop, json(["names": names])))
+    }
+
+    func library(etag: String?) async throws -> LibraryReply {
+        try Self.decodeLibrary(try await verb(F.library, Self.libraryRequest(etag), reply: F.libraryResp))
+    }
+
+    /// #614: empty without an etag, else `{"etag":…}`.
+    static func libraryRequest(_ etag: String?) -> Data {
+        etag.flatMap { try? JSONSerialization.data(withJSONObject: ["etag": $0]) } ?? Data()
+    }
+
+    /// #614: each file as the Mac stored it, re-serialised; a null or missing one is nil.
+    static func decodeLibrary(_ payload: Data) throws -> LibraryReply {
+        guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              let etag = o["etag"] as? String else { throw TransportError.protocolError("unreadable library") }
+        func file(_ key: String) -> Data? {
+            (o[key] as? [String: Any]).flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+        }
+        return LibraryReply(etag: etag, unchanged: o["unchanged"] as? Bool ?? false,
+                            snippets: file("snippets"), quicklinks: file("quicklinks"),
+                            errors: o["errors"] as? [String: String] ?? [:])
     }
 
     /// #590: one verb, one reply. No read deadline: dch answers a revive within 5 min and a

@@ -85,12 +85,24 @@ final class QuicklinkStore {
 
     /// The panel's order: the recently used, newest first, then the rest A–Z. With 120 links
     /// and no search field (v1), the ones in use stay one tap away.
-    func ordered() -> (recent: [Entry], rest: [Entry]) {
-        let links = load().quicklinks, used = recents
+    func ordered() -> (recent: [Entry], rest: [Entry]) { ordered(load().quicklinks) }
+
+    func ordered(_ links: [Entry]) -> (recent: [Entry], rest: [Entry]) {
+        let used = recents
         let recent = used.compactMap { name in links.first { $0.name == name } }
         let rest = links.filter { !used.contains($0.name) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         return (recent, rest)
+    }
+
+    /// The last-synced Mac's (#614), read-only beside these, under its title, recently used
+    /// first (the recents are by name, shared), then A–Z; nil with none.
+    func fromMac() -> (title: String, links: [Entry])? {
+        let root = MacLibrary.root(of: url)
+        guard let lib = MacLibrary.load(root), let data = try? Data(contentsOf: MacLibrary.quicklinksURL(root)),
+              let doc = Self.decode(data) else { return nil }
+        let (recent, rest) = ordered(doc.quicklinks)
+        return (lib.title, recent + rest)
     }
 
     // MARK: - {query}, as the Mac's extension (`quicklinks/init.lua`, `substitute`)
@@ -132,7 +144,8 @@ final class QuicklinkStore {
 /// The quicklinks in the keys' place (#613), as the snippets' panel: the quicklinks key opens it,
 /// a pick or the keyboard button closes it. Recently used first, then A–Z, a name over its URL.
 /// One whose `{query}` has nothing to take (no selection, no word before the caret; always in
-/// the terminal) is dimmed, with why, and takes no tap.
+/// the terminal) is dimmed, with why, and takes no tap. The Mac's (#614) follow the phone's, in
+/// one section, picked as they are.
 /// ponytail: no search field in v1, typing into the panel from the keyboard itself is its own
 /// project; the recents are the answer to a long list for now.
 final class QuicklinkPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
@@ -143,7 +156,8 @@ final class QuicklinkPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
 
     init(store: QuicklinkStore, hasQuery: Bool) {
         let (recent, rest) = store.ordered()
-        sections = (recent.isEmpty ? [(nil, rest)] : [("Recent", recent), ("All", rest)]).filter { !$0.1.isEmpty }
+        let mac = store.fromMac().map { [($0.title as String?, $0.links)] } ?? []
+        sections = ((recent.isEmpty ? [(nil, rest)] : [("Recent", recent), ("All", rest)]) + mac).filter { !$0.1.isEmpty }
         self.hasQuery = hasQuery
         super.init(title: "Quicklinks", empty: "Add quicklinks in Prosper's Settings.")
         table.dataSource = self
