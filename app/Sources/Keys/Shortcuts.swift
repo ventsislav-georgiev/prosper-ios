@@ -100,16 +100,20 @@ enum Shortcuts {
     /// terminal's too (#604), where the mic is the app's own (`TerminalHostVC.dictate`).
     /// Added in the editor, as the clipboard.
     static let dictate = ShortcutKey(id: "mic", label: "dictate", kind: .bytes, systemImage: "mic")
+    /// Snippets (#609): their panel, the toolbar's and the terminal's, where a pick goes to the pty
+    /// as a paste (`TerminalHostVC.showSnippets`). Added in the editor, as the clipboard.
+    static let snippets = ShortcutKey(id: "snips", label: "snippets", kind: .bytes, systemImage: "text.quote")
 
     /// The terminal bar's own keys with no bytes, which `TerminalHostVC.handleKey` acts on by
-    /// id. Neither on the Mac: no Prosper keyboard there fills the history, and dictation is
-    /// off there (#598). The mic only where SpeechAnalyzer runs, iOS 26, as the toolbar's.
+    /// id. None on the Mac: no Prosper keyboard there fills the history, dictation is off there
+    /// (#598), and the Mac's own Prosper expands its snippets in any window, this one too (#609).
+    /// The mic only where SpeechAnalyzer runs, iOS 26, as the toolbar's.
     static var terminalActions: [ShortcutKey] {
         #if targetEnvironment(macCatalyst)
         []
         #else
-        guard #available(iOS 26, *) else { return [clipboard] }
-        return [clipboard, dictate]
+        guard #available(iOS 26, *) else { return [clipboard, snippets] }
+        return [clipboard, snippets, dictate]
         #endif
     }
 
@@ -178,7 +182,7 @@ enum Shortcuts {
         /// use (`hostKey`).
         var catalog: [ShortcutKey] {
             self == .terminal ? Shortcuts.catalog + hostOnly + terminalActions
-                : (Shortcuts.catalog + hostOnly + [clipboard, dictate]).filter { hostKey($0.id) != nil }
+                : (Shortcuts.catalog + hostOnly + [clipboard, snippets, dictate]).filter { hostKey($0.id) != nil }
         }
         /// The toolbar's: the default bar's keys it can use, in order, less send.
         var defaults: [ShortcutKey] {
@@ -229,6 +233,8 @@ enum Shortcuts {
         case clipboard
         /// Dictation's start, or its Done (#598); only with Full Access, on iOS 26.
         case dictate
+        /// The snippets' panel in the keys' place, or the keys back (#609); only with Full Access.
+        case snippets
     }
 
     /// nvim's motions and deletes, and its yank and cut of a line (`SuggestionBar.edit`).
@@ -257,6 +263,7 @@ enum Shortcuts {
         case "paste": return .paste
         case clipboard.id: return .clipboard
         case dictate.id: return .dictate
+        case snippets.id: return .snippets
         case "wordNext": return .edit(.wordNext)
         case "wordEnd": return .edit(.wordEnd)
         case "wordBack": return .edit(.wordBack)

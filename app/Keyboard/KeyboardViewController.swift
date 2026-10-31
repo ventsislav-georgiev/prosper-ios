@@ -33,6 +33,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
         bar.history = ClipboardHistory.shared()
+        bar.snippets = SnippetStore.shared()
         // The stored settings before attach's first refresh: Save Copies is on by default (#601).
         bar.suggestions.settings = KeyboardSettings.current(fullAccess: hasFullAccess)
         // iOS 26's speech engines only; the app has no fallback below it.
@@ -63,7 +64,7 @@ final class KeyboardViewController: UIInputViewController {
         keyboard.settings = settings
         bar.suggestions.settings = settings
         bar.toolbar?.reload()
-        bar.showClips(false)   // the keys first, as Gboard: the history reads afresh at its key
+        bar.showClips(false)   // the keys first, as Gboard: a panel reads afresh at its key
         bar.dictation?.appear()
         sync()
     }

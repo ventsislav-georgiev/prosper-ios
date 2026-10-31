@@ -218,6 +218,15 @@ struct SettingsView: View {
                 Text("On by default: the Prosper keyboard keeps what you copy in other apps, the latest copy each time it shows. Needs Full Access. iOS asks before each save unless Settings › Apps › Prosper › Paste from Other Apps is set to Allow.")
             }
 
+            // The keyboards' and the terminal's snippets key (#609).
+            if let store = SnippetStore.shared() {
+                Section {
+                    NavigationLink("Snippets") { SnippetList(store: store) }
+                } footer: {
+                    Text("Add Snippets to the System Keyboard Toolbar or the Terminal Shortcut Keys, then tap it to type one. In a snippet, {cursor} places the caret, and {clipboard}, {date} and {time} fill in as on the Mac. Needs Full Access in other apps.")
+                }
+            }
+
             // The keyboards' mic key (#598).
             Section {
                 Picker("Keep Mic Ready", selection: $readyPeriod) {
@@ -293,6 +302,116 @@ struct BottomRowSettings: View {
         .environment(\.editMode, .constant(.active))   // keep .onMove handles visible
         .navigationTitle("Keys Beside Space")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// Settings › Snippets (#609): the phone's own (`SnippetStore`), by collection; a tap edits
+/// one, a swipe deletes it. A rich one (the Mac's RTF) is listed, never edited here.
+struct SnippetList: View {
+    let store: SnippetStore
+    @State private var doc = SnippetStore.Document()
+
+    var body: some View {
+        List {
+            ForEach(SnippetStore.grouped(doc.snippets)) { group in
+                Section {
+                    ForEach(group.snippets, id: \.name) { snippet in
+                        if snippet.richText == true {
+                            LabeledContent(snippet.name, value: "Rich text, Mac only")
+                        } else {
+                            NavigationLink { SnippetForm(store: store, original: snippet) } label: {
+                                VStack(alignment: .leading) {
+                                    Text(snippet.name)
+                                    Text(snippet.preview).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }
+                        }
+                    }
+                    .onDelete { rows in
+                        rows.forEach { store.delete(group.snippets[$0].name) }
+                        doc = store.load()
+                    }
+                } header: {
+                    if !group.title.isEmpty { Text(group.title) }
+                }
+            }
+        }
+        .overlay { if doc.snippets.isEmpty { Text("No snippets yet").foregroundStyle(.secondary) } }
+        .toolbar {
+            NavigationLink { SnippetForm(store: store, original: nil) } label: { Image(systemName: "plus") }
+                .accessibilityLabel("Add Snippet")
+        }
+        .onAppear { doc = store.load() }   // and back from the form
+        .navigationTitle("Snippets")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// A snippet's name, keyword, collection and text. Save is off while the name is blank or
+/// another snippet's (names are unique, as on the Mac) or the text is empty. Fields the phone
+/// doesn't edit (description, auto-expand) keep what the Mac wrote.
+struct SnippetForm: View {
+    let store: SnippetStore
+    let original: SnippetStore.Entry?
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var keyword = ""
+    @State private var collection = ""
+    @State private var text = ""
+
+    init(store: SnippetStore, original: SnippetStore.Entry?) {
+        self.store = store
+        self.original = original
+        _name = State(initialValue: original?.name ?? "")
+        _keyword = State(initialValue: original?.keyword ?? "")
+        _collection = State(initialValue: original?.collection ?? "")
+        _text = State(initialValue: original?.text ?? "")
+    }
+
+    private var trimmed: String { name.trimmingCharacters(in: .whitespaces) }
+    private var taken: Bool { trimmed != original?.name && store.load().snippets.contains { $0.name == trimmed } }
+
+    var body: some View {
+        Form {
+            Section {
+                // Labelled: a filled field shows no placeholder, so "su" and "Work" would read alike.
+                LabeledContent("Name") { TextField("Required", text: $name) }
+                LabeledContent("Keyword") {
+                    TextField("Optional", text: $keyword)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                LabeledContent("Collection") { TextField("Optional", text: $collection) }
+            } footer: {
+                if taken { Text("Another snippet has this name.").foregroundStyle(.red) }
+                else { Text("The keyword is for typing it on the Mac; the collection groups it.") }
+            }
+            Section {
+                TextEditor(text: $text)
+                    .frame(minHeight: 140)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } header: {
+                Text("Text")
+            } footer: {
+                Text("{cursor} places the caret. {clipboard}, {date}, {time} and {date:yyyy-MM-dd} fill in as you insert it; one with {argument} inserts only on the Mac.")
+            }
+        }
+        .navigationTitle(original == nil ? "New Snippet" : "Edit Snippet")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    var e = original ?? SnippetStore.Entry(name: "", text: "")
+                    e.name = name
+                    e.keyword = keyword
+                    e.collection = collection
+                    e.text = text
+                    if store.put(e, replacing: original?.name) { dismiss() }
+                }
+                .disabled(trimmed.isEmpty || text.isEmpty || taken)
+            }
+        }
     }
 }
 

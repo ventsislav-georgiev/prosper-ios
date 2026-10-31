@@ -641,8 +641,13 @@ final class SuggestionBar: UIView {
     /// The clipboard history (#597), the controller's App Group store; nil in the app and
     /// tests that don't set one. Its key shows only with it and Full Access.
     var history: ClipboardHistory?
-    /// The history's panel over the keys while open (`showClips`).
-    private(set) var clipsPanel: ClipboardPanel?
+    /// Snippets (#609), the controller's App Group store; nil in the app and tests that don't set
+    /// one. Its key shows only with it and Full Access.
+    var snippets: SnippetStore?
+    /// The panel over the keys while open: the history's (`showClips`) or the snippets'.
+    private(set) var panel: KeysPanel?
+    var clipsPanel: ClipboardPanel? { panel as? ClipboardPanel }
+    var snippetsPanel: SnippetPanel? { panel as? SnippetPanel }
     /// Speech-to-text (#598), the controller's on iOS 26; nil in the app and tests that don't
     /// set one. Its key shows only with it and Full Access; its strip covers the bar.
     var dictation: DictationClient? {
@@ -736,7 +741,7 @@ final class SuggestionBar: UIView {
     /// can't use (`Shortcuts.hostKey`), in one row that scrolls, and the toggle before it.
     /// Paste only where the bar's own would show: with Full Access, and not in landscape.
     /// Copy and cut line with Full Access: a keyboard writes the pasteboard only with it; the
-    /// clipboard history too, with a store to keep it in (#597).
+    /// clipboard history and the snippets too, each with its store (#597, #609).
     func addToolbar(_ keys: @escaping () -> [ShortcutKey]) {
         let tools = ShortcutBar(keys: { [weak self] in
             let full = self?.suggestions.pasteboard() != nil, pastes = full && self?.suggestions.pasteFits == true
@@ -744,6 +749,7 @@ final class SuggestionBar: UIView {
                 guard let action = Shortcuts.hostKey(key.id) else { return false }
                 if case .edit(let e) = action, e.copies { return full }
                 if action == .clipboard { return full && self?.history != nil }
+                if action == .snippets { return full && self?.snippets != nil }
                 if action == .dictate { return full && self?.dictation != nil }
                 return pastes || action != .paste
             }
@@ -785,6 +791,7 @@ final class SuggestionBar: UIView {
             if n > 0 { keyboard.caret(dir * n) }
         case .edit(let e): edit(e, keyboard, doc)
         case .clipboard: showClips(clipsPanel == nil)
+        case .snippets: showSnippets(snippetsPanel == nil)
         case .dictate: dictation?.tap()
         }
     }
@@ -804,21 +811,52 @@ final class SuggestionBar: UIView {
 
     /// The clipboard history's panel over the keys, read afresh, or the keys back (#597).
     func showClips(_ on: Bool) {
-        clipsPanel?.removeFromSuperview()
-        clipsPanel = nil
-        guard on, let history, let pb = suggestions.pasteboard(), let keyboard, let host = keyboard.superview else { return }
-        let panel = ClipboardPanel(history: history, pasteboard: pb)
-        panel.onPick = { [weak self] in self?.pick($0) }
-        panel.onClose = { [weak self] in self?.showClips(false) }
-        panel.translatesAutoresizingMaskIntoConstraints = false
-        host.addSubview(panel)
+        let clips = on ? history.flatMap { h in suggestions.pasteboard().map { ClipboardPanel(history: h, pasteboard: $0) } } : nil
+        clips?.onPick = { [weak self] in self?.pick($0) }
+        cover(clips)
+    }
+
+    /// The snippets' panel over the keys, read afresh, or the keys back (#609); Full Access only.
+    func showSnippets(_ on: Bool) {
+        let list = on && suggestions.pasteboard() != nil ? snippets.map(SnippetPanel.init) : nil
+        list?.onPick = { [weak self] in self?.insert($0) }
+        cover(list)
+    }
+
+    /// `new` over the keys in the open panel's place, or the keys back.
+    private func cover(_ new: KeysPanel?) {
+        panel?.removeFromSuperview()
+        panel = nil
+        guard let new, let keyboard, let host = keyboard.superview else { return }
+        new.onClose = { [weak self] in self?.cover(nil) }
+        new.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(new)
         NSLayoutConstraint.activate([
-            panel.topAnchor.constraint(equalTo: keyboard.topAnchor),
-            panel.leadingAnchor.constraint(equalTo: keyboard.leadingAnchor),
-            panel.trailingAnchor.constraint(equalTo: keyboard.trailingAnchor),
-            panel.bottomAnchor.constraint(equalTo: keyboard.bottomAnchor),
+            new.topAnchor.constraint(equalTo: keyboard.topAnchor),
+            new.leadingAnchor.constraint(equalTo: keyboard.leadingAnchor),
+            new.trailingAnchor.constraint(equalTo: keyboard.trailingAnchor),
+            new.bottomAnchor.constraint(equalTo: keyboard.bottomAnchor),
         ])
-        clipsPanel = panel
+        panel = new
+    }
+
+    /// A snippet pick (#609): resolved (`SnippetStore.resolve`, the clip read only for a
+    /// `{clipboard}`), typed at the cursor, then the caret back to its `{cursor}` through the
+    /// walk (`TerminalKeyboard.caret`), which counts Characters as `back` does. The keys come back.
+    private func insert(_ snippet: SnippetStore.Entry) {
+        showSnippets(false)
+        UIDevice.current.playInputClick()
+        keyboard?.finish { [weak self] in
+            guard let self, let snippets = self.snippets, let keyboard = self.keyboard,
+                  let doc = keyboard.target as? UITextDocumentProxy, keyboard.writable() else { return }
+            let (text, back) = snippets.resolve(snippet, pasteboard: self.suggestions.pasteboard(), history: self.history)
+            doc.insertText(text)
+            self.suggestions.caretMoved()
+            keyboard.resetWord()
+            if back > 0 { keyboard.caret(-back) }
+            keyboard.autoCapitalize()
+            self.refresh()
+        }
     }
 
     /// A history pick: on the pasteboard, and text typed at the cursor too. An image can't be

@@ -239,63 +239,36 @@ final class ClipboardHistory {
     }
 }
 
-/// The history in the keys' place (#597), as Gboard's: the toolbar's clipboard key opens it,
-/// a pick or the keyboard button closes it (`SuggestionBar.showClips`). Rows newest first:
-/// two lines of text or a thumbnail, each with a pin and a delete; Clear all keeps the
-/// pinned. Its Paste (the system's control, text or images) keeps a clip copied elsewhere,
-/// shown only while there is one not kept yet (`ClipboardHistory.fresh`).
-final class ClipboardPanel: UIView, UITableViewDataSource, UITableViewDelegate {
-    let history: ClipboardHistory
-    let pasteboard: UIPasteboard
-    var onPick: ((ClipboardHistory.Clip) -> Void)?
+/// A panel in the keys' place, over the keyboard's keys (`SuggestionBar.cover`) or the
+/// terminal (`TerminalHostVC.cover`): a header with the way back, its title and `trailing`,
+/// a table, and a note while that's empty. The clipboard history's and the snippets' (#609).
+class KeysPanel: UIView {
     var onClose: (() -> Void)?
-    private(set) var clips: [ClipboardHistory.Clip] = []
     let table = UITableView(frame: .zero, style: .plain)
     let backButton = UIButton(configuration: .plain())
-    let clearButton = UIButton(configuration: .plain())
-    let pasteControl: UIPasteControl = {
-        let config = UIPasteControl.Configuration()
-        config.displayMode = .iconAndLabel
-        config.baseForegroundColor = ShortcutBar.Neon.blueBright
-        config.baseBackgroundColor = ShortcutBar.Neon.card
-        let control = UIPasteControl(configuration: config)
-        control.maximumContentSizeCategory = .large   // larger draws blank, as the bar's
-        return control
-    }()
-    private let empty = UILabel()
+    let empty = UILabel()
 
-    init(history: ClipboardHistory, pasteboard: UIPasteboard) {
-        self.history = history
-        self.pasteboard = pasteboard
+    init(title text: String, empty note: String, trailing: [UIView] = []) {
         super.init(frame: .zero)
         backgroundColor = TerminalKeyboard.Style.backdrop
         overrideUserInterfaceStyle = .dark
-        pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.plainText.identifier,
-                                                                              UTType.image.identifier])
-        pasteControl.target = self
 
         backButton.configuration?.image = UIImage(systemName: "keyboard")
         backButton.configuration?.baseForegroundColor = .white
         backButton.accessibilityLabel = "Back to the keys"
         backButton.addAction(UIAction { [weak self] _ in self?.onClose?() }, for: .touchUpInside)
         let title = UILabel()
-        title.text = "Clipboard"
+        title.text = text
         title.font = .systemFont(ofSize: 15, weight: .semibold)
         title.textColor = .white
-        clearButton.configuration?.title = "Clear all"
-        clearButton.configuration?.baseForegroundColor = ShortcutBar.Neon.blueBright
-        clearButton.accessibilityHint = "Keeps the pinned ones"
-        clearButton.addAction(UIAction { [weak self] _ in self?.history.clear(); self?.reload() }, for: .touchUpInside)
-        let header = UIStackView(arrangedSubviews: [backButton, title, UIView(), pasteControl, clearButton])
+        let header = UIStackView(arrangedSubviews: [backButton, title, UIView()] + trailing)
         header.spacing = 6
         header.alignment = .center
 
         table.backgroundColor = .clear
-        table.dataSource = self
-        table.delegate = self
         table.rowHeight = UITableView.automaticDimension
         table.estimatedRowHeight = 52
-        empty.text = "What you copy or paste shows here."
+        empty.text = note
         empty.textColor = TerminalKeyboard.Style.hint
         empty.font = .systemFont(ofSize: 14)
         empty.numberOfLines = 0
@@ -317,6 +290,44 @@ final class ClipboardPanel: UIView, UITableViewDataSource, UITableViewDelegate {
             empty.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
             empty.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
         ])
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// The history in the keys' place (#597), as Gboard's: the toolbar's clipboard key opens it,
+/// a pick or the keyboard button closes it (`SuggestionBar.showClips`). Rows newest first:
+/// two lines of text or a thumbnail, each with a pin and a delete; Clear all keeps the
+/// pinned. Its Paste (the system's control, text or images) keeps a clip copied elsewhere,
+/// shown only while there is one not kept yet (`ClipboardHistory.fresh`).
+final class ClipboardPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
+    let history: ClipboardHistory
+    let pasteboard: UIPasteboard
+    var onPick: ((ClipboardHistory.Clip) -> Void)?
+    private(set) var clips: [ClipboardHistory.Clip] = []
+    let clearButton = UIButton(configuration: .plain())
+    let pasteControl: UIPasteControl = {
+        let config = UIPasteControl.Configuration()
+        config.displayMode = .iconAndLabel
+        config.baseForegroundColor = ShortcutBar.Neon.blueBright
+        config.baseBackgroundColor = ShortcutBar.Neon.card
+        let control = UIPasteControl(configuration: config)
+        control.maximumContentSizeCategory = .large   // larger draws blank, as the bar's
+        return control
+    }()
+
+    init(history: ClipboardHistory, pasteboard: UIPasteboard) {
+        self.history = history
+        self.pasteboard = pasteboard
+        super.init(title: "Clipboard", empty: "What you copy or paste shows here.", trailing: [pasteControl, clearButton])
+        pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.plainText.identifier,
+                                                                              UTType.image.identifier])
+        pasteControl.target = self
+        clearButton.configuration?.title = "Clear all"
+        clearButton.configuration?.baseForegroundColor = ShortcutBar.Neon.blueBright
+        clearButton.accessibilityHint = "Keeps the pinned ones"
+        clearButton.addAction(UIAction { [weak self] _ in self?.history.clear(); self?.reload() }, for: .touchUpInside)
+        table.dataSource = self
+        table.delegate = self
         let width = pasteControl.widthAnchor.constraint(equalToConstant: 96)
         width.priority = .defaultHigh   // gives way to the stack's zero width while hidden
         NSLayoutConstraint.activate([width, pasteControl.heightAnchor.constraint(equalToConstant: 36)])

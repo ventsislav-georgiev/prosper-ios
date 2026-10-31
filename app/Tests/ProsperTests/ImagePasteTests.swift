@@ -532,6 +532,41 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertNil(vc.clipsPanel, "the key again: the terminal back")
     }
 
+    /// The snippets key (#609) opens their panel over the terminal; a pick goes out resolved as
+    /// one bracketed paste, `{clipboard}` from the pasteboard given, then ← back to `{cursor}`:
+    /// never a CR or LF, so nothing runs. A throwaway store and a named pasteboard.
+    func testBarSnippetsKeySendsAPickAsOnePasteAndArrowsBackToTheCursor() async throws {
+        let (vc, spy) = try await makeVC()
+        spy.emit("\u{1b}[?2004h")   // the shell turned bracketed paste on
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ImagePasteTests-\(UUID())")
+        defer { UIPasteboard.remove(withName: pb.name); try? FileManager.default.removeItem(at: dir) }
+        let store = SnippetStore(url: dir.appendingPathComponent("snippets.json"))
+        store.put(.init(name: "Commit", text: "git commit -m \"{cursor}\" # {clipboard}"), replacing: nil)
+        pb.string = "wip"
+        vc.pasteboard = pb
+        vc.snippets = store
+        let (bar, _) = try barAndTerminal(vc)
+        let key = try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == Shortcuts.snippets.id })
+
+        bar.onKey?(key)
+        let panel = try XCTUnwrap(vc.snippetsPanel)
+        XCTAssertTrue(panel.superview === vc.view)
+        XCTAssertEqual(spy.sent, [], "opening the panel sends nothing")
+        panel.tableView(panel.table, didSelectRowAt: IndexPath(row: 0, section: 0))
+        let left: [UInt8] = [0x1b, 0x5b, 0x44]
+        XCTAssertEqual(spy.sent, [Array("\u{1b}[200~git commit -m \"\" # wip\u{1b}[201~".utf8),
+                                  Array([left, left, left, left, left, left, left].joined())])
+        XCTAssertFalse(spy.sent.joined().contains { $0 == 0x0d || $0 == 0x0a }, "never a return")
+        XCTAssertNil(vc.snippetsPanel, "a pick closes the panel")
+
+        bar.onKey?(key)
+        XCTAssertNotNil(vc.snippetsPanel)
+        bar.onKey?(key)
+        XCTAssertNil(vc.snippetsPanel, "the key again: the terminal back")
+    }
+
     /// The mic key (#604): cold, the service starts in place (no hop, no sheet) and the strip
     /// covers the bar; finished phrases go out as bracketed pastes, spaced, never a newline;
     /// the key again is Done, its final in. Warm, a ping starts it afresh, never taking up a

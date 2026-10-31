@@ -181,8 +181,12 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// The keyboards' clipboard history (#597), for the bar's clipboard key (#603). Tests swap
     /// in a throwaway one.
     lazy var history = ClipboardHistory.shared()
-    /// The history's panel over the terminal while open (`showClips`).
-    private(set) var clipsPanel: ClipboardPanel?
+    /// The keyboards' snippets (#609), for the bar's snippets key. Tests swap in a throwaway one.
+    lazy var snippets = SnippetStore.shared()
+    /// The panel over the terminal while open: the history's (`showClips`) or the snippets'.
+    private(set) var panel: KeysPanel?
+    var clipsPanel: ClipboardPanel? { panel as? ClipboardPanel }
+    var snippetsPanel: SnippetPanel? { panel as? SnippetPanel }
     /// The panel's room with the keyboard as it is: the safe area's top to the bar. Tests stub it.
     lazy var clipsRoom: () -> CGFloat = { [weak self] in
         guard let self else { return 0 }
@@ -191,7 +195,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Less room than the panel's 42 pt header and two 53 pt rows: the keyboard goes first.
     static let clipsMinRoom: CGFloat = 150
     /// The panel lowered the keyboard, so its close raises it again.
-    private var clipsLoweredKeyboard = false
+    private var panelLoweredKeyboard = false
     /// The bar's mic key (#604), the keyboard's client on the app's own service: nil on the
     /// Mac and below iOS 26. Tests swap in one on a throwaway store, with fake pings.
     var dictation: DictationClient? {
@@ -537,6 +541,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // The compact keyboard's word ends here: an arrow or tab moved on from it.
         (keyboardInputView as? TerminalKeyboard)?.resetWord()
         if key.id == Shortcuts.clipboard.id { return showClips(clipsPanel == nil) }
+        if key.id == Shortcuts.snippets.id { return showSnippets(snippetsPanel == nil) }
         if key.id == Shortcuts.dictate.id { return dictate() }
         if ["copyLine", "cutLine"].contains(key.id) { copyCaretLine() }   // cut's bytes then delete it
         if key.kind == .bytes, key.bytes.isEmpty { return }
@@ -577,33 +582,55 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
     }
 
-    /// The clipboard history's panel over the terminal, down to the bar, read afresh; or the
-    /// terminal back (#603). A clip copied elsewhere is kept first under Save Copies
-    /// Automatically (#601), as the keyboard keeps it as it appears. With under two rows of
-    /// room (landscape with the keyboard up, #603 QA: 39 pt) the keyboard goes for the panel's
-    /// time, and comes back at its close, however it closes.
+    /// The clipboard history's panel over the terminal, read afresh; or the terminal back (#603).
+    /// A clip copied elsewhere is kept first under Save Copies Automatically (#601), as the
+    /// keyboard keeps it as it appears.
     func showClips(_ on: Bool) {
-        clipsPanel?.removeFromSuperview()
-        clipsPanel = nil
-        if !on, clipsLoweredKeyboard {
-            clipsLoweredKeyboard = false
+        guard on, let history, shortcutBar != nil else { return cover(nil) }
+        if KeyboardSettings.current().saveCopies { history.save(pasteboard) }
+        let clips = ClipboardPanel(history: history, pasteboard: pasteboard)
+        clips.onPick = { [weak self] in self?.pick($0) }
+        cover(clips)
+    }
+
+    /// The snippets' panel over the terminal, read afresh; or the terminal back (#609).
+    func showSnippets(_ on: Bool) {
+        let list = on ? snippets.map(SnippetPanel.init) : nil
+        list?.onPick = { [weak self] in self?.send($0) }
+        cover(list)
+    }
+
+    /// `new` over the terminal down to the bar, in the open panel's place, or the terminal back.
+    /// With under two rows of room (landscape with the keyboard up, #603 QA: 39 pt) the keyboard
+    /// goes for the panel's time, and comes back at its close, however it closes.
+    private func cover(_ new: KeysPanel?) {
+        panel?.removeFromSuperview()
+        panel = nil
+        if new == nil, panelLoweredKeyboard {
+            panelLoweredKeyboard = false
             _ = tv.becomeFirstResponder()
         }
-        guard on, let history, let bar = shortcutBar else { return }
-        if tv.isFirstResponder, clipsRoom() < Self.clipsMinRoom { clipsLoweredKeyboard = tv.resignFirstResponder() }
-        if KeyboardSettings.current().saveCopies { history.save(pasteboard) }
-        let panel = ClipboardPanel(history: history, pasteboard: pasteboard)
-        panel.onPick = { [weak self] in self?.pick($0) }
-        panel.onClose = { [weak self] in self?.showClips(false) }
-        panel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(panel)
+        guard let new, let bar = shortcutBar else { return }
+        if tv.isFirstResponder, clipsRoom() < Self.clipsMinRoom { panelLoweredKeyboard = tv.resignFirstResponder() }
+        new.onClose = { [weak self] in self?.cover(nil) }
+        new.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(new)
         NSLayoutConstraint.activate([
-            panel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            panel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            panel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            panel.bottomAnchor.constraint(equalTo: bar.topAnchor),   // rides the keyboard with the bar
+            new.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            new.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            new.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            new.bottomAnchor.constraint(equalTo: bar.topAnchor),   // rides the keyboard with the bar
         ])
-        clipsPanel = panel
+        panel = new
+    }
+
+    /// A snippet pick (#609): resolved as the keyboard's (`SnippetStore.resolve`), out as one
+    /// paste (`sendText`, never a return), then ← (the bar's) back to its `{cursor}`.
+    private func send(_ snippet: SnippetStore.Entry) {
+        showSnippets(false)
+        guard let out = snippets?.resolve(snippet, pasteboard: pasteboard, history: history) else { return }
+        sendText(out.text)
+        if out.back > 0 { conn.send(ArraySlice(Array(repeating: [0x1b, 0x5b, 0x44] as [UInt8], count: out.back).joined())) }
     }
 
     /// The mic key (#604): the keyboard's (`DictationClient.tap`), on the app's own mic. A
