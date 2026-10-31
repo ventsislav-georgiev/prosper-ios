@@ -213,6 +213,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             dictation?.insert = { [weak self] in self?.dictated($0) }
             dictation?.onStrip = { [weak self] strip in
                 self?.dictationStrip.show(strip)
+                self?.view.setNeedsLayout()   // #654: `fitDictationStrip`
                 if strip == .idle { self?.lastDictated = "" }
             }
             dictation?.hint = { [weak self] in self?.showToast($0) }
@@ -225,13 +226,27 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         strip.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(strip)
         if let bar = shortcutBar {
+            let stripTrailing = strip.trailingAnchor.constraint(equalTo: bar.trailingAnchor)
+            self.stripTrailing = stripTrailing
             NSLayoutConstraint.activate([
                 strip.topAnchor.constraint(equalTo: bar.topAnchor), strip.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
-                strip.leadingAnchor.constraint(equalTo: bar.leadingAnchor), strip.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+                strip.leadingAnchor.constraint(equalTo: bar.leadingAnchor), stripTrailing,
             ])
         }
         return strip
     }()
+    /// The strip's end: short of the bar's mic cap, so its tap still stops (#654).
+    private var stripTrailing: NSLayoutConstraint?
+    /// Ends the strip at the mic cap's leading edge less the bar's gap; edge to edge with no
+    /// cap. On every layout pass, so a rotation or a bar re-split moves it too (#654).
+    private func fitDictationStrip() {
+        guard let bar = shortcutBar, let stripTrailing, !dictationStrip.isHidden else { return }
+        bar.layoutIfNeeded()
+        let mic = bar.capByID[Shortcuts.dictate.id].map { $0.convert($0.bounds, to: bar) }
+        let end = mic.flatMap { bar.bounds.contains($0) ? $0.minX - 6 : nil } ?? bar.bounds.maxX
+        let constant = end - bar.bounds.maxX
+        if stripTrailing.constant != constant { stripTrailing.constant = constant }
+    }
     /// This dictation's last send, for the next phrase's spacing.
     private var lastDictated = ""
     /// Shows the Copy menu at a point in `tv`. Tests swap it to see when it would show.
@@ -555,7 +570,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         if key.id == Shortcuts.snippets.id { return showSnippets(snippetsPanel == nil) }
         if key.id == Shortcuts.quicklinks.id { return showQuicklinks(quicklinksPanel == nil) }
         if key.id == Shortcuts.dictate.id { return dictate() }
-        if ["copyLine", "cutLine"].contains(key.id) { copyCaretLine() }   // cut's bytes then delete it
+        if ["copyLine", "cutLine"].contains(key.id) { copyCaretLine(cut: key.id == "cutLine") }   // cut's bytes then delete it
         if key.kind == .bytes, key.bytes.isEmpty { return }
         switch key.kind {
         case .ctrl, .alt, .shift:
@@ -701,7 +716,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// line leaves the clip be. Claude Code hard-wraps its input, so there it is the caret's
     /// visual row only: what cut line and delete all delete (its ^U), so a cut's clip is what
     /// went. ponytail: the prompt comes with it; the screen can't tell it from the input.
-    func copyCaretLine() {
+    func copyCaretLine(cut: Bool = false) {
         let term = tv.getTerminal()
         var i = cell(at: CGPoint(x: 0, y: tv.caretFrame.midY), term).line + term.buffer.totalLinesTrimmed
         while term.getScrollInvariantLine(row: i)?.isWrapped == true { i -= 1 }
@@ -715,7 +730,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         pasteboard.string = text
         history?.record(text, from: pasteboard)
         ClipboardSync.kick()   // #621
-        showToast("Copied line\n" + (text.count > 60 ? String(text.prefix(60)) + "…" : text))
+        showToast((cut ? "Cut line\n" : "Copied line\n") + (text.count > 60 ? String(text.prefix(60)) + "…" : text))
     }
 
     private var fedHostBytes = false
@@ -1106,6 +1121,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// off the keyboard top until the keyboard next rose (#607): re-glue on every layout.
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        fitDictationStrip()
         guard kbOverlap > 0, let f = kbFrame else { return }
         let overlap = keyboardOverlap(f)
         guard overlap > 0, overlap != kbOverlap else { return }

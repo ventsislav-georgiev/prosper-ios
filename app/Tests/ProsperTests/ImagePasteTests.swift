@@ -402,6 +402,8 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertEqual(pb.string, line)
         XCTAssertEqual(spy.sent, [[0x05, 0x15]])
         XCTAssertEqual(h.clips.map(\.text), [line], "the same line once")
+        let cutNote = vc.view.subviews.flatMap(\.subviews).compactMap { ($0 as? UILabel)?.text }.first { $0.hasPrefix("Cut line") }
+        XCTAssertEqual(cutNote, "Cut line\n" + line.prefix(60) + "…", "a cut says so (#654)")
 
         tv.feed(text: "\r\n")
         try await Task.sleep(nanoseconds: 100_000_000)
@@ -600,7 +602,23 @@ final class ImagePasteTests: XCTestCase {
         let strip = vc.dictationStrip
         vc.view.layoutIfNeeded()
         XCTAssertFalse(strip.isHidden)
-        XCTAssertEqual(strip.frame, bar.frame, "over the bar")
+        XCTAssertEqual(strip.frame, bar.frame, "over the bar: no mic cap, edge to edge")
+        // A bar with the mic cap (#654): the strip stops short of it, so its tap still stops.
+        let saved = Shortcuts.shared().string(forKey: Shortcuts.storageKey)
+        defer {
+            if let saved { Shortcuts.shared().set(saved, forKey: Shortcuts.storageKey) }
+            else { Shortcuts.shared().removeObject(forKey: Shortcuts.storageKey) }
+        }
+        Shortcuts.save([try catalogKey("esc"), Shortcuts.dictate])
+        bar.reload()
+        vc.view.setNeedsLayout()
+        vc.view.layoutIfNeeded()
+        let mic = try XCTUnwrap(bar.capByID[Shortcuts.dictate.id])
+        let micFrame = mic.convert(mic.bounds, to: vc.view)
+        XCTAssertEqual(strip.frame.minX, bar.frame.minX)
+        XCTAssertEqual(strip.frame.height, bar.frame.height)
+        XCTAssertEqual(strip.frame.maxX, micFrame.minX - 6, accuracy: 0.5, "up to the mic cap, still tappable")
+        XCTAssertNil(strip.hitTest(vc.view.convert(CGPoint(x: micFrame.midX, y: micFrame.midY), to: strip), with: nil))
         XCTAssertEqual(strip.label.text, "Starting the mic…", "taken up, not opening Prosper")
         app(id, .listening, ["Hello there."], tail: "how")
         c.sync()

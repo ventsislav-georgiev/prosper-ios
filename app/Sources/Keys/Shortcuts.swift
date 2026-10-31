@@ -313,6 +313,8 @@ final class ShortcutBar: UIView {
     private var modifierCaps: [ShortcutKey.Kind: KeyCapButton] = [:]
     private weak var container: UIView?
     private var caps: [KeyCapButton] = []
+    /// Each key's cap by id, for the owner to lay over the bar around one (#654).
+    private(set) var capByID: [String: UIView] = [:]
     private var rows: [UIStackView] = []        // [top, bottom]; `oneRow`'s bottom only with `twoRows`
     private let keys: () -> [ShortcutKey]
     private let oneRow: Bool
@@ -516,6 +518,7 @@ final class ShortcutBar: UIView {
 
         rows[1].isHidden = oneRow   // `layoutSubviews` shows it for `twoRows`
         caps = []
+        capByID = [:]
         for key in keys() {
             if oneRow, key.kind == .pasteText {
                 rows[0].addArrangedSubview(makePasteControl())
@@ -524,6 +527,7 @@ final class ShortcutBar: UIView {
             let b = makeButton(key)
             if [.ctrl, .alt, .shift].contains(key.kind) { modifierCaps[key.kind] = b }
             caps.append(b)
+            capByID[key.id] = b
             if oneRow { rows[0].addArrangedSubview(b) }   // `layoutSubviews` splits only two
         }
         arrangedWidth = -1        // new caps → split again on the next layout pass
