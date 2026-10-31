@@ -372,6 +372,7 @@ struct SessionListView: View {
     @State private var failed: (title: String, message: String)?   // a verb's error 0x13, as written
     @State private var showingHistory = false      // #589: the ⋯ menu's History sheet
     @State private var showingChat = false         // #646: the ⋯ menu's Chat sheet
+    @State private var showingCommands = false     // #615: the ⋯ menu's Commands sheet
     // The Sidekicks segment is chosen. Scene storage, so the list an alert or Live Activity
     // rebuilds (a new `.id`) comes back on the same tab.
     @SceneStorage("sessions.sidekickTab") private var sidekickTab = false
@@ -528,6 +529,7 @@ struct SessionListView: View {
             HistorySheet(transport: transport, ops: ops) { await refresh() }
         }
         .sheet(isPresented: $showingChat) { ChatScreen(chat: ChatSession(transport: transport)) }
+        .sheet(isPresented: $showingCommands) { CommandsScreen(session: CommandsSession(transport: transport)) }
         .alert("New session", isPresented: $creating) {
             TextField("Name (optional)", text: $newName)
             Button("Create") { startNew() }
@@ -578,7 +580,8 @@ struct SessionListView: View {
     }
 
     /// #590: the Mac's ⋯ (Agent Island): Restart all agents and Stop all in <tab>…, each on its op.
-    /// #589: and History, on any of the Mac's verbs. #646: and Chat, on `.chat`.
+    /// #589: and History, on any of the Mac's verbs. #646: and Chat, on `.chat`. #615: and
+    /// Commands, on `.commands`.
     @ViewBuilder private var controlsMenu: some View {
         if SessionVerb.menuShown(ops) {
             Menu {
@@ -587,6 +590,9 @@ struct SessionListView: View {
                 }
                 if ops.contains(.chat) {
                     Button { showingChat = true } label: { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+                }
+                if ops.contains(.commands) {
+                    Button { showingCommands = true } label: { Label("Commands", systemImage: "command") }
                 }
                 if ops.contains(.restart) {
                     Button("Restart all agents") { confirmingRestartAll = true }
@@ -879,6 +885,7 @@ extension SessionVerb {
         case .forget:  all ? "Clear unpinned" : "Remove failed"
         case .clipboard: "Clipboard sync"   // #621: never shown, a sync failure is only logged
         case .chat:    "Chat"   // #646: never shown, a chat's error stays inline in the chat
+        case .commands: "Commands"   // #615: never shown, a command's error stays inline
         }
     }
 }

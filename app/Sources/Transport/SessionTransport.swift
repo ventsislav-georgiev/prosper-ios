@@ -107,6 +107,10 @@ protocol SessionTransport: AnyObject {
     /// #646: one reply from the Mac's local model, chunk by chunk, on a connection of its own.
     /// Ending the stream's consumer closes the connection, which stops the generation.
     func chat(_ messages: [ChatMessage]) -> AsyncThrowingStream<String, Error>
+    /// #615: the Mac's palette commands, while its Run commands from iPhone toggle is on.
+    func commands() async throws -> [MacCommand]
+    /// #615: one command run on the Mac, `argument` for one that takes text.
+    func runCommand(id: String, argument: String?) async throws -> CommandResult
 }
 
 /// #590: the demo and the test stubs have no dch behind them. Their machine lists no
@@ -132,6 +136,8 @@ extension SessionTransport {
     func chat(_ messages: [ChatMessage]) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { $0.finish(throwing: TransportError.server("Not supported here.")) }
     }
+    func commands() async throws -> [MacCommand] { throw TransportError.server("Not supported here.") }
+    func runCommand(id: String, argument: String?) async throws -> CommandResult { throw TransportError.server("Not supported here.") }
 }
 
 /// #590: a verb the Mac's server answers beyond the base frames. machineInfo lists them in
@@ -141,6 +147,7 @@ enum SessionVerb: String {
     case pin, forget   // #634: "forget" covers forget 0x25 and forgetAll 0x26
     case clipboard     // #621: clipboard history sync, 0x15/0x16/0x22/0x23; only while the Mac's toggle is on
     case chat          // #646: local-model chat, 0x1e/0x1f; only while the Mac's model is on disk
+    case commands      // #615: palette commands, 0x28/0x29; only while the Mac's toggle is on
 
     /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
     static func offered(_ ops: Any?) -> Set<SessionVerb> {
@@ -210,6 +217,23 @@ struct LocalModel: Equatable {
     var id: String
     var name: String
     var loaded: Bool
+}
+
+/// #615: one row of commandsResp 0x2a. `argument`, the input's placeholder hint, means it takes
+/// text; none, it runs on a tap. `icon` is an SF Symbol name; `ext` the extension's title.
+struct MacCommand: Equatable, Identifiable {
+    var id: String
+    var title: String
+    var subtitle: String?
+    var ext: String
+    var argument: String?
+    var icon: String?
+}
+
+/// #615: commandResult 0x2b: `text` shown big, `detail` small ("km → m").
+struct CommandResult: Equatable {
+    var text: String
+    var detail: String?
 }
 
 /// #646: one message of a chat 0x1f request.

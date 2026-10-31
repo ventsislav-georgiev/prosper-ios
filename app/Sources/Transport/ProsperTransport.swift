@@ -32,6 +32,8 @@ final class ProsperTransport: SessionTransport {
         // #646: the Mac's local-model chat.
         static let models: UInt8 = 0x1e, chat: UInt8 = 0x1f, chatDelta: UInt8 = 0x20, chatDone: UInt8 = 0x21
         static let modelsResp: UInt8 = 0x27
+        // #615: the Mac's palette commands.
+        static let commands: UInt8 = 0x28, runCommand: UInt8 = 0x29, commandsResp: UInt8 = 0x2a, commandResult: UInt8 = 0x2b
         // #621: clipboard history sync.
         static let clipboardList: UInt8 = 0x15, clipboardItem: UInt8 = 0x16
         static let addClipboardHistory: UInt8 = 0x22, clipboardUpload: UInt8 = 0x23
@@ -338,6 +340,42 @@ final class ProsperTransport: SessionTransport {
     static func chatRequest(_ messages: [ChatMessage]) -> Data {
         let o = ["messages": messages.map { ["role": $0.role.rawValue, "content": $0.content] }]
         return (try? JSONSerialization.data(withJSONObject: o)) ?? Data()
+    }
+
+    // MARK: - Commands (#615)
+
+    /// The Mac's commands in its order, `[]` right at its launch. An empty request, as the Mac wants.
+    func commands() async throws -> [MacCommand] {
+        try Self.decodeCommands(try await verb(F.commands, Data(), reply: F.commandsResp))
+    }
+
+    /// A row missing its id, title or ext, or not an object, is left out.
+    static func decodeCommands(_ payload: Data) throws -> [MacCommand] {
+        guard let arr = (try? JSONSerialization.jsonObject(with: payload)) as? [Any] else {
+            throw TransportError.protocolError("unreadable commands")
+        }
+        return arr.compactMap { row in
+            guard let o = row as? [String: Any], let id = o["id"] as? String, let title = o["title"] as? String, let ext = o["ext"] as? String else { return nil }
+            return MacCommand(id: id, title: title, subtitle: o["subtitle"] as? String, ext: ext,
+                              argument: o["argument"] as? String, icon: o["icon"] as? String)
+        }
+    }
+
+    func runCommand(id: String, argument: String?) async throws -> CommandResult {
+        try Self.decodeResult(try await verb(F.runCommand, Self.runRequest(id: id, argument: argument), reply: F.commandResult))
+    }
+
+    /// `{"id"}`, with `argument` only when there is one: a null is "malformed" to the Mac.
+    static func runRequest(id: String, argument: String?) -> Data {
+        var o = ["id": id]
+        if let argument, !argument.isEmpty { o["argument"] = argument }
+        return (try? JSONSerialization.data(withJSONObject: o)) ?? Data()
+    }
+
+    static func decodeResult(_ payload: Data) throws -> CommandResult {
+        guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              let text = o["text"] as? String else { throw TransportError.protocolError("unreadable result") }
+        return CommandResult(text: text, detail: o["detail"] as? String)
     }
 
     static func decodeNames(_ payload: Data) throws -> [String] {

@@ -189,7 +189,8 @@ struct SettingsView: View {
             } header: {
                 Text("Session list")
             } footer: {
-                Text("Row details each session shows. Its title and state always show.")
+                // #615: where Commands comes from when the ⋯ menu has none.
+                Text("Row details each session shows. Its title and state always show.\n\nThe ⋯ menu above the list runs the Mac's commands, like Calculator, conversions and Lock Screen, once the Mac has Settings › Remote Terminal › Run commands from iPhone on.")
             }
 
             Section {
