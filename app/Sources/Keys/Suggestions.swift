@@ -963,10 +963,12 @@ final class SuggestionBar: UIView {
     }
 
     /// The keyboard's own copy: retired at once, so a fresh clip of it never takes the bar.
-    private func keep(_ line: String, in copy: UIPasteboard) {
+    /// A cut line's batches each pass the last's base on: one history row a cut (#597).
+    @discardableResult
+    private func keep(_ line: String, in copy: UIPasteboard, over base: [ClipboardHistory.Clip]? = nil) -> [ClipboardHistory.Clip]? {
         copy.string = line
         suggestions.memory.retiredClip = copy.changeCount
-        history?.record(line, from: copy)
+        return history?.record(line, from: copy, over: base)
     }
 
     /// `dd` from the line's end: over the break after it, blind where the after-context stops
@@ -1022,11 +1024,11 @@ final class SuggestionBar: UIView {
                 let n = Self.toLineStart(b)
                 if joins { return gone.isEmpty && b.last?.isNewline == true ? 1 + Self.toLineStart(String(b.dropLast())) : n }
                 return gone.first?.isNewline == true ? 0 : n < b.count ? n + 1 : n
-            }, went: copy.map { copy in { [weak self] gone in
+            }, went: copy.map { copy in var base: [ClipboardHistory.Clip]?; return { [weak self] gone in
                 var line = Substring(gone)
                 if joins, line.last?.isNewline == true { line.removeLast() }
                 if !joins, line.first?.isNewline == true { line.removeFirst() }
-                if !line.isEmpty { self?.keep(String(line), in: copy) }
+                if !line.isEmpty { base = self?.keep(String(line), in: copy, over: base) }
             } }, done: { [weak self] gone in
                 if !joins, gone.first?.isNewline == true { self?.walk(-1, { b, _ in Self.toLineStart(b) }) { _ in } }
             })

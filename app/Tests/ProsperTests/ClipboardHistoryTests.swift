@@ -246,4 +246,36 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertEqual(h.clips.map(\.text), ["pasted", "first line"])
         withExtendedLifetime(kb) {}
     }
+    /// A cut line in batches (a UITextView's line window) is one row, the whole line; rows
+    /// from before stay as they were, one equal to a batch's text too, and a pin on the line
+    /// moves up with it (#597 QA: "gamma line x" and "amma line x" both kept).
+    func testCutLineInBatchesKeepsOneRow() throws {
+        let h = ClipboardHistory(dir: dir)
+        for s in ["older", "a line x", "gamma line x"] { paste(s, into: h) }
+        h.pin(try XCTUnwrap(h.clips.first).id, true)
+        let (kb, bar, doc, _) = rig("alpha one beta two\ngamma line x", history: h)
+        doc.window = 5
+        bar.press(try XCTUnwrap(Shortcuts.hostOnly.first { $0.id == "cutLine" }))
+        let before = pb.changeCount
+        for _ in 1...3_000 { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(doc.text + (doc.after ?? ""), "alpha one beta two")
+        XCTAssertEqual(pb.string, "gamma line x")
+        XCTAssertGreaterThan(pb.changeCount - before, 1, "in batches")
+        XCTAssertEqual(h.clips.map(\.text), ["gamma line x", "a line x", "older"])
+        XCTAssertEqual(h.clips.map(\.pinned), [true, false, false])
+        withExtendedLifetime(kb) {}
+    }
+
+    /// A blank clip the panel's Paste takes isn't kept, and the Paste goes (#597 QA: it stayed).
+    func testBlankPasteIsNotOfferedAgain() {
+        let h = ClipboardHistory(dir: dir)
+        pb.string = "   \n  "
+        let panel = ClipboardPanel(history: h, pasteboard: pb)
+        XCTAssertFalse(panel.pasteControl.isHidden)
+        panel.paste(itemProviders: [NSItemProvider(object: "   \n  " as NSString)])
+        let deadline = Date() + 5
+        while !panel.pasteControl.isHidden, Date() < deadline { RunLoop.main.run(until: Date() + 0.01) }
+        XCTAssertTrue(panel.pasteControl.isHidden)
+        XCTAssertEqual(h.clips, [])
+    }
 }

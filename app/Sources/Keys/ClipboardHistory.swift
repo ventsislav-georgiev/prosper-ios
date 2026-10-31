@@ -69,10 +69,15 @@ final class ClipboardHistory {
     /// The panel offers its Paste: a text or image clip not kept yet.
     func fresh(_ pb: UIPasteboard) -> Bool { (pb.hasStrings || pb.hasImages) && capturable(pb) }
 
-    /// A clip the keyboard pasted or copied, as `pb` holds it now.
-    func record(_ text: String, from pb: UIPasteboard) {
-        guard capturable(pb) else { return }
-        keep(text: text, change: pb.changeCount)
+    /// A clip the keyboard pasted or copied, as `pb` holds it now. Over `base`, the rows a
+    /// cut line's first batch found, a later batch's text takes the last's place: one row a
+    /// cut (#597 QA: each batch kept its own). Returns the base for the next batch.
+    @discardableResult
+    func record(_ text: String, from pb: UIPasteboard, over base: [Clip]? = nil) -> [Clip]? {
+        guard capturable(pb) else { return base }
+        let base = base ?? clips
+        keep(text: text, change: pb.changeCount, over: base)
+        return base
     }
 
     /// The panel's Paste: its clip, text or else an image, kept; then `done`, on the main queue.
@@ -159,15 +164,17 @@ final class ClipboardHistory {
         ] as CFDictionary)
     }
 
-    private func keep(text: String, change: Int) {
+    /// Blank or too long isn't kept, but isn't offered again either (#597 QA: a blank Paste stayed).
+    private func keep(text: String, change: Int, over base: [Clip]? = nil) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              text.utf16.count <= Self.textLimit else { return }
-        keep(Clip(text: text, date: now()), change: change)
+              text.utf16.count <= Self.textLimit else { update { $0.clips = base ?? $0.clips; $0.change = change }; return }
+        keep(Clip(text: text, date: now()), change: change, over: base)
     }
 
-    /// `clip` on top; the same text or image goes from lower down, its pin with it.
-    private func keep(_ clip: Clip, change: Int) {
+    /// `clip` on top, over `base` if given; the same text or image goes from lower down, its pin with it.
+    private func keep(_ clip: Clip, change: Int, over base: [Clip]? = nil) {
         update { i in
+            i.clips = base ?? i.clips
             var clip = clip
             clip.pinned = i.clips.contains { $0.pinned && $0.text == clip.text && $0.image == clip.image }
             i.clips.removeAll { $0.text == clip.text && $0.image == clip.image }
