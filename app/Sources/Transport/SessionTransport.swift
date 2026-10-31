@@ -102,6 +102,11 @@ protocol SessionTransport: AnyObject {
     func addClipboardHistory(_ items: [ClipboardText]) async throws -> ClipboardSent
     /// #621: one phone image into the Mac's clipboard history, on a connection of its own.
     func clipboardUpload(_ item: ClipboardUpload) async throws -> ClipboardSent
+    /// #646: the Mac's local models (one, or none when it isn't on disk).
+    func models() async throws -> [LocalModel]
+    /// #646: one reply from the Mac's local model, chunk by chunk, on a connection of its own.
+    /// Ending the stream's consumer closes the connection, which stops the generation.
+    func chat(_ messages: [ChatMessage]) -> AsyncThrowingStream<String, Error>
 }
 
 /// #590: the demo and the test stubs have no dch behind them. Their machine lists no
@@ -123,6 +128,10 @@ extension SessionTransport {
     }
     func addClipboardHistory(_ items: [ClipboardText]) async throws -> ClipboardSent { throw TransportError.server("Not supported here.") }
     func clipboardUpload(_ item: ClipboardUpload) async throws -> ClipboardSent { throw TransportError.server("Not supported here.") }
+    func models() async throws -> [LocalModel] { throw TransportError.server("Not supported here.") }
+    func chat(_ messages: [ChatMessage]) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { $0.finish(throwing: TransportError.server("Not supported here.")) }
+    }
 }
 
 /// #590: a verb the Mac's server answers beyond the base frames. machineInfo lists them in
@@ -131,6 +140,7 @@ enum SessionVerb: String {
     case history, revive, restart, stop, library
     case pin, forget   // #634: "forget" covers forget 0x25 and forgetAll 0x26
     case clipboard     // #621: clipboard history sync, 0x15/0x16/0x22/0x23; only while the Mac's toggle is on
+    case chat          // #646: local-model chat, 0x1e/0x1f; only while the Mac's model is on disk
 
     /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
     static func offered(_ ops: Any?) -> Set<SessionVerb> {
@@ -193,6 +203,20 @@ struct ClipboardUpload: Equatable {
 struct ClipboardSent: Equatable {
     var added: [String] = []
     var skipped: [String: String] = [:]
+}
+
+/// #646: one row of modelsResp 0x27. `loaded`: resident now, so the first reply comes quickly.
+struct LocalModel: Equatable {
+    var id: String
+    var name: String
+    var loaded: Bool
+}
+
+/// #646: one message of a chat 0x1f request.
+struct ChatMessage: Equatable {
+    enum Role: String { case user, assistant }
+    var role: Role
+    var content: String
 }
 
 /// #590: one ended session from historyResp 0x1b.

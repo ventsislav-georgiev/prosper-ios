@@ -29,7 +29,10 @@ final class ProsperTransport: SessionTransport {
         static let machineInfoResp: UInt8 = 0x18, snapshotResp: UInt8 = 0x19, historyResp: UInt8 = 0x1b
         static let libraryResp: UInt8 = 0x1c
         static let pin: UInt8 = 0x24, forget: UInt8 = 0x25, forgetAll: UInt8 = 0x26   // #634
-        // #621: clipboard history sync. 0x1e-0x21 and 0x27 are the Mac's chat.
+        // #646: the Mac's local-model chat.
+        static let models: UInt8 = 0x1e, chat: UInt8 = 0x1f, chatDelta: UInt8 = 0x20, chatDone: UInt8 = 0x21
+        static let modelsResp: UInt8 = 0x27
+        // #621: clipboard history sync.
         static let clipboardList: UInt8 = 0x15, clipboardItem: UInt8 = 0x16
         static let addClipboardHistory: UInt8 = 0x22, clipboardUpload: UInt8 = 0x23
         static let clipboardItemResp: UInt8 = 0x1a, clipboardResp: UInt8 = 0x1d
@@ -283,6 +286,58 @@ final class ProsperTransport: SessionTransport {
                 if let e { c.resume(throwing: e) } else { c.resume() }
             })
         }
+    }
+
+    // MARK: - Chat (#646)
+
+    /// The Mac's models, `[]` when none is on disk. An empty request, as the Mac wants.
+    func models() async throws -> [LocalModel] {
+        try Self.decodeModels(try await verb(F.models, Data(), reply: F.modelsResp))
+    }
+
+    /// A row missing its id or name is left out; no `loaded` reads as not resident.
+    static func decodeModels(_ payload: Data) throws -> [LocalModel] {
+        guard let arr = (try? JSONSerialization.jsonObject(with: payload)) as? [[String: Any]] else {
+            throw TransportError.protocolError("unreadable models")
+        }
+        return arr.compactMap { o in
+            guard let id = o["id"] as? String, let name = o["name"] as? String else { return nil }
+            return LocalModel(id: id, name: name, loaded: o["loaded"] as? Bool ?? false)
+        }
+    }
+
+    /// Its own connection, never an attached one: the 0x1f request, then each 0x20's text as it
+    /// lands, then chatDone ends the stream or error 0x13 throws its message. No read deadline:
+    /// a cold model loads for 30 s or more before the first delta. The consumer going away
+    /// closes the connection, and that is the Mac's Stop.
+    func chat(_ messages: [ChatMessage]) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { cont in
+            let task = Task {
+                do {
+                    let conn = try await connect()
+                    defer { conn.cancel() }
+                    try await withTaskCancellationHandler {
+                        conn.send(content: FrameCodec.encode(F.chat, Self.chatRequest(messages)), completion: .contentProcessed { _ in })
+                        var buf = Data()
+                        while true {
+                            let frame = try await FrameCodec.read(from: conn, &buf)
+                            if frame.0 != F.chatDelta { _ = try Self.expect(frame, F.chatDone); return }
+                            if let text = ((try? JSONSerialization.jsonObject(with: frame.1)) as? [String: Any])?["text"] as? String {
+                                cont.yield(text)
+                            }
+                        }
+                    } onCancel: { conn.cancel() }
+                    cont.finish()
+                } catch { cont.finish(throwing: error) }
+            }
+            cont.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// `{"messages":[…]}` only: a null model or max_tokens is "malformed" to the Mac.
+    static func chatRequest(_ messages: [ChatMessage]) -> Data {
+        let o = ["messages": messages.map { ["role": $0.role.rawValue, "content": $0.content] }]
+        return (try? JSONSerialization.data(withJSONObject: o)) ?? Data()
     }
 
     static func decodeNames(_ payload: Data) throws -> [String] {

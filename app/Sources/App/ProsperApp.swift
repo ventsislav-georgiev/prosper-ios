@@ -371,6 +371,7 @@ struct SessionListView: View {
     @State private var stoppingAll: [String]?      // Stop all's confirm: the tab's names, counted when asked
     @State private var failed: (title: String, message: String)?   // a verb's error 0x13, as written
     @State private var showingHistory = false      // #589: the ⋯ menu's History sheet
+    @State private var showingChat = false         // #646: the ⋯ menu's Chat sheet
     // The Sidekicks segment is chosen. Scene storage, so the list an alert or Live Activity
     // rebuilds (a new `.id`) comes back on the same tab.
     @SceneStorage("sessions.sidekickTab") private var sidekickTab = false
@@ -526,6 +527,7 @@ struct SessionListView: View {
         .sheet(isPresented: $showingHistory) {
             HistorySheet(transport: transport, ops: ops) { await refresh() }
         }
+        .sheet(isPresented: $showingChat) { ChatScreen(chat: ChatSession(transport: transport)) }
         .alert("New session", isPresented: $creating) {
             TextField("Name (optional)", text: $newName)
             Button("Create") { startNew() }
@@ -576,12 +578,15 @@ struct SessionListView: View {
     }
 
     /// #590: the Mac's ⋯ (Agent Island): Restart all agents and Stop all in <tab>…, each on its op.
-    /// #589: and History, on any of the Mac's verbs.
+    /// #589: and History, on any of the Mac's verbs. #646: and Chat, on `.chat`.
     @ViewBuilder private var controlsMenu: some View {
-        if !ops.subtracting([.library, .clipboard]).isEmpty {
+        if SessionVerb.menuShown(ops) {
             Menu {
                 if ops.contains(.history) {
                     Button { showingHistory = true } label: { Label("History", systemImage: "clock.arrow.circlepath") }
+                }
+                if ops.contains(.chat) {
+                    Button { showingChat = true } label: { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
                 }
                 if ops.contains(.restart) {
                     Button("Restart all agents") { confirmingRestartAll = true }
@@ -855,6 +860,11 @@ extension DchSession {
 }
 
 extension SessionVerb {
+    /// #590: the ⋯ menu shows on any verb with an item in it; library and clipboard have none.
+    static func menuShown(_ ops: Set<SessionVerb>) -> Bool {
+        !ops.subtracting([.library, .clipboard]).isEmpty
+    }
+
     /// #589: an error alert's title. A named row's verb is "Resume failed", "Restart failed",
     /// "Stop failed"; an all-run's is the action itself, as the island labels it ("Resume
     /// interrupted", "Restart all"), over the Mac's summary ("2 resumed, 1 failed").
@@ -868,6 +878,7 @@ extension SessionVerb {
         case .pin:     "Pin failed"
         case .forget:  all ? "Clear unpinned" : "Remove failed"
         case .clipboard: "Clipboard sync"   // #621: never shown, a sync failure is only logged
+        case .chat:    "Chat"   // #646: never shown, a chat's error stays inline in the chat
         }
     }
 }
