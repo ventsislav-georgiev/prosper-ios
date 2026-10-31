@@ -146,12 +146,63 @@ final class KeyboardToolbarTests: XCTestCase {
         bar.showsToolbar = false
         XCTAssertEqual(bar.state, .paste, "over the suggestions")
         XCTAssertFalse(bar.pasteControl.isHidden)
-        XCTAssertTrue(toggle.isHidden)
+        XCTAssertFalse(toggle.isHidden, "the way back to the toolbar (#622)")
         bar.suggestions.pasteboard = { nil }
         bar.refresh()
         bar.showsToolbar = true
         XCTAssertFalse(toolbar.isHidden)
         XCTAssertTrue(bar.showsToolbar, "the pick stays the user's")
+    }
+
+    /// #622: the paste offer keeps the toggle, laid out beside it, and the toggle goes from
+    /// the offer to the toolbar and back; a fresh clip at a word start with the toolbar
+    /// chosen keeps the toolbar. AutoFill still hides both.
+    func testThePasteOfferKeepsTheToggle() throws {
+        let (_, bar, doc) = rig()
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+        pb.string = "clip"
+        bar.suggestions.pasteboard = { pb }
+        bar.refresh()
+        let toolbar = try XCTUnwrap(bar.toolbar), toggle = try XCTUnwrap(bar.toggle)
+        XCTAssertEqual(bar.state, .paste)
+        XCTAssertFalse(toggle.isHidden)
+        XCTAssertTrue(toggle.isEnabled)
+        bar.layoutIfNeeded()
+        XCTAssertFalse(toggle.frame.intersects(bar.pasteControl.frame), "Paste takes the rest")
+
+        toggle.sendActions(for: .touchUpInside)
+        XCTAssertTrue(bar.showsToolbar)
+        XCTAssertFalse(toolbar.isHidden, "the toolbar over the paste offer")
+        XCTAssertTrue(bar.pasteControl.isHidden)
+        XCTAssertFalse(toggle.isHidden)
+        doc.text = "word "
+        bar.refresh()
+        XCTAssertFalse(toolbar.isHidden, "a word start, the clip still fresh")
+
+        toggle.sendActions(for: .touchUpInside)
+        XCTAssertEqual(bar.state, .paste, "back to the paste offer")
+        XCTAssertTrue(toolbar.isHidden)
+        XCTAssertFalse(bar.pasteControl.isHidden)
+        XCTAssertFalse(toggle.isHidden)
+
+        doc.isSecureTextEntry = true
+        bar.refresh()
+        XCTAssertEqual(bar.state, .autofill)
+        XCTAssertTrue(toggle.isHidden)
+        XCTAssertTrue(toolbar.isHidden)
+        XCTAssertTrue(bar.pasteControl.isHidden)
+    }
+
+    /// #622: the keyboard's toolbar sits on the keyboard's backdrop, no blur band; the
+    /// terminal's bar over Apple's keyboard keeps its blur.
+    func testOnlyTheTerminalBarBlurs() throws {
+        func effect(_ bar: ShortcutBar) throws -> UIVisualEffect? {
+            try XCTUnwrap(bar.subviews.compactMap { $0 as? UIVisualEffectView }.first).effect
+        }
+        let (_, bar, _) = rig()
+        XCTAssertNil(try effect(try XCTUnwrap(bar.toolbar)))
+        XCTAssertNotNil(try effect(ShortcutBar()))
     }
 
     /// #599: from a textarea to a login field whose traits catch up after `textDidChange`, as

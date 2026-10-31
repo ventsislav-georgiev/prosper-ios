@@ -316,8 +316,9 @@ final class ShortcutBar: UIView {
         self.keys = keys
         self.oneRow = oneRow
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.inset * 2 + Self.capHeight))
-        // Match the iOS keyboard chrome so the strip reads as part of it.
-        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
+        // Match the iOS keyboard chrome so the strip reads as part of it. `oneRow` sits on
+        // the keyboard's own backdrop: a blur there is a lighter band (#622).
+        let blur = UIVisualEffectView(effect: oneRow ? nil : UIBlurEffect(style: .systemChromeMaterial))
         blur.translatesAutoresizingMaskIntoConstraints = false
         addSubview(blur)
         NSLayoutConstraint.activate([

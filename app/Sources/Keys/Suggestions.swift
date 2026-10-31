@@ -1580,7 +1580,7 @@ final class SuggestionBar: UIView {
     }
 
     private func shows(_ fromToolbar: Bool) -> Bool {
-        fromToolbar ? toolbar?.isHidden == false : state == .paste
+        fromToolbar ? toolbar?.isHidden == false : !pasteControl.isHidden
     }
 
     private func insert(_ clip: String, fromToolbar: Bool) {
@@ -1603,12 +1603,14 @@ final class SuggestionBar: UIView {
         let slots: [Suggestions.Slot?]
         if case .slots(let s) = new { slots = s } else { slots = [nil, nil, nil] }
         let single = new == .autofill || new == .paste   // one full-width button
-        let tools = toolbar != nil && !single && showsToolbar
+        // The toolbar shows over the paste offer (it has its own Paste), never over AutoFill
+        // (#599); the toggle stays beside Paste, so the toolbar is one tap away (#622).
+        let tools = toolbar != nil && new != .autofill && showsToolbar
         autofillButton.isHidden = new != .autofill
-        pasteControl.isHidden = new != .paste
+        pasteControl.isHidden = new != .paste || tools
         toolbar?.isHidden = !tools
         if let toggle {
-            toggle.isHidden = single
+            toggle.isHidden = new == .autofill
             toggle.configuration?.image = UIImage(systemName: tools ? "ellipsis.bubble" : "command")
             toggle.accessibilityLabel = tools ? "Show suggestions" : "Show toolbar"
             setNeedsLayout()
