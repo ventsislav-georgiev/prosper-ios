@@ -2337,9 +2337,16 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// The keys shown, row by row: the letters', or the numpad's.
     var shownKeys: [[Key]] { caps.map { $0.map(\.key) } }
 
+    /// The space bar's minimum width in letter units (#643): space misses matter more than
+    /// the keys beside it. 4 is a first guess; tune it on a device.
+    static let spaceFloor: CGFloat = 4
+    /// How far the keys beside space shrink at most for `spaceFloor` (#643): 123, the language
+    /// key, the globe and a punctuation key stay above 60% of a letter. This wins over the floor.
+    static let minShrink: CGFloat = 0.6
+
     /// Horizontal slots for one row, in a row `width` wide. A letter is one unit
     /// (`columns` units and their gaps fill the width). A row of nine or more characters
-    /// stretches them to fill it. A row with space gives space the rest; a row led by a
+    /// stretches them to fill it. A row with space gives space the rest, `spaceFloor` at least; a row led by a
     /// special key (shift) pins it and the last key to the edges and centers the letters
     /// between; anything else is centered.
     static func place(_ keys: [Key], width: CGFloat, columns: Int = 10) -> [(x: CGFloat, w: CGFloat)] {
@@ -2357,11 +2364,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             }
         }
         if keys.contains(.space) {
-            let fixed = keys.filter { $0 != .space }.map(w).reduce(0, +)
-            let spaceW = width - fixed - g * CGFloat(keys.count - 1)
+            let fixed = keys.filter { $0 != .space }.map(w).reduce(0, +), gaps = g * CGFloat(keys.count - 1)
+            // Below `spaceFloor` the row's other keys give way, all by one factor (#643).
+            let s = fixed > 0 ? min(1, max(minShrink, (width - gaps - spaceFloor * u) / fixed)) : 1
+            let spaceW = width - s * fixed - gaps
             var x: CGFloat = 0
             return keys.map { k in
-                let kw = k == .space ? spaceW : w(k)
+                let kw = k == .space ? spaceW : s * w(k)
                 defer { x += kw + g }
                 return (x, kw)
             }

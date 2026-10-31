@@ -218,6 +218,66 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(short[0].x, 393 - (short[1].x + short[1].w), accuracy: 0.001)
     }
 
+    /// A crowded bottom row (123, the language key, the globe) keeps space `spaceFloor` letter
+    /// units wide: the keys beside it shrink, all by one factor, never past `minShrink`;
+    /// nothing overlaps, and a touch on a shrunk key's center lands on it (#643).
+    func testSpaceKeepsItsFloorInACrowdedBottomRow() throws {
+        for width in [375, 402] as [CGFloat] {
+            for numbers in KeyboardSettings.Numbers.allCases {
+                for language in [false, true] {
+                    for globe in [false, true] {
+                        let kb = TerminalKeyboard()
+                        kb.offersEmoji = !globe   // the app's keyboard has emoji, the extension's the globe
+                        kb.showsGlobe = globe
+                        kb.allowsNumbersKey = true
+                        kb.settings.numbers = numbers
+                        kb.languages = language ? [.english, .bulgarian] : [.english]
+                        kb.frame = CGRect(x: 0, y: 0, width: width, height: TerminalKeyboard.height)
+                        kb.layoutIfNeeded()
+                        let what = "\(width) \(numbers) language \(language) globe \(globe)"
+                        let buttons = kb.subviews.compactMap { $0 as? UIButton }.filter { !$0.isHidden }
+                        let space = try XCTUnwrap(buttons.first { $0.accessibilityLabel == "space" }, what).frame
+                        let row = buttons.filter { $0.frame.midY == space.midY }.sorted { $0.frame.minX < $1.frame.minX }
+                        let keys = try XCTUnwrap(kb.shownKeys.last)
+                        XCTAssertEqual(row.count, keys.count, what)
+                        let rowWidth = row.last!.frame.maxX - row.first!.frame.minX
+                        let u = (rowWidth - 9 * TerminalKeyboard.keyGap) / 10
+                        XCTAssertGreaterThanOrEqual(space.width, TerminalKeyboard.spaceFloor * u - 0.001, what)
+                        for (a, b) in zip(row, row.dropFirst()) {
+                            XCTAssertGreaterThanOrEqual(b.frame.minX - a.frame.maxX, TerminalKeyboard.keyGap - 0.001, "overlap: \(what)")
+                        }
+                        for (button, key) in zip(row, keys) where key != .space {
+                            XCTAssertGreaterThanOrEqual(button.frame.width, TerminalKeyboard.minShrink * u - 0.001, "\(key) \(what)")
+                            guard key != .globe else { continue }   // only its cap opens the list (`nearest`)
+                            XCTAssertEqual(kb.key(at: CGPoint(x: button.frame.midX, y: button.frame.midY)), key, what)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A bottom row that already clears `spaceFloor` is placed as before #643, pixel for pixel.
+    func testABottomRowAboveTheFloorIsUnchanged() {
+        let g = TerminalKeyboard.keyGap
+        for width in [327, 354, 392] as [CGFloat] {
+            let u = (width - 9 * g) / 10
+            for row: [TerminalKeyboard.Key] in [[.char("."), .char(","), .char("/"), .space, .char("?"), .ret],
+                                                 [.numbers, .char("."), .space, .ret], [.space, .ret]] {
+                let wide: [CGFloat] = row.map { $0 == .ret ? 2.25 * u : $0 == .numbers ? 1.5 * u : u }
+                let space = width - zip(row, wide).filter { $0.0 != .space }.map(\.1).reduce(0, +) - g * CGFloat(row.count - 1)
+                XCTAssertGreaterThanOrEqual(space, TerminalKeyboard.spaceFloor * u, "\(row) at \(width) clears the floor")
+                var x: CGFloat = 0
+                for (slot, (key, w)) in zip(TerminalKeyboard.place(row, width: width), zip(row, wide)) {
+                    let kw = key == .space ? space : w
+                    XCTAssertEqual(slot.x, x, "\(key) at \(width)")
+                    XCTAssertEqual(slot.w, kw, "\(key) at \(width)")
+                    x += kw + g
+                }
+            }
+        }
+    }
+
     func testBottomRow() {
         XCTAssertEqual(TerminalKeyboard.rows.last!,
                        [.char("."), .char(","), .char("/"), .space, .char("?"), .emoji, .ret])

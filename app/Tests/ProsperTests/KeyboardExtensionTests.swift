@@ -713,8 +713,13 @@ final class KeyboardExtensionTests: XCTestCase {
                 XCTAssertEqual(row.map { $0.accessibilityLabel ?? "" },
                                (globe ? ["next keyboard"] : []) + ["?", "/", "space", "new line"], "\(layout) \(globe)")
                 XCTAssertNil(caps["."])
-                XCTAssertEqual(space.width - wide.width, 2 * (caps["?"]!.frame.width + TerminalKeyboard.keyGap),
-                               accuracy: 0.001, "two keys' room, gaps included")
+                let room = 2 * (caps["?"]!.frame.width + TerminalKeyboard.keyGap)
+                if globe {   // the globe's default row is at `spaceFloor`, its keys shrunk (#643): less to gain
+                    XCTAssertGreaterThan(space.width, wide.width, "\(layout)")
+                    XCTAssertLessThan(space.width - wide.width, room, "\(layout)")
+                } else {
+                    XCTAssertEqual(space.width - wide.width, room, accuracy: 0.001, "two keys' room, gaps included")
+                }
                 kb.settings = KeyboardSettings()
                 XCTAssertEqual(laidOut(kb)["space"]?.frame, wide, "back to the default")
             }
