@@ -468,7 +468,7 @@ final class KeyboardToolbarTests: XCTestCase {
         let toolbar = Shortcuts.Bar.toolbar.catalog.map(\.id)
         XCTAssertEqual(toolbar, ["tab", "up", "down", "left", "right", "home", "end", "slash", "pipe", "paste", "snl",
                                  "enter", "wordNext", "wordEnd", "wordBack", "delWord", "delHome", "delEnd", "delLine",
-                                 "delAll", "copyLine", "cutLine"])
+                                 "delAll", "copyLine", "cutLine", "clips"])
         XCTAssertEqual(Set(toolbar).count, toolbar.count, "no duplicate ids")
 
         let store = try suiteStore(".terminalEdits")

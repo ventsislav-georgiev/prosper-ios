@@ -630,6 +630,11 @@ final class SuggestionBar: UIView {
     /// leading edge that picks them or the slots; both nil until then.
     private(set) var toolbar: ShortcutBar?
     private(set) var toggle: UIButton?
+    /// The clipboard history (#597), the controller's App Group store; nil in the app and
+    /// tests that don't set one. Its key shows only with it and Full Access.
+    var history: ClipboardHistory?
+    /// The history's panel over the keys while open (`showClips`).
+    private(set) var clipsPanel: ClipboardPanel?
     /// The toggle's pick, in the extension's own defaults (the suggestions' memory's), so it
     /// holds without Full Access. AutoFill shows over the toolbar whatever it says (`show`),
     /// and never changes it; the bar's Paste doesn't (`Suggestions.toolbarShown`).
@@ -707,13 +712,15 @@ final class SuggestionBar: UIView {
     /// The toolbar: `keys` (read again on `toolbar.reload()`) less those a text field
     /// can't use (`Shortcuts.hostKey`), in one row that scrolls, and the toggle before it.
     /// Paste only where the bar's own would show: with Full Access, and not in landscape.
-    /// Copy and cut line with Full Access: a keyboard writes the pasteboard only with it.
+    /// Copy and cut line with Full Access: a keyboard writes the pasteboard only with it; the
+    /// clipboard history too, with a store to keep it in (#597).
     func addToolbar(_ keys: @escaping () -> [ShortcutKey]) {
         let tools = ShortcutBar(keys: { [weak self] in
             let full = self?.suggestions.pasteboard() != nil, pastes = full && self?.suggestions.pasteFits == true
             return keys().filter { key in
                 guard let action = Shortcuts.hostKey(key.id) else { return false }
                 if case .edit(let e) = action, e.copies { return full }
+                if action == .clipboard { return full && self?.history != nil }
                 return pastes || action != .paste
             }
         }, oneRow: true)
@@ -753,6 +760,60 @@ final class SuggestionBar: UIView {
                 : Self.toLineEnd(doc.documentContextAfterInput ?? "")
             if n > 0 { keyboard.caret(dir * n) }
         case .edit(let e): edit(e, keyboard, doc)
+        case .clipboard: showClips(clipsPanel == nil)
+        }
+    }
+
+    /// The clipboard history's panel over the keys, read afresh, or the keys back (#597).
+    func showClips(_ on: Bool) {
+        clipsPanel?.removeFromSuperview()
+        clipsPanel = nil
+        guard on, let history, let pb = suggestions.pasteboard(), let keyboard, let host = keyboard.superview else { return }
+        let panel = ClipboardPanel(history: history, pasteboard: pb)
+        panel.onPick = { [weak self] in self?.pick($0) }
+        panel.onClose = { [weak self] in self?.showClips(false) }
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        host.addSubview(panel)
+        NSLayoutConstraint.activate([
+            panel.topAnchor.constraint(equalTo: keyboard.topAnchor),
+            panel.leadingAnchor.constraint(equalTo: keyboard.leadingAnchor),
+            panel.trailingAnchor.constraint(equalTo: keyboard.trailingAnchor),
+            panel.bottomAnchor.constraint(equalTo: keyboard.bottomAnchor),
+        ])
+        clipsPanel = panel
+    }
+
+    /// A history pick: on the pasteboard, and text typed at the cursor too. An image can't be
+    /// typed (a proxy takes only text), so a hint says to paste it. The keys come back.
+    private func pick(_ clip: ClipboardHistory.Clip) {
+        showClips(false)
+        guard let pb = suggestions.pasteboard(), history?.copy(clip, to: pb) == true else { return }
+        suggestions.memory.retiredClip = pb.changeCount   // never offered back as a fresh clip
+        UIDevice.current.playInputClick()
+        if let text = clip.text {
+            keyboard?.finish { [weak self] in self?.put(text) }
+        } else {
+            hint("Copied — paste it")
+        }
+    }
+
+    /// A short note over the keys that fades, read out by VoiceOver.
+    private func hint(_ text: String) {
+        UIAccessibility.post(notification: .announcement, argument: text)
+        guard let keyboard, let host = keyboard.superview else { return }
+        let label = UILabel()
+        label.text = text
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 15, weight: .medium)
+        label.textAlignment = .center
+        label.backgroundColor = TerminalKeyboard.Style.special
+        label.layer.cornerRadius = 8
+        label.layer.masksToBounds = true
+        label.frame = CGRect(x: 0, y: 0, width: label.intrinsicContentSize.width + 32, height: 36)
+        label.center = CGPoint(x: keyboard.frame.midX, y: keyboard.frame.minY + 40)
+        host.addSubview(label)
+        UIView.animate(withDuration: 0.3, delay: 1.5, options: [], animations: { label.alpha = 0 }) { _ in
+            label.removeFromSuperview()
         }
     }
 
@@ -875,6 +936,7 @@ final class SuggestionBar: UIView {
     private func keep(_ line: String, in copy: UIPasteboard) {
         copy.string = line
         suggestions.memory.retiredClip = copy.changeCount
+        history?.record(line, from: copy)
     }
 
     /// `dd` from the line's end: over the break after it, blind where the after-context stops
@@ -1408,6 +1470,7 @@ final class SuggestionBar: UIView {
     private func put(_ clip: String) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy, keyboard.writable() else { return }
         suggestions.paste(clip, in: doc)
+        if let pb = suggestions.pasteboard() { history?.record(clip, from: pb) }   // #597
         keyboard.resetWord()
         keyboard.autoCapitalize()
         refresh()

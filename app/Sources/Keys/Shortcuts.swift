@@ -87,6 +87,12 @@ enum Shortcuts {
         ShortcutKey(id: "cutLine",  label: "cut line",      kind: .bytes, systemImage: "scissors"),
     ]
 
+    /// The toolbar's clipboard history (#597). Never the terminal's: it has no field for a
+    /// picked clip to go into. Added in the editor, as the edits: the default toolbar fits a
+    /// portrait phone without scrolling, with no room for one more cap.
+    static let clipboard = ShortcutKey(id: "clips", label: "clipboard history", kind: .bytes,
+                                       systemImage: "list.clipboard")
+
     /// The send key: every terminal bar has it, and the editor can't remove it there.
     static let sendID = "enter"
 
@@ -151,7 +157,7 @@ enum Shortcuts {
         /// pty send each, nothing to hold back); on the toolbar, the keys a text field can use (`hostKey`).
         var catalog: [ShortcutKey] {
             self == .terminal ? Shortcuts.catalog + hostOnly.filter { !$0.bytes.isEmpty }
-                : (Shortcuts.catalog + hostOnly).filter { hostKey($0.id) != nil }
+                : (Shortcuts.catalog + hostOnly + [clipboard]).filter { hostKey($0.id) != nil }
         }
         /// The toolbar's: the default bar's keys it can use, in order, less send.
         var defaults: [ShortcutKey] {
@@ -197,6 +203,9 @@ enum Shortcuts {
         /// Full Access.
         case paste
         case edit(Edit)
+        /// The clipboard history's panel in the keys' place, or the keys back (#597); only
+        /// with Full Access.
+        case clipboard
     }
 
     /// nvim's motions and deletes, and its yank and cut of a line (`SuggestionBar.edit`).
@@ -223,6 +232,7 @@ enum Shortcuts {
         case "pipe": return .key(.char("|"))
         case "snl", sendID: return .key(.ret)
         case "paste": return .paste
+        case clipboard.id: return .clipboard
         case "wordNext": return .edit(.wordNext)
         case "wordEnd": return .edit(.wordEnd)
         case "wordBack": return .edit(.wordBack)
@@ -463,7 +473,7 @@ final class ShortcutBar: UIView {
 
     // Neon keycaps, matching Prosper's theme palette (theme-default/theme.json):
     // dark card fill, electric-cyan hairline border + glow, bright-cyan glyphs.
-    private enum Neon {
+    enum Neon {
         static let blue       = UIColor(hex: 0x21CCFF)   // electric cyan border/glow
         static let blueBright = UIColor(hex: 0x75EBFF)   // glyph highlight
         static let card       = UIColor(hex: 0x131923)   // keycap fill

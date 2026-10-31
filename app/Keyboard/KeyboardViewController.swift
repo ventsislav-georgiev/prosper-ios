@@ -10,7 +10,8 @@ import UIKit
 ///
 /// Launched by the system under a tight memory cap: two views, no network, the pasteboard
 /// only with Full Access (the bar's and the toolbar's Paste), nothing held beyond the
-/// keyboard, the shared spell checker and what it learned.
+/// keyboard, the shared spell checker and what it learned. The clipboard history (#597)
+/// lives on disk in the App Group, shared by both extensions (`ClipboardHistory`).
 ///
 /// Two extensions run this controller, both "Prosper", English and Bulgarian: each takes
 /// its letters and dictionary from its own Info.plist's `PrimaryLanguage`.
@@ -30,6 +31,7 @@ final class KeyboardViewController: UIInputViewController {
         keyboard.offersEmoji = false
         bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
+        bar.history = ClipboardHistory.shared()
         bar.attach(keyboard)
         bar.host(keyboard, in: view)
         // The app's editor writes them to the App Group: without Full Access, the defaults.
@@ -52,6 +54,7 @@ final class KeyboardViewController: UIInputViewController {
         keyboard.settings = settings
         bar.suggestions.settings = settings
         bar.toolbar?.reload()
+        bar.showClips(false)   // the keys first, as Gboard: the history reads afresh at its key
         sync()
     }
 
