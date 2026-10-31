@@ -101,7 +101,7 @@ struct KeyboardSettings: Equatable {
     /// row's height going to the toolbar's second row. Same keyboard height either way.
     var numbers = Numbers.row
     enum Numbers: String, CaseIterable { case row, key }
-    /// With Numbers: Key, the numpad takes the bar's height too while it shows (#625).
+    /// The numpad takes the bar's height too while it shows (#625): 123's, or the menu's (#650).
     var numpadHidesToolbar = false
     /// Portrait rows' height and gap (`TerminalKeyboard.metrics`, #583); landscape keeps its own.
     var keySize = KeySize.normal
@@ -1226,9 +1226,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// The numpad in the keys' place, or the keys back (#625): pushed in sideways in
     /// `numpadSwap`, or swapped at once under Reduce Motion. Like the emoji picker's, any
-    /// touch the caps were tracking is dropped.
+    /// touch the caps were tracking is dropped. With Numbers: Row too, from the hold menu (#650).
     func showNumpad(_ on: Bool, animated: Bool = true) {
-        guard on != showsNumpad, numbersKey || !on else { return }
+        guard on != showsNumpad else { return }
         if on, showsEmoji { showEmoji(false) }   // never both (#629)
         stopRepeat(); stopHold(); tracker.reset()
         showsNumpad = on

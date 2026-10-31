@@ -864,8 +864,8 @@ final class SuggestionBar: UIView {
 
     /// What the menu offers here (#623): each panel and the mic gated as its toolbar key
     /// (`addToolbar`), on the toolbar or not, Emoji always (#629: no API picks iOS's own),
-    /// each other language with two or more on (#624), Appearance (#641) and Next Keyboard
-    /// always. A pick closes the menu.
+    /// Numbers where no 123 key is (Numbers: Row, #650), each other language with two or more
+    /// on (#624), Appearance (#641) and Next Keyboard always. A pick closes the menu.
     var menuItems: [ToggleMenu.Item] {
         let full = suggestions.pasteboard() != nil
         var items: [ToggleMenu.Item] = []
@@ -884,6 +884,12 @@ final class SuggestionBar: UIView {
             self?.showMenu(false)
             self?.keyboard?.showEmoji(true)
         })
+        if let keyboard, !keyboard.numbersKey {
+            items.append(.init(title: "Numbers", symbol: "textformat.123") { [weak self] in
+                self?.showMenu(false)
+                self?.keyboard?.showNumpad(true)
+            })
+        }
         if let keyboard, keyboard.languages.count > 1 {
             for language in keyboard.languages where language != keyboard.layout {
                 items.append(.init(title: language.name, symbol: "character.bubble") { [weak self] in
@@ -957,10 +963,12 @@ final class SuggestionBar: UIView {
     }
 
     /// The Appearance panel over the keys, or the keys back (#641). Drawn again in a pick's new
-    /// look (`restyle`), each row where it was. Without Full Access its rows are off.
+    /// look (`restyle`), each row where it was. Without Full Access its rows are off. Its last
+    /// row scrolls clear of the keys' bottom pad (#649).
     func showAppearance(_ on: Bool) {
         guard on, let keyboard else { return cover(nil) }
         let look = AppearancePanel(settings: keyboard.settings, enabled: suggestions.pasteboard() != nil)
+        look.bottomInset = keyboard.bottomInset
         look.onPick = { [weak self] in self?.applyLook($0) }
         look.keep(appearancePanel)
         cover(look)
@@ -968,7 +976,8 @@ final class SuggestionBar: UIView {
 
     /// An Appearance pick (#641), only with Full Access, the group then the app's: each changed
     /// value stored as the app's Settings pickers store it (Match Keys is their ""), so they
-    /// follow, then the keyboard's, which restyles the keys, the bar and the panel.
+    /// follow, then the keyboard's, which restyles the keys, the bar and the panel. A Layout
+    /// pick (#650) re-lays the keys as Settings' does, and the panel is drawn again for its ring.
     private func applyLook(_ new: KeyboardSettings) {
         guard let keyboard, suggestions.pasteboard() != nil, let store = KeyboardSettings.store() else { return }
         typealias Key = KeyboardSettings.Key
@@ -976,7 +985,11 @@ final class SuggestionBar: UIView {
         if new.theme != old.theme { store.set(new.theme.rawValue, forKey: Key.theme) }
         if new.toolbarTheme != old.toolbarTheme { store.set(new.toolbarTheme?.rawValue ?? "", forKey: Key.toolbarTheme) }
         if new.accent != old.accent { store.set(new.accent.rawValue, forKey: Key.accent) }
+        if new.keySize != old.keySize { store.set(new.keySize.rawValue, forKey: Key.keySize) }
+        if new.numbers != old.numbers { store.set(new.numbers.rawValue, forKey: Key.numbers) }
+        if new.numpadHidesToolbar != old.numpadHidesToolbar { store.set(new.numpadHidesToolbar, forKey: Key.numpadHidesToolbar) }
         keyboard.settings = new
+        if appearancePanel?.settings != new { showAppearance(true) }   // no new look to redraw it (`restyle`)
     }
 
     /// The quicklinks' panel over the keys, read afresh, or the keys back (#613); Full Access only.
@@ -1890,8 +1903,9 @@ final class ToggleMenu: KeysPanel {
     }
     let items: [Item]
     private(set) var tiles: [UIButton] = []
-    /// The tiles' smaller look, under `tall` (`layoutSubviews`).
+    /// The tiles' smaller look, under `tall`, and their titles' size (`layoutSubviews`).
     private var small = false
+    private(set) var titleSize: CGFloat = 15
 
     init(items: [Item]) {
         self.items = items
@@ -1906,7 +1920,7 @@ final class ToggleMenu: KeysPanel {
             header.isLayoutMarginsRelativeArrangement = true
             header.directionalLayoutMargins = .init(top: 0, leading: 4, bottom: 0, trailing: 0)
         }
-        tiles = items.map { Self.tile($0, small: false) }
+        tiles = items.map { Self.tile($0, small: false, size: 15) }
         tiles.forEach(addSubview)
         // A button's own tap wins over its superview's recognizer, so only taps off the tiles close.
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tappedOff)))
@@ -1927,8 +1941,7 @@ final class ToggleMenu: KeysPanel {
     /// Three a row up to 72 pt tall, under the caption, 8 pt apart and in (#641). Where those rows
     /// won't fit the keys (landscape, Numbers: Key, a short Key Size with seven tiles or more),
     /// as many rows as fit at 44 pt and more a row, the tiles' badge and title smaller under `tall`.
-    ///
-    /// ponytail: the one row of landscape with Numbers: Key truncates the longest titles.
+    /// Every title as small as the widest needs to fit its tile whole (#649): landscape's one row.
     override func layoutSubviews() {
         super.layoutSubviews()
         let area = bounds.inset(by: safeAreaInsets).inset(by: UIEdgeInsets(top: 46, left: 8, bottom: 8, right: 8))
@@ -1939,14 +1952,26 @@ final class ToggleMenu: KeysPanel {
         let rows = (tiles.count + columns - 1) / columns
         let h = min(Self.tileHeight, (area.height - CGFloat(rows - 1) * gap) / CGFloat(rows))
         let w = (area.width - CGFloat(columns - 1) * gap) / CGFloat(columns)
-        if (h < Self.tall) != small {
-            small.toggle()
-            for (tile, item) in zip(tiles, items) { tile.configuration = Self.tile(item, small: small).configuration }
+        let size = Self.titleSize(items.map(\.title), small: h < Self.tall, room: w - 8)   // the tile's insets
+        if (h < Self.tall) != small || size != titleSize {
+            (small, titleSize) = (h < Self.tall, size)
+            for (tile, item) in zip(tiles, items) { tile.configuration = Self.tile(item, small: small, size: size).configuration }
         }
         for (i, tile) in tiles.enumerated() {
             tile.frame = CGRect(x: area.minX + CGFloat(i % columns) * (w + gap), y: area.minY + CGFloat(i / columns) * (h + gap),
                                 width: w, height: h)
         }
+    }
+
+    /// 15 pt, 13 `small`, less by half points till the widest of `titles` fits `room` (#649).
+    static func titleSize(_ titles: [String], small: Bool, room: CGFloat) -> CGFloat {
+        var size: CGFloat = small ? 13 : 15
+        func widest() -> CGFloat {
+            let font = UIFont.systemFont(ofSize: size, weight: .medium)
+            return titles.map { ceil(($0 as NSString).size(withAttributes: [.font: font]).width) }.max() ?? 0
+        }
+        while size > 8, widest() > room { size -= 0.5 }
+        return size
     }
 
     /// `symbol` in the accent, centred on a rounded square of it at 16%: 34 pt, 24 small.
@@ -1964,8 +1989,9 @@ final class ToggleMenu: KeysPanel {
     }
 
     /// A tile (#626): its icon in the accent on a badge of it, the title under it; `small` for a
-    /// short row (#641). The content centres, so its insets only keep it off the edges.
-    private static func tile(_ item: Item, small: Bool) -> UIButton {
+    /// short row (#641), its title at `size` (`titleSize`). The content centres, so its insets
+    /// only keep it off the edges.
+    private static func tile(_ item: Item, small: Bool, size: CGFloat) -> UIButton {
         var cfg = UIButton.Configuration.plain()
         cfg.image = badge(item.symbol, small: small)
         cfg.imagePlacement = .top
@@ -1975,7 +2001,7 @@ final class ToggleMenu: KeysPanel {
         cfg.titleLineBreakMode = .byTruncatingTail
         cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
             var a = $0
-            a.font = .systemFont(ofSize: small ? 13 : 15, weight: .medium)
+            a.font = .systemFont(ofSize: size, weight: .medium)
             a.foregroundColor = Style.label.withAlphaComponent(0.9)
             return a
         }

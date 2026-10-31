@@ -189,12 +189,12 @@ final class KeyboardLanguagesTests: XCTestCase {
     /// switches; with one, no language tile.
     func testTheMenuOffersTheOtherLanguageOnlyWithTwo() throws {
         let (kb, bar, _) = rig([.english])
-        XCTAssertEqual(bar.menuItems.map(\.title), ["Emoji", "Appearance", "Next Keyboard"])
+        XCTAssertEqual(bar.menuItems.map(\.title), ["Emoji", "Numbers", "Appearance", "Next Keyboard"])
         kb.languages = [.english, .bulgarian]
-        XCTAssertEqual(bar.menuItems.map(\.title), ["Emoji", "Български", "Appearance", "Next Keyboard"])
+        XCTAssertEqual(bar.menuItems.map(\.title), ["Emoji", "Numbers", "Български", "Appearance", "Next Keyboard"])
         try XCTUnwrap(bar.menuItems.first { $0.title == "Български" }).run()
         XCTAssertEqual(kb.layout, .bulgarian)
-        XCTAssertEqual(bar.menuItems.map(\.title), ["Emoji", "English", "Appearance", "Next Keyboard"])
+        XCTAssertEqual(bar.menuItems.map(\.title), ["Emoji", "Numbers", "English", "Appearance", "Next Keyboard"])
         for item in bar.menuItems { XCTAssertNotNil(UIImage(systemName: item.symbol), item.title) }
     }
 

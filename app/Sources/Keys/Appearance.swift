@@ -4,15 +4,18 @@ import UIKit
 /// (`SuggestionBar.showAppearance`). A Keys row of every theme, a Toolbar row of Match Keys and
 /// every theme, and the accent while the keys are Dark, Light or True Black (a Mac theme lights
 /// in its own colour, #642): each a strip that scrolls sideways, the current swatch ringed in
-/// the accent and in view. A tap hands the settings with it to `onPick`; the bar applies and
-/// stores them and draws this panel again in the new look. Without Full Access the rows are
-/// off, under a note: the keyboard can't reach the app's settings then.
+/// the accent and in view. Under them a Layout group (#650): Key Size, Numbers and Numpad Hides
+/// Toolbar, in text chips. A tap hands the settings with it to `onPick`; the bar applies and
+/// stores them and draws this panel again. Without Full Access the rows are off, under a
+/// note: the keyboard can't reach the app's settings then.
 final class AppearancePanel: KeysPanel {
     typealias Theme = KeyboardSettings.Theme
     let settings: KeyboardSettings
     var onPick: ((KeyboardSettings) -> Void)?
     /// Each row's swatches: Keys, Toolbar (Match Keys first), Accent (none for a Mac theme).
     private(set) var keys: [UIButton] = [], toolbar: [UIButton] = [], accents: [UIButton] = []
+    /// The Layout group's chips (#650): Key Size, Numbers, Numpad Hides Toolbar.
+    private(set) var sizes: [UIButton] = [], numbers: [UIButton] = [], numpad: [UIButton] = []
     let note = UILabel()
     /// The panel's own scroll and the rows', by caption.
     ///
@@ -40,14 +43,36 @@ final class AppearancePanel: KeysPanel {
                 return swatch(lit.rawValue.capitalized, dot, on: lit == accent) { $0.accent = lit }
             }
         }
+        sizes = KeyboardSettings.KeySize.allCases.map { size in
+            swatch(size.rawValue.capitalized, nil, on: size == settings.keySize) { $0.keySize = size }
+        }
+        numbers = KeyboardSettings.Numbers.allCases.map { n in
+            swatch(n.rawValue.capitalized, nil, on: n == settings.numbers) { $0.numbers = n }
+        }
+        numpad = [false, true].map { on in
+            swatch(on ? "On" : "Off", nil, on: on == settings.numpadHidesToolbar) { $0.numpadHidesToolbar = on }
+        }
         note.text = "Turn on Full Access to change the look here"
         note.textColor = Style.hint
         note.font = .systemFont(ofSize: 13)
         note.numberOfLines = 0
         note.isHidden = enabled
+        let layout = UILabel()
+        layout.text = "Layout"
+        layout.font = .systemFont(ofSize: 15, weight: .semibold)   // the panel's title's
+        layout.textColor = Style.label
+        layout.accessibilityTraits = .header
+        let group = UIStackView(arrangedSubviews: [layout])   // 12 pt in, over the captions
+        group.isLayoutMarginsRelativeArrangement = true
+        group.directionalLayoutMargins = .init(top: 6, leading: 12, bottom: 0, trailing: 12)
         var rows: [UIView] = [note]
-        for (caption, row) in [("Keys", keys), ("Toolbar", toolbar), ("Accent", accents)] where !row.isEmpty {
-            row.forEach { $0.isEnabled = enabled }
+        for (caption, row) in [("Keys", keys), ("Toolbar", toolbar), ("Accent", accents), ("Key Size", sizes),
+                               ("Numbers", numbers), ("Numpad Hides Toolbar", numpad)] where !row.isEmpty {
+            if caption == "Key Size" { rows.append(group) }
+            for b in row {
+                b.isEnabled = enabled
+                if !enabled { b.accessibilityTraits.insert(.notEnabled) }   // an explicit trait drops UIControl's (#649)
+            }
             let label = UILabel()
             let indent = NSMutableParagraphStyle()
             indent.firstLineHeadIndent = 12   // over the swatches' edge
@@ -103,6 +128,12 @@ final class AppearancePanel: KeysPanel {
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// Clears the keys' bottom pad (`TerminalKeyboard.bottomInset`) at the end of the scroll (#649).
+    var bottomInset: CGFloat {
+        get { scroll.contentInset.bottom }
+        set { scroll.contentInset.bottom = newValue }
+    }
+
     /// The strips where `old`'s were, the panel this one redraws after a pick, so a pick doesn't
     /// jump them back to the current; a row new to it centres its current.
     func keep(_ old: AppearancePanel?) {
@@ -111,15 +142,16 @@ final class AppearancePanel: KeysPanel {
         for (caption, strip) in strips { strip.start = old.strips[caption]?.contentOffset }
     }
 
-    /// A swatch (#641): `image` over its name, ringed in the accent while `on`, which VoiceOver
-    /// hears as selected. A tap: the settings with `change`.
-    private func swatch(_ name: String, _ image: UIImage, on: Bool,
+    /// A swatch (#641): `image` over its name, or the name alone (a Layout chip, #650), ringed in
+    /// the accent while `on`, which VoiceOver hears as selected. A tap: the settings with `change`.
+    private func swatch(_ name: String, _ image: UIImage?, on: Bool,
                         _ change: @escaping (inout KeyboardSettings) -> Void) -> UIButton {
         var cfg = UIButton.Configuration.plain()
         cfg.image = image
         cfg.imagePlacement = .top
         cfg.imagePadding = 2
-        cfg.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8)   // three rows in Normal's keys
+        let (v, h): (CGFloat, CGFloat) = image == nil ? (8, 14) : (4, 8)   // a chip about 30 pt tall
+        cfg.contentInsets = NSDirectionalEdgeInsets(top: v, leading: h, bottom: v, trailing: h)   // three rows in Normal's keys
         cfg.title = name
         cfg.titleLineBreakMode = .byTruncatingTail   // one line
         cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {

@@ -611,16 +611,92 @@ final class KeyboardThemeTests: XCTestCase {
         let panel = try XCTUnwrap(bar.appearancePanel)
         XCTAssertFalse(panel.note.isHidden)
         XCTAssertEqual(panel.note.text, "Turn on Full Access to change the look here")
-        let all = panel.keys + panel.toolbar + panel.accents
-        XCTAssertEqual(all.count, 24 + 25 + 6)
+        let all = panel.keys + panel.toolbar + panel.accents + panel.sizes + panel.numbers + panel.numpad
+        XCTAssertEqual(all.count, 24 + 25 + 6 + 3 + 2 + 2)
         XCTAssertFalse(all.contains { $0.isEnabled })
+        for b in all { XCTAssertTrue(b.accessibilityTraits.contains(.notEnabled), "\(b.accessibilityLabel!): VoiceOver says dimmed (#649)") }
         try tap(panel.keys, "Light")
         try tap(panel.toolbar, "Neon")
         try tap(panel.accents, "Green")
+        try tap(panel.sizes, "Large")
+        try tap(panel.numbers, "Key")
+        try tap(panel.numpad, "On")
         XCTAssertEqual(stored, [nil, nil, nil], "nothing written")
+        XCTAssertEqual(defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("keyboard.") }, [])
         XCTAssertEqual(kb.settings, KeyboardSettings())
         XCTAssertEqual(Style.palette, Style.Palette(KeyboardSettings()))
         XCTAssertTrue(bar.appearancePanel === panel, "nothing to redraw")
+        withExtendedLifetime((doc, view)) {}
+    }
+
+    /// The Layout group (#650) under the theme rows: Key Size, Numbers and Numpad Hides Toolbar
+    /// as chips, the current one ringed. A pick stores only its key as Settings does, the keys
+    /// re-lay live (taller rows; the digit row to the toolbar's band), and the panel, drawn
+    /// again over them with the pick ringed, still scrolls its last row clear of the keys' pad.
+    func testALayoutPickStoresOnlyItsKeyAndReLaysTheKeysLive() throws {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        if #available(iOS 17, *) { window.traitOverrides.verticalSizeClass = .regular }
+        window.isHidden = false
+        defer { window.isHidden = true }
+        let (kb, bar, view, doc) = try appearanceRig()
+        kb.allowsNumbersKey = true
+        kb.bottomInset = TerminalKeyboard.extensionBottomInset
+        window.addSubview(view)
+        func fit() {
+            view.frame.size.height = view.systemLayoutSizeFitting(CGSize(width: 402, height: 0), withHorizontalFittingPriority: .required,
+                                                                  verticalFittingPriority: .fittingSizeLevel).height
+            view.layoutIfNeeded()
+            view.layoutIfNeeded()
+        }
+        let keyed = [KeyboardSettings.Key.keySize, KeyboardSettings.Key.numbers, KeyboardSettings.Key.numpadHidesToolbar]
+        bar.showAppearance(true)
+        fit()
+        var panel = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(panel.sizes.map(\.accessibilityLabel), ["Normal", "Medium", "Large"])
+        XCTAssertEqual(panel.numbers.map(\.accessibilityLabel), ["Row", "Key"])
+        XCTAssertEqual(panel.numpad.map(\.accessibilityLabel), ["Off", "On"])
+        XCTAssertEqual(selected(panel.sizes) + selected(panel.numbers) + selected(panel.numpad), ["Normal", "Row", "Off"])
+        XCTAssertGreaterThan(panel.sizes[0].convert(panel.sizes[0].bounds, to: panel).minY,
+                             panel.toolbar[0].convert(panel.toolbar[0].bounds, to: panel).maxY, "under the theme rows")
+        XCTAssertEqual(panel.bottomInset, TerminalKeyboard.extensionBottomInset)
+        let normal = kb.frame.height, barHeight = bar.frame.height
+
+        try tap(panel.sizes, "Large")
+        fit()
+        XCTAssertEqual(keyed.map { defaults.object(forKey: $0) as? String }, ["large", nil, nil], "only Key Size, as Settings' picker")
+        XCTAssertEqual(stored, [nil, nil, nil])
+        XCTAssertEqual(KeyboardSettings.current().keySize, .large, "the app's Settings follow")
+        XCTAssertGreaterThan(kb.frame.height, normal + 10, "taller rows, live")
+        panel = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(selected(panel.sizes), ["Large"], "drawn again, Large ringed")
+        XCTAssertEqual(panel.sizes[2].configuration?.background.strokeWidth, 2)
+        XCTAssertEqual(panel.frame, kb.frame, "over the keys at their new height")
+
+        try tap(panel.numbers, "Key")
+        fit()
+        XCTAssertEqual(keyed.map { defaults.object(forKey: $0) as? String }, ["large", "key", nil])
+        XCTAssertTrue(kb.numbersKey)
+        XCTAssertEqual(kb.shownKeys.last?.first, .numbers, "123 on the keys")
+        let m = TerminalKeyboard.metrics(compact: false, size: .large)
+        XCTAssertEqual(bar.frame.height, barHeight + m.row + m.gap, accuracy: 0.5, "the digit row's height to the bar")
+        panel = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(selected(panel.numbers), ["Key"])
+        XCTAssertEqual(panel.frame, kb.frame)
+
+        try tap(panel.numpad, "On")
+        fit()
+        XCTAssertEqual(defaults.object(forKey: KeyboardSettings.Key.numpadHidesToolbar) as? Bool, true)
+        XCTAssertTrue(kb.settings.numpadHidesToolbar)
+        panel = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(selected(panel.numpad), ["On"])
+        XCTAssertEqual(Set(defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("keyboard.") }), Set(keyed), "nothing else")
+
+        // Scrolled to its end, the last row clears the keys' pad.
+        let scroll = try XCTUnwrap(panel.subviews.first { $0 is UIScrollView && !($0 is UITableView) } as? UIScrollView)
+        scroll.contentOffset.y = max(0, scroll.contentSize.height + scroll.adjustedContentInset.bottom - scroll.bounds.height)
+        let on = panel.numpad[1].convert(panel.numpad[1].bounds, to: panel)
+        XCTAssertLessThanOrEqual(on.maxY, panel.bounds.maxY - kb.bottomInset, "clear of the pad")
+        XCTAssertGreaterThanOrEqual(on.minY, 42, "under the header")
         withExtendedLifetime((doc, view)) {}
     }
 
@@ -642,7 +718,10 @@ final class KeyboardThemeTests: XCTestCase {
         XCTAssertEqual(panel.keys.map(\.accessibilityLabel), Theme.allCases.map(\.title))
         XCTAssertEqual(panel.toolbar.map(\.accessibilityLabel), ["Match Keys"] + Theme.allCases.map(\.title))
         XCTAssertTrue(panel.accents.isEmpty, "Violet keys are a Mac theme")
-        for b in panel.keys + panel.toolbar { XCTAssertTrue(b.accessibilityTraits.contains(.button), "\(b.accessibilityLabel!)") }
+        for b in panel.keys + panel.toolbar + panel.sizes + panel.numbers + panel.numpad {
+            XCTAssertTrue(b.accessibilityTraits.contains(.button), "\(b.accessibilityLabel!)")
+            XCTAssertFalse(b.accessibilityTraits.contains(.notEnabled), "\(b.accessibilityLabel!): on with Full Access")
+        }
         XCTAssertEqual(selected(panel.keys), ["Violet"])
         XCTAssertEqual(selected(panel.toolbar), ["Teal"])
         func strip(_ b: UIButton) throws -> UIScrollView { try XCTUnwrap(b.superview?.superview as? UIScrollView) }
@@ -661,18 +740,21 @@ final class KeyboardThemeTests: XCTestCase {
         withExtendedLifetime((doc, view)) {}
     }
 
-    /// The menu's seven or eight tiles fit the keys at every Key Size, Numbers: Key too, on a
+    /// The menu's seven to nine tiles fit the keys at every Key Size, Numbers: Key too, on a
     /// 375 pt portrait and a 750 pt landscape (its safe area off an 874 pt screen): inside the
     /// panel under its caption, none overlapping, each as tall as its content and as wide as
-    /// its title. Six in portrait keep #626's three a row at 72 pt.
-    func testTheMenuFitsSevenOrEightTilesInPortraitAndLandscape() {
-        let titles = ["Clipboard", "Snippets", "Quicklinks", "Dictate", "Emoji", "Български", "Appearance", "Next Keyboard"]
-        for count in [7, 8] {
+    /// its title, landscape's one row with Numbers: Key too (#649). Numbers is a tile with the
+    /// digit row only (#650). Six in portrait keep #626's three a row at 72 pt.
+    func testTheMenuFitsSevenToNineTilesInPortraitAndLandscape() {
+        let all = ["Clipboard", "Snippets", "Quicklinks", "Dictate", "Emoji", "Numbers", "Български", "Appearance", "Next Keyboard"]
+        for count in [7, 8, 9] {
             for compact in [false, true] {
                 for size in KeyboardSettings.KeySize.allCases {
                     for rows in [5, 4] {
+                        let titles = rows == 5 ? all : all.filter { $0 != "Numbers" }
+                        guard count <= titles.count else { continue }
                         let note = "\(count) tiles, \(compact ? "landscape" : "portrait") \(size) \(rows) rows"
-                        let menu = ToggleMenu(items: titles.prefix(count).map { .init(title: $0, symbol: "paintpalette") {} })
+                        let menu = ToggleMenu(items: titles.suffix(count).map { .init(title: $0, symbol: "paintpalette") {} })
                         menu.frame = CGRect(x: 0, y: 0, width: compact ? 750 : 375,
                                             height: TerminalKeyboard.keysHeight(compact: compact, size: size, rows: rows)
                                                 + TerminalKeyboard.extensionBottomInset)
@@ -683,17 +765,16 @@ final class KeyboardThemeTests: XCTestCase {
                             XCTAssertGreaterThanOrEqual(frame.minY, 46, "\(note): under the caption")
                             let fits = tile.intrinsicContentSize
                             XCTAssertLessThanOrEqual(fits.height, frame.height + 0.5, "\(note): \(tile.accessibilityLabel!)")
-                            // ponytail's corner (`ToggleMenu.layoutSubviews`): one row in landscape.
-                            if !(compact && rows == 4) {
-                                XCTAssertLessThanOrEqual(fits.width, frame.width + 0.5, "\(note): \(tile.accessibilityLabel!)")
-                            }
+                            XCTAssertLessThanOrEqual(fits.width, frame.width + 0.5, "\(note): \(tile.accessibilityLabel!) whole")
                         }
+                        XCTAssertGreaterThanOrEqual(menu.titleSize, 10, "\(note): still legible")
+                        if !compact { XCTAssertTrue([13, 15].contains(menu.titleSize), "\(note): portrait's sizes as they were") }
                         for (i, a) in frames.enumerated() { for b in frames[(i + 1)...] { XCTAssertFalse(a.intersects(b), note) } }
                     }
                 }
             }
         }
-        let six = ToggleMenu(items: titles.prefix(6).map { .init(title: $0, symbol: "globe") {} })
+        let six = ToggleMenu(items: all.prefix(6).map { .init(title: $0, symbol: "globe") {} })
         six.frame = CGRect(x: 0, y: 0, width: 375, height: TerminalKeyboard.keysHeight(compact: false) + TerminalKeyboard.extensionBottomInset)
         six.layoutIfNeeded()
         XCTAssertEqual(six.tiles.map(\.frame.height), Array(repeating: 72, count: 6))

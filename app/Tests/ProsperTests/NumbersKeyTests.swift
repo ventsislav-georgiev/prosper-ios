@@ -246,6 +246,44 @@ final class NumbersKeyTests: XCTestCase {
 
     // MARK: Bulgarian
 
+    /// The hold menu's Numbers (#650), beside Emoji, only where no 123 key is: it opens the
+    /// numpad as 123 does, pushed in, the bar hidden with Hide Toolbar on the Numpad and the
+    /// height kept; ABC brings the digit row, the bottom row and the bar back.
+    func testTheMenusNumbersOpensTheNumpadWithTheDigitRow() throws {
+        let (kb, bar, doc, view) = rig(numbers: .row)
+        let titles = bar.menuItems.map(\.title)
+        XCTAssertEqual(titles.firstIndex(of: "Numbers"), titles.firstIndex(of: "Emoji").map { $0 + 1 }, "next to Emoji")
+        XCTAssertNotNil(UIImage(systemName: try XCTUnwrap(bar.menuItems.first { $0.title == "Numbers" }).symbol))
+        kb.settings.numpadHidesToolbar = true
+        let total = fit(view), barHeight = bar.frame.height, letters = kb.shownKeys
+        bar.showMenu(true)
+        try XCTUnwrap(bar.menuPanel?.tiles.first { $0.accessibilityLabel == "Numbers" }).sendActions(for: .touchUpInside)
+        XCTAssertNil(bar.menuPanel, "the pick closes the menu")
+        XCTAssertTrue(kb.showsNumpad)
+        XCTAssertEqual(kb.shownKeys, TerminalKeyboard.numpadRows)
+        XCTAssertEqual((kb.layer.animation(forKey: kCATransition) as? CATransition)?.type, .push, "pushed in, as from 123")
+        XCTAssertEqual(fit(view), total, accuracy: 1, "the same keyboard height")
+        XCTAssertTrue(bar.isHidden, "Hide Toolbar on the Numpad applies")
+        try tap(kb, "7")
+        try tap(kb, "ABC")
+        XCTAssertFalse(kb.showsNumpad)
+        XCTAssertEqual(kb.shownKeys, letters, "the digit row and the bottom row back")
+        XCTAssertEqual(fit(view), total, accuracy: 1)
+        XCTAssertFalse(bar.isHidden)
+        XCTAssertEqual(bar.frame.height, barHeight, accuracy: 0.5)
+        XCTAssertEqual(doc.text, "7")
+
+        kb.settings.numbers = .key
+        XCTAssertFalse(bar.menuItems.contains { $0.title == "Numbers" }, "123 is on the keys")
+        kb.allowsNumbersKey = false
+        XCTAssertTrue(bar.menuItems.contains { $0.title == "Numbers" }, "the digit row again")
+        let app = TerminalKeyboard()   // without `allowsNumbersKey` the numpad works too
+        app.showNumpad(true, animated: false)
+        XCTAssertEqual(app.shownKeys, TerminalKeyboard.numpadRows)
+        app.press(.numbers)
+        XCTAssertEqual(app.shownKeys.first.map(chars), "1234567890")
+    }
+
     func testBulgarianHasTheKeyTooAndTheSameNumpad() throws {
         let (kb, _, doc, view) = rig(.bulgarian, numbers: .row)
         let total = fit(view)
