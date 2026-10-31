@@ -121,7 +121,7 @@ final class Suggestions {
         let before = doc.documentContextBeforeInput ?? ""
         let word = Self.currentWord(before)
         if word.isEmpty {
-            let words = memory.predict(after: Self.previousWord(before)).map { w -> String in
+            let words = memory.predict(after: Self.previousWord(before), in: layout).map { w -> String in
                 let w = display(w)
                 switch shift {
                 case .off: return w
@@ -583,13 +583,17 @@ final class TypingMemory {
     }
 
     /// The three words most often typed after `previous`, topped up with the most often
-    /// typed words overall when it has fewer followers. Lowercase.
-    func predict(after previous: String) -> [String] {
+    /// typed words overall when it has fewer followers. Lowercase. With a `layout`, only
+    /// words it types: one store holds both languages since #624, where the Bulgarian
+    /// extension had its own, so a switch showed the other's words (#635).
+    func predict(after previous: String, in layout: TerminalKeyboard.Layout? = nil) -> [String] {
         var after: [String: Int] = [:], all: [String: Int] = [:]
         let lead = previous.lowercased() + " "
+        let letters = layout.map { Set($0.letterRows.joined()) }
         for (key, n) in pairs {
             guard let space = key.firstIndex(of: " ") else { continue }
             let w = String(key[key.index(after: space)...])
+            if let letters, let first = w.first(where: \.isLetter), !letters.contains(first) { continue }
             all[w, default: 0] += n
             if key.hasPrefix(lead) { after[w, default: 0] += n }
         }

@@ -121,4 +121,28 @@ final class KeyboardLanguagesTests: XCTestCase {
         XCTAssertEqual(bar.menuItems.map(\.title), ["Emoji", "English", "Next Keyboard"])
         for item in bar.menuItems { XCTAssertNotNil(UIImage(systemName: item.symbol), item.title) }
     }
+
+    /// One store holds both languages' words: an empty field offers the shown layout's only,
+    /// the same after a switch as at a launch in it, both ways (#635).
+    func testEmptyFieldSlotsFollowASwitch() {
+        let memory = TypingMemory(defaults: defaults)
+        for (w, n) in [("the", 3), ("a", 2), ("o", 1), ("и", 3), ("да", 2), ("на", 1)] {
+            for _ in 0..<n { memory.record("", w) }
+        }
+        let (kb, bar, doc) = rig([.english, .bulgarian])
+        func slots(_ s: Suggestions) -> [String?] {
+            guard case .slots(let slots) = s.state(doc, shift: .off) else { return [] }
+            return slots.map { $0?.word }
+        }
+        let launched = { (layout: Layout) in slots(Suggestions(memory: memory, layout: layout)) }
+        XCTAssertEqual(launched(.english), ["a", "the", "o"])
+        XCTAssertEqual(launched(.bulgarian), ["да", "и", "на"])
+        kb.layout = .bulgarian
+        XCTAssertEqual(slots(bar.suggestions), ["да", "и", "на"], "Bulgarian's, as a Bulgarian launch")
+        kb.layout = .english
+        XCTAssertEqual(slots(bar.suggestions), ["a", "the", "o"], "and English's back")
+        doc.text = "д"
+        kb.layout = .bulgarian
+        XCTAssertEqual(slots(bar.suggestions), launched(.bulgarian), "mid-word too")
+    }
 }
