@@ -84,6 +84,12 @@ struct SettingsView: View {
     private var saveCopies = KeyboardSettings().saveCopies
     @AppStorage(KeyboardSettings.Key.languages, store: KeyboardSettings.store())
     private var languages = TerminalKeyboard.Layout.english.rawValue
+    @AppStorage(KeyboardSettings.Key.theme, store: KeyboardSettings.store())
+    private var theme = KeyboardSettings().theme
+    @AppStorage(KeyboardSettings.Key.accent, store: KeyboardSettings.store())
+    private var accent = KeyboardSettings().accent
+    /// A new preview each time the list shows again: a page under it may have changed the keys.
+    @State private var previewID = UUID()
     @AppStorage(Dictation.ReadyPeriod.key) private var readyPeriod = Dictation.ReadyPeriod.ten
     @ObservedObject private var dictation = DictationService.shared
     @AppStorage(AgentCommand.key) private var agentCommand = ""
@@ -196,6 +202,16 @@ struct SettingsView: View {
             // Not on the Mac: no Prosper keyboard there to read them.
             #if !targetEnvironment(macCatalyst)
             Section {
+                KeyboardPreview(settings: .current())
+                    .id(previewID)
+                    .listRowInsets(EdgeInsets())
+                    .accessibilityHidden(true)
+                Picker("Theme", selection: $theme) {
+                    ForEach(KeyboardSettings.Theme.allCases, id: \.self) { Text($0 == .black ? "True Black" : $0.rawValue.capitalized) }
+                }
+                Picker("Accent", selection: $accent) {
+                    ForEach(KeyboardSettings.Accent.allCases, id: \.self) { Text($0.rawValue.capitalized) }
+                }
                 Toggle("Auto-Capitalization", isOn: $autoCapitalization)
                 Toggle("Auto-Correction", isOn: $autoCorrection)
                 Toggle("Enable Caps Lock", isOn: $capsLock)
@@ -213,7 +229,7 @@ struct SettingsView: View {
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows. Numbers: Key swaps the digit row in other apps for a 123 key that opens a numpad, and gives the toolbar a second row in its place.")
+                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows. Numbers: Key swaps the digit row in other apps for a 123 key that opens a numpad, and gives the toolbar a second row in its place. Theme and Accent apply to both keyboards; the accent lights return, send and the toolbar's held keys.")
             }
 
             // The Prosper keyboard's languages (#624); the terminal's keyboard stays English.
@@ -307,6 +323,7 @@ struct SettingsView: View {
 
             if let error { Section { Text(error).foregroundStyle(.red).font(.callout) } }
         }
+        .onAppear { previewID = UUID() }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showLogin) { LoginView(account: account) }
@@ -337,6 +354,45 @@ struct SettingsView: View {
         defer { busy = false }
         do { try await account.deleteAccount(); error = nil }
         catch { self.error = error.localizedDescription }
+    }
+}
+
+/// The Prosper keyboard as the settings make it, drawn only (#626): its bar with the toolbar
+/// over the keys, as in other apps, following each change. No pasteboard, so no Paste or copy keys.
+struct KeyboardPreview: UIViewRepresentable {
+    let settings: KeyboardSettings
+
+    @MainActor final class Coordinator {
+        let keyboard = TerminalKeyboard()
+        let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: UserDefaults(suiteName: "keyboard.preview") ?? .standard)))
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        let kb = context.coordinator.keyboard, bar = context.coordinator.bar
+        kb.bottomInset = TerminalKeyboard.extensionBottomInset
+        kb.offersEmoji = false
+        kb.allowsNumbersKey = true
+        bar.attach(kb)
+        bar.host(kb, in: view)
+        bar.addToolbar { Shortcuts.Bar.toolbar.load() }
+        bar.showsToolbar = true
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        context.coordinator.keyboard.settings = settings
+    }
+
+    /// The width offered, the bar and keys' height at it.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIView, context: Context) -> CGSize? {
+        let width = proposal.width ?? 375
+        uiView.frame.size.width = width
+        let height = uiView.systemLayoutSizeFitting(CGSize(width: width, height: 0), withHorizontalFittingPriority: .required,
+                                                    verticalFittingPriority: .fittingSizeLevel).height
+        return CGSize(width: width, height: height)
     }
 }
 

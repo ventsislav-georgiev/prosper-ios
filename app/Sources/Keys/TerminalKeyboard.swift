@@ -59,6 +59,8 @@ struct KeyboardSettings: Equatable {
         static let languages = "keyboard.languages"
         static let numbers = "keyboard.numbers"
         static let numpadHidesToolbar = "keyboard.numpadHidesToolbar"
+        static let theme = "keyboard.theme"
+        static let accent = "keyboard.accent"
     }
 
     /// Shift on at a sentence start (`TerminalKeyboard.autoCapitalize`). Off by default.
@@ -114,6 +116,14 @@ struct KeyboardSettings: Equatable {
         }
     }
 
+    /// The keyboards' look (#626): every view they draw reads it (`TerminalKeyboard.Style`).
+    var theme = Theme.dark
+    enum Theme: String, CaseIterable { case dark, light, black }
+    /// What lights up (#626): return, the toolbar's send and lit modifiers, the panels'
+    /// highlights. None is neutral, the labels' colour.
+    var accent = Accent.violet
+    enum Accent: String, CaseIterable { case violet, blue, pink, orange, green, none }
+
     init() {}
     /// What `defaults` holds, the default for anything it doesn't; nil is all defaults.
     init(_ defaults: UserDefaults?) {
@@ -131,6 +141,8 @@ struct KeyboardSettings: Equatable {
         bottomOrder = defaults?.string(forKey: Key.bottomOrder) ?? bottomOrder
         bottomHidden = defaults?.string(forKey: Key.bottomHidden) ?? bottomHidden
         keySize = defaults?.string(forKey: Key.keySize).flatMap(KeySize.init) ?? keySize
+        theme = defaults?.string(forKey: Key.theme).flatMap(Theme.init) ?? theme
+        accent = defaults?.string(forKey: Key.accent).flatMap(Accent.init) ?? accent
         languages = Self.languages(defaults?.string(forKey: Key.languages))
     }
 
@@ -1081,9 +1093,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     var fullAccess = true
     /// The app's Keyboard settings: the extension's controller sets them when it appears,
     /// the terminal when it takes focus. A new bottom row rebuilds the caps; a new key size
-    /// resizes them.
+    /// resizes them; a new theme or accent becomes every view's (`Style.palette`) and redraws
+    /// what this keyboard drew with another (`restyle`).
     var settings = KeyboardSettings() {
         didSet {
+            Style.palette = Style.Palette(settings)
+            if Style.palette != drawn { restyle() }
             if settings.numbers != oldValue.numbers { return numbersChanged() }
             if settings.bottomRow != oldValue.bottomRow { build() }
             if settings.keySize != oldValue.keySize { fitHeight(); setNeedsLayout(); rowsChanged?() }
@@ -1108,6 +1123,16 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     var lentHeight: CGFloat = 0 { didSet { if lentHeight != oldValue { fitHeight(); setNeedsLayout() } } }
     /// The rows changed what the bar should take: Numbers, the numpad, Key Size, the size class.
     var rowsChanged: (() -> Void)?
+    /// The palette the caps were built with (`build`), and the bar's redraw for a new one (#626).
+    private var drawn: Style.Palette?
+    var restyled: (() -> Void)?
+
+    /// The caps rebuilt in `Style.palette`, the picker dropped till it next opens, the bar told.
+    private func restyle() {
+        if emojiPicker?.isHidden == true { emojiPicker?.removeFromSuperview(); emojiPicker = nil }
+        build()
+        restyled?()
+    }
 
     private func numbersChanged() {
         if !numbersKey { showsNumpad = false }
@@ -1241,7 +1266,6 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.tallest), inputViewStyle: .keyboard)
         allowsSelfSizing = true
         isMultipleTouchEnabled = true
-        overrideUserInterfaceStyle = .dark
         addLayoutGuide(keysArea)
         heightConstraint = heightAnchor.constraint(equalToConstant: Self.height)
         heightConstraint.priority = .required - 1
@@ -1739,22 +1763,100 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     // MARK: - Caps
 
-    /// Shared with the extension's `SuggestionBar`, so the bar matches the keys.
+    /// Shared with the extension's `SuggestionBar`, its toolbar and panels, so they match the
+    /// keys. The colours are the theme's (#626): `palette`, the settings the last keyboard
+    /// took (`settings`), first read from the App Group.
     enum Style {
-        static let key = UIColor(white: 0.42, alpha: 1)          // ~#6B6B6B
-        static let keyPressed = UIColor(white: 0.58, alpha: 1)
-        static let special = UIColor(white: 0.27, alpha: 1)      // ~#454545
-        static let specialPressed = UIColor(white: 0.42, alpha: 1)
-        /// Behind the extension's bar and keys (`SuggestionBar.host`): dark in light apps too.
-        static let backdrop = UIColor(white: 0.13, alpha: 1)
-        static let hint = UIColor(white: 1, alpha: 0.6)           // secondary label
+        static var palette = Palette(.current())
+        /// Letters, space and the numpad's digits: the raised caps.
+        static var key: UIColor { palette.key }
+        static var keyPressed: UIColor { palette.keyPressed }
+        /// Shift, delete and the digit row.
+        static var special: UIColor { palette.special }
+        static var specialPressed: UIColor { palette.specialPressed }
+        /// The toolbar's caps, the menu's tiles, the panels' cards: `special`, white in Light.
+        static var surface: UIColor { palette.surface }
+        static var surfacePressed: UIColor { palette.surfacePressed }
+        /// Behind the extension's bar and keys (`SuggestionBar.host`): its own in light apps too.
+        static var backdrop: UIColor { palette.backdrop }
+        static var label: UIColor { palette.label }
+        static var hint: UIColor { palette.hint }             // secondary label
+        /// A cap's border and the panels' separators.
+        static var hairline: UIColor { palette.hairline }
+        /// The accent (`KeyboardSettings.accent`), its gradient's end on a filled cap
+        /// (`wash`), and a label on it.
+        static var accent: UIColor { palette.accent }
+        static var onAccent: UIColor { palette.onAccent }
+        static var wash: [CGColor] { [palette.accent.cgColor, palette.accentEnd.cgColor] }
+        /// `wash` as an image to stretch over a cap (`UIBackgroundConfiguration.image`).
+        static var washImage: UIImage {
+            let g = CAGradientLayer()
+            g.colors = wash
+            g.frame = CGRect(x: 0, y: 0, width: 1, height: 36)
+            return UIGraphicsImageRenderer(bounds: g.bounds).image { g.render(in: $0.cgContext) }
+        }
+        /// The toolbar's and the panels' glyphs.
+        static var icon: UIColor { palette.label.withAlphaComponent(0.85) }
+        static let radius: CGFloat = 8
         static let hintFont = UIFont.systemFont(ofSize: 10)
         static let letterFont = UIFont.systemFont(ofSize: 22)
         static let wordFont = UIFont.systemFont(ofSize: 16)
         static let symbol = UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+
+        struct Palette: Equatable {
+            var key, keyPressed, special, specialPressed, surface, surfacePressed, backdrop, label, hint, hairline: UIColor
+            var accent = UIColor.clear, accentEnd = UIColor.clear, onAccent = UIColor.white
+            var style = UIUserInterfaceStyle.dark
+
+            static let dark = Palette(key: UIColor(hex: 0x2B2D34), keyPressed: UIColor(hex: 0x3B3E47),
+                                      special: UIColor(hex: 0x1D1F25), specialPressed: UIColor(hex: 0x2B2D34),
+                                      backdrop: UIColor(hex: 0x101115), label: UIColor(hex: 0xF2F3F5),
+                                      hint: UIColor(white: 1, alpha: 0.55), hairline: UIColor(white: 1, alpha: 0.07))
+            static let light = Palette(key: .white, keyPressed: UIColor(hex: 0xADB1BA),
+                                       special: UIColor(hex: 0xADB1BA), specialPressed: .white,
+                                       backdrop: UIColor(hex: 0xD1D4DA), label: UIColor(hex: 0x111111),
+                                       hint: UIColor(white: 0, alpha: 0.5), hairline: UIColor(white: 0, alpha: 0.06),
+                                       surface: UIColor(hex: 0xFFFFFF),   // not .white: a table maps that to its own dynamic colour
+                                       surfacePressed: UIColor(hex: 0xE4E6EA), style: .light)
+            static let black = Palette(key: UIColor(hex: 0x1C1C1E), keyPressed: UIColor(hex: 0x2C2C2E),
+                                       special: UIColor(hex: 0x121214), specialPressed: UIColor(hex: 0x1C1C1E),
+                                       backdrop: .black, label: UIColor(hex: 0xF2F3F5),
+                                       hint: UIColor(white: 1, alpha: 0.55), hairline: UIColor(white: 1, alpha: 0.07))
+
+            init(key: UIColor, keyPressed: UIColor, special: UIColor, specialPressed: UIColor, backdrop: UIColor,
+                 label: UIColor, hint: UIColor, hairline: UIColor, surface: UIColor? = nil, surfacePressed: UIColor? = nil,
+                 style: UIUserInterfaceStyle = .dark) {
+                (self.key, self.keyPressed, self.special, self.specialPressed) = (key, keyPressed, special, specialPressed)
+                (self.surface, self.surfacePressed) = (surface ?? special, surfacePressed ?? specialPressed)
+                (self.backdrop, self.label, self.hint, self.hairline, self.style) = (backdrop, label, hint, hairline, style)
+            }
+
+            init(_ settings: KeyboardSettings) {
+                switch settings.theme {
+                case .dark: self = .dark
+                case .light: self = .light
+                case .black: self = .black
+                }
+                let ends: (UInt32, UInt32)
+                switch settings.accent {
+                case .violet: ends = (0x8B7CFF, 0x5E8BFF)
+                case .blue: ends = (0x4C8DFF, 0x2F6BFF)
+                case .pink: ends = (0xFF5FA2, 0xE5408A)
+                case .orange: ends = (0xFF9F43, 0xFF7A30)
+                case .green: ends = (0x34D399, 0x10B981)
+                case .none:   // the labels' colour, on the backdrop's
+                    (accent, accentEnd, onAccent) = (label, label.withAlphaComponent(0.85), backdrop)
+                    return
+                }
+                (accent, accentEnd) = (UIColor(hex: ends.0), UIColor(hex: ends.1))
+            }
+        }
     }
 
     private func build() {
+        drawn = Style.palette
+        overrideUserInterfaceStyle = Style.palette.style
+        backgroundColor = Style.backdrop   // the app's too, over the system's (#626)
         hidePreview()
         caps.joined().forEach { $0.removeFromSuperview() }
         var rows = layout.rows
@@ -1779,6 +1881,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
         cap.fill = plain ? Style.key : Style.special
         cap.pressedFill = plain ? Style.keyPressed : Style.specialPressed
+        if key == .ret { cap.wash() }   // the accent's (#626)
         cap.accessibilityTraits = .keyboardKey
         if key == .globe {
             // The one cap that takes its own touches: `handleInputModeList` wants a
@@ -2297,14 +2400,12 @@ extension TerminalKeyboard {
         init() {
             super.init(frame: .zero)
             isUserInteractionEnabled = false
-            shape.fillColor = Style.key.cgColor
             shape.shadowColor = UIColor.black.cgColor
             shape.shadowOpacity = 0.45
             shape.shadowRadius = 3
             shape.shadowOffset = CGSize(width: 0, height: 1)
             layer.addSublayer(shape)
             label.font = .systemFont(ofSize: 32)
-            label.textColor = .white
             label.textAlignment = .center
             addSubview(label)
         }
@@ -2317,8 +2418,10 @@ extension TerminalKeyboard {
             let bubble = CGRect(x: x, y: key.minY - rise, width: w, height: rise + 8)
             frame = bubble.union(key)
             let local = { (r: CGRect) in r.offsetBy(dx: -self.frame.minX, dy: -self.frame.minY) }
-            let path = UIBezierPath(roundedRect: local(bubble), cornerRadius: 9)
-            path.append(UIBezierPath(roundedRect: local(key), cornerRadius: 6))
+            let path = UIBezierPath(roundedRect: local(bubble), cornerRadius: 10)
+            path.append(UIBezierPath(roundedRect: local(key), cornerRadius: Style.radius))
+            shape.fillColor = Style.key.cgColor   // the theme's, as it is now (#626)
+            label.textColor = Style.label
             shape.path = path.cgPath
             shape.shadowPath = path.cgPath
             label.text = text
@@ -2328,24 +2431,32 @@ extension TerminalKeyboard {
 }
 
 /// One key, drawn only: flat fill that lightens while `isHighlighted` (set by the
-/// keyboard's touch tracking), a hairline bottom shadow like the system keys, and the
-/// hold symbol's `hint` in the top-right corner. Touches go through to the keyboard view.
+/// keyboard's touch tracking), a hairline border, a 1 px top highlight and a crisp bottom
+/// shadow like the system keys (#626), and the hold symbol's `hint` in the top-right corner.
+/// Touches go through to the keyboard view. Its colours are `Style`'s as it's made.
 private final class Cap: UIButton {
+    typealias Style = TerminalKeyboard.Style
     let key: TerminalKeyboard.Key
     var fill: UIColor = .gray { didSet { refill() } }
     var pressedFill: UIColor = .lightGray
     let hint = UILabel()
+    private let shine = CALayer()
+    /// The accent's gradient over the fill while not pressed (`wash`): return's.
+    private var gradient: CAGradientLayer?
 
     init(key: TerminalKeyboard.Key) {
         self.key = key
         super.init(frame: .zero)
-        layer.cornerRadius = 6
+        layer.cornerRadius = Style.radius
+        layer.borderColor = Style.hairline.cgColor
         layer.shadowColor = UIColor.black.cgColor
         layer.shadowOpacity = 0.35
         layer.shadowOffset = CGSize(width: 0, height: 1)
         layer.shadowRadius = 0
-        setTitleColor(.white, for: .normal)
-        tintColor = .white
+        shine.backgroundColor = UIColor(white: 1, alpha: Style.palette.style == .light ? 0.5 : 0.08).cgColor
+        layer.addSublayer(shine)
+        setTitleColor(Style.label, for: .normal)
+        tintColor = Style.label
         titleLabel?.adjustsFontSizeToFitWidth = true   // a long return title ("emergency")
         titleLabel?.minimumScaleFactor = 0.5
         isUserInteractionEnabled = false
@@ -2353,15 +2464,39 @@ private final class Cap: UIButton {
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// Filled with the accent: its gradient, a lighter press, the label on it.
+    func wash() {
+        let g = CAGradientLayer()
+        g.colors = Style.wash
+        g.cornerRadius = Style.radius
+        layer.insertSublayer(g, at: 0)
+        gradient = g
+        fill = Style.accent
+        pressedFill = Style.accent.withAlphaComponent(0.75)
+        setTitleColor(Style.onAccent, for: .normal)
+        tintColor = Style.onAccent
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
+        let px = 1 / max(traitCollection.displayScale, 1)
+        layer.borderWidth = px
+        shine.frame = CGRect(x: Style.radius, y: px, width: max(0, bounds.width - 2 * Style.radius), height: px)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let gradient { layer.insertSublayer(gradient, at: 0) }   // under the image UIButton adds at 0
+        gradient?.frame = bounds
+        CATransaction.commit()
         hint.sizeToFit()
         // Tucked into the corner: at 375 pt a 22 pt M or Z reaches within 3 pt of it.
         hint.frame.origin = CGPoint(x: bounds.maxX - hint.frame.width - 2.5, y: 0)
     }
 
     override var isHighlighted: Bool { didSet { refill() } }
-    private func refill() { backgroundColor = isHighlighted ? pressedFill : fill }
+    private func refill() {
+        backgroundColor = isHighlighted ? pressedFill : fill
+        gradient?.isHidden = isHighlighted
+    }
 
     /// VoiceOver's double-tap: the cap has no actions of its own to fire.
     var activate: (() -> Void)?

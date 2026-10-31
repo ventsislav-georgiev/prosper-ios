@@ -530,15 +530,9 @@ final class ShortcutBar: UIView {
         caps.forEach { $0.accessibilityTraits = capsEnabled ? .button : [.button, .notEnabled] }
     }
 
-    // Neon keycaps, matching Prosper's theme palette (theme-default/theme.json):
-    // dark card fill, electric-cyan hairline border + glow, bright-cyan glyphs.
-    enum Neon {
-        static let blue       = UIColor(hex: 0x21CCFF)   // electric cyan border/glow
-        static let blueBright = UIColor(hex: 0x75EBFF)   // glyph highlight
-        static let card       = UIColor(hex: 0x131923)   // keycap fill
-        static let pressed    = UIColor(hex: 0x24405A)   // keycap fill under the finger
-        static let text       = UIColor(hex: 0xE8F2FC)   // primary text
-    }
+    // The keyboard's caps (#626): the theme's special fill, a hairline border, a crisp
+    // bottom shadow, no glow; the accent only on send and a lit modifier.
+    private typealias Style = TerminalKeyboard.Style
     private static let capFont: UIFont = {
         let base = UIFont.systemFont(ofSize: 15, weight: .medium)
         guard let d = base.fontDescriptor.withDesign(.rounded) else { return base }
@@ -546,7 +540,7 @@ final class ShortcutBar: UIView {
     }()
     private func makeButton(_ key: ShortcutKey) -> KeyCapButton {
         var cfg = UIButton.Configuration.plain()
-        cfg.baseForegroundColor = Neon.blueBright
+        cfg.baseForegroundColor = Style.icon
         cfg.contentInsets = .init(top: 5, leading: KeyCapButton.padding, bottom: 5, trailing: KeyCapButton.padding)
         if let sym = key.systemImage {
             cfg.image = UIImage(systemName: sym,
@@ -555,25 +549,22 @@ final class ShortcutBar: UIView {
             cfg.title = key.label
             cfg.titleTextAttributesTransformer = .init { var c = $0; c.font = Self.capFont; return c }
         }
-        cfg.background.backgroundColor = Neon.card
-        cfg.background.cornerRadius = 7
-        cfg.cornerStyle = .fixed     // .dynamic grows the radius with the text size; Paste's stays 7
-        cfg.background.strokeColor = Neon.blue.withAlphaComponent(0.55)
+        cfg.background.backgroundColor = Style.surface
+        cfg.background.cornerRadius = Style.radius
+        cfg.cornerStyle = .fixed     // .dynamic grows the radius with the text size; Paste's stays put
+        cfg.background.strokeColor = Style.hairline
         cfg.background.strokeWidth = 1
-        if key.id == Shortcuts.sendID {                 // the send key's outer stroke, brighter
-            cfg.background.strokeColor = Neon.blue
-            cfg.background.strokeWidth = 1.5
+        let send = key.id == Shortcuts.sendID   // the toolbar's action key: the accent (#626)
+        if send {
+            cfg.baseForegroundColor = Style.onAccent
+            cfg.background.image = Style.washImage
+            cfg.background.imageContentMode = .scaleToFill
         }
         let b = KeyCapButton(configuration: cfg)
         b.accessibilityLabel = key.label   // an icon cap would otherwise read its SF Symbol name
-        b.idleFill = Neon.card
-        b.pressedFill = Neon.pressed
-        // Neon halo.
-        b.layer.shadowColor = Neon.blue.cgColor
-        b.layer.shadowOpacity = 0.5
-        b.layer.shadowRadius = 5
-        b.layer.shadowOffset = .zero
-        b.layer.masksToBounds = false
+        b.idleFill = send ? Style.accent : Style.surface
+        b.pressedFill = send ? Style.accent : Style.surfacePressed
+        Self.shade(b)
         // Tap on touch-DOWN, like the keyboard: feedback has to land under the finger,
         // not on release. The key itself still fires on touchUpInside.
         b.addAction(UIAction { [weak self] _ in self?.tap() }, for: .touchDown)
@@ -587,7 +578,7 @@ final class ShortcutBar: UIView {
             // the filled cap — "stays on past the next key".
             let led = UIView()
             led.isUserInteractionEnabled = false
-            led.backgroundColor = UIColor(hex: 0x05080D)
+            led.backgroundColor = Style.onAccent
             led.layer.cornerRadius = 1
             led.isHidden = true
             led.translatesAutoresizingMaskIntoConstraints = false
@@ -600,27 +591,17 @@ final class ShortcutBar: UIView {
             ])
             b.led = led
         }
-        if key.id == Shortcuts.sendID {
-            // The send key outshines the rest: a doubled neon border (an inner ring inside
-            // the outer stroke) and a stronger halo.
-            let ring = UIView()
-            ring.isUserInteractionEnabled = false
-            ring.layer.borderColor = Neon.blueBright.cgColor
-            ring.layer.borderWidth = 1
-            ring.layer.cornerRadius = 4.5
-            ring.translatesAutoresizingMaskIntoConstraints = false
-            b.addSubview(ring)
-            NSLayoutConstraint.activate([
-                ring.leadingAnchor.constraint(equalTo: b.leadingAnchor, constant: 2.5),
-                ring.trailingAnchor.constraint(equalTo: b.trailingAnchor, constant: -2.5),
-                ring.topAnchor.constraint(equalTo: b.topAnchor, constant: 2.5),
-                ring.bottomAnchor.constraint(equalTo: b.bottomAnchor, constant: -2.5),
-            ])
-            b.ring = ring
-            b.layer.shadowRadius = 7
-            b.idleGlow = 0.85
-        }
         return b
+    }
+
+    /// The keys' crisp 1 pt bottom shadow, no glow (#626).
+    static func shade(_ v: UIView) {
+        v.layer.shadowColor = UIColor.black.cgColor
+        v.layer.shadowOpacity = 0.35
+        v.layer.shadowRadius = 0
+        v.layer.shadowOffset = CGSize(width: 0, height: 1)
+        v.layer.masksToBounds = false
+        (v as? KeyCapButton)?.idleGlow = 0.35
     }
 
     /// The system's secure Paste as a cap: a tap hands the clip to `paste(itemProviders:)`,
@@ -631,32 +612,28 @@ final class ShortcutBar: UIView {
     private func makePasteControl() -> UIView {
         let config = UIPasteControl.Configuration()
         config.displayMode = .iconOnly
-        config.baseForegroundColor = Neon.blueBright
-        config.baseBackgroundColor = Neon.card
+        config.baseForegroundColor = Style.icon
+        config.baseBackgroundColor = Style.surface
         config.cornerStyle = .fixed
-        config.cornerRadius = 6      // concentric inside the cap's 7, 1 pt in
+        config.cornerRadius = Style.radius - 1   // concentric inside the cap's, 1 pt in
         let control = UIPasteControl(configuration: config)
         control.maximumContentSizeCategory = .large
         control.target = self
         return pasteCap(around: control)
     }
 
-    /// A cap like `makeButton`'s (fill, 1 pt border, radius, halo) with `control` inside it,
+    /// A cap like `makeButton`'s (fill, 1 pt border, radius, shadow) with `control` inside it,
     /// 1 pt in at the sides and as near 1 pt as its own height allows above and below, so
     /// the border shows. Nothing goes over the control: the secure control refuses taps
     /// when covered. Its intrinsic height (34.3 pt at Large) is required — under its
     /// content the control draws blank. 44 pt wide.
     private func pasteCap(around control: UIView) -> UIView {
         let cap = UIView()
-        cap.backgroundColor = Neon.card
-        cap.layer.cornerRadius = 7
+        cap.backgroundColor = Style.surface
+        cap.layer.cornerRadius = Style.radius
         cap.layer.borderWidth = 1
-        cap.layer.borderColor = Neon.blue.withAlphaComponent(0.55).cgColor
-        cap.layer.shadowColor = Neon.blue.cgColor
-        cap.layer.shadowOpacity = 0.5
-        cap.layer.shadowRadius = 5
-        cap.layer.shadowOffset = .zero
-        cap.layer.masksToBounds = false
+        cap.layer.borderColor = Style.hairline.cgColor
+        Self.shade(cap)
         control.translatesAutoresizingMaskIntoConstraints = false
         control.setContentCompressionResistancePriority(.required, for: .vertical)
         cap.addSubview(control)
@@ -673,20 +650,18 @@ final class ShortcutBar: UIView {
         return cap
     }
 
-    /// once = solid cyan fill + dark glyph; locked = the once look plus the dark bar under
-    /// the label and a slightly stronger halo; off = like the rest.
+    /// once = the accent's fill and its glyph colour (#626); locked = the once look plus a bar
+    /// in that colour under the label; off = like the rest.
     private func refreshModifiers() {
         for (kind, b) in modifierCaps {
             guard var cfg = b.configuration else { continue }
             let mode = modes[kind] ?? .off
             let on = mode != .off
-            cfg.baseForegroundColor = on ? UIColor(hex: 0x05080D) : Neon.blueBright
-            cfg.background.strokeColor = Neon.blue.withAlphaComponent(on ? 1 : 0.55)
+            cfg.baseForegroundColor = on ? Style.onAccent : Style.icon
+            cfg.background.image = on ? Style.washImage : nil
             b.configuration = cfg
-            b.pressedFill = on ? Neon.blueBright : Neon.pressed
-            b.idleFill = on ? Neon.blue : Neon.card      // applies the fill
-            b.idleGlow = mode == .off ? 0.5 : mode == .once ? 0.9 : 1
-            b.layer.shadowRadius = mode == .locked ? 6 : 5
+            b.pressedFill = on ? Style.accent : Style.surfacePressed
+            b.idleFill = on ? Style.accent : Style.surface      // applies the fill
             b.led?.isHidden = mode != .locked
             b.accessibilityValue = mode == .once ? "on" : mode == .locked ? "locked" : nil
         }
@@ -701,15 +676,15 @@ final class ShortcutBar: UIView {
     }
 }
 
-/// A keycap that answers the finger: the fill lifts, the cap sinks a hair and the halo
-/// flares on touch-down, then springs back — the keyboard's own press language. Purely
+/// A keycap that answers the finger: the fill lifts, the cap sinks a hair and its shadow
+/// deepens on touch-down, then springs back — the keyboard's own press language. Purely
 /// visual; the haptic is fired by the bar, which owns the one warm generator.
 final class KeyCapButton: UIButton {
     /// Resting fill. Setting it re-applies immediately, so the ctrl cap can flip between
     /// armed and idle without knowing whether it's mid-press.
     var idleFill: UIColor = .clear { didSet { applyFill() } }
     var pressedFill: UIColor = .clear
-    /// Resting halo strength — armed ctrl glows harder than the rest.
+    /// Resting shadow strength.
     var idleGlow: Float = 0.5 { didSet { if !isHighlighted { layer.shadowOpacity = idleGlow } } }
     /// Side padding around the glyph at natural width.
     static let padding: CGFloat = 8
@@ -729,9 +704,8 @@ final class KeyCapButton: UIButton {
             invalidateIntrinsicContentSize()
         }
     }
-    /// A modifier cap's locked light, and the send cap's inner ring; nil on other caps.
+    /// A modifier cap's locked light; nil on other caps.
     var led: UIView?
-    var ring: UIView?
     /// The width the cap's content wants, ignoring `columnWidth` — never narrower than the
     /// 36pt cap is tall, so a lone arrow or ^C starts square (a squeeze can still take it
     /// to about 34x36, 31x36 in `oneRow`).
@@ -770,7 +744,7 @@ final class KeyCapButton: UIButton {
     }
 }
 
-private extension UIColor {
+extension UIColor {
     convenience init(hex: UInt32) {
         self.init(red:   CGFloat((hex >> 16) & 0xff) / 255,
                   green: CGFloat((hex >> 8)  & 0xff) / 255,

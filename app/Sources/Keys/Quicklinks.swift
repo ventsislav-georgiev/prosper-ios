@@ -181,15 +181,13 @@ final class QuicklinkPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
         let link = sections[indexPath.section].links[indexPath.row]
         let off = unavailable(link)
         let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-        cell.backgroundColor = .clear
         cell.selectionStyle = off == nil ? .default : .none
         var content = cell.defaultContentConfiguration()
+        Self.card(cell, &content, off: off != nil)
         content.text = link.name
-        content.textProperties.color = off == nil ? .white : TerminalKeyboard.Style.hint
         content.textProperties.font = .systemFont(ofSize: 15, weight: .medium)
         content.secondaryText = off ?? link.url
         content.secondaryTextProperties.numberOfLines = 1
-        content.secondaryTextProperties.color = TerminalKeyboard.Style.hint
         cell.contentConfiguration = content
         // One VoiceOver label, the name then the URL's host (#631).
         cell.accessibilityLabel = [link.name, URL(string: link.url)?.host].compactMap { $0 }.joined(separator: ", ")

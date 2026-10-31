@@ -284,7 +284,7 @@ final class KeyboardToolbarTests: XCTestCase {
     }
 
     /// A tap still switches the toolbar and the suggestions, and opens no menu; with the menu
-    /// open it only closes it, as the keyboard button and a tap off the tiles do.
+    /// open it only closes it, as a tap off the tiles does. The menu has no keyboard button (#626).
     func testATapOnTheToggleSwitchesOrClosesTheMenu() throws {
         let (kb, bar, _, view, _) = try hostedRig()
         let toggle = try XCTUnwrap(bar.toggle)
@@ -296,8 +296,7 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertNil(bar.menuPanel)
         XCTAssertTrue(bar.showsToolbar, "the tap closed the menu, no switch")
         bar.showMenu(true)
-        try XCTUnwrap(bar.menuPanel).backButton.sendActions(for: .touchUpInside)
-        XCTAssertNil(bar.menuPanel, "the keyboard button")
+        XCTAssertTrue(try XCTUnwrap(bar.menuPanel).backButton.isHidden, "a caption instead")
         withExtendedLifetime((kb, view)) {}
     }
 

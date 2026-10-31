@@ -63,17 +63,19 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(kb.shift.mode, .once, "nor does a digit spend it")
     }
 
-    /// The digit row is dim like shift, delete and return; letters and punctuation aren't.
+    /// The digit row is dim like shift and delete; letters and punctuation aren't; return
+    /// takes the accent (#626).
     func testDigitsUseTheSpecialColor() throws {
         let (_, caps) = laidOut()
         let special = try XCTUnwrap(caps["shift"]).backgroundColor
         let plain = try XCTUnwrap(caps["q"]).backgroundColor
         XCTAssertNotEqual(special, plain)
         for d in "1234567890" { XCTAssertEqual(caps[String(d)]?.backgroundColor, special, "\(d)") }
-        for k in ["delete", "new line"] { XCTAssertEqual(caps[k]?.backgroundColor, special, k) }
+        XCTAssertEqual(caps["delete"]?.backgroundColor, special)
+        XCTAssertEqual(caps["new line"]?.backgroundColor, TerminalKeyboard.Style.accent)
         for k in ["a", "m", ".", ",", "?", "space"] { XCTAssertEqual(caps[k]?.backgroundColor, plain, k) }
         XCTAssertEqual(try XCTUnwrap(caps["5"]).title(for: .normal), "5")
-        XCTAssertEqual(try XCTUnwrap(caps["5"]).titleColor(for: .normal), .white)
+        XCTAssertEqual(try XCTUnwrap(caps["5"]).titleColor(for: .normal), TerminalKeyboard.Style.label)
     }
 
     /// Each hinted cap draws its symbol small in its top-right quadrant, the letter still

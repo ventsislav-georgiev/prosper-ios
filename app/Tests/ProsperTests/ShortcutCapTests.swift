@@ -242,7 +242,7 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(ShortcutKey.Kind(rawValue: "ctrl"), .ctrl, "saved bars encode ctrl as \"ctrl\"")
     }
 
-    /// once = solid fill, read as "on"; locked = the same fill plus a dark bar under the
+    /// once = the accent's fill, read as "on"; locked = the same fill plus a bar under the
     /// label, read as "locked"; off = no fill, no bar, no value.
     @MainActor
     func testLockedModifierShowsItsLight() throws {
@@ -262,12 +262,12 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(alt.accessibilityValue, "locked")
         XCTAssertNil(shift.accessibilityValue)
         XCTAssertNotEqual(ctrl.configuration?.background.backgroundColor, idleFill, "once fills the cap")
+        XCTAssertEqual(ctrl.configuration?.background.backgroundColor, TerminalKeyboard.Style.accent, "with the accent (#626)")
         XCTAssertEqual(alt.configuration?.background.backgroundColor, ctrl.configuration?.background.backgroundColor,
                        "locked fills the cap like once")
         XCTAssertEqual(shift.configuration?.background.backgroundColor, idleFill, "off keeps the dark card")
-        XCTAssertEqual(altLED.backgroundColor, ctrl.configuration?.baseForegroundColor, "the bar is the dark glyph colour")
+        XCTAssertEqual(altLED.backgroundColor, ctrl.configuration?.baseForegroundColor, "the bar is the lit glyph's colour")
         XCTAssertEqual(alt.configuration?.baseForegroundColor, ctrl.configuration?.baseForegroundColor, "locked glyph is the once glyph")
-        XCTAssertGreaterThan(alt.layer.shadowOpacity, ctrl.layer.shadowOpacity - 0.01, "locked glows at least as hard")
 
         // The bar: short, centered under the label, inside the cap.
         let led = altLED.frame
@@ -288,9 +288,9 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(altLED.frame, led, "the bar keeps its place through mode changes")
     }
 
-    /// The send key: Slack's paper plane, labelled "send", with a doubled border.
+    /// The send key: Slack's paper plane, labelled "send", filled with the accent (#626).
     @MainActor
-    func testSendCapIsAPaperPlaneWithADoubleBorder() throws {
+    func testSendCapIsAPaperPlaneInTheAccent() throws {
         let send = try key("enter")
         XCTAssertEqual(send.label, "send")
         XCTAssertEqual(send.systemImage, "paperplane.fill")
@@ -301,14 +301,11 @@ final class ShortcutCapTests: XCTestCase {
         let cap = try XCTUnwrap(caps.first { $0.accessibilityLabel == "send" })
         let esc = try XCTUnwrap(caps.first { $0.accessibilityLabel == "esc" })
         XCTAssertNotNil(cap.configuration?.image, "the send cap shows the paper plane")
-        let ring = try XCTUnwrap(cap.ring, "no inner ring")
-        XCTAssertNil(esc.ring)
-        XCTAssertGreaterThan(ring.layer.borderWidth, 0)
-        XCTAssertEqual(ring.frame.minX, 2.5, accuracy: 0.34, "the inner ring sits 2-3 pt inside the outer stroke")
-        XCTAssertEqual(cap.bounds.maxY - ring.frame.maxY, 2.5, accuracy: 0.34)
-        XCTAssertGreaterThan(cap.configuration?.background.strokeWidth ?? 0, esc.configuration?.background.strokeWidth ?? 0,
-                             "the outer stroke is stronger than the other caps'")
-        XCTAssertGreaterThan(cap.layer.shadowOpacity, esc.layer.shadowOpacity, "and so is the halo")
+        XCTAssertEqual(cap.configuration?.background.backgroundColor, TerminalKeyboard.Style.accent)
+        XCTAssertNotNil(cap.configuration?.background.image, "its gradient")
+        XCTAssertEqual(cap.configuration?.baseForegroundColor, TerminalKeyboard.Style.onAccent)
+        XCTAssertEqual(esc.configuration?.background.backgroundColor, TerminalKeyboard.Style.surface)
+        XCTAssertNil(esc.configuration?.background.image)
     }
 
     /// The default bar on an iPhone 17 (402 pt): 8 over 8, columns paired as in the

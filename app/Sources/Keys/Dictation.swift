@@ -311,19 +311,15 @@ final class DictationStrip: UIView {
 
     init(done: @escaping () -> Void, cancel: @escaping () -> Void) {
         super.init(frame: .zero)
-        backgroundColor = TerminalKeyboard.Style.backdrop
         isHidden = true
         dot.backgroundColor = .systemRed
         dot.layer.cornerRadius = 5
         dot.isAccessibilityElement = false
-        label.textColor = .white
         label.font = .systemFont(ofSize: 16)
         label.lineBreakMode = .byTruncatingHead   // the latest words show
         doneButton.configuration?.title = "Done"
-        doneButton.configuration?.baseForegroundColor = ShortcutBar.Neon.blueBright
         doneButton.addAction(UIAction { _ in done() }, for: .touchUpInside)
         cancelButton.configuration?.image = UIImage(systemName: "xmark")
-        cancelButton.configuration?.baseForegroundColor = .white
         cancelButton.accessibilityLabel = "Cancel dictation"
         cancelButton.addAction(UIAction { _ in cancel() }, for: .touchUpInside)
         // ✕ and Done hug the edges; the dot and words sit centred between them, a long tail
@@ -359,8 +355,17 @@ final class DictationStrip: UIView {
         middle.setContentHuggingPriority(.fittingSizeLevel, for: .horizontal)
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        restyle()
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// In the theme's colours, Done in its accent (#626); the bar's `restyle` calls it again.
+    func restyle() {
+        backgroundColor = TerminalKeyboard.Style.backdrop
+        label.textColor = TerminalKeyboard.Style.label
+        doneButton.configuration?.baseForegroundColor = TerminalKeyboard.Style.accent
+        cancelButton.configuration?.baseForegroundColor = TerminalKeyboard.Style.icon
+    }
 
     func show(_ strip: DictationClient.Strip) {
         isHidden = strip == .idle

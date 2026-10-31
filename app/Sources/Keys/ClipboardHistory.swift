@@ -242,34 +242,40 @@ final class ClipboardHistory {
 /// A panel in the keys' place, over the keyboard's keys (`SuggestionBar.cover`) or the
 /// terminal (`TerminalHostVC.cover`): a header with the way back, its title and `trailing`,
 /// a table, and a note while that's empty. The clipboard history's and the snippets' (#609).
+/// In the theme's colours (#626): its rows on a card with hairline separators (`card`), the
+/// table itself, as tall as its rows up to 8 pt above the panel's bottom, then scrolling.
 class KeysPanel: UIView {
+    typealias Style = TerminalKeyboard.Style
     var onClose: (() -> Void)?
-    let table = UITableView(frame: .zero, style: .plain)
+    let table: UITableView = Card(frame: .zero, style: .plain)
     let backButton = UIButton(configuration: .plain())
+    let title = UILabel()
     let empty = UILabel()
 
     init(title text: String, empty note: String, trailing: [UIView] = []) {
         super.init(frame: .zero)
-        backgroundColor = TerminalKeyboard.Style.backdrop
-        overrideUserInterfaceStyle = .dark
+        backgroundColor = Style.backdrop
+        overrideUserInterfaceStyle = Style.palette.style
 
         backButton.configuration?.image = UIImage(systemName: "keyboard")
-        backButton.configuration?.baseForegroundColor = .white
+        backButton.configuration?.baseForegroundColor = Style.icon
         backButton.accessibilityLabel = "Back to the keys"
         backButton.addAction(UIAction { [weak self] _ in self?.onClose?() }, for: .touchUpInside)
-        let title = UILabel()
         title.text = text
         title.font = .systemFont(ofSize: 15, weight: .semibold)
-        title.textColor = .white
+        title.textColor = Style.label
         let header = UIStackView(arrangedSubviews: [backButton, title, UIView()] + trailing)
         header.spacing = 6
         header.alignment = .center
 
-        table.backgroundColor = .clear
+        table.backgroundColor = Style.surface
+        table.separatorColor = Style.hairline
+        table.layer.cornerRadius = 14
+        table.tableFooterView = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 1))   // no separator under the last row
         table.rowHeight = UITableView.automaticDimension
         table.estimatedRowHeight = 52
         empty.text = note
-        empty.textColor = TerminalKeyboard.Style.hint
+        empty.textColor = Style.hint
         empty.font = .systemFont(ofSize: 14)
         empty.numberOfLines = 0
         empty.textAlignment = .center
@@ -283,15 +289,28 @@ class KeysPanel: UIView {
             header.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -4),
             header.heightAnchor.constraint(equalToConstant: 40),
             table.topAnchor.constraint(equalTo: header.bottomAnchor),
-            table.leadingAnchor.constraint(equalTo: leadingAnchor),
-            table.trailingAnchor.constraint(equalTo: trailingAnchor),
-            table.bottomAnchor.constraint(equalTo: bottomAnchor),
-            empty.centerYAnchor.constraint(equalTo: table.centerYAnchor),
+            table.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 8),
+            table.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            table.bottomAnchor.constraint(lessThanOrEqualTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            empty.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 21),   // under the header
             empty.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
             empty.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
         ])
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// The card: as tall as its rows (#626).
+    private final class Card: UITableView {
+        override var contentSize: CGSize { didSet { invalidateIntrinsicContentSize() } }
+        override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: contentSize.height) }
+    }
+
+    /// A row on the card, `text` in the label's colour or the hint's while `off` (#626).
+    static func card(_ cell: UITableViewCell, _ content: inout UIListContentConfiguration, off: Bool = false) {
+        cell.backgroundColor = .clear
+        content.textProperties.color = off ? Style.hint : Style.label
+        content.secondaryTextProperties.color = Style.hint
+    }
 }
 
 /// The history in the keys' place (#597), as Gboard's: the toolbar's clipboard key opens it,
@@ -308,8 +327,8 @@ final class ClipboardPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
     let pasteControl: UIPasteControl = {
         let config = UIPasteControl.Configuration()
         config.displayMode = .iconAndLabel
-        config.baseForegroundColor = ShortcutBar.Neon.blueBright
-        config.baseBackgroundColor = ShortcutBar.Neon.card
+        config.baseForegroundColor = TerminalKeyboard.Style.accent
+        config.baseBackgroundColor = TerminalKeyboard.Style.surface
         let control = UIPasteControl(configuration: config)
         control.maximumContentSizeCategory = .large   // larger draws blank, as the bar's
         return control
@@ -323,7 +342,7 @@ final class ClipboardPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
                                                                               UTType.image.identifier])
         pasteControl.target = self
         clearButton.configuration?.title = "Clear all"
-        clearButton.configuration?.baseForegroundColor = ShortcutBar.Neon.blueBright
+        clearButton.configuration?.baseForegroundColor = Style.accent
         clearButton.accessibilityHint = "Keeps the pinned ones"
         clearButton.addAction(UIAction { [weak self] _ in self?.history.clear(); self?.reload() }, for: .touchUpInside)
         table.dataSource = self
@@ -352,10 +371,9 @@ final class ClipboardPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let clip = clips[indexPath.row]
         let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-        cell.backgroundColor = .clear
         var content = cell.defaultContentConfiguration()
+        Self.card(cell, &content)
         content.textProperties.numberOfLines = 2
-        content.textProperties.color = .white
         content.textProperties.font = .systemFont(ofSize: 15)
         if let text = clip.text {
             content.text = text
@@ -373,13 +391,13 @@ final class ClipboardPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
         cell.accessibilityValue = clip.pinned ? "pinned" : nil
         let pin = UIButton(configuration: .plain())
         pin.configuration?.image = UIImage(systemName: clip.pinned ? "pin.fill" : "pin")
-        pin.configuration?.baseForegroundColor = clip.pinned ? ShortcutBar.Neon.blueBright : TerminalKeyboard.Style.hint
+        pin.configuration?.baseForegroundColor = clip.pinned ? Style.accent : Style.hint
         pin.accessibilityLabel = clip.pinned ? "Unpin" : "Pin"
         pin.addAction(UIAction { [weak self] _ in self?.history.pin(clip.id, !clip.pinned); self?.reload() },
                       for: .touchUpInside)
         let delete = UIButton(configuration: .plain())
         delete.configuration?.image = UIImage(systemName: "xmark")
-        delete.configuration?.baseForegroundColor = TerminalKeyboard.Style.hint
+        delete.configuration?.baseForegroundColor = Style.hint
         delete.accessibilityLabel = "Delete"
         delete.addAction(UIAction { [weak self] _ in self?.history.delete(clip.id); self?.reload() }, for: .touchUpInside)
         let actions = UIStackView(arrangedSubviews: [pin, delete])

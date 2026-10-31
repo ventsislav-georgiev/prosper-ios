@@ -194,15 +194,13 @@ final class SnippetPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate 
         let snippet = groups[indexPath.section].snippets[indexPath.row]
         let off = snippet.unavailable
         let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-        cell.backgroundColor = .clear
         cell.selectionStyle = off == nil ? .default : .none
         var content = cell.defaultContentConfiguration()
+        Self.card(cell, &content, off: off != nil)
         content.text = snippet.name
-        content.textProperties.color = off == nil ? .white : TerminalKeyboard.Style.hint
         content.textProperties.font = .systemFont(ofSize: 15, weight: .medium)
         content.secondaryText = off ?? snippet.preview
         content.secondaryTextProperties.numberOfLines = 1
-        content.secondaryTextProperties.color = TerminalKeyboard.Style.hint
         cell.contentConfiguration = content
         // One VoiceOver label: the name, else the preview (#631).
         cell.accessibilityLabel = snippet.name.isEmpty ? snippet.preview : snippet.name

@@ -695,27 +695,27 @@ final class SuggestionBar: UIView {
     let autofillButton = UIButton(configuration: .plain())
     /// The system's secure Paste (it draws its own icon and "Paste"): a tap hands the clip
     /// to `paste(itemProviders:)` with no Allow Paste prompt, where reading
-    /// `UIPasteboard.string` raises one on every tap.
-    let pasteControl: UIPasteControl = {
+    /// `UIPasteboard.string` raises one on every tap. Made again for a new theme (`restyle`):
+    /// its colours are fixed.
+    private(set) var pasteControl: UIPasteControl!
+    private static func makePasteControl() -> UIPasteControl {
         let config = UIPasteControl.Configuration()
         config.displayMode = .iconAndLabel
-        config.baseForegroundColor = .white
+        config.baseForegroundColor = TerminalKeyboard.Style.label
         config.baseBackgroundColor = TerminalKeyboard.Style.backdrop   // .clear draws black
         let control = UIPasteControl(configuration: config)
         // Above Large the control outgrows its 36 pt and draws blank, taking no taps.
         control.maximumContentSizeCategory = .large
         return control
-    }()
+    }
 
     /// Nil: a fresh one on the extension's own defaults. (Not a default argument: those
     /// are evaluated off the main actor.)
     init(suggestions: Suggestions? = nil) {
         self.suggestions = suggestions ?? Suggestions()
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.height))
-        overrideUserInterfaceStyle = .dark
         for i in 0..<3 {
             let b = UIButton(type: .custom)
-            b.setTitleColor(.white, for: .normal)
             b.titleLabel?.font = .systemFont(ofSize: 17)
             b.titleLabel?.lineBreakMode = .byTruncatingMiddle
             b.layer.cornerRadius = 6
@@ -725,7 +725,6 @@ final class SuggestionBar: UIView {
         }
         for _ in 0..<2 {
             let line = UIView()
-            line.backgroundColor = TerminalKeyboard.Style.key
             hairlines.append(line)
             addSubview(line)
         }
@@ -733,7 +732,6 @@ final class SuggestionBar: UIView {
         config.image = UIImage(systemName: "key.fill")
         config.title = "AutoFill"
         config.imagePadding = 6
-        config.baseForegroundColor = .white
         autofillButton.configuration = config
         let key = autofillButton
         key.addAction(UIAction { [weak self] _ in self?.pressedAt = Date() }, for: .touchDown)
@@ -742,11 +740,42 @@ final class SuggestionBar: UIView {
         key.addTarget(self, action: #selector(modeListTouch(_:event:)), for: .allTouchEvents)
         addSubview(autofillButton)
         pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.plainText.identifier])
-        pasteControl.target = self
-        addSubview(pasteControl)
-        show(state)
+        restyle()
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// The bar in `TerminalKeyboard.Style`'s colours (#626): as it's made, and again when its
+    /// keyboard takes another theme (`restyled`), the toolbar and Paste made again with them.
+    func restyle() {
+        typealias Style = TerminalKeyboard.Style
+        overrideUserInterfaceStyle = Style.palette.style
+        if let keyboard, keyboard.superview === superview { superview?.backgroundColor = Style.backdrop }   // `host`'s
+        slotButtons.forEach { $0.setTitleColor(Style.label, for: .normal) }
+        hairlines.forEach { $0.backgroundColor = Style.key }
+        autofillButton.configuration?.baseForegroundColor = Style.label
+        let old = pasteControl
+        pasteControl = Self.makePasteControl()
+        pasteControl.target = self
+        insertSubview(pasteControl, aboveSubview: old ?? autofillButton)
+        old?.removeFromSuperview()
+        toggle.map(Self.paint)
+        toolbar?.reload()
+        if dictation != nil { dictationStrip.restyle() }
+        show(state)
+        setNeedsLayout()
+    }
+
+    /// The toggle as a toolbar cap (#626).
+    private static func paint(_ t: UIButton) {
+        typealias Style = TerminalKeyboard.Style
+        t.configuration?.baseForegroundColor = Style.icon
+        t.configuration?.background.backgroundColor = Style.surface
+        t.configuration?.background.cornerRadius = Style.radius
+        t.configuration?.background.strokeColor = Style.hairline
+        t.configuration?.background.strokeWidth = 1
+        t.configuration?.cornerStyle = .fixed
+        ShortcutBar.shade(t)
+    }
 
     private func autofillLift() {
         defer { pressedAt = nil }
@@ -781,7 +810,7 @@ final class SuggestionBar: UIView {
         addSubview(tools)
         toolbar = tools
         let t = UIButton(configuration: .plain())
-        t.configuration?.baseForegroundColor = .white
+        Self.paint(t)
         // Body's size at Large, fixed: a glyph growing with the text clips in the 36 pt slot.
         t.configuration?.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 17)
         t.addAction(UIAction { [weak self] _ in self?.toggleTapped() }, for: .touchUpInside)
@@ -1008,14 +1037,14 @@ final class SuggestionBar: UIView {
         guard let keyboard, let host = keyboard.superview else { return }
         let label = UILabel()
         label.text = text
-        label.textColor = .white
+        label.textColor = TerminalKeyboard.Style.label
         label.font = .systemFont(ofSize: 15, weight: .medium)
         label.textAlignment = .center
         label.numberOfLines = 2
         let fits = label.sizeThatFits(CGSize(width: keyboard.bounds.width - 16 - 32, height: .greatestFiniteMagnitude))
         let bubble = UIView(frame: CGRect(x: 0, y: 0, width: fits.width + 32, height: max(36, fits.height + 16)))
-        bubble.backgroundColor = TerminalKeyboard.Style.special
-        bubble.layer.cornerRadius = 8
+        bubble.backgroundColor = TerminalKeyboard.Style.surface
+        bubble.layer.cornerRadius = TerminalKeyboard.Style.radius
         label.frame = bubble.bounds.insetBy(dx: 16, dy: 0)
         bubble.addSubview(label)
         bubble.center = CGPoint(x: keyboard.frame.midX, y: keyboard.frame.minY + 40)
@@ -1595,6 +1624,7 @@ final class SuggestionBar: UIView {
         }
         keyboard.screenWords = { [weak self] in self?.suggestions.personalWords ?? [] }
         keyboard.rowsChanged = { [weak self] in self?.fitRows() }
+        keyboard.restyled = { [weak self] in self?.restyle() }
         suggestions.layout = keyboard.layout
         keyboard.layoutChanged = { [weak self] layout in
             self?.suggestions.layout = layout
@@ -1808,9 +1838,9 @@ final class SuggestionBar: UIView {
 }
 
 /// The toolbar toggle's hold menu in the keys' place (#623): a panel (`SuggestionBar.cover`)
-/// of rounded icon tiles, three a row, a tile a pick. Drawn in the keyboard's own view, not a
-/// UIMenu, which an extension clips. A tap off the tiles, the keyboard button or the toggle
-/// closes it.
+/// of rounded icon tiles, three a row, a tile a pick, under a small caption (#626). Drawn in
+/// the keyboard's own view, not a UIMenu, which an extension clips. A tap off the tiles or the
+/// toggle closes it.
 final class ToggleMenu: KeysPanel {
     struct Item {
         let title: String
@@ -1825,6 +1855,14 @@ final class ToggleMenu: KeysPanel {
         super.init(title: "Switch to", empty: "")
         table.isHidden = true
         empty.isHidden = true
+        backButton.isHidden = true
+        title.attributedText = NSAttributedString(string: "SWITCH TO", attributes: [
+            .font: UIFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: Style.hint, .kern: 0.5])
+        title.accessibilityLabel = "Switch to"
+        if let header = title.superview as? UIStackView {   // the caption on the tiles' edge, 8 pt in
+            header.isLayoutMarginsRelativeArrangement = true
+            header.directionalLayoutMargins = .init(top: 0, leading: 4, bottom: 0, trailing: 0)
+        }
         tiles = items.map(Self.tile)
         let columns = 3
         let rows = stride(from: 0, to: tiles.count, by: columns).map { start -> UIStackView in
@@ -1863,28 +1901,43 @@ final class ToggleMenu: KeysPanel {
 
     @objc private func tappedOff() { onClose?() }
 
+    /// `symbol` in the accent, centred on a rounded square of it at 16%.
+    private static func badge(_ symbol: String) -> UIImage? {
+        let glyph = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))?
+            .withTintColor(Style.accent, renderingMode: .alwaysOriginal)
+        let side: CGFloat = 34
+        return UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { _ in
+            Style.accent.withAlphaComponent(0.16).setFill()
+            UIBezierPath(roundedRect: CGRect(x: 0, y: 0, width: side, height: side), cornerRadius: 10).fill()
+            if let glyph {
+                glyph.draw(at: CGPoint(x: (side - glyph.size.width) / 2, y: (side - glyph.size.height) / 2))
+            }
+        }.withRenderingMode(.alwaysOriginal)
+    }
+
+    /// A tile (#626): its icon in the accent on a badge of it, the title under it.
     private static func tile(_ item: Item) -> UIButton {
         var cfg = UIButton.Configuration.plain()
-        cfg.image = UIImage(systemName: item.symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold))
+        cfg.image = badge(item.symbol)
         cfg.imagePlacement = .top
         cfg.imagePadding = 6
-        cfg.baseForegroundColor = ShortcutBar.Neon.blueBright
+        cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 4, bottom: 6, trailing: 4)   // "Next Keyboard" at 15 pt
         cfg.title = item.title
         cfg.titleLineBreakMode = .byTruncatingTail
         cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
             var a = $0
-            a.font = .systemFont(ofSize: 13, weight: .medium)
-            a.foregroundColor = ShortcutBar.Neon.text
+            a.font = .systemFont(ofSize: 15, weight: .medium)
+            a.foregroundColor = Style.label.withAlphaComponent(0.9)
             return a
         }
         cfg.background.cornerRadius = 14
-        cfg.background.strokeColor = ShortcutBar.Neon.blue.withAlphaComponent(0.25)
+        cfg.background.strokeColor = Style.hairline
         cfg.background.strokeWidth = 1
         let b = UIButton(configuration: cfg)
         b.configurationUpdateHandler = { b in
-            b.configuration?.background.backgroundColor = b.isHighlighted
-                ? TerminalKeyboard.Style.specialPressed : TerminalKeyboard.Style.special
+            b.configuration?.background.backgroundColor = b.isHighlighted ? Style.surfacePressed : Style.surface
         }
+        ShortcutBar.shade(b)
         b.accessibilityLabel = item.title
         return b
     }

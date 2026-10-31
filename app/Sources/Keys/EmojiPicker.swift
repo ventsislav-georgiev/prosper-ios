@@ -31,6 +31,8 @@ struct EmojiRecents: Equatable {
 /// group and delete. Its touches stay its own: the keyboard's tracker ignores every touch
 /// while it shows (`TerminalKeyboard.track`).
 ///
+/// The group last picked in the bar is lit in the accent (#626).
+///
 /// ponytail: delete doesn't repeat while held, and the bar doesn't follow the scroll to
 /// light the group in view. Add both if the picker sees heavy use.
 final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDelegate {
@@ -56,6 +58,7 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     private(set) var sections: [[String]] = []
     let grid = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewFlowLayout())
     private let bar = UIStackView()
+    private(set) var groupButtons: [UIButton] = []
 
     init(frame: CGRect = .zero, full: Bool = true) {
         self.full = full
@@ -73,12 +76,15 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
 
         bar.distribution = .fillEqually
         bar.spacing = 2
-        bar.addArrangedSubview(button(title: "ABC", label: "letters", fill: Style.special) { [weak self] in self?.letters() })
+        bar.addArrangedSubview(button(title: "ABC", label: "letters", fill: Style.surface) { [weak self] in self?.letters() })
         let names = ["Recents"] + (full ? EmojiData.groups.map(\.name) : ["Frequent"])
         for (section, (symbol, name)) in zip(full ? Self.symbols : ["clock", "star"], names).enumerated() {
-            bar.addArrangedSubview(button(image: symbol, label: name) { [weak self] in self?.show(section) })
+            let b = button(image: symbol, label: name) { [weak self] in self?.show(section) }
+            groupButtons.append(b)
+            bar.addArrangedSubview(b)
         }
-        bar.addArrangedSubview(button(image: "delete.left", label: "delete", fill: Style.special) { [weak self] in self?.delete() })
+        light(0)
+        bar.addArrangedSubview(button(image: "delete.left", label: "delete", fill: Style.surface) { [weak self] in self?.delete() })
         addSubview(bar)
         reload()
     }
@@ -92,9 +98,11 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         b.titleLabel?.adjustsFontSizeToFitWidth = true   // ABC in a 30 pt key
         b.titleLabel?.minimumScaleFactor = 0.6
         b.setImage(image.flatMap { UIImage(systemName: $0, withConfiguration: Style.symbol) }, for: .normal)
-        b.tintColor = fill == nil ? Style.hint : .white
+        b.tintColor = fill == nil ? Style.hint : Style.icon
+        b.setTitleColor(Style.label, for: .normal)
         b.backgroundColor = fill
-        b.layer.cornerRadius = 6
+        b.layer.cornerRadius = Style.radius
+        if fill != nil { ShortcutBar.shade(b) }
         b.accessibilityLabel = label
         b.accessibilityTraits = .keyboardKey
         b.addAction(UIAction { _ in action() }, for: .touchUpInside)
@@ -110,8 +118,13 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
 
     /// The bar's group button: the grid scrolls to its first emoji.
     func show(_ section: Int) {
+        light(section)
         guard !sections[section].isEmpty else { return grid.setContentOffset(.zero, animated: false) }
         grid.scrollToItem(at: IndexPath(item: 0, section: section), at: .left, animated: false)
+    }
+
+    private func light(_ section: Int) {
+        for (i, b) in groupButtons.enumerated() { b.tintColor = i == section ? Style.accent : Style.hint }
     }
 
     override func layoutSubviews() {
