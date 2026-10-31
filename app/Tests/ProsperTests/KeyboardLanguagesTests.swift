@@ -145,4 +145,95 @@ final class KeyboardLanguagesTests: XCTestCase {
         kb.layout = .bulgarian
         XCTAssertEqual(slots(bar.suggestions), launched(.bulgarian), "mid-word too")
     }
+
+    // MARK: Language key (#638)
+
+    private func caps(_ kb: TerminalKeyboard) -> [UIButton] {
+        kb.layoutIfNeeded()
+        return kb.subviews.compactMap { $0 as? UIButton }.filter { !$0.isHidden }
+    }
+
+    private func languageKey(_ kb: TerminalKeyboard) -> UIButton? {
+        caps(kb).first { $0.accessibilityLabel?.hasPrefix("Switch to") == true }
+    }
+
+    func testTheLanguageKeyShowsOnlyWithTwoLanguages() {
+        XCTAssertFalse(TerminalKeyboard().shownKeys.joined().contains(.language), "the app's keyboard: no languages")
+        let (kb, _, _) = rig([.english])
+        XCTAssertFalse(kb.shownKeys.joined().contains(.language), "one language: no key")
+        let one = kb.shownKeys.last
+        kb.languages = [.english, .bulgarian]
+        XCTAssertEqual(kb.shownKeys.last?.first, .language, "it leads the bottom row")
+        XCTAssertNotNil(languageKey(kb))
+        kb.languages = [.english]
+        XCTAssertEqual(kb.shownKeys.last, one, "Bulgarian turned off: the row as it was")
+        XCTAssertNil(languageKey(kb))
+    }
+
+    func testATapSwitchesToTheNextLanguageAndRelabels() throws {
+        let (kb, bar, doc) = rig([.english, .bulgarian])
+        var heard: [Layout] = []
+        bar.languageChanged = { heard.append($0) }
+        func tap() throws {
+            let f = try XCTUnwrap(languageKey(kb)).frame
+            kb.track(.began, id: 1, at: CGPoint(x: f.midX, y: f.midY))
+            kb.track(.ended, id: 1, at: CGPoint(x: f.midX, y: f.midY))
+        }
+        let key = try XCTUnwrap(languageKey(kb))
+        XCTAssertEqual(key.title(for: .normal), "БГ", "named for where it goes")
+        XCTAssertEqual(key.accessibilityLabel, "Switch to Български")
+        XCTAssertTrue(key.accessibilityTraits.contains(.keyboardKey))
+        XCTAssertEqual(key.backgroundColor, TerminalKeyboard.Style.special)
+        XCTAssertFalse(key.isUserInteractionEnabled, "a tracked key, not one with its own touches")
+        try tap()
+        XCTAssertEqual(kb.layout, .bulgarian, "one tap switches")
+        XCTAssertEqual(heard, [.bulgarian], "layoutChanged reaches the bar")
+        XCTAssertEqual(bar.suggestions.layout, .bulgarian)
+        XCTAssertEqual(try XCTUnwrap(languageKey(kb)).title(for: .normal), "EN")
+        XCTAssertEqual(languageKey(kb)?.accessibilityLabel, "Switch to English")
+        try tap()
+        XCTAssertEqual(kb.layout, .english, "and wraps around")
+        XCTAssertEqual(heard, [.bulgarian, .english])
+        XCTAssertEqual(doc.text, "", "it types nothing")
+    }
+
+    func testTheLanguageKeyFollows123AndPrecedesTheGlobe() {
+        let (kb, _, _) = rig([.english, .bulgarian])
+        kb.offersEmoji = false
+        kb.showsGlobe = true
+        kb.allowsNumbersKey = true
+        kb.settings.numbers = .key
+        let row: [TerminalKeyboard.Key] = [.numbers, .language, .globe, .char("."), .char(","), .char("/"), .space, .char("?"), .ret]
+        XCTAssertEqual(kb.shownKeys.last, row)
+        let shown = caps(kb).filter { $0.frame.midY == languageKey(kb)?.frame.midY }.sorted { $0.frame.minX < $1.frame.minX }
+        XCTAssertEqual(shown.map { $0.accessibilityLabel ?? "" },
+                       ["numbers", "Switch to Български", "next keyboard", ".", ",", "/", "space", "?", "new line"])
+        for (a, b) in zip(shown, shown.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(b.frame.minX - a.frame.maxX, TerminalKeyboard.keyGap - 0.001, "\(a.accessibilityLabel!) overlaps")
+        }
+        kb.press(.numbers)
+        XCTAssertFalse(kb.shownKeys.joined().contains(.language), "none on the numpad")
+        kb.press(.numbers)
+        XCTAssertEqual(kb.shownKeys.last, row, "back with the letters")
+    }
+
+    func testALetterTouchIsNeverCorrectedOntoTheLanguageKey() throws {
+        let (kb, _, _) = rig([.english, .bulgarian])
+        kb.press(.char("t"))   // a word under way: touches off a letter's center may be corrected
+        let all = caps(kb)
+        let key = try XCTUnwrap(languageKey(kb)).frame
+        var x = key.minX - 30
+        while x < key.maxX + 30 {
+            var y = key.minY - 60
+            while y < key.maxY + 10 {
+                let p = CGPoint(x: x, y: y)
+                let nearest = all.min { TerminalKeyboard.distance(p, $0.frame) < TerminalKeyboard.distance(p, $1.frame) }
+                if nearest?.frame != key {
+                    XCTAssertNotEqual(kb.key(at: p), .language, "\(p), nearest \(nearest?.accessibilityLabel ?? "")")
+                }
+                y += 2
+            }
+            x += 2
+        }
+    }
 }

@@ -882,6 +882,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case emoji
         /// 123 on the letters, ABC on the numpad: swaps them (`showNumpad`, Numbers: Key, #625).
         case numbers
+        /// The next of `languages`, one tap (#638): titled with where it goes, as 123 is.
+        case language
     }
 
     static let rowHeight: CGFloat = 38
@@ -1043,6 +1045,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
         /// What the toggle's menu calls it (#624), in its own language.
         var name: String { self == .english ? "English" : "Български" }
+        /// The language key's title (#638).
+        var short: String { self == .english ? "EN" : "БГ" }
         /// `UIInputViewController.primaryLanguage` while it shows: the host's dictation and
         /// spell checking follow it.
         var primaryLanguage: String { self == .english ? "en-US" : "bg-BG" }
@@ -1256,8 +1260,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
     }
     /// What the Prosper extension switches between (#624): its Languages setting. Under two,
-    /// the toggle's menu has no language.
-    var languages: [Layout] = []
+    /// the toggle's menu has no language and the bottom row no language key (#638).
+    var languages: [Layout] = [] { didSet { if languages != oldValue { build() } } }
+    /// What the language key switches to: the one after `layout`, wrapping. Nil under two.
+    var nextLanguage: Layout? {
+        guard languages.count > 1 else { return nil }
+        return languages[((languages.firstIndex(of: layout) ?? -1) + 1) % languages.count]
+    }
     /// The layout switched: the bar's suggestions follow (`SuggestionBar.attach`).
     var layoutChanged: ((Layout) -> Void)?
 
@@ -1341,6 +1350,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case .globe: return   // its cap acts on its own; the tracker never yields it (`nearest`)
         case .emoji: showEmoji(true)
         case .numbers: showNumpad(!showsNumpad)
+        case .language: if let next = nextLanguage { layout = next }
         }
         autoCapitalize()
     }
@@ -1862,6 +1872,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         var rows = layout.rows
         rows[rows.count - 1] = settings.bottomRow.filter { offersEmoji || $0 != .emoji }
         if showsGlobe { rows[rows.count - 1].insert(.globe, at: 0) }
+        if nextLanguage != nil { rows[rows.count - 1].insert(.language, at: 0) }   // between 123 and the globe
         if numbersKey { rows.removeFirst(); rows[rows.count - 1].insert(.numbers, at: 0) }   // where iOS has it
         if showsNumpad { rows = Self.numpadRows }   // ponytail: no globe on it; ABC goes back to it
         caps = rows.map { $0.map(makeCap) }
@@ -2101,6 +2112,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             case .globe: image = "globe"; label = "next keyboard"
             case .emoji: image = "face.smiling"; label = "emoji"
             case .numbers: title = showsNumpad ? "ABC" : "123"; label = showsNumpad ? "letters" : "numbers"
+            case .language: title = nextLanguage?.short; label = "Switch to \(nextLanguage?.name ?? "")"
             }
             if blanked { title = nil; image = nil }
             cap.hint.isHidden = blanked
@@ -2263,7 +2275,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
         func w(_ k: Key) -> CGFloat {
             switch k {
-            case .char, .globe, .emoji: return u
+            case .char, .globe, .emoji, .language: return u   // the language key as narrow as the globe: space keeps its room (#638)
             case .ret: return 2.25 * u
             default: return 1.5 * u
             }
