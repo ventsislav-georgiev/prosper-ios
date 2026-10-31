@@ -247,7 +247,7 @@ struct SettingsView: View {
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows. Numbers: Key swaps the digit row in other apps for a 123 key that opens a numpad, and gives the toolbar a second row in its place; with Row, the Numbers in the menu a hold on the toolbar toggle opens shows the numpad. The themes and Accent apply to both keyboards: the Toolbar Theme to the toolbar's keys, the Keys Theme to the rest. The accent lights return, send and the toolbar's held keys in Dark, Light and True Black.")
+                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows. Numbers: Key swaps the digit row in other apps for a 123 key that opens a numpad, and gives the toolbar a second row in its place; with Row, hold the toolbar toggle and pick Numbers for the numpad. The themes and Accent apply to both keyboards: the Toolbar Theme to the toolbar's keys, the Keys Theme to the rest. The accent lights return, send and the toolbar's held keys in Dark, Light and True Black.")
             }
 
             // The Prosper keyboard's languages (#624); the terminal's keyboard stays English.
