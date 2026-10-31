@@ -182,6 +182,34 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     lazy var history = ClipboardHistory.shared()
     /// The history's panel over the terminal while open (`showClips`).
     private(set) var clipsPanel: ClipboardPanel?
+    /// The bar's mic key (#604), the keyboard's client on the app's own service: nil on the
+    /// Mac and below iOS 26. Tests swap in one on a throwaway store, with fake pings.
+    var dictation: DictationClient? {
+        didSet {
+            dictation?.insert = { [weak self] in self?.dictated($0) }
+            dictation?.onStrip = { [weak self] strip in
+                self?.dictationStrip.show(strip)
+                if strip == .idle { self?.lastDictated = "" }
+            }
+            dictation?.hint = { [weak self] in self?.showToast($0) }
+        }
+    }
+    /// The keyboard's strip, over the bar while dictating.
+    private(set) lazy var dictationStrip: DictationStrip = {
+        let strip = DictationStrip(done: { [weak self] in self?.dictation?.done() },
+                                   cancel: { [weak self] in self?.dictation?.cancel() })
+        strip.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(strip)
+        if let bar = shortcutBar {
+            NSLayoutConstraint.activate([
+                strip.topAnchor.constraint(equalTo: bar.topAnchor), strip.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
+                strip.leadingAnchor.constraint(equalTo: bar.leadingAnchor), strip.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            ])
+        }
+        return strip
+    }()
+    /// This dictation's last send, for the next phrase's spacing.
+    private var lastDictated = ""
     /// Shows the Copy menu at a point in `tv`. Tests swap it to see when it would show.
     lazy var presentMenu: (CGPoint) -> Void = { [weak self] p in
         self?.editMenu?.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: p))
@@ -311,7 +339,25 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
         tv.onPaste = { [weak self] s in self?.sendText(s) }
         stateSub = conn.$state.sink { [weak self] in self?.applyInputState($0) }
+        #if !targetEnvironment(macCatalyst)
+        if #available(iOS 26, *), let store = Dictation.Store.shared() {
+            let d = DictationClient(store: store)
+            // No hop: the mic is here. Started in place, no sheet; `dictate` takes it up. Its
+            // pings stay Darwin's: the service hears the app's own (checked in-process).
+            d.open = { url, done in
+                guard let id = Dictation.id(from: url) else { return done(false) }
+                DictationService.shared.start(id)
+                done(true)
+            }
+            dictation = d
+        }
+        #endif
+        // Leaving for another app ends dictation as leaving the screen does (`disappear`).
+        nc.addObserver(self, selector: #selector(onBackground),
+                       name: UIApplication.didEnterBackgroundNotification, object: nil)
     }
+
+    @objc private func onBackground() { dictation?.disappear() }
 
     /// OQ-13 (a): a `.failed` session takes no input until retried — the keyboard is
     /// not silently eating keys. `send` dropping while failed stays as the backstop.
@@ -359,6 +405,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         _ = tv.resignFirstResponder()
+        dictation?.disappear()   // ✕, as the keyboard's: what's finished goes in, the strip clears
     }
 
     /// The terminal's current input view: the compact keyboard on iPhone, nil where the
@@ -480,6 +527,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // The compact keyboard's word ends here: an arrow or tab moved on from it.
         (keyboardInputView as? TerminalKeyboard)?.resetWord()
         if key.id == Shortcuts.clipboard.id { return showClips(clipsPanel == nil) }
+        if key.id == Shortcuts.dictate.id { return dictate() }
         if ["copyLine", "cutLine"].contains(key.id) { copyCaretLine() }   // cut's bytes then delete it
         if key.kind == .bytes, key.bytes.isEmpty { return }
         switch key.kind {
@@ -539,6 +587,32 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             panel.bottomAnchor.constraint(equalTo: bar.topAnchor),   // rides the keyboard with the bar
         ])
         clipsPanel = panel
+    }
+
+    /// The mic key (#604): the keyboard's (`DictationClient.tap`), on the app's own mic. A
+    /// fresh start never takes up another's request (a keyboard's, mid-hop); `appear` arms the
+    /// client's pings and poll. Cold, its hop is the in-place start (`open`), so it's taken up
+    /// at once, as the keyboard's coming back.
+    func dictate() {
+        guard let d = dictation else { return }
+        if d.strip == .idle {
+            d.store.request = nil
+            d.appear()
+        }
+        d.tap()
+        if d.hopping { d.appear() }
+    }
+
+    /// Finished phrases to the pty, one paste each (`sendText`), spaced as the keyboard's
+    /// (`Dictation.spaced`) from this dictation's last. Never a newline, never a return:
+    /// dictation must never run a command.
+    /// ponytail: the first phrase isn't spaced from what's before the caret; read the
+    /// screen if that bites.
+    private func dictated(_ text: String) {
+        let phrase = Dictation.spaced(text.split(whereSeparator: \.isNewline).joined(separator: " "), after: lastDictated)
+        guard !phrase.isEmpty else { return }
+        lastDictated = phrase
+        sendText(phrase)
     }
 
     /// A history pick, as the keyboard's (`SuggestionBar.pick`): on the pasteboard, and text

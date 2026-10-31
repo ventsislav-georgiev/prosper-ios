@@ -223,7 +223,7 @@ final class DictationClient {
         if let s, !live {   // over: Done's end, the mic off, or the app gone
             if s.phase != .ready {
                 if case .finishing(let shown) = strip, !shown.isEmpty { insert(shown) }   // Done's, never finalized
-                hint(s.note ?? "The mic stopped — tap it to reopen Prosper")
+                hint(s.note ?? "The mic stopped — tap it to start again")
             }
             return end()
         }

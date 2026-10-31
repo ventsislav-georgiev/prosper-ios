@@ -459,6 +459,92 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertNil(vc.clipsPanel, "the key again: the terminal back")
     }
 
+    /// The mic key (#604): cold, the service starts in place (no hop, no sheet) and the strip
+    /// covers the bar; finished phrases go out as bracketed pastes, spaced, never a newline;
+    /// the key again is Done, its final in. Warm, a ping starts it afresh, never taking up a
+    /// keyboard's request; ✕ drops the tail, a refusal's note shows, and leaving cancels.
+    /// A throwaway store and fake pings: no mic, no SpeechAnalyzer.
+    func testBarMicKeyDictatesIntoThePty() async throws {
+        let (vc, spy) = try await makeVC()
+        spy.emit("\u{1b}[?2004h")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let store = Dictation.Store(dir: FileManager.default.temporaryDirectory.appendingPathComponent("ImagePasteTests-\(UUID())"))
+        defer { try? FileManager.default.removeItem(at: store.dir) }
+        let clock = Date()
+        var pings: [Dictation.Ping] = [], opened: [URL] = []
+        func app(_ id: UUID?, _ phase: Dictation.State.Phase, _ phrases: [String] = [], tail: String = "", note: String? = nil) {
+            store.state = Dictation.State(id: id, phase: phase, heartbeat: clock, phrases: phrases, tail: tail, note: note)
+        }
+        let c = DictationClient(store: store)
+        c.polls = false
+        c.now = { clock }
+        c.ping = { pings.append($0) }
+        c.open = { url, done in opened.append(url); app(Dictation.id(from: url), .preparing); done(true) }   // the service's start
+        vc.dictation = c
+        let (bar, _) = try barAndTerminal(vc)
+        let key = try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == Shortcuts.dictate.id })
+        func paste(_ s: String) -> [UInt8] { Array("\u{1b}[200~\(s)\u{1b}[201~".utf8) }
+
+        bar.onKey?(key)
+        var id = try XCTUnwrap(store.request?.id)
+        XCTAssertEqual(opened, [Dictation.url(id)])
+        XCTAssertEqual(pings, [], "cold: started in place")
+        let strip = vc.dictationStrip
+        vc.view.layoutIfNeeded()
+        XCTAssertFalse(strip.isHidden)
+        XCTAssertEqual(strip.frame, bar.frame, "over the bar")
+        XCTAssertEqual(strip.label.text, "Starting the mic…", "taken up, not opening Prosper")
+        app(id, .listening, ["Hello there."], tail: "how")
+        c.sync()
+        XCTAssertEqual(strip.label.text, "how")
+        app(id, .listening, ["Hello there.", "How are you?\nls", "Fine."], tail: "bye")
+        c.sync()
+        XCTAssertEqual(spy.sent, [paste("Hello there."), paste(" How are you? ls Fine.")])
+        bar.onKey?(key)
+        XCTAssertEqual(pings, [.stop], "the key again: Done")
+        XCTAssertEqual(strip.label.text, "bye…")
+        app(id, .ready, ["Hello there.", "How are you?\nls", "Fine.", "Bye."])
+        c.sync()
+        XCTAssertEqual(spy.sent.last, paste(" Bye."), "Done: the final goes in")
+        XCTAssertTrue(strip.isHidden)
+
+        let keyboards = Dictation.Request(date: clock)
+        store.request = keyboards
+        app(keyboards.id, .listening)
+        bar.onKey?(key)
+        id = try XCTUnwrap(store.request?.id)
+        XCTAssertNotEqual(id, keyboards.id, "never takes up a keyboard's")
+        XCTAssertEqual(pings, [.stop, .start], "warm: a ping")
+        XCTAssertEqual(opened.count, 1)
+        app(id, .listening, ["One."], tail: "scrap this")
+        c.sync()
+        strip.cancelButton.sendActions(for: .touchUpInside)
+        XCTAssertEqual(pings.last, .cancel)
+        XCTAssertEqual(spy.sent.last, paste("One."), "a fresh dictation's first: unspaced")
+        XCTAssertTrue(strip.isHidden, "✕: the tail dropped")
+
+        app(nil, .off)
+        bar.onKey?(key)
+        id = try XCTUnwrap(store.request?.id)
+        app(id, .off, note: "Microphone access is off — allow it in Settings › Apps › Prosper")
+        c.sync()
+        XCTAssertTrue(strip.isHidden)
+        let note = vc.view.subviews.flatMap(\.subviews).compactMap { ($0 as? UILabel)?.text }.first { $0.hasPrefix("Microphone") }
+        XCTAssertNotNil(note, "the service's note")
+
+        app(nil, .ready)
+        bar.onKey?(key)
+        app(try XCTUnwrap(store.request?.id), .listening, tail: "x")
+        c.sync()
+        let sent = spy.sent.count
+        vc.viewWillDisappear(false)
+        XCTAssertEqual(pings.last, .cancel, "leaving: ✕")
+        XCTAssertTrue(strip.isHidden)
+        XCTAssertNil(store.request)
+        XCTAssertEqual(spy.sent.count, sent)
+        XCTAssertFalse(spy.sent.joined().contains(0x0d) || spy.sent.joined().contains(0x0a), "never a return")
+    }
+
     /// paste and paste img never take the modifiers and never spend them.
     func testPasteKeysDontSpendModifiers() async throws {
         let (vc, spy) = try await makeVC()

@@ -69,8 +69,8 @@ targets:
         # INFOPLIST_KEY_ (the `prosper` URL scheme the keyboard opens it by, background audio
         # to keep the mic ready) is in Sources/Info.plist, merged into the generated one.
         INFOPLIST_FILE: Sources/Info.plist
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Prosper turns the mic on when you dictate with the Prosper keyboard's mic key, and keeps it ready for the time you choose in Settings."
-        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Prosper turns what you dictate with the Prosper keyboard's mic key into text."
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Prosper turns the mic on when you dictate with a Prosper mic key, in the keyboard or the terminal's bar, and keeps it ready for the time you choose in Settings."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Prosper turns what you dictate with a Prosper mic key, in the keyboard or the terminal's bar, into text."
         SWIFT_VERSION: "5.9"
         # Catalyst gives same-app e2e on the Mac (PLAN §8). Client is connect-only;
         # com.apple.security.network.client (in Prosper.entitlements) lets the

@@ -96,17 +96,20 @@ enum Shortcuts {
     /// portrait phone without scrolling, with no room for one more cap.
     static let clipboard = ShortcutKey(id: "clips", label: "clipboard history", kind: .bytes,
                                        systemImage: "list.clipboard")
-    /// The toolbar's speech-to-text (#598), by Prosper's mic (`DictationClient`). Not the
-    /// terminal's yet (#604); added in the editor, as the clipboard.
+    /// Speech-to-text (#598) by Prosper's mic (`DictationClient`): the toolbar's, and the
+    /// terminal's too (#604), where the mic is the app's own (`TerminalHostVC.dictate`).
+    /// Added in the editor, as the clipboard.
     static let dictate = ShortcutKey(id: "mic", label: "dictate", kind: .bytes, systemImage: "mic")
 
     /// The terminal bar's own keys with no bytes, which `TerminalHostVC.handleKey` acts on by
-    /// id. The clipboard not on the Mac: no Prosper keyboard there fills the history.
+    /// id. Neither on the Mac: no Prosper keyboard there fills the history, and dictation is
+    /// off there (#598). The mic only where SpeechAnalyzer runs, iOS 26, as the toolbar's.
     static var terminalActions: [ShortcutKey] {
         #if targetEnvironment(macCatalyst)
         []
         #else
-        [clipboard]
+        guard #available(iOS 26, *) else { return [clipboard] }
+        return [clipboard, dictate]
         #endif
     }
 
@@ -170,9 +173,9 @@ enum Shortcuts {
         case terminal, toolbar
 
         var storageKey: String { self == .terminal ? Shortcuts.storageKey : "toolbarKeys" }
-        /// What the editor offers: on the terminal, every toolbar key but dictate (#604), all the
-        /// edits (nothing to hold back) and its actions; on the toolbar, the keys a text field
-        /// can use (`hostKey`).
+        /// What the editor offers: on the terminal, every toolbar key (#604), all the edits
+        /// (nothing to hold back) and its actions; on the toolbar, the keys a text field can
+        /// use (`hostKey`).
         var catalog: [ShortcutKey] {
             self == .terminal ? Shortcuts.catalog + hostOnly + terminalActions
                 : (Shortcuts.catalog + hostOnly + [clipboard, dictate]).filter { hostKey($0.id) != nil }

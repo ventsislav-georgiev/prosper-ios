@@ -269,7 +269,7 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(Shortcuts.Bar.terminal.load(store).map(\.id), ["esc", "tab", "enter"])
         XCTAssertTrue(Shortcuts.Bar.terminal.sendMandatory)
         XCTAssertEqual(Shortcuts.Bar.terminal.catalog.map(\.id), Shortcuts.catalog.map(\.id)
-                       + Shortcuts.hostOnly.map(\.id) + ["clips"])
+                       + Shortcuts.hostOnly.map(\.id) + ["clips", "mic"])
     }
 
     /// The toolbar's Paste is the system's control, pasting into the toolbar: its clip goes
@@ -519,13 +519,14 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["paste", "left", "delLine", "delWord", "enter"])
     }
 
-    /// Parity (#603): every key the toolbar offers, the terminal's bar offers too, but those
-    /// named here. A new toolbar key fails this until the terminal offers it or it's listed.
+    /// Parity (#603, #604): every key the toolbar offers, the terminal's bar offers too, but
+    /// those named here. A new toolbar key fails this until the terminal offers it or it's listed.
     func testTerminalOffersEveryToolbarKey() {
-        var notOnTerminal: Set<String> = [Shortcuts.dictate.id]   // #604
+        var notOnTerminal: Set<String> = []
         #if targetEnvironment(macCatalyst)
-        notOnTerminal.insert(Shortcuts.clipboard.id)   // no Prosper keyboard on the Mac to fill it
+        notOnTerminal = [Shortcuts.clipboard.id, Shortcuts.dictate.id]   // no Prosper keyboard on the Mac; dictation off there
         #endif
+        if #unavailable(iOS 26) { notOnTerminal.insert(Shortcuts.dictate.id) }   // no SpeechAnalyzer
         let terminal = Set(Shortcuts.Bar.terminal.catalog.map(\.id))
         XCTAssertEqual(Set(Shortcuts.Bar.toolbar.catalog.map(\.id)).subtracting(terminal), notOnTerminal)
     }

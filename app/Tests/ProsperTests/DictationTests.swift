@@ -262,10 +262,10 @@ final class DictationTests: XCTestCase {
         id = try XCTUnwrap(store.request?.id)
         app(id, .listening)
         c.sync()
-        app(id, .off, ["Last."], note: "The mic stopped for a call or Siri — tap it to reopen Prosper")
+        app(id, .off, ["Last."], note: "The mic stopped for a call or Siri — tap the mic to start again")
         c.sync()
         XCTAssertEqual(typed, ["Last."])
-        XCTAssertEqual(hints, ["The mic stopped for a call or Siri — tap it to reopen Prosper"])
+        XCTAssertEqual(hints, ["The mic stopped for a call or Siri — tap the mic to start again"])
         XCTAssertEqual(c.strip, .idle)
 
         app(nil, .ready)
@@ -305,12 +305,13 @@ final class DictationTests: XCTestCase {
         v.subviews.flatMap { ($0 as? KeyCapButton).map { [$0] } ?? caps($0) }
     }
 
-    /// The toolbar's alone, added in the editor, an iOS 16 symbol; only with Full Access and a
-    /// client (the controller makes one on iOS 26).
-    func testMicKeyIsToolbarOnlyAndNeedsFullAccessAndAClient() throws {
+    /// The toolbar's and, on iOS 26, the terminal's (#604), added in the editor, an iOS 16
+    /// symbol; on the toolbar only with Full Access and a client (the controller makes one on iOS 26).
+    func testMicKeyIsOnBothBarsAndNeedsFullAccessAndAClient() throws {
         XCTAssertEqual(Shortcuts.hostKey(Shortcuts.dictate.id), .dictate)
         XCTAssertTrue(Shortcuts.Bar.toolbar.catalog.contains(Shortcuts.dictate))
-        XCTAssertFalse(Shortcuts.Bar.terminal.catalog.contains { $0.id == Shortcuts.dictate.id })
+        XCTAssertTrue(Shortcuts.Bar.terminal.catalog.contains(Shortcuts.dictate))
+        XCTAssertFalse(Shortcuts.Bar.terminal.defaults.contains(Shortcuts.dictate))
         XCTAssertFalse(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.dictate), "added in the editor")
         XCTAssertNotNil(UIImage(systemName: try XCTUnwrap(Shortcuts.dictate.systemImage)))
 

@@ -43,14 +43,14 @@ final class DictationService: ObservableObject {
         }
         center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { n in
             let began = (n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.began.rawValue
-            Task { @MainActor in if began { DictationService.shared.end("The mic stopped for a call or Siri — tap it to reopen Prosper") } }
+            Task { @MainActor in if began { DictationService.shared.end("The mic stopped for a call or Siri — tap the mic to start again") } }
         }
         center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { _ in
             // ponytail: a route change (headphones in or out) that stopped the engine ends it;
             // restart it in the foreground if that bites.
             Task { @MainActor in
                 let me = DictationService.shared
-                if !me.engine.isRunning, me.state?.phase != .preparing { me.end("The audio route changed — tap the mic to reopen Prosper") }
+                if !me.engine.isRunning, me.state?.phase != .preparing { me.end("The audio route changed — tap the mic to start again") }
             }
         }
     }
@@ -77,16 +77,18 @@ final class DictationService: ObservableObject {
         start(r.id)
     }
 
-    private func start(_ id: UUID) {
+    /// Also the terminal's mic key (#604), in place: no sheet. The request is taken up at
+    /// once, so its `DictationClient` finds it on the return (`appear`).
+    func start(_ id: UUID) {
         guard !(warm && state?.id == id), #available(iOS 26, *) else { return }
+        halt()
+        write(Dictation.State(id: id, phase: .preparing, heartbeat: Date()))
+        keepAlive()
         Task { await begin(id) }
     }
 
     @available(iOS 26, *)
     private func begin(_ id: UUID) async {
-        halt()
-        write(Dictation.State(id: id, phase: .preparing, heartbeat: Date()))
-        keepAlive()
         status = "Asking for the microphone…"
         guard await AVAudioApplication.requestRecordPermission() else {
             return end("Microphone access is off — allow it in Settings › Apps › Prosper")

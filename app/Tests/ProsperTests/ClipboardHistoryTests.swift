@@ -214,7 +214,6 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertEqual(Shortcuts.hostKey(Shortcuts.clipboard.id), .clipboard)
         XCTAssertTrue(Shortcuts.Bar.toolbar.catalog.contains(Shortcuts.clipboard))
         XCTAssertTrue(Shortcuts.Bar.terminal.catalog.contains(Shortcuts.clipboard))
-        XCTAssertFalse(Shortcuts.Bar.terminal.catalog.contains { $0.id == Shortcuts.dictate.id })
         XCTAssertFalse(Shortcuts.Bar.terminal.defaults.contains { $0.id == Shortcuts.clipboard.id })
         XCTAssertFalse(Shortcuts.defaults.contains { $0.id == Shortcuts.clipboard.id })
         XCTAssertFalse(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.clipboard), "added in the editor")
