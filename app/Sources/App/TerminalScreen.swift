@@ -263,6 +263,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         _ = DchTerminalView.routeReplace   // dictation/predictive replace goes the paste way (#281)
         self.tv = tv
         tv.terminalDelegate = self
+        tv.restyled = { [weak self] in self?.shortcutBar?.reload() }   // its caps and backdrop (#642)
         tv.backgroundColor = .black
         tv.nativeBackgroundColor = .black
         tv.installColors(TerminalHostVC.ansiPalette)   // vibrant 16-color ANSI (matches macOS Terminal)
@@ -1691,12 +1692,16 @@ private final class DchTerminalView: TerminalView {
     /// compact keyboard has an emoji key of its own, `TerminalKeyboard.Key.emoji`.)
     @objc(keyboardType) var asciiKeyboardType: UIKeyboardType { .asciiCapable }
 
+    /// The compact keyboard took another theme: the host's shortcut bar follows (#642).
+    var restyled: (() -> Void)?
+
     /// Built on first need, and only on devices that use it.
     private lazy var compactKeyboard: TerminalKeyboard = {
         let kb = TerminalKeyboard()
         kb.target = self
         kb.inputHost = self   // its height then reaches the input host (`inputHost`)
         kb.sendBytes = { [weak self] in self?.send($0) }   // through the host's send, like any key
+        kb.restyled = { [weak self] in self?.restyled?() }
         kb.screenWords = { [weak self] in self.map { TerminalKeyboard.screenWords(in: $0.getTerminal()) } ?? [] }
         kb.moveCaret = { [weak self] in   // the space-bar trackpad: arrow keys, like the bar's
             guard let self else { return }

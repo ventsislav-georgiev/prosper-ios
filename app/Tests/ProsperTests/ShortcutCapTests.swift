@@ -126,7 +126,7 @@ final class ShortcutCapTests: XCTestCase {
             let sv = try XCTUnwrap(scrollView(row))
             let last = try XCTUnwrap(row.arrangedSubviews.last)
             let maxX = last.convert(last.bounds, to: sv).maxX
-            XCTAssertEqual(maxX, sv.bounds.width, accuracy: 1, "row fills the bar")
+            XCTAssertEqual(maxX, sv.bounds.width - ShortcutBar.glowRoom, accuracy: 1, "row fills the bar")   // less its glow room (#642)
             XCTAssertLessThanOrEqual(sv.contentSize.width, sv.bounds.width + 0.01, "not scrollable")
         }
         try fillsRow(r[0])
@@ -431,7 +431,7 @@ final class ShortcutCapTests: XCTestCase {
                 let caps = Self.caps(bar)
                 XCTAssertEqual(row.arrangedSubviews.count, keys.count)
                 let last = try XCTUnwrap(row.arrangedSubviews.last)
-                XCTAssertLessThanOrEqual(last.convert(last.bounds, to: sv).maxX, sv.bounds.width + 0.01, "\(width) paste \(paste): end clipped")
+                XCTAssertLessThanOrEqual(last.convert(last.bounds, to: sv).maxX, sv.bounds.width - ShortcutBar.glowRoom + 0.01, "\(width) paste \(paste): end clipped")
                 XCTAssertLessThanOrEqual(sv.contentSize.width, sv.bounds.width + 0.01, "\(width) paste \(paste): scrolls")
                 if paste { XCTAssertEqual(row.arrangedSubviews[0].frame.width, 44, "\(width): Paste") }
                 for c in caps {
@@ -444,7 +444,7 @@ final class ShortcutCapTests: XCTestCase {
                 }
                 let natural = caps.map(\.naturalWidth).reduce(0, +), placed = caps.map(\.frame.width).reduce(0, +)
                 let span = natural + (paste ? 44 : 0) + 6 * CGFloat(keys.count - 1)
-                if span <= sv.bounds.width {
+                if span <= sv.bounds.width - 2 * ShortcutBar.glowRoom {
                     for c in caps { XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.01, "\(width): widened") }
                 } else {
                     XCTAssertLessThan(placed, natural, "\(width): not squeezed")
@@ -458,7 +458,7 @@ final class ShortcutCapTests: XCTestCase {
     func testShortToolbarKeepsNaturalWidths() throws {
         let (bar, row, sv) = try makeToolbar(try ["up", "tab"].map(key), width: 402)
         for c in Self.caps(bar) { XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.01) }
-        XCTAssertEqual(row.arrangedSubviews[0].convert(row.arrangedSubviews[0].bounds, to: sv).minX, 0, accuracy: 0.01)
+        XCTAssertEqual(row.arrangedSubviews[0].convert(row.arrangedSubviews[0].bounds, to: sv).minX, ShortcutBar.glowRoom, accuracy: 0.01)
         XCTAssertLessThan(try XCTUnwrap(row.arrangedSubviews.last).convert(row.arrangedSubviews.last!.bounds, to: sv).maxX,
                           sv.bounds.width / 2)
     }
@@ -475,7 +475,7 @@ final class ShortcutCapTests: XCTestCase {
         let over = try makeToolbar(keys, width: span + 43 + 16 - 0.4)
         let caps = Self.caps(over.bar), last = try XCTUnwrap(over.row.arrangedSubviews.last)
         XCTAssertLessThan(caps.map(\.frame.width).reduce(0, +), caps.map(\.naturalWidth).reduce(0, +), "not squeezed")
-        XCTAssertLessThanOrEqual(last.convert(last.bounds, to: over.scroll).maxX, over.scroll.bounds.width + 0.01, "end clipped")
+        XCTAssertLessThanOrEqual(last.convert(last.bounds, to: over.scroll).maxX, over.scroll.bounds.width - ShortcutBar.glowRoom + 0.01, "end clipped")
     }
 
     /// #562: the default toolbar plus next word at 402 would need about 0.83 — under
@@ -497,7 +497,7 @@ final class ShortcutCapTests: XCTestCase {
         long.frame = CGRect(x: 0, y: 0, width: 375 - 43, height: 44)
         long.layoutIfNeeded()
         let sv = try XCTUnwrap(Self.caps(long)[0].superview?.superview?.superview as? UIScrollView)
-        XCTAssertGreaterThan(sv.contentSize.width, sv.bounds.width / ShortcutBar.minRowScale, "past the floor")
+        XCTAssertGreaterThan(sv.contentSize.width - 2 * ShortcutBar.glowRoom, (sv.bounds.width - 2 * ShortcutBar.glowRoom) / ShortcutBar.minRowScale, "past the floor")
         for c in Self.caps(long) { XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.01, "squeezed past the floor") }
 
         keys = Shortcuts.Bar.toolbar.defaults

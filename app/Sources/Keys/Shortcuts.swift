@@ -297,6 +297,10 @@ enum Shortcuts {
 final class ShortcutBar: UIView {
     private static let inset: CGFloat = 4       // above and below the caps
     private static let capHeight: CGFloat = 36
+    /// The scroll view reaches this far past the caps, the stack inset back by it, so a Mac
+    /// theme's glow (radius 5) isn't cut into a band at its edges (#642). Nothing moves: the
+    /// caps keep their frames, and the frame and content grow alike, so it scrolls as far.
+    static let glowRoom: CGFloat = 8
     private static let spacing: CGFloat = 6     // between caps, and between the rows
     var onKey: ((ShortcutKey) -> Void)?
     /// The Paste control's clip (`oneRow`).
@@ -326,18 +330,19 @@ final class ShortcutBar: UIView {
         self.keys = keys
         self.oneRow = oneRow
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: Self.inset * 2 + Self.capHeight))
-        // Match the iOS keyboard chrome so the strip reads as part of it. `oneRow` sits on
-        // the keyboard's own backdrop: a blur there is a lighter band (#622).
-        let blur = UIVisualEffectView(effect: oneRow ? nil : UIBlurEffect(style: .systemChromeMaterial))
-        blur.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(blur)
+        // On the keyboard's backdrop so the strip reads as part of it: `oneRow` on the
+        // keyboard's own (#622), the app's in the theme's (`build`, #642). The system's chrome
+        // blur followed the app's dark look, a dark band over Light keys and a grey one over True Black.
+        let content = UIView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(content)
         NSLayoutConstraint.activate([
-            blur.leadingAnchor.constraint(equalTo: leadingAnchor),
-            blur.trailingAnchor.constraint(equalTo: trailingAnchor),
-            blur.topAnchor.constraint(equalTo: topAnchor),
-            blur.bottomAnchor.constraint(equalTo: bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor),
+            content.topAnchor.constraint(equalTo: topAnchor),
+            content.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-        self.container = blur.contentView
+        self.container = content
         if oneRow { pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.plainText.identifier]) }
         build()
     }
@@ -468,6 +473,7 @@ final class ShortcutBar: UIView {
 
     private func build() {
         guard let container else { return }
+        if !oneRow { backgroundColor = Style.backdrop }
         container.subviews.forEach { $0.removeFromSuperview() }
         modifierCaps = [:]
 
@@ -497,15 +503,15 @@ final class ShortcutBar: UIView {
         scroll.addSubview(stack)
 
         NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
-            scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
-            scroll.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.inset),
-            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -Self.inset),
-            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-            stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
+            scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8 - Self.glowRoom),
+            scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: Self.glowRoom - 8),
+            scroll.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.inset - Self.glowRoom),
+            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: Self.glowRoom - Self.inset),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: Self.glowRoom),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -Self.glowRoom),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: Self.glowRoom),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -Self.glowRoom),
+            stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -2 * Self.glowRoom),
         ])
 
         rows[1].isHidden = oneRow   // `layoutSubviews` shows it for `twoRows`
@@ -531,16 +537,19 @@ final class ShortcutBar: UIView {
     }
 
     // The keyboard's caps (#626): the theme's special fill, a hairline border, a crisp
-    // bottom shadow, no glow; the accent only on send and a lit modifier.
+    // bottom shadow, no glow; the accent only on send and a lit modifier. In the Toolbar
+    // theme's colours (`bar`, #642), a Mac theme's neon outline and glow with it.
     private typealias Style = TerminalKeyboard.Style
+    private var bar: Style.Palette { Style.bar }
     private static let capFont: UIFont = {
         let base = UIFont.systemFont(ofSize: 15, weight: .medium)
         guard let d = base.fontDescriptor.withDesign(.rounded) else { return base }
         return UIFont(descriptor: d, size: 15)
     }()
     private func makeButton(_ key: ShortcutKey) -> KeyCapButton {
+        let bar = self.bar
         var cfg = UIButton.Configuration.plain()
-        cfg.baseForegroundColor = Style.icon
+        cfg.baseForegroundColor = bar.icon
         cfg.contentInsets = .init(top: 5, leading: KeyCapButton.padding, bottom: 5, trailing: KeyCapButton.padding)
         if let sym = key.systemImage {
             cfg.image = UIImage(systemName: sym,
@@ -549,22 +558,22 @@ final class ShortcutBar: UIView {
             cfg.title = key.label
             cfg.titleTextAttributesTransformer = .init { var c = $0; c.font = Self.capFont; return c }
         }
-        cfg.background.backgroundColor = Style.surface
+        cfg.background.backgroundColor = bar.surface
         cfg.background.cornerRadius = Style.radius
         cfg.cornerStyle = .fixed     // .dynamic grows the radius with the text size; Paste's stays put
-        cfg.background.strokeColor = Style.hairline
+        cfg.background.strokeColor = bar.border
         cfg.background.strokeWidth = 1
         let send = key.id == Shortcuts.sendID   // the toolbar's action key: the accent (#626)
         if send {
-            cfg.baseForegroundColor = Style.onAccent
-            cfg.background.image = Style.washImage
+            cfg.baseForegroundColor = bar.onAccent
+            cfg.background.image = bar.washImage
             cfg.background.imageContentMode = .scaleToFill
         }
         let b = KeyCapButton(configuration: cfg)
         b.accessibilityLabel = key.label   // an icon cap would otherwise read its SF Symbol name
-        b.idleFill = send ? Style.accent : Style.surface
-        b.pressedFill = send ? Style.accent : Style.surfacePressed
-        Self.shade(b)
+        b.idleFill = send ? bar.accent : bar.surface
+        b.pressedFill = send ? bar.accent : bar.surfacePressed
+        Self.shade(b, glow: bar.glow)
         // Tap on touch-DOWN, like the keyboard: feedback has to land under the finger,
         // not on release. The key itself still fires on touchUpInside.
         b.addAction(UIAction { [weak self] _ in self?.tap() }, for: .touchDown)
@@ -578,7 +587,7 @@ final class ShortcutBar: UIView {
             // the filled cap — "stays on past the next key".
             let led = UIView()
             led.isUserInteractionEnabled = false
-            led.backgroundColor = Style.onAccent
+            led.backgroundColor = bar.onAccent
             led.layer.cornerRadius = 1
             led.isHidden = true
             led.translatesAutoresizingMaskIntoConstraints = false
@@ -594,14 +603,23 @@ final class ShortcutBar: UIView {
         return b
     }
 
-    /// The keys' crisp 1 pt bottom shadow, no glow (#626).
-    static func shade(_ v: UIView) {
-        v.layer.shadowColor = UIColor.black.cgColor
-        v.layer.shadowOpacity = 0.35
-        v.layer.shadowRadius = 0
-        v.layer.shadowOffset = CGSize(width: 0, height: 1)
+    /// The keys' crisp 1 pt bottom shadow, no glow (#626), or a dark Mac theme's halo in
+    /// `glow` (#642), which `trace` gives its path.
+    static func shade(_ v: UIView, glow: UIColor? = nil) {
+        v.layer.shadowColor = (glow ?? .black).cgColor
+        v.layer.shadowOpacity = glow == nil ? 0.35 : 0.5
+        v.layer.shadowRadius = glow == nil ? 0 : 5
+        v.layer.shadowOffset = glow == nil ? CGSize(width: 0, height: 1) : .zero
+        v.layer.shadowPath = nil
         v.layer.masksToBounds = false
-        (v as? KeyCapButton)?.idleGlow = 0.35
+        (v as? KeyCapButton)?.idleGlow = v.layer.shadowOpacity
+    }
+
+    /// A glowing cap's halo drawn from its rounded bounds (#642): without a `shadowPath` each
+    /// is rendered offscreen every frame, past what 40 caps afford. Made again only for new bounds.
+    static func trace(_ v: UIView) {
+        guard v.layer.shadowRadius > 0, v.layer.shadowPath?.boundingBox != v.bounds else { return }
+        v.layer.shadowPath = UIBezierPath(roundedRect: v.bounds, cornerRadius: Style.radius).cgPath
     }
 
     /// The system's secure Paste as a cap: a tap hands the clip to `paste(itemProviders:)`,
@@ -612,8 +630,8 @@ final class ShortcutBar: UIView {
     private func makePasteControl() -> UIView {
         let config = UIPasteControl.Configuration()
         config.displayMode = .iconOnly
-        config.baseForegroundColor = Style.icon
-        config.baseBackgroundColor = Style.surface
+        config.baseForegroundColor = bar.icon
+        config.baseBackgroundColor = bar.surface
         config.cornerStyle = .fixed
         config.cornerRadius = Style.radius - 1   // concentric inside the cap's, 1 pt in
         let control = UIPasteControl(configuration: config)
@@ -628,12 +646,12 @@ final class ShortcutBar: UIView {
     /// when covered. Its intrinsic height (34.3 pt at Large) is required — under its
     /// content the control draws blank. 44 pt wide.
     private func pasteCap(around control: UIView) -> UIView {
-        let cap = UIView()
-        cap.backgroundColor = Style.surface
+        let cap = PasteCap()
+        cap.backgroundColor = bar.surface
         cap.layer.cornerRadius = Style.radius
         cap.layer.borderWidth = 1
-        cap.layer.borderColor = Style.hairline.cgColor
-        Self.shade(cap)
+        cap.layer.borderColor = bar.border.cgColor
+        Self.shade(cap, glow: bar.glow)
         control.translatesAutoresizingMaskIntoConstraints = false
         control.setContentCompressionResistancePriority(.required, for: .vertical)
         cap.addSubview(control)
@@ -657,11 +675,11 @@ final class ShortcutBar: UIView {
             guard var cfg = b.configuration else { continue }
             let mode = modes[kind] ?? .off
             let on = mode != .off
-            cfg.baseForegroundColor = on ? Style.onAccent : Style.icon
-            cfg.background.image = on ? Style.washImage : nil
+            cfg.baseForegroundColor = on ? bar.onAccent : bar.icon
+            cfg.background.image = on ? bar.washImage : nil
             b.configuration = cfg
-            b.pressedFill = on ? Style.accent : Style.surfacePressed
-            b.idleFill = on ? Style.accent : Style.surface      // applies the fill
+            b.pressedFill = on ? bar.accent : bar.surfacePressed
+            b.idleFill = on ? bar.accent : bar.surface      // applies the fill
             b.led?.isHidden = mode != .locked
             b.accessibilityValue = mode == .once ? "on" : mode == .locked ? "locked" : nil
         }
@@ -735,12 +753,25 @@ final class KeyCapButton: UIButton {
         }
     }
 
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        ShortcutBar.trace(self)
+    }
+
     private func applyFill() {
         guard var cfg = configuration else { return }
         let want = isHighlighted ? pressedFill : idleFill
         guard cfg.background.backgroundColor != want else { return }
         cfg.background.backgroundColor = want
         configuration = cfg
+    }
+}
+
+/// Paste's cap (`ShortcutBar.pasteCap`), its glow traced as a `KeyCapButton`'s (#642).
+private final class PasteCap: UIView {
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        ShortcutBar.trace(self)
     }
 }
 

@@ -86,6 +86,9 @@ struct SettingsView: View {
     private var languages = TerminalKeyboard.Layout.english.rawValue
     @AppStorage(KeyboardSettings.Key.theme, store: KeyboardSettings.store())
     private var theme = KeyboardSettings().theme
+    /// "" is Match keys (#642).
+    @AppStorage(KeyboardSettings.Key.toolbarTheme, store: KeyboardSettings.store())
+    private var toolbarTheme = ""
     @AppStorage(KeyboardSettings.Key.accent, store: KeyboardSettings.store())
     private var accent = KeyboardSettings().accent
     /// A new preview each time the list shows again: a page under it may have changed the keys.
@@ -206,11 +209,23 @@ struct SettingsView: View {
                     .id(previewID)
                     .listRowInsets(EdgeInsets())
                     .accessibilityHidden(true)
-                Picker("Theme", selection: $theme) {
-                    ForEach(KeyboardSettings.Theme.allCases, id: \.self) { Text($0 == .black ? "True Black" : $0.rawValue.capitalized) }
+                // A page each, with swatches a menu would tint away (#642).
+                Picker("Keys Theme", selection: $theme) {
+                    ForEach(KeyboardSettings.Theme.allCases, id: \.self) { ThemeLabel(theme: $0, accent: accent) }
                 }
+                .pickerStyle(.navigationLink)
+                Picker("Toolbar Theme", selection: $toolbarTheme) {
+                    Text("Match Keys").tag("")
+                    ForEach(KeyboardSettings.Theme.allCases, id: \.self) { ThemeLabel(theme: $0, accent: accent).tag($0.rawValue) }
+                }
+                .pickerStyle(.navigationLink)
+                let accentApplies = [theme, KeyboardSettings.Theme(rawValue: toolbarTheme) ?? theme].contains { !$0.isMac }
                 Picker("Accent", selection: $accent) {
                     ForEach(KeyboardSettings.Accent.allCases, id: \.self) { Text($0.rawValue.capitalized) }
+                }
+                .disabled(!accentApplies)
+                if !accentApplies {
+                    Text("Mac themes light up in their own colour.").font(.footnote).foregroundStyle(.secondary)
                 }
                 Toggle("Auto-Capitalization", isOn: $autoCapitalization)
                 Toggle("Auto-Correction", isOn: $autoCorrection)
@@ -229,7 +244,7 @@ struct SettingsView: View {
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows. Numbers: Key swaps the digit row in other apps for a 123 key that opens a numpad, and gives the toolbar a second row in its place. Theme and Accent apply to both keyboards; the accent lights return, send and the toolbar's held keys.")
+                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows. Numbers: Key swaps the digit row in other apps for a 123 key that opens a numpad, and gives the toolbar a second row in its place. The themes and Accent apply to both keyboards: the Toolbar Theme to the toolbar's keys, the Keys Theme to the rest. The accent lights return, send and the toolbar's held keys in Dark, Light and True Black.")
             }
 
             // The Prosper keyboard's languages (#624); the terminal's keyboard stays English.
@@ -393,6 +408,29 @@ struct KeyboardPreview: UIViewRepresentable {
         let height = uiView.systemLayoutSizeFitting(CGSize(width: width, height: 0), withHorizontalFittingPriority: .required,
                                                     verticalFittingPriority: .fittingSizeLevel).height
         return CGSize(width: width, height: height)
+    }
+}
+
+/// A theme's name after its swatch (#642): a key in its outline on its backdrop, and its accent.
+private struct ThemeLabel: View {
+    let theme: KeyboardSettings.Theme
+    let accent: KeyboardSettings.Accent
+
+    var body: some View {
+        let p = TerminalKeyboard.Style.Palette(theme, accent: accent)
+        Label {
+            Text(theme.title)
+        } icon: {
+            HStack(spacing: 3) {
+                RoundedRectangle(cornerRadius: 3).fill(Color(p.key))
+                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(Color(p.border), lineWidth: 1))
+                    .frame(width: 14, height: 14)
+                Circle().fill(Color(p.accent)).frame(width: 8, height: 8)
+            }
+            .padding(4)
+            .background(Color(p.backdrop), in: RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.3), lineWidth: 0.5))
+        }
     }
 }
 

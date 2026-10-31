@@ -14,6 +14,7 @@ final class KeyboardThemeTests: XCTestCase {
     private var defaults: UserDefaults!
     private var store: (() -> UserDefaults?)!
     private var palette: Style.Palette!
+    private var barPalette: Style.Palette!
 
     override func setUp() {
         super.setUp()
@@ -21,12 +22,12 @@ final class KeyboardThemeTests: XCTestCase {
         defaults = UserDefaults(suiteName: suite)
         store = KeyboardSettings.store
         KeyboardSettings.store = { [defaults] in defaults }
-        palette = Style.palette
-        Style.palette = Style.Palette(KeyboardSettings())
+        (palette, barPalette) = (Style.palette, Style.bar)
+        (Style.palette, Style.bar) = (Style.Palette(KeyboardSettings()), Style.Palette.bar(KeyboardSettings()))
     }
 
     override func tearDown() {
-        Style.palette = palette
+        (Style.palette, Style.bar) = (palette, barPalette)
         KeyboardSettings.store = store
         defaults.removePersistentDomain(forName: suite)
         super.tearDown()
@@ -193,5 +194,234 @@ final class KeyboardThemeTests: XCTestCase {
         defaults.set("teal", forKey: "keyboard.accent")
         XCTAssertEqual(KeyboardSettings.current().theme, .dark)
         XCTAssertEqual(KeyboardSettings.current().accent, .violet)
+    }
+
+    // MARK: - The Mac themes (#642)
+
+    typealias Theme = KeyboardSettings.Theme
+
+    func testEveryMacThemeParsesIntoAPalette() {
+        XCTAssertEqual(Theme.allCases.count, 24)
+        XCTAssertEqual(Theme.mac.count, 21)
+        XCTAssertEqual(Array(Theme.allCases.prefix(4)), [.dark, .light, .black, .neon], "#626's first, then Neon")
+        XCTAssertEqual(Theme.allCases.filter(\.isMac).count, 21)
+        XCTAssertEqual(Theme.neon.title, "Neon")
+        XCTAssertEqual(Theme.black.title, "True Black")
+        XCTAssertEqual(Theme.contrastDark.rawValue, "contrast-dark")
+        XCTAssertEqual(Theme.mac.values.filter { $0.light }.count, 8)
+        for theme in Theme.allCases where theme.isMac {
+            let mac = Theme.mac[theme]!
+            XCTAssertEqual(mac.hex.count, 12, "\(theme)")
+            XCTAssertEqual(Set(mac.hex.map { $0 >> 24 }), [0], "\(theme): RGB only")
+            XCTAssertFalse(mac.title.isEmpty)
+            let p = Style.Palette(theme, accent: .violet)
+            let c = mac.hex.map { UIColor(hex: $0) }
+            XCTAssertEqual(p.key, c[8], "\(theme): card")
+            XCTAssertEqual(p.keyPressed, c[9], "\(theme): cardHi")
+            XCTAssertEqual(p.special, c[7], "\(theme): sidebar")
+            XCTAssertEqual(p.surface, c[8], "\(theme)")
+            XCTAssertEqual(p.backdrop, c[6], "\(theme): bgBottom")
+            XCTAssertEqual(p.label, c[10], "\(theme): textPrimary")
+            XCTAssertEqual(p.hint, c[11], "\(theme): textSecondary")
+            XCTAssertEqual(p.icon, c[1], "\(theme): glyphs in blueBright")
+            XCTAssertEqual(p.accent, c[0], "\(theme): return and send in blue")
+            XCTAssertEqual(p.accentEnd, c[0])
+            XCTAssertEqual(p.neon, c[0])
+            XCTAssertEqual(p.border, c[0].withAlphaComponent(0.55))
+            XCTAssertEqual(p.style, mac.light ? .light : .dark, "\(theme)")
+            XCTAssertEqual(p.glow, mac.light ? nil : c[0], "\(theme): a light one keeps the border, no glow")
+            XCTAssertEqual(Style.Palette(theme, accent: .green), p, "\(theme): its own accent")
+        }
+        XCTAssertEqual(Style.Palette(.neon, accent: .none).neon, UIColor(hex: 0x21CCFF))
+        XCTAssertEqual(Style.Palette(.neon, accent: .none).backdrop, UIColor(hex: 0x05080D))
+        for theme in [Theme.dark, .light, .black] {
+            XCTAssertNil(Style.Palette(theme, accent: .violet).neon, "\(theme)")
+            XCTAssertNotEqual(Style.Palette(theme, accent: .violet), Style.Palette(theme, accent: .green), "\(theme)")
+        }
+    }
+
+    func testNeonKeysDrawTheBorderAndGlow() throws {
+        let kb = laidOut()
+        let dark = try cap(kb, "q")
+        XCTAssertEqual(dark.layer.borderWidth, 1 / max(dark.traitCollection.displayScale, 1), "Dark's hairline")
+        XCTAssertEqual(dark.layer.shadowRadius, 0)
+        XCTAssertNil(dark.layer.shadowPath, "Dark's crisp shadow as it was")
+
+        kb.settings.theme = .neon
+        kb.layoutIfNeeded()
+        let blue = UIColor(hex: 0x21CCFF)
+        for title in ["q", "shift", "5", "space"] {
+            let c = try cap(kb, title)
+            XCTAssertEqual(c.backgroundColor, title == "q" || title == "space" ? UIColor(hex: 0x131923) : UIColor(hex: 0x080C13), title)
+            XCTAssertEqual(c.layer.borderWidth, 1, title)
+            XCTAssertEqual(c.layer.borderColor, blue.withAlphaComponent(0.55).cgColor, title)
+            XCTAssertEqual(c.layer.shadowColor, blue.cgColor, title)
+            XCTAssertEqual(c.layer.shadowRadius, 5, title)
+            XCTAssertEqual(c.layer.shadowOpacity, 0.5, title)
+            XCTAssertEqual(c.layer.shadowOffset, .zero, title)
+            XCTAssertEqual(c.layer.shadowPath?.boundingBox, c.bounds, "\(title): the glow has its path")
+        }
+        XCTAssertEqual(try cap(kb, "q").titleColor(for: .normal), UIColor(hex: 0xE8F2FC), "letters in textPrimary")
+        XCTAssertEqual(try cap(kb, "new line").backgroundColor, blue, "return in blue")
+        XCTAssertEqual(try cap(kb, "new line").tintColor, UIColor(hex: 0x05080D))
+        XCTAssertEqual(kb.backgroundColor, UIColor(hex: 0x05080D), "bgBottom")
+
+        kb.settings.theme = .daylight
+        kb.layoutIfNeeded()
+        let q = try cap(kb, "q")
+        XCTAssertEqual(q.layer.borderWidth, 1)
+        XCTAssertEqual(q.layer.borderColor, UIColor(hex: 0x0062D1).withAlphaComponent(0.55).cgColor)
+        XCTAssertEqual(q.layer.shadowRadius, 0, "a light Mac theme: no glow")
+        XCTAssertNil(q.layer.shadowPath)
+        XCTAssertEqual(kb.overrideUserInterfaceStyle, .light)
+    }
+
+    func testMatchKeysOrASeparateToolbarThemeOnABuiltKeyboard() throws {
+        let doc = Proxy()
+        let kb = TerminalKeyboard()
+        kb.target = doc
+        kb.offersEmoji = false
+        let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: defaults)))
+        bar.attach(kb)
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: 402, height: 400))
+        bar.host(kb, in: view)
+        bar.addToolbar { Shortcuts.Bar.toolbar.defaults }
+        bar.showsToolbar = true
+        let neon = Style.Palette(.neon, accent: .violet), dark = Style.Palette(.dark, accent: .violet)
+        func toolCap() throws -> KeyCapButton {
+            try XCTUnwrap(Self.all(try XCTUnwrap(bar.toolbar)).compactMap { $0 as? KeyCapButton }.first { $0.accessibilityLabel == "tab" })
+        }
+        func check(keys: Style.Palette, toolbar: Style.Palette, _ note: String) throws {
+            view.layoutIfNeeded()
+            XCTAssertEqual(try cap(kb, "q").backgroundColor, keys.key, "\(note): the keys")
+            XCTAssertEqual(view.backgroundColor, keys.backdrop, "\(note): the backdrop")
+            let t = try toolCap()
+            XCTAssertEqual(t.configuration?.background.backgroundColor, toolbar.surface, "\(note): the toolbar's caps")
+            XCTAssertEqual(t.configuration?.background.strokeColor, toolbar.border, note)
+            XCTAssertEqual(t.configuration?.baseForegroundColor, toolbar.icon, note)
+            XCTAssertEqual(t.layer.shadowRadius, toolbar.glow == nil ? 0 : 5, "\(note): the toolbar's glow")
+            let toggle = try XCTUnwrap(bar.toggle)
+            XCTAssertEqual(toggle.configuration?.background.backgroundColor, toolbar.surface, "\(note): the toggle")
+            XCTAssertEqual(toggle.layer.shadowRadius, toolbar.glow == nil ? 0 : 5, "\(note): the toggle's glow")
+            if toolbar.glow != nil {
+                XCTAssertEqual(toggle.layer.shadowPath?.boundingBox, toggle.bounds, "\(note): the toggle's path")
+                XCTAssertEqual(t.layer.shadowPath?.boundingBox, t.bounds, "\(note): the cap's path")
+            }
+        }
+        try check(keys: dark, toolbar: dark, "the default")
+
+        var settings = KeyboardSettings()
+        settings.theme = .neon
+        kb.settings = settings
+        XCTAssertNil(settings.toolbarTheme, "Match keys")
+        try check(keys: neon, toolbar: neon, "Neon, Match keys")
+
+        settings.toolbarTheme = .dark
+        kb.settings = settings
+        try check(keys: neon, toolbar: dark, "Neon keys, Dark toolbar")
+
+        settings.theme = .dark
+        settings.toolbarTheme = .neon
+        kb.settings = settings
+        try check(keys: dark, toolbar: neon, "Dark keys, Neon toolbar")
+        XCTAssertEqual(Style.palette, dark)
+        XCTAssertEqual(Style.bar, neon)
+        bar.showMenu(true)
+        let tile = try XCTUnwrap(bar.menuPanel?.tiles.first)
+        tile.setNeedsUpdateConfiguration()
+        tile.layoutIfNeeded()
+        XCTAssertEqual(tile.configuration?.background.backgroundColor, dark.surface, "the menu follows the keys")
+        bar.showMenu(false)
+
+        // A lit modifier in the toolbar's blue, whatever the keys'.
+        let ctrl = ShortcutKey(id: "ctrl", label: "ctrl", kind: .ctrl)
+        let tools = ShortcutBar(keys: { [ctrl] }, oneRow: true)
+        tools.modes = [.ctrl: .once]
+        let lit = try XCTUnwrap(Self.all(tools).compactMap { $0 as? KeyCapButton }.first)
+        XCTAssertEqual(lit.configuration?.background.backgroundColor, neon.accent)
+        XCTAssertEqual(lit.configuration?.baseForegroundColor, neon.onAccent)
+        withExtendedLifetime((doc, kb)) {}
+    }
+
+    /// The terminal's own bar (not `oneRow`) on the keys' backdrop, not the system's chrome,
+    /// and again when the app's keyboard takes another theme (`restyled`, as the host wires it).
+    func testTheTerminalBarsBackdropFollowsTheTheme() throws {
+        let kb = laidOut()
+        let bar = ShortcutBar(keys: { Shortcuts.defaults })
+        bar.frame = CGRect(x: 0, y: 0, width: 402, height: 86)
+        kb.restyled = { [weak bar] in bar?.reload() }
+        XCTAssertEqual(bar.backgroundColor, Style.Palette.dark.backdrop, "Dark: its backdrop")
+        XCTAssertFalse(Self.all(bar).contains { $0 is UIVisualEffectView }, "no system blur")
+        for theme in [Theme.light, .black, .neon] {
+            kb.settings.theme = theme
+            let want = Style.Palette(theme, accent: .violet)
+            XCTAssertEqual(bar.backgroundColor, want.backdrop, "\(theme)")
+            XCTAssertEqual(bar.backgroundColor, kb.backgroundColor, "\(theme): one backdrop with the keys")
+            bar.layoutIfNeeded()
+            let tab = try XCTUnwrap(Self.all(bar).compactMap { $0 as? KeyCapButton }.first { $0.accessibilityLabel == "tab" })
+            XCTAssertEqual(tab.configuration?.background.backgroundColor, want.surface, "\(theme): its caps")
+        }
+        XCTAssertEqual(Style.Palette.black.backdrop, .black)
+    }
+
+    /// The glow isn't cut into a band at the scroll view's edges (#622's band, #642): it reaches
+    /// past the caps by more than the glow on top, bottom and left, and every cap stays where
+    /// it was, 8 pt in and 4 pt down, in Dark and Neon, in the keyboard's bar and the app's.
+    func testTheToolbarsGlowIsNotClippedAndNoCapMoves() throws {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 300))
+        window.isHidden = false
+        defer { window.isHidden = true }
+        for oneRow in [true, false] {
+            var placed: [[CGRect]] = []
+            for theme in [Theme.dark, .neon] {
+                var settings = KeyboardSettings()
+                settings.theme = theme
+                (Style.palette, Style.bar) = (Style.Palette(settings), Style.Palette.bar(settings))
+                let bar = ShortcutBar(keys: { Shortcuts.defaults }, oneRow: oneRow)
+                if oneRow { bar.twoRows = true }
+                bar.frame = CGRect(x: 0, y: 100, width: 402, height: 86)
+                window.addSubview(bar)
+                bar.layoutIfNeeded()
+                bar.layoutIfNeeded()
+                let caps = Self.all(bar).compactMap { $0 as? KeyCapButton }.filter { $0.window != nil }
+                XCTAssertGreaterThan(caps.count, 8, "\(theme) oneRow \(oneRow)")
+                let frames = caps.map { $0.convert($0.bounds, to: nil) }
+                let union = frames.reduce(frames[0]) { $0.union($1) }
+                XCTAssertEqual(union.minX, 8, accuracy: 0.01, "\(theme) oneRow \(oneRow): 8 pt in")
+                XCTAssertEqual(union.minY, 104, accuracy: 0.01, "\(theme) oneRow \(oneRow): 4 pt down")
+                XCTAssertEqual(frames[0].height, 36, accuracy: 0.01)
+                let scroll = try XCTUnwrap(caps[0].superview?.superview?.superview as? UIScrollView)
+                XCTAssertTrue(scroll.clipsToBounds)
+                let clip = scroll.convert(scroll.bounds, to: nil)
+                XCTAssertGreaterThanOrEqual(union.minY - clip.minY, 5, "\(theme) oneRow \(oneRow): room on top")
+                XCTAssertGreaterThanOrEqual(clip.maxY - union.maxY, 5, "\(theme) oneRow \(oneRow): below")
+                XCTAssertGreaterThanOrEqual(union.minX - clip.minX, 5, "\(theme) oneRow \(oneRow): left")
+                XCTAssertEqual(scroll.contentSize.width - scroll.bounds.width,
+                               union.width - (402 - 16), accuracy: 0.5, "\(theme) oneRow \(oneRow): scrolls as far as before")
+                if theme == .neon { XCTAssertEqual(caps[0].layer.shadowRadius, 5) }
+                placed.append(frames)
+                bar.removeFromSuperview()
+            }
+            XCTAssertEqual(placed[0], placed[1], "oneRow \(oneRow): Neon's caps where Dark's are")
+        }
+    }
+
+    func testToolbarThemeRoundTripsAndUnknownValuesReadAsTheDefaults() {
+        XCTAssertNil(KeyboardSettings.current().toolbarTheme, "absent is Match keys")
+        defaults.set("neon", forKey: "keyboard.theme")
+        defaults.set("daylight", forKey: "keyboard.toolbarTheme")
+        XCTAssertEqual(KeyboardSettings.current().theme, .neon)
+        XCTAssertEqual(KeyboardSettings.current().toolbarTheme, .daylight)
+        XCTAssertEqual(Style.Palette.bar(.current()), Style.Palette(.daylight, accent: .violet))
+        XCTAssertNil(KeyboardSettings.current(fullAccess: false).toolbarTheme)
+        defaults.set("contrast-light", forKey: "keyboard.toolbarTheme")
+        XCTAssertEqual(KeyboardSettings.current().toolbarTheme, .contrastLight)
+        defaults.set("", forKey: "keyboard.toolbarTheme")
+        XCTAssertNil(KeyboardSettings.current().toolbarTheme, "Settings' Match keys")
+        XCTAssertEqual(Style.Palette.bar(.current()), Style.Palette(.current()), "Match keys: the keys' palette")
+        defaults.set("default", forKey: "keyboard.toolbarTheme")
+        defaults.set("sepia", forKey: "keyboard.theme")
+        XCTAssertNil(KeyboardSettings.current().toolbarTheme, "unknown is Match keys")
+        XCTAssertEqual(KeyboardSettings.current().theme, .dark, "unknown is Dark")
     }
 }

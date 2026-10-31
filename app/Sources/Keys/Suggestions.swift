@@ -765,16 +765,16 @@ final class SuggestionBar: UIView {
         setNeedsLayout()
     }
 
-    /// The toggle as a toolbar cap (#626).
+    /// The toggle as a toolbar cap (#626), in the Toolbar theme's colours (#642).
     private static func paint(_ t: UIButton) {
-        typealias Style = TerminalKeyboard.Style
-        t.configuration?.baseForegroundColor = Style.icon
-        t.configuration?.background.backgroundColor = Style.surface
-        t.configuration?.background.cornerRadius = Style.radius
-        t.configuration?.background.strokeColor = Style.hairline
+        let bar = TerminalKeyboard.Style.bar
+        t.configuration?.baseForegroundColor = bar.icon
+        t.configuration?.background.backgroundColor = bar.surface
+        t.configuration?.background.cornerRadius = TerminalKeyboard.Style.radius
+        t.configuration?.background.strokeColor = bar.border
         t.configuration?.background.strokeWidth = 1
         t.configuration?.cornerStyle = .fixed
-        ShortcutBar.shade(t)
+        ShortcutBar.shade(t, glow: bar.glow)
     }
 
     private func autofillLift() {
@@ -1818,6 +1818,7 @@ final class SuggestionBar: UIView {
                                                  right: safeAreaInsets.right + 3))
         if let toggle, !toggle.isHidden {
             toggle.frame = CGRect(x: area.minX, y: area.minY, width: 36, height: area.height)
+            ShortcutBar.trace(toggle)
             area = area.inset(by: UIEdgeInsets(top: 0, left: 40, bottom: 0, right: 0))
         }
         toolbar?.frame = CGRect(x: area.minX, y: 0, width: bounds.width - area.minX,

@@ -60,6 +60,7 @@ struct KeyboardSettings: Equatable {
         static let numbers = "keyboard.numbers"
         static let numpadHidesToolbar = "keyboard.numpadHidesToolbar"
         static let theme = "keyboard.theme"
+        static let toolbarTheme = "keyboard.toolbarTheme"
         static let accent = "keyboard.accent"
     }
 
@@ -117,10 +118,56 @@ struct KeyboardSettings: Equatable {
     }
 
     /// The keyboards' look (#626): every view they draw reads it (`TerminalKeyboard.Style`).
+    /// The Keys theme since #642: the keys, the menu and the panels.
     var theme = Theme.dark
-    enum Theme: String, CaseIterable { case dark, light, black }
+    /// The toolbar's caps, its toggle and lit modifiers (#642); nil is Match keys, and so is
+    /// a stored value no theme has.
+    var toolbarTheme: Theme?
+    /// #626's three, then the Mac app's (#642), which bring their own accent (`mac`).
+    enum Theme: String, CaseIterable {
+        case dark, light, black, neon, amber, blossom, contrastDark = "contrast-dark", contrastLight = "contrast-light",
+             crimson, daylight, ember, emerald, fern, gold, graphite, indigo, lavender, lime, mint, rose,
+             silver, solar, teal, violet
+        var title: String {
+            switch self {
+            case .dark: return "Dark"
+            case .light: return "Light"
+            case .black: return "True Black"
+            default: return Self.mac[self]!.title
+            }
+        }
+        /// One of the Mac app's, its own accent and the neon look (`Style.Palette.neon`).
+        var isMac: Bool { Self.mac[self] != nil }
+        /// Copied from the Mac app's extensions/theme-*/theme.json (theme-default is Neon): its
+        /// appearance, then blue, blueBright, indigo, magenta, terminal, bgTop, bgBottom,
+        /// sidebar, card, cardHi, textPrimary, textSecondary (`Style.Palette.init(_:accent:)`).
+        static let mac: [Theme: (title: String, light: Bool, hex: [UInt32])] = [
+            .neon: ("Neon", false, [0x21CCFF, 0x75EBFF, 0x5C80FF, 0xF545B0, 0x45FFB5, 0x0B1018, 0x05080D, 0x080C13, 0x131923, 0x1B232F, 0xE8F2FC, 0x8C9EBA]),
+            .amber: ("Amber Terminal", false, [0xFFB000, 0xFFD166, 0xFF7A1A, 0xFF4D6D, 0xFFE08A, 0x14100A, 0x0B0905, 0x0F0C07, 0x1E1810, 0x2A2216, 0xF5ECDD, 0xB8A98C]),
+            .blossom: ("Blossom", true, [0xBA1C51, 0xE23C79, 0x0E728B, 0xBA3912, 0x11734A, 0xF8EDF0, 0xF2DEE5, 0xF5E6EB, 0xFFFFFF, 0xF8F2F4, 0x34141F, 0x72525E]),
+            .contrastDark: ("High Contrast Dark", false, [0xE0FF00, 0xF0FF80, 0x66C2FF, 0xFF3DC8, 0x33FF85, 0x000000, 0x000000, 0x000000, 0x101010, 0x202020, 0xFFFFFF, 0xC8C8C8]),
+            .contrastLight: ("High Contrast Light", true, [0x0000C2, 0x2E2EDB, 0x6A00B8, 0xB3006B, 0x00602E, 0xFFFFFF, 0xFFFFFF, 0xFFFFFF, 0xF2F2F2, 0xE5E5E5, 0x000000, 0x3C3C3C]),
+            .crimson: ("Crimson", false, [0xF63159, 0xFC889F, 0xD166F5, 0xFF9B29, 0x4CF0A4, 0x1A0B0D, 0x0C0506, 0x130809, 0x291618, 0x381E22, 0xF9EBED, 0xB78F94]),
+            .daylight: ("Daylight", true, [0x0062D1, 0x1F8CF9, 0x451FE0, 0xC11554, 0x087D52, 0xEDF2F7, 0xDFE7F1, 0xE7EDF5, 0xFFFFFF, 0xF2F5F8, 0x142234, 0x526072]),
+            .ember: ("Ember", false, [0xFF3F0F, 0xFF8E6B, 0x3BD8F7, 0xFF479D, 0x4FEE9E, 0x1A100B, 0x0C0805, 0x130C08, 0x291D16, 0x38281E, 0xF9F1EB, 0xB79F8F]),
+            .emerald: ("Emerald", false, [0x17E864, 0x75F5A8, 0x9271F4, 0xFF5291, 0x68F3C9, 0x0B1A13, 0x050C09, 0x08130E, 0x162920, 0x1E382C, 0xEBF9F3, 0x8FB7A5]),
+            .fern: ("Fern", true, [0x1E7911, 0x35A31F, 0xA5540D, 0xB11644, 0x0E712F, 0xEFF7EE, 0xE2F0E0, 0xE9F4E8, 0xFFFFFF, 0xF3F7F2, 0x153414, 0x547252]),
+            .gold: ("Gold", false, [0xD6B351, 0xEDD997, 0x7F9CBD, 0xE6566A, 0x60C797, 0x141311, 0x0A0908, 0x0F0E0C, 0x21201D, 0x2E2C28, 0xF9F5EB, 0xB7AA8F]),
+            .graphite: ("Graphite", false, [0x9CA7B4, 0xCAD1D8, 0x717F8E, 0xE05C69, 0x65C394, 0x111214, 0x08090A, 0x0C0D0F, 0x1D1F21, 0x282B2E, 0xEBF2F9, 0x8FA2B7]),
+            .indigo: ("Indigo", false, [0x7075FF, 0xADB0FF, 0xFFA53D, 0xFF52AE, 0x5EF3B5, 0x0B0B1A, 0x05050C, 0x080813, 0x161629, 0x1E1E38, 0xEBEBF9, 0x8F8FB7]),
+            .lavender: ("Lavender", true, [0x6D1CCA, 0x8945E3, 0x9A6804, 0xBF184F, 0x11734A, 0xF2EDF7, 0xE7DFF1, 0xEDE7F5, 0xFFFFFF, 0xF5F2F8, 0x241434, 0x625272]),
+            .lime: ("Lime", false, [0x73ED1D, 0xAEF66F, 0x47AAF5, 0xFF476C, 0x42F0CD, 0x101A0B, 0x080C05, 0x0C1308, 0x1C2816, 0x27381F, 0xF0F9EB, 0x9CB78F]),
+            .mint: ("Mint", true, [0x057A57, 0x11AC78, 0xBA3412, 0xB51248, 0x0A7136, 0xEDF7F4, 0xDFF1EA, 0xE7F4EF, 0xFFFFFF, 0xF2F8F6, 0x143429, 0x527267]),
+            .rose: ("Rose", false, [0xFF42BA, 0xFF8FD2, 0x36F2EC, 0xFF6952, 0x5FF2BC, 0x1A0B15, 0x0C050A, 0x13080F, 0x291622, 0x381E30, 0xF9EBF4, 0xB78FA9]),
+            .silver: ("Silver", true, [0x434E60, 0x637288, 0x657186, 0xA92839, 0x1C6949, 0xF1F2F4, 0xE5E7EB, 0xECEDF0, 0xFFFFFF, 0xF4F5F6, 0x141F34, 0x525E72]),
+            .solar: ("Solar", true, [0x9E5F00, 0xD18605, 0x0D6687, 0xAC115E, 0x306F11, 0xF8F4EC, 0xF3ECDD, 0xF6F0E6, 0xFFFFFF, 0xF8F6F1, 0x342814, 0x726652]),
+            .teal: ("Teal", false, [0x09E1B6, 0x67F9E0, 0xFBAF2D, 0xFB4BA3, 0x58EEA8, 0x0A1A19, 0x050C0C, 0x081313, 0x152928, 0x1E3937, 0xEBF9F8, 0x8FB7B5]),
+            .violet: ("Violet", false, [0xC266FF, 0xDDA3FF, 0x41F1B6, 0xFF52C5, 0x5FF2A8, 0x130B1A, 0x09050C, 0x0E0813, 0x201629, 0x2C1E38, 0xF3EBF9, 0xA68FB7]),
+        ]
+    }
     /// What lights up (#626): return, the toolbar's send and lit modifiers, the panels'
-    /// highlights. None is neutral, the labels' colour.
+    /// highlights. None is neutral, the labels' colour. Dark, Light and True Black's only:
+    /// a Mac theme lights in its own blue (#642).
     var accent = Accent.violet
     enum Accent: String, CaseIterable { case violet, blue, pink, orange, green, none }
 
@@ -142,6 +189,7 @@ struct KeyboardSettings: Equatable {
         bottomHidden = defaults?.string(forKey: Key.bottomHidden) ?? bottomHidden
         keySize = defaults?.string(forKey: Key.keySize).flatMap(KeySize.init) ?? keySize
         theme = defaults?.string(forKey: Key.theme).flatMap(Theme.init) ?? theme
+        toolbarTheme = defaults?.string(forKey: Key.toolbarTheme).flatMap(Theme.init)
         accent = defaults?.string(forKey: Key.accent).flatMap(Accent.init) ?? accent
         languages = Self.languages(defaults?.string(forKey: Key.languages))
     }
@@ -1097,12 +1145,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     var fullAccess = true
     /// The app's Keyboard settings: the extension's controller sets them when it appears,
     /// the terminal when it takes focus. A new bottom row rebuilds the caps; a new key size
-    /// resizes them; a new theme or accent becomes every view's (`Style.palette`) and redraws
-    /// what this keyboard drew with another (`restyle`).
+    /// resizes them; a new theme or accent becomes every view's (`Style.palette`, the
+    /// toolbar's `Style.bar`) and redraws what this keyboard drew with another (`restyle`).
     var settings = KeyboardSettings() {
         didSet {
-            Style.palette = Style.Palette(settings)
-            if Style.palette != drawn { restyle() }
+            (Style.palette, Style.bar) = (Style.Palette(settings), Style.Palette.bar(settings))
+            if [Style.palette, Style.bar] != drawn { restyle() }
             if settings.numbers != oldValue.numbers { return numbersChanged() }
             if settings.bottomRow != oldValue.bottomRow { build() }
             if settings.keySize != oldValue.keySize { fitHeight(); setNeedsLayout(); rowsChanged?() }
@@ -1127,8 +1175,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     var lentHeight: CGFloat = 0 { didSet { if lentHeight != oldValue { fitHeight(); setNeedsLayout() } } }
     /// The rows changed what the bar should take: Numbers, the numpad, Key Size, the size class.
     var rowsChanged: (() -> Void)?
-    /// The palette the caps were built with (`build`), and the bar's redraw for a new one (#626).
-    private var drawn: Style.Palette?
+    /// The palettes the caps were built with (`build`), the toolbar's second, and the bar's
+    /// redraw for a new one (#626).
+    private var drawn: [Style.Palette] = []
     var restyled: (() -> Void)?
 
     /// The caps rebuilt in `Style.palette`, the picker dropped till it next opens, the bar told.
@@ -1778,6 +1827,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// took (`settings`), first read from the App Group.
     enum Style {
         static var palette = Palette(.current())
+        /// The toolbar's caps, its toggle and lit modifiers: the Toolbar theme's (#642).
+        static var bar = Palette.bar(.current())
         /// Letters, space and the numpad's digits: the raised caps.
         static var key: UIColor { palette.key }
         static var keyPressed: UIColor { palette.keyPressed }
@@ -1797,16 +1848,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         /// (`wash`), and a label on it.
         static var accent: UIColor { palette.accent }
         static var onAccent: UIColor { palette.onAccent }
-        static var wash: [CGColor] { [palette.accent.cgColor, palette.accentEnd.cgColor] }
-        /// `wash` as an image to stretch over a cap (`UIBackgroundConfiguration.image`).
-        static var washImage: UIImage {
-            let g = CAGradientLayer()
-            g.colors = wash
-            g.frame = CGRect(x: 0, y: 0, width: 1, height: 36)
-            return UIGraphicsImageRenderer(bounds: g.bounds).image { g.render(in: $0.cgContext) }
-        }
+        static var wash: [CGColor] { palette.wash }
         /// The toolbar's and the panels' glyphs.
-        static var icon: UIColor { palette.label.withAlphaComponent(0.85) }
+        static var icon: UIColor { palette.icon }
         static let radius: CGFloat = 8
         static let hintFont = UIFont.systemFont(ofSize: 10)
         static let letterFont = UIFont.systemFont(ofSize: 22)
@@ -1814,9 +1858,23 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         static let symbol = UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
 
         struct Palette: Equatable {
-            var key, keyPressed, special, specialPressed, surface, surfacePressed, backdrop, label, hint, hairline: UIColor
+            var key, keyPressed, special, specialPressed, surface, surfacePressed, backdrop, label, hint, hairline, icon: UIColor
             var accent = UIColor.clear, accentEnd = UIColor.clear, onAccent = UIColor.white
             var style = UIUserInterfaceStyle.dark
+            /// A Mac theme's blue (#642): caps outlined 1 pt in it at 55% (`border`), and on a
+            /// dark one haloed in it (`glow`), the old neon toolbar's look.
+            var neon: UIColor?
+            /// A cap's outline: the hairline, or the neon's.
+            var border: UIColor { neon?.withAlphaComponent(0.55) ?? hairline }
+            var glow: UIColor? { style == .dark ? neon : nil }
+            var wash: [CGColor] { [accent.cgColor, accentEnd.cgColor] }
+            /// `wash` as an image to stretch over a cap (`UIBackgroundConfiguration.image`).
+            var washImage: UIImage {
+                let g = CAGradientLayer()
+                g.colors = wash
+                g.frame = CGRect(x: 0, y: 0, width: 1, height: 36)
+                return UIGraphicsImageRenderer(bounds: g.bounds).image { g.render(in: $0.cgContext) }
+            }
 
             static let dark = Palette(key: UIColor(hex: 0x2B2D34), keyPressed: UIColor(hex: 0x3B3E47),
                                       special: UIColor(hex: 0x1D1F25), specialPressed: UIColor(hex: 0x2B2D34),
@@ -1839,16 +1897,34 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                 (self.key, self.keyPressed, self.special, self.specialPressed) = (key, keyPressed, special, specialPressed)
                 (self.surface, self.surfacePressed) = (surface ?? special, surfacePressed ?? specialPressed)
                 (self.backdrop, self.label, self.hint, self.hairline, self.style) = (backdrop, label, hint, hairline, style)
+                icon = label.withAlphaComponent(0.85)
             }
 
-            init(_ settings: KeyboardSettings) {
-                switch settings.theme {
+            /// The keys': the Keys theme's.
+            init(_ settings: KeyboardSettings) { self.init(settings.theme, accent: settings.accent) }
+            /// The toolbar's: its own theme, or the keys' with Match keys (#642).
+            static func bar(_ settings: KeyboardSettings) -> Palette {
+                Palette(settings.toolbarTheme ?? settings.theme, accent: settings.accent)
+            }
+
+            init(_ theme: KeyboardSettings.Theme, accent lit: KeyboardSettings.Accent) {
+                switch theme {
                 case .dark: self = .dark
                 case .light: self = .light
                 case .black: self = .black
+                default:
+                    // A Mac theme (#642): its cards for caps, its own blue for the accent.
+                    let mac = KeyboardSettings.Theme.mac[theme]!
+                    let c = mac.hex.map { UIColor(hex: $0) }
+                    let (blue, blueBright, bgBottom, sidebar, card, cardHi) = (c[0], c[1], c[6], c[7], c[8], c[9])
+                    self.init(key: card, keyPressed: cardHi, special: sidebar, specialPressed: card, backdrop: bgBottom,
+                              label: c[10], hint: c[11], hairline: c[11].withAlphaComponent(0.2),
+                              surface: card, surfacePressed: cardHi, style: mac.light ? .light : .dark)
+                    (accent, accentEnd, onAccent, icon, neon) = (blue, blue, bgBottom, blueBright, blue)
+                    return
                 }
                 let ends: (UInt32, UInt32)
-                switch settings.accent {
+                switch lit {
                 case .violet: ends = (0x8B7CFF, 0x5E8BFF)
                 case .blue: ends = (0x4C8DFF, 0x2F6BFF)
                 case .pink: ends = (0xFF5FA2, 0xE5408A)
@@ -1864,7 +1940,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     private func build() {
-        drawn = Style.palette
+        drawn = [Style.palette, Style.bar]
         overrideUserInterfaceStyle = Style.palette.style
         backgroundColor = Style.backdrop   // the app's too, over the system's (#626)
         hidePreview()
@@ -2444,7 +2520,8 @@ extension TerminalKeyboard {
 
 /// One key, drawn only: flat fill that lightens while `isHighlighted` (set by the
 /// keyboard's touch tracking), a hairline border, a 1 px top highlight and a crisp bottom
-/// shadow like the system keys (#626), and the hold symbol's `hint` in the top-right corner.
+/// shadow like the system keys (#626), or a Mac theme's neon outline and glow (#642), and
+/// the hold symbol's `hint` in the top-right corner.
 /// Touches go through to the keyboard view. Its colours are `Style`'s as it's made.
 private final class Cap: UIButton {
     typealias Style = TerminalKeyboard.Style
@@ -2453,6 +2530,8 @@ private final class Cap: UIButton {
     var pressedFill: UIColor = .lightGray
     let hint = UILabel()
     private let shine = CALayer()
+    /// A Mac theme's 1 pt outline (#642), not the hairline's pixel.
+    private let outlined = Style.palette.neon != nil
     /// The accent's gradient over the fill while not pressed (`wash`): return's.
     private var gradient: CAGradientLayer?
 
@@ -2460,11 +2539,8 @@ private final class Cap: UIButton {
         self.key = key
         super.init(frame: .zero)
         layer.cornerRadius = Style.radius
-        layer.borderColor = Style.hairline.cgColor
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.35
-        layer.shadowOffset = CGSize(width: 0, height: 1)
-        layer.shadowRadius = 0
+        layer.borderColor = Style.palette.border.cgColor
+        ShortcutBar.shade(self, glow: Style.palette.glow)
         shine.backgroundColor = UIColor(white: 1, alpha: Style.palette.style == .light ? 0.5 : 0.08).cgColor
         layer.addSublayer(shine)
         setTitleColor(Style.label, for: .normal)
@@ -2492,7 +2568,8 @@ private final class Cap: UIButton {
     override func layoutSubviews() {
         super.layoutSubviews()
         let px = 1 / max(traitCollection.displayScale, 1)
-        layer.borderWidth = px
+        layer.borderWidth = outlined ? 1 : px
+        ShortcutBar.trace(self)
         shine.frame = CGRect(x: Style.radius, y: px, width: max(0, bounds.width - 2 * Style.radius), height: px)
         CATransaction.begin()
         CATransaction.setDisableActions(true)

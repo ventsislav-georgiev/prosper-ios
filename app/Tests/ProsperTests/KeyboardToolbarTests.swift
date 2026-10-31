@@ -346,14 +346,14 @@ final class KeyboardToolbarTests: XCTestCase {
     }
 
     /// #622: the keyboard's toolbar sits on the keyboard's backdrop, no blur band; the
-    /// terminal's bar over Apple's keyboard keeps its blur.
-    func testOnlyTheTerminalBarBlurs() throws {
-        func effect(_ bar: ShortcutBar) throws -> UIVisualEffect? {
-            try XCTUnwrap(bar.subviews.compactMap { $0 as? UIVisualEffectView }.first).effect
-        }
+    /// terminal's bar on the theme's since #642, no blur either: the system's followed the
+    /// app's dark look into Light and True Black.
+    func testNeitherBarBlurs() throws {
         let (_, bar, _) = rig()
-        XCTAssertNil(try effect(try XCTUnwrap(bar.toolbar)))
-        XCTAssertNotNil(try effect(ShortcutBar()))
+        for b in [try XCTUnwrap(bar.toolbar), ShortcutBar()] {
+            XCTAssertFalse(b.subviews.contains { $0 is UIVisualEffectView })
+        }
+        XCTAssertNil(try XCTUnwrap(bar.toolbar).backgroundColor, "the keyboard's own backdrop shows through")
     }
 
     /// #599: from a textarea to a login field whose traits catch up after `textDidChange`, as
