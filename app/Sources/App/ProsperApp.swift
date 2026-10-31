@@ -116,10 +116,15 @@ struct HomeView: View {
         // The Live Activity's link and a tapped "needs you" alert: that Mac's sessions
         // (and the session, for an alert), or just home when no saved Mac matches.
         .onOpenURL { url in
+            // Not on the Mac: no Prosper keyboard there, and a link mustn't turn its mic on.
+            #if !targetEnvironment(macCatalyst)
             if dictation.open(url) { return }   // the keyboard's mic key (#598): its screen, listening
+            #endif
             if let t = LiveTarget(url: url) { live.target = t }
         }
+        #if !targetEnvironment(macCatalyst)
         .sheet(isPresented: $dictation.showing) { DictationScreen(service: dictation) }
+        #endif
         .onReceive(live.$target) { t in
             guard let t else { return }
             live.target = nil

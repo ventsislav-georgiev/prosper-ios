@@ -827,7 +827,8 @@ final class SuggestionBar: UIView {
         }
     }
 
-    /// A short note over the keys that fades, read out by VoiceOver.
+    /// A short note over the keys that fades, read out by VoiceOver. A long one wraps to two
+    /// lines within the keyboard's width and stays up longer.
     private func hint(_ text: String) {
         UIAccessibility.post(notification: .announcement, argument: text)
         guard let keyboard, let host = keyboard.superview else { return }
@@ -836,14 +837,17 @@ final class SuggestionBar: UIView {
         label.textColor = .white
         label.font = .systemFont(ofSize: 15, weight: .medium)
         label.textAlignment = .center
-        label.backgroundColor = TerminalKeyboard.Style.special
-        label.layer.cornerRadius = 8
-        label.layer.masksToBounds = true
-        label.frame = CGRect(x: 0, y: 0, width: label.intrinsicContentSize.width + 32, height: 36)
-        label.center = CGPoint(x: keyboard.frame.midX, y: keyboard.frame.minY + 40)
-        host.addSubview(label)
-        UIView.animate(withDuration: 0.3, delay: 1.5, options: [], animations: { label.alpha = 0 }) { _ in
-            label.removeFromSuperview()
+        label.numberOfLines = 2
+        let fits = label.sizeThatFits(CGSize(width: keyboard.bounds.width - 16 - 32, height: .greatestFiniteMagnitude))
+        let bubble = UIView(frame: CGRect(x: 0, y: 0, width: fits.width + 32, height: max(36, fits.height + 16)))
+        bubble.backgroundColor = TerminalKeyboard.Style.special
+        bubble.layer.cornerRadius = 8
+        label.frame = bubble.bounds.insetBy(dx: 16, dy: 0)
+        bubble.addSubview(label)
+        bubble.center = CGPoint(x: keyboard.frame.midX, y: keyboard.frame.minY + 40)
+        host.addSubview(bubble)
+        UIView.animate(withDuration: 0.3, delay: text.count > 40 ? 3 : 1.5, options: [], animations: { bubble.alpha = 0 }) { _ in
+            bubble.removeFromSuperview()
         }
     }
 

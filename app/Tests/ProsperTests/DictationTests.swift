@@ -94,6 +94,20 @@ final class DictationTests: XCTestCase {
         XCTAssertEqual(Dictation.ReadyPeriod.stored(in: defaults), .ten)
     }
 
+    /// Done or ✕ while the mic is still getting ready wins: over there, ready, never listening.
+    /// Once it listens, `finish` halts the transcription first, so nothing changes here.
+    func testStopWhilePreparing() {
+        var s = Dictation.State(id: UUID(), phase: .preparing, heartbeat: clock)
+        XCTAssertTrue(s.stopPreparing())
+        XCTAssertEqual(s.phase, .ready)
+        for phase in [Dictation.State.Phase.listening, .finishing, .ready, .off] {
+            var other = Dictation.State(id: UUID(), phase: phase, heartbeat: clock, tail: "two")
+            XCTAssertFalse(other.stopPreparing(), "\(phase)")
+            XCTAssertEqual(other.phase, phase)
+            XCTAssertEqual(other.tail, "two")
+        }
+    }
+
     func testSpacingAndEnglish() {
         XCTAssertEqual(Dictation.spaced(" Hello.", after: ""), "Hello.")
         XCTAssertEqual(Dictation.spaced("Hello.", after: "Say"), " Hello.")

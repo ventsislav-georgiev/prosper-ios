@@ -100,8 +100,9 @@ final class DictationService: ObservableObject {
             transcription = t
             guard state?.id == id, warm else { return halt() }   // ended or replaced meanwhile
             if !engine.isRunning { try startMic() }
-            heardAt = Date()
             status = nil
+            guard state?.phase == .preparing else { return halt() }   // Done or ✕ meanwhile: the mic ready, not listening
+            heardAt = Date()
             update { $0.phase = .listening }
         } catch {
             end("The mic couldn't start: \(error.localizedDescription)")
@@ -158,7 +159,10 @@ final class DictationService: ObservableObject {
 
     /// Done (the last phrase finalized and kept) or ✕ (the tail dropped); the mic stays ready.
     private func finish(cancel: Bool) async {
-        guard #available(iOS 26, *), let t = transcription as? Transcription else { return }
+        guard #available(iOS 26, *), let t = transcription as? Transcription else {
+            if var s = state, s.stopPreparing() { write(s); lastUse = Date() }
+            return
+        }
         transcription = nil
         feed.detach()
         let id = state?.id
@@ -242,6 +246,17 @@ extension Dictation {
         func expired(since: Date, now: Date) -> Bool {
             self != .untilStopped && now.timeIntervalSince(since) >= TimeInterval(rawValue) * 60
         }
+    }
+}
+
+extension Dictation.State {
+    /// Done or ✕ before it listens (nothing transcribing yet): `id` over there, the mic left
+    /// ready as after a Done, and `begin`, no longer preparing, doesn't go on to listen.
+    /// False, nothing changed, in any other phase.
+    mutating func stopPreparing() -> Bool {
+        guard phase == .preparing else { return false }
+        phase = .ready
+        return true
     }
 }
 
@@ -363,7 +378,10 @@ struct DictationScreen: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
                 switch service.state?.phase {
-                case .preparing?, .listening?, .finishing?:
+                case .preparing?:
+                    Label("Getting the mic ready…", systemImage: "mic")
+                        .font(.title2.weight(.semibold))
+                case .listening?, .finishing?:
                     Label("Listening — tap ◀ Back to return", systemImage: "mic.fill")
                         .font(.title2.weight(.semibold))
                         .foregroundStyle(.red)
