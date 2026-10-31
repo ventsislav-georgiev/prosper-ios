@@ -335,9 +335,20 @@ class KeysPanel: UIView {
     var jumpTitles: [String]? { table.scrolls && !jumps.isEmpty ? jumps.map(\.title) : nil }
 
     /// To the letter's first row itself, not its section's header: -1 keeps UIKit from
-    /// scrolling to the section after (#639).
+    /// scrolling to the section after (#639). The row lands whole under its section's floating
+    /// header (none when untitled), clamped to the content; `scrollToRow` left a titled
+    /// section's first row under the header on the device. Again after a layout: landing
+    /// measures rows only estimated before.
     func jump(_ index: Int) -> Int {
-        table.scrollToRow(at: jumps[index].row, at: .top, animated: false)
+        let row = jumps[index].row
+        for _ in 0..<3 {
+            let inset = table.adjustedContentInset
+            let top = table.rectForRow(at: row).minY - table.rectForHeader(inSection: row.section).height - inset.top
+            let y = max(min(top, table.contentSize.height + inset.bottom - table.bounds.height), -inset.top)
+            if abs(y - table.contentOffset.y) < 0.5 { break }
+            table.setContentOffset(CGPoint(x: table.contentOffset.x, y: y), animated: false)
+            table.layoutIfNeeded()
+        }
         return -1
     }
 

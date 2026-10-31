@@ -100,4 +100,63 @@ final class JumpIndexTests: XCTestCase {
         let s = laidOut(SnippetPanel(store: snippets(["alpha", "bravo"]))) as! SnippetPanel
         XCTAssertNil(s.sectionIndexTitles(for: s.table))
     }
+
+    /// Untitled alpha…juliet, then the titled "Zeta" kilo…tango (#639).
+    private func twoGroups() -> SnippetPanel {
+        let store = snippets(["kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango"],
+                             in: "Zeta")
+        for n in ["alpha", "bravo", "Charlie", "delta", "echo", "Foxtrot", "golf", "hotel", "india", "Juliet"] {
+            store.put(.init(name: n, text: "text of \(n)"), replacing: nil)
+        }
+        return laidOut(SnippetPanel(store: store)) as! SnippetPanel
+    }
+
+    /// Jumps to `letter` and returns its row's rect in the table's own coordinates.
+    private func jump(_ panel: SnippetPanel, _ letter: String) throws -> CGRect {
+        let table = panel.table
+        XCTAssertTrue(table.scrolls)
+        let titles = try XCTUnwrap(panel.sectionIndexTitles(for: table))
+        let i = try XCTUnwrap(titles.firstIndex(of: letter))
+        XCTAssertEqual(panel.tableView(table, sectionForSectionIndexTitle: letter, at: i), -1)
+        table.layoutIfNeeded()
+        return table.rectForRow(at: panel.jumps[i].row)
+    }
+
+    /// The row whole on screen, under its section's floating header.
+    private func assertBelowItsHeader(_ panel: SnippetPanel, _ letter: String, file: StaticString = #filePath,
+                                      line: UInt = #line) throws {
+        let table = panel.table
+        let row = try jump(panel, letter)
+        let section = panel.jumps[try XCTUnwrap(panel.sectionIndexTitles(for: table)?.firstIndex(of: letter))].row.section
+        let header = try XCTUnwrap(table.headerView(forSection: section), "Zeta's header floats", file: file, line: line)
+        let visible = CGRect(origin: table.contentOffset, size: table.bounds.size)
+        XCTAssertGreaterThan(header.frame.height, 0, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(row.minY, header.frame.maxY - 0.5, "\(letter) not under its header", file: file, line: line)
+        XCTAssertLessThanOrEqual(row.maxY, visible.maxY + 0.5, "\(letter) whole", file: file, line: line)
+        XCTAssertEqual(row.minY, header.frame.maxY, accuracy: 1, "\(letter) right under the header", file: file, line: line)
+    }
+
+    func testASectionsFirstRowLandsUnderItsFloatingHeader() throws {
+        try assertBelowItsHeader(twoGroups(), "K")
+    }
+
+    func testAMidSectionRowLandsUnderItsFloatingHeader() throws {
+        try assertBelowItsHeader(twoGroups(), "N")
+    }
+
+    func testAnUntitledSectionsRowLandsAtTheTop() throws {
+        let panel = twoGroups()
+        let row = try jump(panel, "C")
+        XCTAssertEqual(panel.table.contentOffset.y, row.minY - panel.table.adjustedContentInset.top, accuracy: 1)
+        XCTAssertEqual(panel.table.indexPathsForVisibleRows?.first, IndexPath(row: 2, section: 0))
+    }
+
+    func testTheEndsClampToTheContent() throws {
+        let panel = twoGroups(), table = panel.table
+        _ = try jump(panel, "T")
+        let end = table.contentSize.height + table.adjustedContentInset.bottom - table.bounds.height
+        XCTAssertEqual(table.contentOffset.y, end, accuracy: 1, "tango can't scroll past the end")
+        _ = try jump(panel, "A")
+        XCTAssertEqual(table.contentOffset.y, -table.adjustedContentInset.top, accuracy: 1, "alpha can't scroll above the top")
+    }
 }
