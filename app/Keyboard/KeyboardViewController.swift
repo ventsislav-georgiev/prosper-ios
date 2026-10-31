@@ -14,12 +14,19 @@ import UIKit
 /// lives on disk in the App Group, shared by both extensions (`ClipboardHistory`). Dictation
 /// (#598) hops to Prosper for the mic, then talks to it there (`DictationClient`).
 ///
-/// Two extensions run this controller, both "Prosper", English and Bulgarian. The Prosper
-/// one has the app's Languages setting, switched from the toggle's menu, the last pick
-/// kept in the App Group (#624); the Bulgarian one, its Info.plist's
-/// `PrimaryLanguage`, stays Bulgarian only for one release, then goes.
+/// Two extensions run this controller, Prosper and Prosper (Bulgarian), each its Info.plist's
+/// `PrimaryLanguage`, so the system globe can switch language (#640). Prosper always has the
+/// app's Languages setting, Prosper (Bulgarian) when Bulgarian is in it, else Bulgarian only;
+/// switched from the toggle's menu and the language key, the last pick kept in the App Group
+/// (#624). After a globe hop each opens in its own language (`KeyboardSettings.languages`).
 final class KeyboardViewController: UIInputViewController {
     private static let fixed = TerminalKeyboard.Layout(extension: .main)
+    /// Prosper, not a language's own extension: its Info.plist names English, as
+    /// `Layout(primaryLanguage:)` reads anything not Bulgarian (#640).
+    private static let main = fixed == .english
+    /// Past `viewDidAppear`: a language change now is the user's switch, not the pick at
+    /// appear, so an extension AutoFill only passes through records nothing (#640).
+    private var onScreen = false
     private let keyboard = TerminalKeyboard(layout: KeyboardViewController.fixed)
     private let bar = SuggestionBar(suggestions: Suggestions(layout: KeyboardViewController.fixed))
 
@@ -37,7 +44,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.nextKeyboard = { [weak self] in self?.advanceToNextInputMode() }   // the toggle's menu (#623)
         bar.languageChanged = { [weak self] layout in
             self?.primaryLanguage = layout.primaryLanguage   // the host's dictation and spell check
-            KeyboardSettings.activeLanguage = layout
+            if self?.onScreen == true, self?.hasFullAccess == true { KeyboardSettings.activeLanguage = layout }
         }
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
         bar.history = ClipboardHistory.shared()
@@ -73,8 +80,8 @@ final class KeyboardViewController: UIInputViewController {
         keyboard.settings = settings
         keyboard.fullAccess = hasFullAccess   // the emoji recents' store (#629)
         bar.suggestions.settings = settings
-        let languages = KeyboardSettings.languages(fixed: Self.fixed, settings: settings,
-                                                   active: hasFullAccess ? KeyboardSettings.activeLanguage : nil)
+        let languages = KeyboardSettings.languages(fixed: Self.fixed, main: Self.main, settings: settings,
+                                                   fullAccess: hasFullAccess)
         keyboard.languages = languages.all
         keyboard.layout = languages.shown
         keyboard.showNumpad(false, animated: false)   // the letters first in each field, as iOS
@@ -87,11 +94,13 @@ final class KeyboardViewController: UIInputViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        onScreen = false
         bar.dictation?.disappear()
     }
 
     /// AutoFill on the sibling Prosper keyboard just advanced here: advance once more, past
-    /// it, toward Apple's keyboard (`KeyboardSettings.hops`).
+    /// it, toward Apple's keyboard (`KeyboardSettings.hops`). Else this extension is the one
+    /// shown, in its language, for the next to appear to tell a globe hop (#640).
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         TerminalKeyboard.undelayEdges(view.window)
@@ -100,6 +109,9 @@ final class KeyboardViewController: UIInputViewController {
         let own = Bundle.main.bundleIdentifier ?? ""
         if KeyboardSettings.hops(mark, own: own, now: Date(), login: login) {
             advanceToNextInputMode()
+        } else {
+            onScreen = true
+            KeyboardSettings.shown(Self.fixed, in: keyboard.layout, fullAccess: hasFullAccess)
         }
     }
 

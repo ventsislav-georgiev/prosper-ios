@@ -264,7 +264,7 @@ struct SettingsView: View {
             } header: {
                 Text("Keyboard Languages")
             } footer: {
-                Text("With more than one on, switch the Prosper keyboard's language from the menu a hold on its toolbar toggle opens. Needs Full Access. The Prosper keyboard now has Bulgarian built in: turn it on here, then remove the second Prosper keyboard, the one listed with Bulgarian, in Settings › General › Keyboard › Keyboards. That one goes away in a coming release.")
+                Text("Two ways to type in both. One Prosper keyboard: turn both on here, then switch with its language key or the menu a hold on its toolbar toggle opens; needs Full Access. Or a keyboard per language: also add Prosper (Bulgarian) in Settings › General › Keyboard › Keyboards and switch with the globe; each opens in its own language. With Bulgarian off here, neither shows the language key.")
             }
 
             Section {

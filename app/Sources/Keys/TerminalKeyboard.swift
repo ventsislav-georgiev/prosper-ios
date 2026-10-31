@@ -202,14 +202,44 @@ struct KeyboardSettings: Equatable {
         set { store()?.set(newValue?.rawValue, forKey: activeLanguageKey) }
     }
 
-    /// An extension's languages and the one it shows. The Bulgarian extension (`fixed`
-    /// Bulgarian) stays Bulgarian only until it's removed (#624); the Prosper keyboard has
-    /// its setting's, at the last one switched to while that's still on.
-    static func languages(fixed: TerminalKeyboard.Layout, settings: KeyboardSettings,
-                          active: TerminalKeyboard.Layout?) -> (all: [TerminalKeyboard.Layout], shown: TerminalKeyboard.Layout) {
-        if fixed == .bulgarian { return ([.bulgarian], .bulgarian) }
-        let all = settings.languages
-        return (all, active.flatMap { all.contains($0) ? $0 : nil } ?? all[0])
+    /// The Prosper extension shown last, by its own language, so the next one to appear can
+    /// tell a globe hop from a re-show (#640). Written with Full Access only (`shown`).
+    static let shownExtensionKey = "keyboard.shownExtension"
+    static var shownExtension: TerminalKeyboard.Layout? {
+        get { store()?.string(forKey: shownExtensionKey).flatMap(TerminalKeyboard.Layout.init) }
+        set { store()?.set(newValue?.rawValue, forKey: shownExtensionKey) }
+    }
+
+    /// An extension's languages and the one it shows (#640). `fixed` is its Info.plist's
+    /// language. The main one (Prosper, the one people keep alone) always has the Languages
+    /// setting, so Bulgarian only there types Bulgarian. A language's own extension (Prosper
+    /// (Bulgarian)) has the setting when its language is in it, else that language only: with
+    /// Bulgarian off, each is one language with no language key, and the globe switches.
+    /// After a globe hop (`last`, another extension), without Full Access or with nothing to
+    /// keep, it opens in `fixed` (the first of `all` without it); re-shown, at the last one
+    /// switched to (`active`) while that's in `all`. No `last` yet reads as a re-show.
+    static func languages(fixed: TerminalKeyboard.Layout, main: Bool, settings: KeyboardSettings,
+                          fullAccess: Bool, last: TerminalKeyboard.Layout?, active: TerminalKeyboard.Layout?)
+        -> (all: [TerminalKeyboard.Layout], shown: TerminalKeyboard.Layout) {
+        let all = main || settings.languages.contains(fixed) ? settings.languages : [fixed]
+        let own = all.contains(fixed) ? fixed : all[0]
+        guard fullAccess, last == nil || last == fixed, let active, all.contains(active) else { return (all, own) }
+        return (all, active)
+    }
+
+    /// The same, from the App Group; without Full Access it's never read.
+    static func languages(fixed: TerminalKeyboard.Layout, main: Bool, settings: KeyboardSettings, fullAccess: Bool)
+        -> (all: [TerminalKeyboard.Layout], shown: TerminalKeyboard.Layout) {
+        languages(fixed: fixed, main: main, settings: settings, fullAccess: fullAccess,
+                  last: fullAccess ? shownExtension : nil, active: fullAccess ? activeLanguage : nil)
+    }
+
+    /// An extension on screen in `language`: the next one to appear reads both (#640).
+    /// Without Full Access the group isn't shared, so nothing is written.
+    static func shown(_ fixed: TerminalKeyboard.Layout, in language: TerminalKeyboard.Layout, fullAccess: Bool) {
+        guard fullAccess else { return }
+        shownExtension = fixed
+        activeLanguage = language
     }
 
     /// Every key of `bottomKeys` once, in `stored`'s order: unknown ones dropped, missing

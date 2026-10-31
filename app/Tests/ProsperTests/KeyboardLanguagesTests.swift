@@ -61,35 +61,111 @@ final class KeyboardLanguagesTests: XCTestCase {
         XCTAssertEqual(KeyboardSettings(defaults).languages, [.english, .bulgarian])
     }
 
-    /// The Prosper keyboard shows the last language switched to while it's still on, else
-    /// the first; the Bulgarian extension is Bulgarian only, whatever the setting says. The
-    /// pick round-trips through the App Group.
-    func testTheShownLanguageAndTheBulgarianExtension() {
-        var s = KeyboardSettings()
-        s.languages = [.english, .bulgarian]
-        XCTAssertTrue(KeyboardSettings.languages(fixed: .english, settings: s, active: .bulgarian) == ([.english, .bulgarian], .bulgarian))
-        XCTAssertTrue(KeyboardSettings.languages(fixed: .english, settings: s, active: nil) == ([.english, .bulgarian], .english))
-        s.languages = [.english]
-        XCTAssertTrue(KeyboardSettings.languages(fixed: .english, settings: s, active: .bulgarian) == ([.english], .english),
-                      "Bulgarian turned off: back to English")
-        for languages in [[Layout.english], [.english, .bulgarian]] {
-            s.languages = languages
-            XCTAssertTrue(KeyboardSettings.languages(fixed: .bulgarian, settings: s, active: .english) == ([.bulgarian], .bulgarian),
-                          "the Bulgarian extension stays Bulgarian with \(languages)")
+    /// Prosper always has the setting; Prosper (Bulgarian) has it when Bulgarian is in it, else
+    /// Bulgarian only. Each opens in its own language, or the first of `all` without it (#640).
+    func testEachExtensionsLanguagesForEachSetting() {
+        let en = Layout.english, bg = Layout.bulgarian
+        let cases: [(settings: [Layout], fixed: Layout, all: [Layout], own: Layout)] = [
+            ([en], en, [en], en), ([en], bg, [bg], bg),
+            ([bg], en, [bg], bg), ([bg], bg, [bg], bg),
+            ([en, bg], en, [en, bg], en), ([en, bg], bg, [en, bg], bg),
+        ]
+        for c in cases {
+            var s = KeyboardSettings()
+            s.languages = c.settings
+            let other: Layout = c.fixed == en ? bg : en
+            let label = "\(c.fixed) with \(c.settings)"
+            func shown(_ last: Layout?, _ active: Layout?) -> Layout {
+                let l = KeyboardSettings.languages(fixed: c.fixed, main: c.fixed == en, settings: s, fullAccess: true,
+                                                   last: last, active: active)
+                XCTAssertEqual(l.all, c.all, label)
+                return l.shown
+            }
+            XCTAssertEqual(shown(nil, nil), c.own, "\(label): first appear")
+            XCTAssertEqual(shown(other, other), c.own, "\(label): after a globe hop, its own")
+            XCTAssertEqual(shown(other, nil), c.own, "\(label): after a globe hop, nothing switched")
+            XCTAssertEqual(shown(c.fixed, other), c.all.contains(other) ? other : c.own,
+                           "\(label): re-shown, the last switched to while it's in all")
+            XCTAssertEqual(shown(nil, other), c.all.contains(other) ? other : c.own, "\(label): no record reads as a re-show")
         }
+    }
 
+    /// Bulgarian only, with Prosper alone (the #624 path): it types Bulgarian, as before #640.
+    func testProsperAloneWithBulgarianOnlyTypesBulgarian() {
+        var s = KeyboardSettings()
+        s.languages = [.bulgarian]
+        func main(_ last: Layout?, _ active: Layout?, fullAccess: Bool = true, _ settings: KeyboardSettings? = nil)
+            -> (all: [Layout], shown: Layout) {
+            KeyboardSettings.languages(fixed: .english, main: true, settings: settings ?? s, fullAccess: fullAccess,
+                                       last: last, active: active)
+        }
+        XCTAssertTrue(main(nil, nil) == ([.bulgarian], .bulgarian), "fresh")
+        XCTAssertTrue(main(.bulgarian, .english) == ([.bulgarian], .bulgarian), "after a hop from Prosper (Bulgarian)")
+        XCTAssertTrue(main(.english, .bulgarian) == ([.bulgarian], .bulgarian), "re-shown")
+        XCTAssertTrue(main(.english, .english) == ([.bulgarian], .bulgarian), "re-shown, English since turned off")
+        XCTAssertTrue(main(nil, nil, fullAccess: false, KeyboardSettings.current(fullAccess: false)) == ([.english], .english),
+                      "no Full Access: the defaults, English")
+        var english = KeyboardSettings()
+        english.languages = [.english]
+        XCTAssertTrue(KeyboardSettings.languages(fixed: .bulgarian, main: false, settings: english,
+                                                 fullAccess: true, last: .english, active: .english) == ([.bulgarian], .bulgarian),
+                      "Prosper (Bulgarian) with English only: Bulgarian only")
+    }
+
+    /// The App Group round trip as the controller drives it: appear, on screen, switch (#640).
+    func testAGlobeHopOpensEachExtensionInItsOwnLanguage() {
         let saved = KeyboardSettings.store
         defer { KeyboardSettings.store = saved }
         KeyboardSettings.store = { [defaults] in defaults }
-        XCTAssertNil(KeyboardSettings.activeLanguage)
+        var s = KeyboardSettings()
+        s.languages = [.english, .bulgarian]
+        func appear(_ fixed: Layout) -> Layout {
+            let l = KeyboardSettings.languages(fixed: fixed, main: fixed == .english, settings: s, fullAccess: true)
+            XCTAssertEqual(l.all, [.english, .bulgarian])
+            KeyboardSettings.shown(fixed, in: l.shown, fullAccess: true)
+            return l.shown
+        }
+        XCTAssertEqual(appear(.english), .english)
+        XCTAssertEqual(KeyboardSettings.shownExtension, .english)
+        KeyboardSettings.activeLanguage = .bulgarian   // the key or the menu
+        XCTAssertEqual(appear(.english), .bulgarian, "Prosper re-shown keeps the last switched to")
+        XCTAssertEqual(appear(.bulgarian), .bulgarian, "the globe to Prosper (Bulgarian)")
+        KeyboardSettings.activeLanguage = .english
+        XCTAssertEqual(appear(.bulgarian), .english, "Prosper (Bulgarian) re-shown keeps it too")
         KeyboardSettings.activeLanguage = .bulgarian
-        XCTAssertEqual(KeyboardSettings.activeLanguage, .bulgarian)
+        XCTAssertEqual(appear(.english), .english, "the globe back to Prosper: English, not the Bulgarian left")
+        XCTAssertEqual(appear(.english), .english, "and re-shown, what it showed")
+        XCTAssertEqual(appear(.bulgarian), .bulgarian)
+
         XCTAssertEqual(Layout.bulgarian.primaryLanguage, "bg-BG")
         XCTAssertEqual(Layout.english.primaryLanguage, "en-US")
     }
 
-    /// A switch rebuilds the letters and their holds in place, and the bar's suggestions take
-    /// the new layout's dictionary and neighbors; the controller hears of it once.
+    /// Without Full Access each opens in its own language, and the group is never touched.
+    func testWithoutFullAccessEachOpensInItsOwnLanguage() {
+        let saved = KeyboardSettings.store
+        defer { KeyboardSettings.store = saved }
+        KeyboardSettings.store = { [defaults] in defaults }
+        KeyboardSettings.shownExtension = .english
+        KeyboardSettings.activeLanguage = .english
+        var reads = 0
+        KeyboardSettings.store = { [defaults] in reads += 1; return defaults }
+        let s = KeyboardSettings.current(fullAccess: false)
+        for fixed in Layout.allCases {
+            let l = KeyboardSettings.languages(fixed: fixed, main: fixed == .english, settings: s, fullAccess: false)
+            XCTAssertTrue(l == ([fixed], fixed), "\(fixed)")
+            KeyboardSettings.shown(fixed, in: fixed, fullAccess: false)
+            var all = KeyboardSettings()
+            all.languages = [.english, .bulgarian]
+            XCTAssertEqual(KeyboardSettings.languages(fixed: fixed, main: fixed == .english, settings: all, fullAccess: false,
+                                                      last: fixed, active: fixed == .english ? .bulgarian : .english).shown,
+                           fixed, "stale values passed in are ignored")
+        }
+        XCTAssertEqual(reads, 0, "no App Group reads or writes")
+        KeyboardSettings.store = { [defaults] in defaults }
+        XCTAssertEqual(KeyboardSettings.shownExtension, .english, "unchanged")
+    }
+
     func testTheLayoutFollowsTheLanguage() {
         let (kb, bar, _) = rig([.english, .bulgarian])
         var heard: [Layout] = []
