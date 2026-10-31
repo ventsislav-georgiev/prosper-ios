@@ -85,9 +85,10 @@ final class Suggestions {
     /// controller sets them when it appears.
     var settings = KeyboardSettings()
 
-    let layout: TerminalKeyboard.Layout
-    /// The layout's checker language, read once (`TerminalKeyboard.Layout.language`).
-    let language: String?
+    /// The keyboard's, followed on a language switch (`SuggestionBar.attach`, #624).
+    var layout: TerminalKeyboard.Layout { didSet { language = layout.language } }
+    /// The layout's checker language, read once per layout (`TerminalKeyboard.Layout.language`).
+    private(set) var language: String?
 
     init(memory: TypingMemory = TypingMemory(), layout: TerminalKeyboard.Layout = .english) {
         self.memory = memory
@@ -656,6 +657,9 @@ final class SuggestionBar: UIView {
     var menuPanel: ToggleMenu? { panel as? ToggleMenu }
     /// The controller's `advanceToNextInputMode`: the menu's Next Keyboard, the EN <-> BG hop (#623).
     var nextKeyboard: (() -> Void)?
+    /// The keyboard switched language from the menu (#624): the controller
+    /// tells the host (`primaryLanguage`) and keeps it for the next launch.
+    var languageChanged: ((TerminalKeyboard.Layout) -> Void)?
     /// The toggle picked the toolbar over AutoFill (#623): only a toggle tap there sets it, so
     /// AutoFill never shows the toolbar by itself (#599); any other state clears it (`show`).
     var toolbarOverAutofill = false
@@ -810,7 +814,8 @@ final class SuggestionBar: UIView {
     }
 
     /// What the menu offers here (#623): each panel and the mic gated as its toolbar key
-    /// (`addToolbar`), on the toolbar or not, and Next Keyboard always. A pick closes the menu.
+    /// (`addToolbar`), on the toolbar or not, each other language with two or more on (#624),
+    /// and Next Keyboard always. A pick closes the menu.
     var menuItems: [ToggleMenu.Item] {
         let full = suggestions.pasteboard() != nil
         var items: [ToggleMenu.Item] = []
@@ -825,6 +830,14 @@ final class SuggestionBar: UIView {
         if full, snippets != nil { add(Shortcuts.snippets, "Snippets") { $0.showSnippets(true) } }
         if full, quicklinks != nil { add(Shortcuts.quicklinks, "Quicklinks") { $0.showQuicklinks(true) } }
         if full, dictation != nil { add(Shortcuts.dictate, "Dictate") { $0.dictation?.tap() } }
+        if let keyboard, keyboard.languages.count > 1 {
+            for language in keyboard.languages where language != keyboard.layout {
+                items.append(.init(title: language.name, symbol: "character.bubble") { [weak self] in
+                    self?.showMenu(false)
+                    self?.keyboard?.layout = language
+                })
+            }
+        }
         items.append(.init(title: "Next Keyboard", symbol: "globe") { [weak self] in
             self?.showMenu(false)
             self?.nextKeyboard?()
@@ -1570,6 +1583,12 @@ final class SuggestionBar: UIView {
             self?.refresh()
         }
         keyboard.screenWords = { [weak self] in self?.suggestions.personalWords ?? [] }
+        suggestions.layout = keyboard.layout
+        keyboard.layoutChanged = { [weak self] layout in
+            self?.suggestions.layout = layout
+            self?.languageChanged?(layout)
+            self?.refresh()
+        }
         refresh()
     }
 

@@ -14,12 +14,14 @@ import UIKit
 /// lives on disk in the App Group, shared by both extensions (`ClipboardHistory`). Dictation
 /// (#598) hops to Prosper for the mic, then talks to it there (`DictationClient`).
 ///
-/// Two extensions run this controller, both "Prosper", English and Bulgarian: each takes
-/// its letters and dictionary from its own Info.plist's `PrimaryLanguage`.
+/// Two extensions run this controller, both "Prosper", English and Bulgarian. The Prosper
+/// one has the app's Languages setting, switched from the toggle's menu, the last pick
+/// kept in the App Group (#624); the Bulgarian one, its Info.plist's
+/// `PrimaryLanguage`, stays Bulgarian only for one release, then goes.
 final class KeyboardViewController: UIInputViewController {
-    private static let layout = TerminalKeyboard.Layout(extension: .main)
-    private let keyboard = TerminalKeyboard(layout: KeyboardViewController.layout)
-    private let bar = SuggestionBar(suggestions: Suggestions(layout: KeyboardViewController.layout))
+    private static let fixed = TerminalKeyboard.Layout(extension: .main)
+    private let keyboard = TerminalKeyboard(layout: KeyboardViewController.fixed)
+    private let bar = SuggestionBar(suggestions: Suggestions(layout: KeyboardViewController.fixed))
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -32,6 +34,10 @@ final class KeyboardViewController: UIInputViewController {
         keyboard.offersEmoji = false
         bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
         bar.nextKeyboard = { [weak self] in self?.advanceToNextInputMode() }   // the toggle's menu (#623)
+        bar.languageChanged = { [weak self] layout in
+            self?.primaryLanguage = layout.primaryLanguage   // the host's dictation and spell check
+            KeyboardSettings.activeLanguage = layout
+        }
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
         bar.history = ClipboardHistory.shared()
         bar.snippets = SnippetStore.shared()
@@ -65,6 +71,10 @@ final class KeyboardViewController: UIInputViewController {
         let settings = KeyboardSettings.current(fullAccess: hasFullAccess)
         keyboard.settings = settings
         bar.suggestions.settings = settings
+        let languages = KeyboardSettings.languages(fixed: Self.fixed, settings: settings,
+                                                   active: hasFullAccess ? KeyboardSettings.activeLanguage : nil)
+        keyboard.languages = languages.all
+        keyboard.layout = languages.shown
         bar.toolbar?.reload()
         bar.showClips(false)   // the keys first, as Gboard: a panel reads afresh at its key
         bar.toolbarOverAutofill = false   // AutoFill first in a new field (#623)

@@ -78,6 +78,8 @@ struct SettingsView: View {
     private var keySize = KeyboardSettings().keySize
     @AppStorage(KeyboardSettings.Key.saveCopies, store: KeyboardSettings.store())
     private var saveCopies = KeyboardSettings().saveCopies
+    @AppStorage(KeyboardSettings.Key.languages, store: KeyboardSettings.store())
+    private var languages = TerminalKeyboard.Layout.english.rawValue
     @AppStorage(Dictation.ReadyPeriod.key) private var readyPeriod = Dictation.ReadyPeriod.ten
     @ObservedObject private var dictation = DictationService.shared
     @AppStorage(AgentCommand.key) private var agentCommand = ""
@@ -203,6 +205,24 @@ struct SettingsView: View {
                 Text("Keyboard")
             } footer: {
                 Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows.")
+            }
+
+            // The Prosper keyboard's languages (#624); the terminal's keyboard stays English.
+            Section {
+                ForEach(TerminalKeyboard.Layout.allCases, id: \.self) { language in
+                    let on = KeyboardSettings.languages(languages)
+                    Toggle(language == .english ? "English" : "Bulgarian", isOn: Binding(
+                        get: { on.contains(language) },
+                        set: { add in
+                            let picked = add ? on + [language] : on.filter { $0 != language }
+                            languages = picked.map(\.rawValue).joined(separator: ",")
+                        }))
+                    .disabled(on == [language])   // one always stays on
+                }
+            } header: {
+                Text("Keyboard Languages")
+            } footer: {
+                Text("With more than one on, switch the Prosper keyboard's language from the menu a hold on its toolbar toggle opens. Needs Full Access. The Prosper keyboard now has Bulgarian built in: turn it on here, then remove the second Prosper keyboard, the one listed with Bulgarian, in Settings › General › Keyboard › Keyboards. That one goes away in a coming release.")
             }
 
             Section {

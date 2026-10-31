@@ -56,6 +56,7 @@ struct KeyboardSettings: Equatable {
         static let bottomHidden = "keyboard.bottomHidden"
         static let keySize = "keyboard.keySize"
         static let saveCopies = "keyboard.saveCopies"
+        static let languages = "keyboard.languages"
     }
 
     /// Shift on at a sentence start (`TerminalKeyboard.autoCapitalize`). Off by default.
@@ -80,6 +81,16 @@ struct KeyboardSettings: Equatable {
     /// The emoji key's stand-in in `bottomOrder` and `bottomHidden` (#515). An order or a
     /// hidden set stored before it existed lacks it, so it shows, last before return (`order`).
     static let emojiKey: Character = "😀"
+    /// The Prosper keyboard's languages (#624), stored as `Layout` raw values joined by ","
+    /// (`AppStorage` has no arrays). English only by default, so nobody's keys change until
+    /// they turn another on; never empty, in `Layout.allCases` order. With two or more, the
+    /// toggle's menu switches them (`TerminalKeyboard.languages`).
+    var languages: [TerminalKeyboard.Layout] = [.english]
+    static func languages(_ stored: String?) -> [TerminalKeyboard.Layout] {
+        let picked = Set((stored ?? "").split(separator: ",").compactMap { TerminalKeyboard.Layout(rawValue: String($0)) })
+        let all = TerminalKeyboard.Layout.allCases.filter(picked.contains)
+        return all.isEmpty ? [.english] : all
+    }
     /// Portrait rows' height and gap (`TerminalKeyboard.metrics`, #583); landscape keeps its own.
     var keySize = KeySize.normal
     enum KeySize: String, CaseIterable {
@@ -109,6 +120,25 @@ struct KeyboardSettings: Equatable {
         bottomOrder = defaults?.string(forKey: Key.bottomOrder) ?? bottomOrder
         bottomHidden = defaults?.string(forKey: Key.bottomHidden) ?? bottomHidden
         keySize = defaults?.string(forKey: Key.keySize).flatMap(KeySize.init) ?? keySize
+        languages = Self.languages(defaults?.string(forKey: Key.languages))
+    }
+
+    /// The language the Prosper keyboard last switched to, in the App Group so it outlives
+    /// the extension's process; the keyboard writes it, never the app.
+    static let activeLanguageKey = "keyboard.activeLanguage"
+    static var activeLanguage: TerminalKeyboard.Layout? {
+        get { store()?.string(forKey: activeLanguageKey).flatMap(TerminalKeyboard.Layout.init) }
+        set { store()?.set(newValue?.rawValue, forKey: activeLanguageKey) }
+    }
+
+    /// An extension's languages and the one it shows. The Bulgarian extension (`fixed`
+    /// Bulgarian) stays Bulgarian only until it's removed (#624); the Prosper keyboard has
+    /// its setting's, at the last one switched to while that's still on.
+    static func languages(fixed: TerminalKeyboard.Layout, settings: KeyboardSettings,
+                          active: TerminalKeyboard.Layout?) -> (all: [TerminalKeyboard.Layout], shown: TerminalKeyboard.Layout) {
+        if fixed == .bulgarian { return ([.bulgarian], .bulgarian) }
+        let all = settings.languages
+        return (all, active.flatMap { all.contains($0) ? $0 : nil } ?? all[0])
     }
 
     /// Every key of `bottomKeys` once, in `stored`'s order: unknown ones dropped, missing
@@ -942,13 +972,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         "з": "_", "ь": "$", "ц": "\"", "ж": "'", "б": ":", "н": ";", "м": "/",
     ]
 
-    /// A keyboard's letters and their dictionary, picked once at init: English for the
-    /// app's terminal and the Prosper extension, Bulgarian for the Bulgarian extension
-    /// (`init(extension:)`).
+    /// A keyboard's letters and their dictionary: English for the app's terminal, Bulgarian
+    /// for the Bulgarian extension (`init(extension:)`), and in the Prosper extension the
+    /// one of its `languages` it switched to (#624).
     ///
     /// ponytail: two hand-written layouts. A third language means a table per layout
     /// (rows, holds, checker language) rather than another case in each switch.
-    enum Layout: Equatable {
+    enum Layout: String, CaseIterable {
         case english, bulgarian
 
         /// An extension's `PrimaryLanguage` ("bg-BG"); anything else is English.
@@ -972,6 +1002,11 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                 row.compactMap { if case .char(let c) = $0 { return Character(c) } else { return nil } }
             }
         }
+        /// What the toggle's menu calls it (#624), in its own language.
+        var name: String { self == .english ? "English" : "Български" }
+        /// `UIInputViewController.primaryLanguage` while it shows: the host's dictation and
+        /// spell checking follow it.
+        var primaryLanguage: String { self == .english ? "en-US" : "bg-BG" }
         /// The longest letter row: `place` sizes the shift row's keys to match it.
         var columns: Int { rows[1].count }
 
@@ -1105,7 +1140,21 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var keysHeightConstraint: NSLayoutConstraint!
     private var compact: Bool { traitCollection.verticalSizeClass == .compact }
 
-    let layout: Layout
+    /// Rebuilt in place on a switch (#624), its lexicon loaded, `layoutChanged` told.
+    var layout: Layout {
+        didSet {
+            guard layout != oldValue else { return }
+            knownCache = [:]; completionsCache = nil
+            build()
+            _ = Self.dictionaryKnows("te", language: layout.language)
+            layoutChanged?(layout)
+        }
+    }
+    /// What the Prosper extension switches between (#624): its Languages setting. Under two,
+    /// the toggle's menu has no language.
+    var languages: [Layout] = []
+    /// The layout switched: the bar's suggestions follow (`SuggestionBar.attach`).
+    var layoutChanged: ((Layout) -> Void)?
 
     init(layout: Layout = .english) {
         self.layout = layout
