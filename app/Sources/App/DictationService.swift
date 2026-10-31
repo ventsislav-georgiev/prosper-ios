@@ -89,10 +89,10 @@ final class DictationService: ObservableObject {
         keepAlive()
         status = "Asking for the microphone…"
         guard await AVAudioApplication.requestRecordPermission() else {
-            return end("Microphone access is off — allow it in Settings › Prosper")
+            return end("Microphone access is off — allow it in Settings › Apps › Prosper")
         }
         guard await withCheckedContinuation({ c in SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0) } }) == .authorized else {
-            return end("Speech Recognition is off — allow it in Settings › Prosper")
+            return end("Speech Recognition is off — allow it in Settings › Apps › Prosper")
         }
         do {
             let t = try await Transcription.start(feed: feed, status: { [weak self] in self?.status = $0 },

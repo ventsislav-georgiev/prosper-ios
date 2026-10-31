@@ -215,7 +215,7 @@ struct SettingsView: View {
             } header: {
                 Text("Clipboard History")
             } footer: {
-                Text("On by default: the Prosper keyboard keeps what you copy in other apps, the latest copy each time it shows. Needs Full Access. iOS asks before each save unless Settings › Prosper › Paste from Other Apps is set to Allow.")
+                Text("On by default: the Prosper keyboard keeps what you copy in other apps, the latest copy each time it shows. Needs Full Access. iOS asks before each save unless Settings › Apps › Prosper › Paste from Other Apps is set to Allow.")
             }
 
             // The keyboards' mic key (#598).
