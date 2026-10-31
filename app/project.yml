@@ -51,6 +51,10 @@ targets:
       - target: ProsperKeyboardBulgarian
         embed: true
         platformFilter: iOS
+      # Share › Prosper (#610): text, links and images from any app to a session.
+      - target: ProsperShare
+        embed: true
+        platformFilter: iOS
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios
@@ -179,6 +183,44 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.keyboard-bg
         # As in ProsperKeyboard.
         CODE_SIGN_ENTITLEMENTS: Keyboard/Keyboard.entitlements
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        CODE_SIGNING_ALLOWED: NO
+  # Share › Prosper (#610): picks a session, then hands what was shared to the app
+  # (ShareInbox), which pastes it there. Lists the sessions itself, so it builds the
+  # transport, but holds no session open and doesn't link SwiftTerm.
+  ProsperShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Share
+      - path: Sources/Share
+      - path: Sources/Shared
+      - path: Sources/Transport/ProsperTransport.swift
+      - path: Sources/Transport/SessionTransport.swift
+      - path: Sources/Transport/Machine.swift
+      - path: Sources/App/SessionMeta.swift
+    # As in ProsperKeyboard: a real NSExtension dict.
+    info:
+      path: Share/Info.plist
+      properties:
+        CFBundleDisplayName: Prosper
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 1
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.share
+        # The app's App Group: the machines, the last session and the handoff (ShareInbox).
+        CODE_SIGN_ENTITLEMENTS: Share/Share.entitlements
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES

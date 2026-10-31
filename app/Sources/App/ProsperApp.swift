@@ -120,11 +120,17 @@ struct HomeView: View {
             #if !targetEnvironment(macCatalyst)
             if dictation.open(url) { return }   // the keyboard's mic key (#598): its screen, listening
             #endif
+            // Share › Prosper (#610): that session, where its terminal pastes the item.
+            if let item = ShareInbox.open(url) {
+                ShareInbox.pending = item
+                return go(.sessions(.machine(item.target.machine), open: item.target.session, tap: UUID()))
+            }
             if let t = LiveTarget(url: url) { live.target = t }
         }
         #if !targetEnvironment(macCatalyst)
         .sheet(isPresented: $dictation.showing) { DictationScreen(service: dictation) }
         #endif
+        .onReceive(store.$machines) { ShareInbox.save(machines: $0) }   // for Share › Prosper (#610)
         .onReceive(live.$target) { t in
             guard let t else { return }
             live.target = nil
@@ -451,6 +457,7 @@ struct SessionListView: View {
                 TerminalScreen(transport: transport, session: open)
                     .onAppear {
                         LiveStatus.shared.attached = LiveTarget(macId: liveMachine?.serverDeviceId, session: open.name)
+                        if let machine { ShareInbox.last = ShareTarget(machine: machine.id, session: open.name) }   // #610
                     }
                     .onDisappear {
                         // Only our own: after a switch the next terminal's onAppear can run first.
@@ -1000,4 +1007,26 @@ final class MockTransport: SessionTransport {
     }
     func kill(name: String) async throws {}
     func rename(name: String, alias: String?) async throws {}
+}
+
+extension ShareItem {
+    /// What the terminal's own keys send for it: the image as the paste img key does (the
+    /// Mac's clipboard, then ^V), then the text as ONE bracketed paste, never a Return.
+    /// Bracketed regardless: a fresh terminal hasn't heard the host's 2004 yet (`sendText`).
+    var outbound: [Outbound] {
+        (image.map { [.clipboard($0), .bytes([0x16])] } ?? [])
+            + (text.map { [.bytes(TerminalMath.pasteBytes($0))] } ?? [])
+    }
+}
+
+extension SessionConnection {
+    /// A share, queued until the session is live like anything typed before it is.
+    func deliver(_ item: ShareItem?) {
+        for out in item?.outbound ?? [] {
+            switch out {
+            case .bytes(let b): send(b[...])
+            case .clipboard(let png): putClipboard(png)
+            }
+        }
+    }
 }

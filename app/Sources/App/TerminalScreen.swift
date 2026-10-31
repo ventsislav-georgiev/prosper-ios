@@ -71,6 +71,7 @@ struct TerminalScreen: View {
             // instead of reattaching (which would recreate the session).
             if state == .ended { dismiss() }
         }
+        .onAppear { conn.deliver(ShareInbox.take(for: session.name)) }   // Share › Prosper (#610)
         .onDisappear { conn.close() }
     }
 
