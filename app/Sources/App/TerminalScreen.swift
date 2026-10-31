@@ -182,6 +182,15 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     lazy var history = ClipboardHistory.shared()
     /// The history's panel over the terminal while open (`showClips`).
     private(set) var clipsPanel: ClipboardPanel?
+    /// The panel's room with the keyboard as it is: the safe area's top to the bar. Tests stub it.
+    lazy var clipsRoom: () -> CGFloat = { [weak self] in
+        guard let self else { return 0 }
+        return (self.shortcutBar?.frame.minY ?? self.view.bounds.maxY) - self.view.safeAreaInsets.top
+    }
+    /// Less room than the panel's 42 pt header and two 53 pt rows: the keyboard goes first.
+    static let clipsMinRoom: CGFloat = 150
+    /// The panel lowered the keyboard, so its close raises it again.
+    private var clipsLoweredKeyboard = false
     /// The bar's mic key (#604), the keyboard's client on the app's own service: nil on the
     /// Mac and below iOS 26. Tests swap in one on a throwaway store, with fake pings.
     var dictation: DictationClient? {
@@ -569,11 +578,18 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// The clipboard history's panel over the terminal, down to the bar, read afresh; or the
     /// terminal back (#603). A clip copied elsewhere is kept first under Save Copies
-    /// Automatically (#601), as the keyboard keeps it as it appears.
+    /// Automatically (#601), as the keyboard keeps it as it appears. With under two rows of
+    /// room (landscape with the keyboard up, #603 QA: 39 pt) the keyboard goes for the panel's
+    /// time, and comes back at its close, however it closes.
     func showClips(_ on: Bool) {
         clipsPanel?.removeFromSuperview()
         clipsPanel = nil
+        if !on, clipsLoweredKeyboard {
+            clipsLoweredKeyboard = false
+            _ = tv.becomeFirstResponder()
+        }
         guard on, let history, let bar = shortcutBar else { return }
+        if tv.isFirstResponder, clipsRoom() < Self.clipsMinRoom { clipsLoweredKeyboard = tv.resignFirstResponder() }
         if KeyboardSettings.current().saveCopies { history.save(pasteboard) }
         let panel = ClipboardPanel(history: history, pasteboard: pasteboard)
         panel.onPick = { [weak self] in self?.pick($0) }
@@ -623,20 +639,22 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         if let text = clip.text { sendText(text) } else { showToast("Copied — paste it") }
     }
 
-    /// The caret's line off the screen, soft wraps joined, trailing blanks trimmed: on the
-    /// pasteboard and in the history, as the keyboard's copy line (`SuggestionBar.keep`), with
-    /// a note as the long press's. An empty line leaves the clip be. ponytail: the prompt
-    /// comes with it; the screen can't tell it from the input.
+    /// The caret's line off the screen, soft wraps joined, blanks trimmed both ends (Claude
+    /// Code indents its continuation rows): on the pasteboard and in the history, as the
+    /// keyboard's copy line (`SuggestionBar.keep`), with a note as the long press's. An empty
+    /// line leaves the clip be. Claude Code hard-wraps its input, so there it is the caret's
+    /// visual row only: what cut line and delete all delete (its ^U), so a cut's clip is what
+    /// went. ponytail: the prompt comes with it; the screen can't tell it from the input.
     func copyCaretLine() {
         let term = tv.getTerminal()
         var i = cell(at: CGPoint(x: 0, y: tv.caretFrame.midY), term).line + term.buffer.totalLinesTrimmed
         while term.getScrollInvariantLine(row: i)?.isWrapped == true { i -= 1 }
         var text = ""
         repeat {
-            text += term.getScrollInvariantLine(row: i)?.translateToString(trimRight: true, skipNullCellsFollowingWide: true) ?? ""
+            text += term.getScrollInvariantLine(row: i).map(Self.rowText) ?? ""
             i += 1
         } while term.getScrollInvariantLine(row: i)?.isWrapped == true
-        while text.last?.isWhitespace == true { text.removeLast() }
+        text = text.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return }
         pasteboard.string = text
         history?.record(text, from: pasteboard)
@@ -843,9 +861,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         var line = touched
         var i = term.buffer.totalLinesTrimmed
         while let l = term.getScrollInvariantLine(row: i) {
-            // trimRight drops only never-written cells, never a typed space: a wrap right
-            // after a space keeps it, and the cell a wide char left empty at the edge goes.
-            let s = l.translateToString(trimRight: true, skipNullCellsFollowingWide: true)
+            let s = Self.rowText(l)   // a wrap right after a typed space keeps it
             if l.isWrapped, !rows.isEmpty { rows[rows.count - 1] += s } else { rows.append(s) }
             if i - term.buffer.totalLinesTrimmed == touched { line = rows.count - 1 }
             i += 1
@@ -855,9 +871,17 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let block = TerminalMath.commandBlock(rows, at: line)
         let text = TerminalMath.oneLine(block.joined(separator: "\n"), cols: term.cols)
         guard !text.isEmpty else { return }
-        UIPasteboard.general.string = text
+        pasteboard.string = text
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         showToast("Copied as one line\n" + (text.count > 60 ? String(text.prefix(60)) + "…" : text))
+    }
+
+    /// A row's text for a copy. trimRight drops only never-written cells at the end, never a
+    /// typed space, and the cell a wide char left empty at the edge goes. Never-written cells
+    /// inside it (a TUI's cursor-move gaps: Claude Code's input box) are blanks, not NULs
+    /// (#603 QA: its words came out glued).
+    static func rowText(_ l: BufferLine) -> String {
+        l.translateToString(trimRight: true, skipNullCellsFollowingWide: true).replacingOccurrences(of: "\0", with: " ")
     }
 
     /// A pill under the nav bar that fades out by itself.

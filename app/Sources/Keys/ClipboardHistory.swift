@@ -295,7 +295,7 @@ final class ClipboardPanel: UIView, UITableViewDataSource, UITableViewDelegate {
         table.delegate = self
         table.rowHeight = UITableView.automaticDimension
         table.estimatedRowHeight = 52
-        empty.text = "What you paste or copy with this keyboard shows here."
+        empty.text = "What you copy or paste shows here."
         empty.textColor = TerminalKeyboard.Style.hint
         empty.font = .systemFont(ofSize: 14)
         empty.numberOfLines = 0

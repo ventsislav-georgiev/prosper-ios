@@ -412,6 +412,79 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertEqual(spy.sent, [[0x05, 0x15], [0x05, 0x15]])
     }
 
+    /// Cells a TUI skips with cursor moves (Claude Code's input box) are never written and
+    /// read as NULs: both copies take them as blanks (#603 QA: "word8\0word9" came out glued).
+    /// The key's copy trims the row's indent too, the long press's `oneLine` always did.
+    func testCopiesTakeCursorMoveGapsAsBlanks() async throws {
+        let (vc, _) = try await makeVC()
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ImagePasteTests-\(UUID())")
+        defer { UIPasteboard.remove(withName: pb.name); try? FileManager.default.removeItem(at: dir) }
+        vc.pasteboard = pb
+        vc.history = ClipboardHistory(dir: dir)
+        let (bar, tv) = try barAndTerminal(vc)
+        tv.feed(text: "\u{1b}[2J\u{1b}[H\u{1b}[2Cword1\u{1b}[2Cword2\u{1b}[1Cend")
+        try await Task.sleep(nanoseconds: 100_000_000)   // the caret moves on SwiftTerm's display pass
+
+        bar.onKey?(try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == "copyLine" }))
+        XCTAssertEqual(pb.string, "word1  word2 end", "the key's copy line")
+        pb.string = ""
+        vc.copyLine(at: rowPoint(tv, 0))
+        XCTAssertEqual(pb.string, "word1  word2 end", "the long press")
+    }
+
+    /// The panel keeps two rows at least: with less room than that between the safe area's top
+    /// and the bar (landscape, keyboard up) the keyboard goes as it opens, and comes back as it
+    /// closes, by the key, its keyboard button or a pick; only a keyboard the panel lowered.
+    func testClipsPanelLowersAKeyboardThatLeavesItNoRoomAndRaisesItBack() async throws {
+        let (vc, _) = try await makeVC()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = vc
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ImagePasteTests-\(UUID())")
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        defer { UIPasteboard.remove(withName: pb.name); try? FileManager.default.removeItem(at: dir) }
+        vc.pasteboard = pb
+        vc.history = ClipboardHistory(dir: dir)
+        pb.string = "echo hi"
+        vc.history?.record("echo hi", from: pb)
+        let (bar, tv) = try barAndTerminal(vc)
+        let key = try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == Shortcuts.clipboard.id })
+        var room: CGFloat = 81   // QA's landscape: a 39 pt list under the 42 pt header
+        vc.clipsRoom = { room }
+
+        XCTAssertTrue(tv.becomeFirstResponder())
+        bar.onKey?(key)
+        XCTAssertNotNil(vc.clipsPanel)
+        XCTAssertFalse(tv.isFirstResponder, "no room: the keyboard goes")
+        bar.onKey?(key)
+        XCTAssertTrue(tv.isFirstResponder, "the key again: the keyboard back")
+
+        bar.onKey?(key)
+        XCTAssertFalse(tv.isFirstResponder)
+        try XCTUnwrap(vc.clipsPanel).onClose?()
+        XCTAssertTrue(tv.isFirstResponder, "its keyboard button: the keyboard back")
+
+        bar.onKey?(key)
+        let panel = try XCTUnwrap(vc.clipsPanel)
+        panel.tableView(panel.table, didSelectRowAt: IndexPath(row: 0, section: 0))
+        XCTAssertTrue(tv.isFirstResponder, "a pick: the keyboard back")
+
+        room = 260   // portrait, or the keyboard down
+        bar.onKey?(key)
+        XCTAssertTrue(tv.isFirstResponder, "room enough: the keyboard stays")
+        bar.onKey?(key)
+        XCTAssertTrue(tv.isFirstResponder)
+
+        _ = tv.resignFirstResponder()
+        room = 81
+        bar.onKey?(key)
+        bar.onKey?(key)
+        XCTAssertFalse(tv.isFirstResponder, "a keyboard the panel didn't lower isn't raised")
+    }
+
     /// The clipboard key (#603) opens the history's panel over the terminal; a text pick goes
     /// out as the paste key's bracketed paste and is copied, an image pick is only copied. Each
     /// pick closes the panel. A named pasteboard and a throwaway store.
