@@ -1,5 +1,6 @@
 import XCTest
 import SwiftTerm
+import SwiftUI
 import UIKit
 @testable import Prosper
 
@@ -1075,6 +1076,51 @@ final class TerminalKeyboardTests: XCTestCase {
         expect(TerminalKeyboard.keysHeight(compact: false, size: .large) + TerminalKeyboard.bottomPadding, "Large")
         rotate(.landscapeRight)
         expect(landscape, "Large in landscape")
+        vc.toggleKeyboard()
+        spin(0.5)
+    }
+
+    /// #607: on the phone the host sits in SwiftUI's NavigationStack, not as the window's
+    /// root, and turning to landscape with the keyboard up left the bar below the keyboard
+    /// top until the keyboard next rose. Real scene rotation, the app's own hierarchy.
+    func testBarRidesTheKeyboardAfterTurningInTheAppsHost() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone only")
+        guard #available(iOS 16, *) else { throw XCTSkip("requestGeometryUpdate is iOS 16") }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let host = UIHostingController(rootView: NavigationStack {
+            TerminalScreen(transport: SpyTransport(), session: DchSession(name: "t", alias: nil))
+        })
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        func spin(_ s: TimeInterval) { RunLoop.main.run(until: Date().addingTimeInterval(s)) }
+        func rotate(_ o: UIInterfaceOrientationMask) {
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: o)) { XCTFail("rotation: \($0)") }
+            spin(1.5)
+        }
+        defer { rotate(.portrait) }
+        spin(0.5)
+        func find(_ vc: UIViewController) -> TerminalHostVC? {
+            vc as? TerminalHostVC ?? vc.children.lazy.compactMap(find).first
+        }
+        let vc = try XCTUnwrap(find(host), "no host VC under the navigation stack")
+        let kb = try XCTUnwrap(vc.keyboardInputView as? TerminalKeyboard)
+        let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar })
+        let screen = scene.screen.coordinateSpace
+        func check(_ what: String, line: UInt = #line) {
+            let top = kb.convert(kb.bounds, to: screen).minY
+            let barBottom = bar.convert(bar.bounds, to: screen).maxY
+            XCTAssertEqual(barBottom, top, accuracy: 0.5,
+                           "\(what): bar bottom \(barBottom), keyboard top \(top)", line: line)
+        }
+        vc.toggleKeyboard()
+        spin(1)
+        check("portrait")
+        rotate(.landscapeRight)
+        check("turned to landscape")
+        rotate(.portrait)
+        check("turned back")
         vc.toggleKeyboard()
         spin(0.5)
     }

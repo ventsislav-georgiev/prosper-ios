@@ -522,17 +522,13 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     /// Rotation changes the grid: the remote program reflows to the new size but
     /// repaints only what it thinks changed, so the screen can come back partly
-    /// blank. Resync from dch's mirror once the new size settles, and refit the
-    /// keyboard geometry to the new bounds (the frame UIKit posted mid-rotation was
-    /// measured against the old ones).
+    /// blank. Resync from dch's mirror once the new size settles. (The keyboard glue
+    /// refits in `viewDidLayoutSubviews`: the bounds settle after this completion.)
     override func viewWillTransition(to size: CGSize,
                                      with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
         coordinator.animate(alongsideTransition: nil) { [weak self] _ in
             guard let self else { return }
-            if let f = self.kbFrame, self.handle.keyboardShown {
-                self.applyKeyboard(f, notification: nil)
-            }
             // Repair first: its layout pass also settles a bar that gained or lost a
             // row at the new width, and the lift must be measured on that final grid.
             self.repairAfterSizeChange()
@@ -1071,17 +1067,36 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Split out of `kbChange` because rotation posts the new keyboard frame while
     /// `view` is still the old orientation: the overlap then comes out measured
     /// against the wrong height, which left the shortcut bar floating mid-screen and
-    /// the input row lifted out of view. `viewWillTransition` re-applies the same
+    /// the input row lifted out of view. `viewDidLayoutSubviews` re-measures the same
     /// frame once the bounds have caught up.
     private func applyKeyboard(_ end: CGRect, notification n: Notification?) {
-        let endInView = view.convert(end, from: nil)
-        let safeBottomY = view.bounds.maxY - view.safeAreaInsets.bottom
-        let overlap = max(0, safeBottomY - endInView.minY)
+        let overlap = keyboardOverlap(end)
         let shown = overlap > 0
         kbConstraint.constant = -overlap   // glue the shortcut bar to the keyboard top
         handle.keyboardShown = shown
         kbOverlap = shown ? overlap : 0
         animateKeyboard(n, offset: shown ? caretLiftOffset(overlap: overlap) : 0)
+    }
+
+    /// How far a keyboard at `end` (screen coordinates) reaches above the safe bottom.
+    private func keyboardOverlap(_ end: CGRect) -> CGFloat {
+        let safeBottomY = view.bounds.maxY - view.safeAreaInsets.bottom
+        return max(0, safeBottomY - view.convert(end, from: nil).minY)
+    }
+
+    /// In the app the host sits in SwiftUI, which gives this view its new frame and safe
+    /// area only after rotation's keyboard frame and after `viewWillTransition`'s
+    /// completion (iPhone 17e landscape: 370 tall with a 20 pt safe bottom while the
+    /// frame came, 292 with none once settled). The overlap measured then left the bar
+    /// off the keyboard top until the keyboard next rose (#607): re-glue on every layout.
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard kbOverlap > 0, let f = kbFrame else { return }
+        let overlap = keyboardOverlap(f)
+        guard overlap > 0, overlap != kbOverlap else { return }
+        kbConstraint.constant = -overlap
+        kbOverlap = overlap
+        relift()
     }
 
     @objc private func kbHide(_ n: Notification) {

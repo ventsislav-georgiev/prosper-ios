@@ -4,7 +4,7 @@
 #   scripts/test.sh full <sim-udid> <derived-data> [xcodebuild args]   everything: before a push, and after
 #                                                                     any change to the keyboards' editing or typing
 # Extra args go to xcodebuild, e.g. -only-testing:ProsperTests/ShareTests.
-# The fast tier skips the exhaustive sweeps below: 23 tests that take ~460 s of the ~525 s.
+# The fast tier skips the exhaustive sweeps below: 24 tests that take ~460 s of the ~525 s.
 set -euo pipefail
 tier=${1:?fast or full}; sim=${2:?simulator udid}; dd=${3:?derived data path}; shift 3
 cd "$(dirname "$0")/../app"
