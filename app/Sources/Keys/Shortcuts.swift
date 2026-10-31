@@ -313,7 +313,7 @@ final class ShortcutBar: UIView {
     private let keys: () -> [ShortcutKey]
     private let oneRow: Bool
     /// `oneRow` in two rows (Numbers: Key, #625): the keys split where the longer row is
-    /// shortest (`balancedSplit`), each row fitted as the one row is.
+    /// shortest (`balancedSplit`), each row filled to the bar's width (#636).
     var twoRows = false { didSet { if twoRows != oldValue { arrangedWidth = -1; setNeedsLayout() } } }
     private var arrangedWidth: CGFloat = -1     // width the caps were last split for
     /// The bar's height IS its row count, so the owner never needs a number: flipping
@@ -364,7 +364,7 @@ final class ShortcutBar: UIView {
     /// and a wider overflow keeps its widths and scrolls. The split always reads natural widths,
     /// never the widened or squeezed ones. `oneRow` is never widened: it keeps natural widths,
     /// left-aligned, unless it overflows by under 14% (`minRowScale`), then its caps squeeze
-    /// to fit around the fixed 44 pt Paste cap.
+    /// to fit around the fixed 44 pt Paste cap. `twoRows` widens each row to span the bar (#636).
     override func layoutSubviews() {
         if bounds.width != arrangedWidth, oneRow {
             arrangedWidth = bounds.width
@@ -379,7 +379,7 @@ final class ShortcutBar: UIView {
                 let fixed = CGFloat(row.arrangedSubviews.count - caps.count)   // the Paste caps
                 let available = bounds.width - 16 - fixed * (44 + Self.spacing)
                 let span = natural.reduce(0, +) + Self.spacing * CGFloat(max(0, caps.count - 1))
-                let cols = span <= available ? natural : Self.filled(natural, spacing: Self.spacing,
+                let cols = span <= available && !twoRows ? natural : Self.filled(natural, spacing: Self.spacing,
                     available: available, minScale: Self.minRowScale, pixel: 1 / max(1, traitCollection.displayScale))
                 for (cap, w) in zip(caps, cols) { cap.columnWidth = w }
             }

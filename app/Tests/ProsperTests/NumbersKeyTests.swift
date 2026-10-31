@@ -25,10 +25,10 @@ final class NumbersKeyTests: XCTestCase {
         super.tearDown()
     }
 
-    /// The extension's keyboard, its bar and toolbar, hosted in a 402 pt wide view in a window.
-    /// Keep all four: the keyboard holds the proxy and the bar weakly.
-    private func rig(_ layout: TerminalKeyboard.Layout = .english,
-                     numbers: KeyboardSettings.Numbers = .key) -> (TerminalKeyboard, SuggestionBar, Proxy, UIView) {
+    /// The extension's keyboard, its bar and toolbar, hosted in a `width` pt wide view in a window,
+    /// `compact` the landscape size class. Keep all four: the keyboard holds the proxy and the bar weakly.
+    private func rig(_ layout: TerminalKeyboard.Layout = .english, numbers: KeyboardSettings.Numbers = .key,
+                     width: CGFloat = 402, compact: Bool = false) -> (TerminalKeyboard, SuggestionBar, Proxy, UIView) {
         let doc = Proxy()
         doc.autocapitalizationType = .none
         let kb = TerminalKeyboard(layout: layout)
@@ -37,10 +37,10 @@ final class NumbersKeyTests: XCTestCase {
         kb.offersEmoji = false
         let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: defaults), layout: layout))
         bar.attach(kb)
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: width, height: compact ? 402 : 874))
         // A window with no scene takes its size class from its own size; the phone's is regular.
-        if #available(iOS 17, *) { window.traitOverrides.verticalSizeClass = .regular }
-        let view = UIView(frame: CGRect(x: 0, y: 0, width: 402, height: 400))
+        if #available(iOS 17, *) { window.traitOverrides.verticalSizeClass = compact ? .compact : .regular }
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: width, height: 400))
         window.addSubview(view)
         window.isHidden = false
         addTeardownBlock { window.isHidden = true }
@@ -55,7 +55,7 @@ final class NumbersKeyTests: XCTestCase {
     /// The view at the height its bar and keys add up to, laid out; that height.
     @discardableResult
     private func fit(_ view: UIView) -> CGFloat {
-        let h = view.systemLayoutSizeFitting(CGSize(width: 402, height: 0), withHorizontalFittingPriority: .required,
+        let h = view.systemLayoutSizeFitting(CGSize(width: view.bounds.width, height: 0), withHorizontalFittingPriority: .required,
                                              verticalFittingPriority: .fittingSizeLevel).height
         view.frame.size.height = h
         view.layoutIfNeeded()
@@ -156,6 +156,30 @@ final class NumbersKeyTests: XCTestCase {
                                     "the slots under the toolbar's row")
         XCTAssertEqual(ShortcutBar.balancedSplit([40, 40, 40, 40, 100], spacing: 6), 3, "the longer row is shortest")
         XCTAssertEqual(ShortcutBar.balancedSplit([50, 50], spacing: 6), 1)
+    }
+
+    /// Each of the two rows spans the bar at every width, as the one row a portrait phone squeezes
+    /// to fit does, and no fit drops a key: they were left at natural widths, a third of a
+    /// landscape bar (#636).
+    func testTwoRowsSpanTheBarWithTheSameKeysAtEveryWidth() throws {
+        func caps(_ v: UIView) -> [KeyCapButton] { v.subviews.flatMap { ($0 as? KeyCapButton).map { [$0] } ?? caps($0) } }
+        var sets: [[String]] = []
+        for (width, compact) in [(402, false), (874, true), (874, false)] as [(CGFloat, Bool)] {
+            let (_, bar, _, view) = rig(width: width, compact: compact)
+            bar.showsToolbar = true
+            fit(view)
+            let toolbar = try XCTUnwrap(bar.toolbar)
+            XCTAssertTrue(toolbar.twoRows)
+            let shown = caps(toolbar).filter { !($0.superview?.isHidden ?? true) }
+            let rows = Set(shown.compactMap(\.superview).map(ObjectIdentifier.init))
+            XCTAssertEqual(rows.count, 2, "\(width): two rows")
+            for row in shown.compactMap(\.superview) {
+                XCTAssertGreaterThanOrEqual(row.frame.width, 0.9 * (toolbar.bounds.width - 16), "\(width): a row spans the bar")
+            }
+            sets.append(shown.map { $0.accessibilityLabel ?? $0.title(for: .normal) ?? "" })
+        }
+        XCTAssertEqual(Set(sets).count, 1, "the same keys at every width: \(sets)")
+        XCTAssertEqual(sets.first?.count, Shortcuts.Bar.toolbar.defaults.filter { $0.kind != .pasteText }.count)
     }
 
     // MARK: Numpad
