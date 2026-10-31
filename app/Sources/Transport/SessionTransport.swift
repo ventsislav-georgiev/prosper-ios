@@ -94,6 +94,14 @@ protocol SessionTransport: AnyObject {
     func forget(name: String) async throws -> [String]
     /// #634: Clear unpinned, over every History dir.
     func forgetAll() async throws -> HistoryCleared
+    /// #621: the Mac's clipboard history, newest first, paged on with `before`; only [] is the end.
+    func clipboardList(limit: Int, before: String?, since: String?) async throws -> [ClipboardRow]
+    /// #621: one item's bytes, refused past `max`, and the sha256 the Mac gave for them.
+    func clipboardItem(id: String, max: Int) async throws -> (sha256: String, data: Data)
+    /// #621: phone text into the Mac's clipboard history, never its pasteboard.
+    func addClipboardHistory(_ items: [ClipboardText]) async throws -> ClipboardSent
+    /// #621: one phone image into the Mac's clipboard history, on a connection of its own.
+    func clipboardUpload(_ item: ClipboardUpload) async throws -> ClipboardSent
 }
 
 /// #590: the demo and the test stubs have no dch behind them. Their machine lists no
@@ -107,6 +115,14 @@ extension SessionTransport {
     func pin(name: String, pin: Bool) async throws -> [String] { throw TransportError.server("Not supported here.") }
     func forget(name: String) async throws -> [String] { throw TransportError.server("Not supported here.") }
     func forgetAll() async throws -> HistoryCleared { throw TransportError.server("Not supported here.") }
+    func clipboardList(limit: Int, before: String?, since: String?) async throws -> [ClipboardRow] {
+        throw TransportError.server("Not supported here.")
+    }
+    func clipboardItem(id: String, max: Int) async throws -> (sha256: String, data: Data) {
+        throw TransportError.server("Not supported here.")
+    }
+    func addClipboardHistory(_ items: [ClipboardText]) async throws -> ClipboardSent { throw TransportError.server("Not supported here.") }
+    func clipboardUpload(_ item: ClipboardUpload) async throws -> ClipboardSent { throw TransportError.server("Not supported here.") }
 }
 
 /// #590: a verb the Mac's server answers beyond the base frames. machineInfo lists them in
@@ -114,6 +130,7 @@ extension SessionTransport {
 enum SessionVerb: String {
     case history, revive, restart, stop, library
     case pin, forget   // #634: "forget" covers forget 0x25 and forgetAll 0x26
+    case clipboard     // #621: clipboard history sync, 0x15/0x16/0x22/0x23; only while the Mac's toggle is on
 
     /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
     static func offered(_ ops: Any?) -> Set<SessionVerb> {
@@ -129,6 +146,53 @@ struct LibraryReply: Equatable {
     var snippets: Data?
     var quicklinks: Data?
     var errors: [String: String] = [:]
+}
+
+/// #621: one row of clipboardResp 0x1d. Every textual kind is "text"; `text` is its first 2000
+/// characters, whole when its UTF-8 is `size` bytes.
+struct ClipboardRow: Equatable {
+    var id: String
+    var date: String     // as the Mac wrote it: the next sync's `since`
+    var kind: String     // text, image or file
+    var source = "Mac"   // or "iPhone": one a phone sent
+    var text: String?
+    var size = 0
+
+    /// ISO8601 with milliseconds, the Mac's precision; read with or without them.
+    static func wire(_ date: Date) -> String {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.string(from: date)
+    }
+
+    static func date(_ s: String) -> Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = f.date(from: s) { return d }
+        f.formatOptions = [.withInternetDateTime]
+        return f.date(from: s)
+    }
+}
+
+/// #621: a phone clip for addClipboardHistory 0x22.
+struct ClipboardText: Equatable {
+    var id: UUID
+    var date: Date
+    var text: String
+}
+
+/// #621: a phone image for clipboardUpload 0x23, history only.
+struct ClipboardUpload: Equatable {
+    var id: UUID
+    var date: Date
+    var data: Data
+    var mime: String?
+}
+
+/// #621: ok's `{added, skipped}`: the ids the Mac took, and the rest by id with its reason.
+struct ClipboardSent: Equatable {
+    var added: [String] = []
+    var skipped: [String: String] = [:]
 }
 
 /// #590: one ended session from historyResp 0x1b.

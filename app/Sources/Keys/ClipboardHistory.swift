@@ -26,6 +26,9 @@ final class ClipboardHistory {
         var image: String?
         var date: Date
         var pinned = false
+        /// #621: `mac` for a clip synced from the Mac, which never goes back; nil for this phone's.
+        /// Optional, so an index written before it still reads.
+        var source: String?
     }
 
     private struct Index: Codable, Equatable {
@@ -40,6 +43,7 @@ final class ClipboardHistory {
     /// ponytail: longer text isn't kept, so the index stays small to read on every open.
     static let textLimit = 20_000
     static let imageSide: CGFloat = 1024
+    static let mac = "Mac"
 
     let dir: URL
     let cap: Int
@@ -159,6 +163,30 @@ final class ClipboardHistory {
     /// The image at `source` downsampled to `imageSide`, as PNG if it has alpha, else JPEG,
     /// in `dir`: its file's name, nil if it isn't an image.
     func storeImage(at source: URL) -> String? { storeImage(Self.source(source)) }
+
+    /// #621: an image's bytes, one pulled from the Mac, stored as `storeImage(at:)` stores a file.
+    func storeImage(data: Data) -> String? { storeImage(Self.source(data as CFData)) }
+
+    /// #621: clips from the Mac at their dates, none later than now, newest first. The same text
+    /// or image already here stays in its row, pin and source with it, taking the newer date.
+    /// A pulled image's file no row names afterwards (aged out or capped at once) goes.
+    func merge(_ incoming: [Clip]) {
+        guard !incoming.isEmpty else { return }
+        let kept = update { i in
+            for var clip in incoming {
+                clip.date = min(clip.date, now())
+                if let k = i.clips.firstIndex(where: { $0.text == clip.text && $0.image == clip.image }) {
+                    i.clips[k].date = max(i.clips[k].date, clip.date)
+                } else {
+                    i.clips.append(clip)
+                }
+            }
+            i.clips.sort { $0.date > $1.date }
+        }
+        for name in Set(incoming.compactMap(\.image)).subtracting(kept.clips.compactMap(\.image)) {
+            try? FileManager.default.removeItem(at: url(name))
+        }
+    }
 
     private func storeImage(_ source: CGImageSource?) -> String? {
         guard let cg = Self.downsample(source, side: Self.imageSide) else { return nil }
@@ -438,9 +466,14 @@ final class ClipboardPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
             cell.accessibilityLabel = "Image"
             cell.accessibilityHint = "Copies it, to paste"
         }
-        cell.contentConfiguration = content
         cell.isAccessibilityElement = true
-        cell.accessibilityValue = clip.pinned ? "pinned" : nil
+        if clip.source == ClipboardHistory.mac {   // #621: synced from the Mac
+            content.secondaryText = ClipboardHistory.mac
+            content.secondaryTextProperties.font = .systemFont(ofSize: 11)
+        }
+        cell.contentConfiguration = content
+        let value = [clip.pinned ? "pinned" : nil, clip.source == ClipboardHistory.mac ? "from the Mac" : nil].compactMap { $0 }
+        cell.accessibilityValue = value.isEmpty ? nil : value.joined(separator: ", ")
         let pin = UIButton(configuration: .plain())
         pin.configuration?.image = UIImage(systemName: clip.pinned ? "pin.fill" : "pin")
         pin.configuration?.baseForegroundColor = clip.pinned ? Style.accent : Style.hint

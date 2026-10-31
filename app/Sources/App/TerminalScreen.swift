@@ -70,6 +70,7 @@ struct TerminalScreen: View {
             // Remote process finished (`exit`) — pop back to the session list
             // instead of reattaching (which would recreate the session).
             if state == .ended { dismiss() }
+            if state == .connected { ClipboardSync.kick() }   // #621
         }
         .onAppear { conn.deliver(ShareInbox.take(for: session.name)) }   // Share › Prosper (#610)
         .onDisappear { conn.close() }
@@ -598,7 +599,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// keyboard keeps it as it appears.
     func showClips(_ on: Bool) {
         guard on, let history, shortcutBar != nil else { return cover(nil) }
-        if KeyboardSettings.current().saveCopies { history.save(pasteboard) }
+        if KeyboardSettings.current().saveCopies { history.save(pasteboard); ClipboardSync.kick() }   // #621
         let clips = ClipboardPanel(history: history, pasteboard: pasteboard)
         clips.onPick = { [weak self] in self?.pick($0) }
         cover(clips)
@@ -713,6 +714,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         guard !text.isEmpty else { return }
         pasteboard.string = text
         history?.record(text, from: pasteboard)
+        ClipboardSync.kick()   // #621
         showToast("Copied line\n" + (text.count > 60 ? String(text.prefix(60)) + "…" : text))
     }
 

@@ -578,7 +578,7 @@ struct SessionListView: View {
     /// #590: the Mac's ⋯ (Agent Island): Restart all agents and Stop all in <tab>…, each on its op.
     /// #589: and History, on any of the Mac's verbs.
     @ViewBuilder private var controlsMenu: some View {
-        if !ops.subtracting([.library]).isEmpty {
+        if !ops.subtracting([.library, .clipboard]).isEmpty {
             Menu {
                 if ops.contains(.history) {
                     Button { showingHistory = true } label: { Label("History", systemImage: "clock.arrow.circlepath") }
@@ -807,6 +807,7 @@ struct SessionListView: View {
         // on the Mac, which has them already. Its own task: a slow reply never holds the list.
         #if !targetEnvironment(macCatalyst)
         if info.ops.contains(.library), let mm = liveMachine { Task { try? await MacLibrary.sync(mm, over: t) } }
+        ClipboardSync.offer(info.ops, over: t, machine: m.id.uuidString)   // #621: and a sync, if it lists clipboard
         #endif
         if let session = account.session, let wakeId = info.wakeId {
             let meta = await WakeClient(session: session).meta(wakeId: wakeId)
@@ -866,6 +867,7 @@ extension SessionVerb {
         case .library: "Sync from Mac"
         case .pin:     "Pin failed"
         case .forget:  all ? "Clear unpinned" : "Remove failed"
+        case .clipboard: "Clipboard sync"   // #621: never shown, a sync failure is only logged
         }
     }
 }

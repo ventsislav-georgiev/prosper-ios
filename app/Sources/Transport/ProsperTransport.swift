@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import CryptoKit
 
 /// Talks to Prosper's `DchSessionServer` over the length-prefixed binary frame
 /// protocol (see the server's `DchFrame`). One TCP connection per operation:
@@ -28,6 +29,10 @@ final class ProsperTransport: SessionTransport {
         static let machineInfoResp: UInt8 = 0x18, snapshotResp: UInt8 = 0x19, historyResp: UInt8 = 0x1b
         static let libraryResp: UInt8 = 0x1c
         static let pin: UInt8 = 0x24, forget: UInt8 = 0x25, forgetAll: UInt8 = 0x26   // #634
+        // #621: clipboard history sync. 0x1e-0x21 and 0x27 are the Mac's chat.
+        static let clipboardList: UInt8 = 0x15, clipboardItem: UInt8 = 0x16
+        static let addClipboardHistory: UInt8 = 0x22, clipboardUpload: UInt8 = 0x23
+        static let clipboardItemResp: UInt8 = 0x1a, clipboardResp: UInt8 = 0x1d
     }
 
     /// One-shot identity handshake (PLAN §2a). Sends `0x08`, reads the `0x18` reply
@@ -158,10 +163,126 @@ final class ProsperTransport: SessionTransport {
     /// waits as long as it takes (keepalive still ends a dead one). Error 0x13 throws its
     /// message as written.
     private func verb(_ type: UInt8, _ payload: Data, reply: UInt8 = F.ok) async throws -> Data {
-        let (t, p) = try await oneShot(send: type, payload: payload)
-        if t == reply { return p }
-        if t == F.error { throw TransportError.server(Self.decodeMessage(p)) }
+        try Self.expect(try await oneShot(send: type, payload: payload), reply)
+    }
+
+    /// `frame`'s payload when it is a `type`; error 0x13 throws its message as written.
+    private static func expect(_ frame: (UInt8, Data), _ type: UInt8) throws -> Data {
+        let (t, p) = frame
+        if t == type { return p }
+        if t == F.error { throw TransportError.server(decodeMessage(p)) }
         throw TransportError.protocolError("unexpected reply 0x\(String(t, radix: 16))")
+    }
+
+    // MARK: - Clipboard history (#621)
+
+    func clipboardList(limit: Int, before: String?, since: String?) async throws -> [ClipboardRow] {
+        var o: [String: Any] = ["limit": limit]
+        if let before { o["before"] = before }
+        if let since { o["since"] = since }
+        return try Self.decodeClipboardRows(try await verb(F.clipboardList, json(o), reply: F.clipboardResp))
+    }
+
+    /// A row missing its id, date or kind is left out.
+    static func decodeClipboardRows(_ payload: Data) throws -> [ClipboardRow] {
+        guard let arr = (try? JSONSerialization.jsonObject(with: payload)) as? [[String: Any]] else {
+            throw TransportError.protocolError("unreadable clipboard list")
+        }
+        return arr.compactMap { o in
+            guard let id = o["id"] as? String, let date = o["date"] as? String, let kind = o["kind"] as? String else { return nil }
+            return ClipboardRow(id: id, date: date, kind: kind, source: o["source"] as? String ?? "Mac",
+                                text: o["text"] as? String, size: o["size"] as? Int ?? 0)
+        }
+    }
+
+    /// The 0x1a header, then 0x10 frames to its `size`, then ok. Over `max` is refused before
+    /// any byte is held. ponytail: no `offset` resume; a dropped pull starts over next sync.
+    func clipboardItem(id: String, max: Int) async throws -> (sha256: String, data: Data) {
+        let conn = try await connect()
+        defer { conn.cancel() }
+        conn.send(content: FrameCodec.encode(F.clipboardItem, json(["id": id])), completion: .contentProcessed { _ in })
+        var buf = Data()
+        let header = try Self.expect(try await FrameCodec.read(from: conn, &buf), F.clipboardItemResp)
+        guard let o = (try? JSONSerialization.jsonObject(with: header)) as? [String: Any],
+              let size = o["size"] as? Int, let sha = o["sha256"] as? String else {
+            throw TransportError.protocolError("unreadable clipboard item")
+        }
+        guard (0...max).contains(size) else { throw TransportError.protocolError("clipboard item too large") }
+        var data = Data(capacity: size)
+        while true {
+            let frame = try await FrameCodec.read(from: conn, &buf)
+            if frame.0 == F.data {
+                data.append(frame.1)
+                guard data.count <= size else { throw TransportError.protocolError("clipboard item too long") }
+                continue
+            }
+            _ = try Self.expect(frame, F.ok)
+            guard data.count == size else { throw TransportError.protocolError("clipboard item short") }
+            return (sha, data)
+        }
+    }
+
+    func addClipboardHistory(_ items: [ClipboardText]) async throws -> ClipboardSent {
+        let wire = items.map { ["id": $0.id.uuidString, "date": ClipboardRow.wire($0.date), "kind": "text", "text": $0.text] }
+        return try Self.decodeSent(try await verb(F.addClipboardHistory, json(["items": wire])))
+    }
+
+    static func decodeSent(_ payload: Data) throws -> ClipboardSent {
+        guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any] else {
+            throw TransportError.protocolError("unreadable reply")
+        }
+        var sent = ClipboardSent(added: o["added"] as? [String] ?? [])
+        for s in o["skipped"] as? [[String: Any]] ?? [] {
+            if let id = s["id"] as? String { sent.skipped[id] = s["reason"] as? String ?? "" }
+        }
+        return sent
+    }
+
+    /// A Mac answers a duplicate, no_space or "off" right after the header: this long for that
+    /// before the bytes go.
+    static var earlyWait: TimeInterval = 0.5
+    static let uploadChunk = 1 << 20
+
+    /// Its own connection, as the Mac wants (one upload per connection, never an attached one):
+    /// the header, then the bytes in 0x10 frames of at most `uploadChunk`, then one reply, read
+    /// as it lands. Bytes stop once it has: the Mac drops data frames after its reply.
+    func clipboardUpload(_ item: ClipboardUpload) async throws -> ClipboardSent {
+        let conn = try await connect()
+        defer { conn.cancel() }
+        let landed = Landed()
+        let reply = Task { () throws -> (UInt8, Data) in
+            defer { landed.set() }
+            return try await FrameCodec.readOne(from: conn)
+        }
+        try await Self.send(conn, FrameCodec.encode(F.clipboardUpload, json(Self.uploadHeader(item))))
+        let early = Date().addingTimeInterval(Self.earlyWait)
+        while !landed.done, Date() < early { try await Task.sleep(nanoseconds: 20_000_000) }
+        let bytes = item.data
+        var at = bytes.startIndex
+        while at < bytes.endIndex, !landed.done {
+            let next = min(at + Self.uploadChunk, bytes.endIndex)
+            try await Self.send(conn, FrameCodec.encode(F.data, bytes.subdata(in: at..<next)))
+            at = next
+        }
+        return try Self.decodeSent(try Self.expect(try await reply.value, F.ok))
+    }
+
+    /// Kind image, history only (no `live`).
+    static func uploadHeader(_ item: ClipboardUpload) -> [String: Any] {
+        var o: [String: Any] = ["id": item.id.uuidString, "date": ClipboardRow.wire(item.date), "kind": "image",
+                                "source": "iPhone", "size": item.data.count,
+                                "sha256": SHA256.hash(data: item.data).map { String(format: "%02x", $0) }.joined()]
+        if let mime = item.mime { o["mime"] = mime }
+        return o
+    }
+
+    /// `frame` handed to the socket, waited on: an upload's bytes never pile up in NWConnection.
+    private static func send(_ conn: NWConnection, _ frame: Data) async throws {
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+            conn.send(content: frame, completion: .contentProcessed { e in
+                if let e { c.resume(throwing: e) } else { c.resume() }
+            })
+        }
     }
 
     static func decodeNames(_ payload: Data) throws -> [String] {
@@ -294,6 +415,11 @@ enum FrameCodec {
     /// Read frames off `conn` until one whole frame is assembled, return it.
     static func readOne(from conn: NWConnection) async throws -> (UInt8, Data) {
         var buf = Data()
+        return try await read(from: conn, &buf)
+    }
+
+    /// The next frame, `buf` keeping what came past it: a reply of several frames (#621).
+    static func read(from conn: NWConnection, _ buf: inout Data) async throws -> (UInt8, Data) {
         while true {
             if let frame = try pop(&buf) { return frame }
             let chunk = try await receive(conn)
@@ -327,6 +453,14 @@ enum FrameCodec {
             }
         }
     }
+}
+
+/// #621: set once an upload's reply has landed, read by the task streaming its bytes.
+private final class Landed: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var done: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
 }
 
 /// A live attached session. Output is an `AsyncStream` of raw byte slices; input

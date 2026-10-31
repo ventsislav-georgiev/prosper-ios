@@ -82,6 +82,8 @@ struct SettingsView: View {
     private var numpadHidesToolbar = KeyboardSettings().numpadHidesToolbar
     @AppStorage(KeyboardSettings.Key.saveCopies, store: KeyboardSettings.store())
     private var saveCopies = KeyboardSettings().saveCopies
+    @AppStorage(ClipboardSync.key, store: KeyboardSettings.store())   // #621
+    private var syncClips = true
     @AppStorage(KeyboardSettings.Key.languages, store: KeyboardSettings.store())
     private var languages = TerminalKeyboard.Layout.english.rawValue
     @AppStorage(KeyboardSettings.Key.theme, store: KeyboardSettings.store())
@@ -274,13 +276,15 @@ struct SettingsView: View {
 
             Section {
                 Toggle("Save Copies Automatically", isOn: $saveCopies)
+                Toggle("Sync with Mac", isOn: $syncClips)   // #621
+                    .onChange(of: syncClips) { on in if on { ClipboardSync.kick() } }
                 Button("Open Prosper in iOS Settings") {
                     if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                 }
             } header: {
                 Text("Clipboard History")
             } footer: {
-                Text("On by default: the Prosper keyboard keeps what you copy in other apps, the latest copy each time it shows. Needs Full Access. iOS asks before each save unless Settings › Apps › Prosper › Paste from Other Apps is set to Allow.")
+                Text("On by default: the Prosper keyboard keeps what you copy in other apps, the latest copy each time it shows. Needs Full Access. iOS asks before each save unless Settings › Apps › Prosper › Paste from Other Apps is set to Allow.\n\nSync with Mac shares this history with your Mac's while Prosper is open: text and images, not files. The Mac needs Settings › Remote Terminal › Sync clipboard history with iPhone on too.")
             }
 
             // The keyboards' and the terminal's snippets key (#609).
