@@ -57,6 +57,8 @@ struct KeyboardSettings: Equatable {
         static let keySize = "keyboard.keySize"
         static let saveCopies = "keyboard.saveCopies"
         static let languages = "keyboard.languages"
+        static let numbers = "keyboard.numbers"
+        static let numpadHidesToolbar = "keyboard.numpadHidesToolbar"
     }
 
     /// Shift on at a sentence start (`TerminalKeyboard.autoCapitalize`). Off by default.
@@ -91,6 +93,13 @@ struct KeyboardSettings: Equatable {
         let all = TerminalKeyboard.Layout.allCases.filter(picked.contains)
         return all.isEmpty ? [.english] : all
     }
+    /// The Prosper keyboard's digits (#625): a row over the letters (`row`, as before), or a
+    /// 123 key at the bottom row's left that swaps the letters for a numpad (`key`), the
+    /// row's height going to the toolbar's second row. Same keyboard height either way.
+    var numbers = Numbers.row
+    enum Numbers: String, CaseIterable { case row, key }
+    /// With Numbers: Key, the numpad takes the bar's height too while it shows (#625).
+    var numpadHidesToolbar = false
     /// Portrait rows' height and gap (`TerminalKeyboard.metrics`, #583); landscape keeps its own.
     var keySize = KeySize.normal
     enum KeySize: String, CaseIterable {
@@ -117,6 +126,8 @@ struct KeyboardSettings: Equatable {
         read(Key.predictiveText, &predictiveText)
         read(Key.characterPreview, &characterPreview)
         read(Key.saveCopies, &saveCopies)
+        read(Key.numpadHidesToolbar, &numpadHidesToolbar)
+        numbers = defaults?.string(forKey: Key.numbers).flatMap(Numbers.init) ?? numbers
         bottomOrder = defaults?.string(forKey: Key.bottomOrder) ?? bottomOrder
         bottomHidden = defaults?.string(forKey: Key.bottomHidden) ?? bottomHidden
         keySize = defaults?.string(forKey: Key.keySize).flatMap(KeySize.init) ?? keySize
@@ -857,6 +868,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         case globe
         /// Opens the emoji picker in place of the caps (`EmojiPicker`).
         case emoji
+        /// 123 on the letters, ABC on the numpad: swaps them (`showNumpad`, Numbers: Key, #625).
+        case numbers
     }
 
     static let rowHeight: CGFloat = 38
@@ -880,9 +893,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static func undelayEdges(_ window: UIWindow?) {
         window?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
     }
-    static func keysHeight(compact: Bool, size: KeyboardSettings.KeySize = .normal) -> CGFloat {
+    /// `rows` 4: no digit row (Numbers: Key, #625), its row and gap the bar's (`numberRowHeight`).
+    static func keysHeight(compact: Bool, size: KeyboardSettings.KeySize = .normal, rows: Int = 5) -> CGFloat {
         let m = metrics(compact: compact, size: size)
-        return m.top + 5 * m.row + 4 * m.gap
+        return m.top + CGFloat(rows) * m.row + CGFloat(rows - 1) * m.gap
     }
     /// Under the bottom row, in place of the 34 pt home-indicator inset: enough to keep
     /// the space bar off the bottom edge, where the home gesture starts. (Deferring that
@@ -950,6 +964,19 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         "a": "@", "s": "#", "d": "&", "f": "*", "g": "-", "h": "+", "j": "=", "k": "(", "l": ")",
         "z": "_", "x": "$", "c": "\"", "v": "'", "b": ":", "n": ";", "m": "/",
     ]
+
+    /// The numpad (Numbers: Key, #625), in every key row's place: 1–9 and 0 between . and ,
+    /// as on a calculator, two columns of the symbols numbers come with, then delete, return,
+    /// space and ABC back to the letters. No holds, previews or autocorrect on it (`press`).
+    static let numpadRows: [[Key]] = [
+        chars("123-/") + [.backspace],
+        chars("456:;") + [.ret],
+        chars("789()") + [.space],
+        chars(".0,@\"") + [.numbers],
+    ]
+    /// The numpad's column widths, in shares of the row: digits and the last column wider than
+    /// the symbols, every numpad key wider than a letter key (`layoutSubviews`).
+    static let numpadColumns: [CGFloat] = [1.5, 1.5, 1.5, 1, 1, 1.5]
 
     /// Apple's "Bulgarian – QWERTY" (phonetic) letters, 11 / 11 / 8, between the same
     /// digits and bottom row.
@@ -1053,10 +1080,58 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// resizes them.
     var settings = KeyboardSettings() {
         didSet {
+            if settings.numbers != oldValue.numbers { return numbersChanged() }
             if settings.bottomRow != oldValue.bottomRow { build() }
-            if settings.keySize != oldValue.keySize { fitHeight(); setNeedsLayout() }
+            if settings.keySize != oldValue.keySize { fitHeight(); setNeedsLayout(); rowsChanged?() }
+            if settings.numpadHidesToolbar != oldValue.numpadHidesToolbar { rowsChanged?() }
         }
     }
+    /// Numbers: Key may apply (#625): the extension's controller sets it. The app's keyboard
+    /// keeps the digit row whatever the setting says: it has no toolbar to take the row.
+    var allowsNumbersKey = false { didSet { if allowsNumbersKey != oldValue { numbersChanged() } } }
+    /// No digit row, a 123 key instead (`build`).
+    var numbersKey: Bool { allowsNumbersKey && settings.numbers == .key }
+    /// The numpad shows in the keys' place (`showNumpad`).
+    private(set) var showsNumpad = false
+    /// What the digit row's row and gap leave for the bar with `numbersKey` (`SuggestionBar.fitRows`),
+    /// so the keyboard's total height is the same either way; 0 with the row.
+    var numberRowHeight: CGFloat {
+        guard numbersKey else { return 0 }
+        let m = Self.metrics(compact: compact, size: settings.keySize)
+        return m.row + m.gap
+    }
+    /// The bar's height, lent to the keys while it hides on the numpad (`SuggestionBar.fitRows`).
+    var lentHeight: CGFloat = 0 { didSet { if lentHeight != oldValue { fitHeight(); setNeedsLayout() } } }
+    /// The rows changed what the bar should take: Numbers, the numpad, Key Size, the size class.
+    var rowsChanged: (() -> Void)?
+
+    private func numbersChanged() {
+        if !numbersKey { showsNumpad = false }
+        build()
+        fitHeight()
+        rowsChanged?()
+    }
+
+    /// The numpad in the keys' place, or the keys back (#625): pushed in sideways in
+    /// `numpadSwap`, or swapped at once under Reduce Motion. Like the emoji picker's, any
+    /// touch the caps were tracking is dropped.
+    func showNumpad(_ on: Bool, animated: Bool = true) {
+        guard on != showsNumpad, numbersKey || !on else { return }
+        stopRepeat(); stopHold(); tracker.reset()
+        showsNumpad = on
+        if animated, window != nil, !UIAccessibility.isReduceMotionEnabled {
+            let push = CATransition()
+            push.type = .push
+            push.subtype = on ? .fromRight : .fromLeft
+            push.duration = Self.numpadSwap
+            push.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(push, forKey: "numpad")
+        }
+        build()
+        fitHeight()
+        rowsChanged?()
+    }
+    static let numpadSwap: TimeInterval = 0.2
     /// The extension's suggestions (`SuggestionBar.attach`): asked before every key, it
     /// can autocorrect the word a separator ends, or take the key itself (true: backspace
     /// undoing an autocorrect) and the keyboard types nothing. Nil in the app.
@@ -1185,11 +1260,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// (`traitCollectionDidChange`: `registerForTraitChanges` is iOS 17.)
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
-        if previous?.verticalSizeClass != traitCollection.verticalSizeClass { fitHeight(); setNeedsLayout() }
+        if previous?.verticalSizeClass != traitCollection.verticalSizeClass { fitHeight(); setNeedsLayout(); rowsChanged?() }
     }
 
     private func fitHeight() {
-        keysHeightConstraint.constant = Self.keysHeight(compact: compact, size: settings.keySize)
+        keysHeightConstraint.constant = Self.keysHeight(compact: compact, size: settings.keySize, rows: numbersKey ? 4 : 5)
+            + lentHeight
         let height = keysHeightConstraint.constant + bottomInset
         guard height != heightConstraint.constant else { return }
         heightConstraint.constant = height
@@ -1207,7 +1283,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         defer { didPress?() }
         settle()
         landed = nil
-        if willPress?(key) == true {
+        // The numpad types as it is (#625): only backspace asks, to undo an autocorrect.
+        if !showsNumpad || key == .backspace, willPress?(key) == true {
             // ponytail: the text is no longer what the keys typed (an undone autocorrect),
             // so touch correction starts afresh rather than guess it back.
             word = ""
@@ -1234,6 +1311,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             return   // the user's shift: auto-capitalization doesn't undo it
         case .globe: return   // its cap acts on its own; the tracker never yields it (`nearest`)
         case .emoji: showEmoji(true)
+        case .numbers: showNumpad(!showsNumpad)
         }
         autoCapitalize()
     }
@@ -1674,6 +1752,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         var rows = layout.rows
         rows[rows.count - 1] = settings.bottomRow.filter { offersEmoji || $0 != .emoji }
         if showsGlobe { rows[rows.count - 1].insert(.globe, at: 0) }
+        if numbersKey { rows.removeFirst(); rows[rows.count - 1].insert(.numbers, at: 0) }   // where iOS has it
+        if showsNumpad { rows = Self.numpadRows }   // ponytail: no globe on it; ABC goes back to it
         caps = rows.map { $0.map(makeCap) }
         caps.joined().forEach { $0.isHidden = showsEmoji }
         refreshLabels()
@@ -1685,7 +1765,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         // Digits take the special keys' dimmer fill, setting the row off from the letters.
         let plain: Bool
         switch key {
-        case .char(let c): plain = c.first?.isNumber != true
+        case .char(let c): plain = showsNumpad || c.first?.isNumber != true
         case .space: plain = true
         default: plain = false
         }
@@ -1703,7 +1783,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         } else {
             cap.activate = { [weak self] in self?.press(key) }
         }
-        if case .char(let c) = key, let symbol = layout.holdSymbol[c] {
+        if !showsNumpad, case .char(let c) = key, let symbol = layout.holdSymbol[c] {
             cap.hint.text = symbol
             cap.hint.font = Style.hintFont
             cap.hint.textColor = Style.hint
@@ -1845,7 +1925,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// never turns space, shift or backspace into a letter (in landscape the 4 pt row gap
     /// is under the lift), nor a digit into a letter or a letter into a digit.
     private func aimed(_ point: CGPoint) -> CGPoint {
-        let letters = Set(caps.dropFirst().dropLast().joined().map(\.key).filter { if case .char = $0 { true } else { false } })
+        if showsNumpad { return point }
+        let letters = Set(caps.dropFirst(numbersKey ? 0 : 1).dropLast().joined().map(\.key).filter { if case .char = $0 { true } else { false } })
         let lifted = CGPoint(x: point.x, y: point.y - Self.tapLift)
         return letters.contains(nearest(at: point)) && letters.contains(nearest(at: lifted)) ? lifted : point
     }
@@ -1877,7 +1958,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         let cap = tracker.previewKey.flatMap { k in caps.joined().first { $0.key == k } }
         let symbol = tracker.previewSymbol.map(shifted)
         // Character Preview off still shows a hold's symbol, as Apple's still shows its accents.
-        if let cap, settings.characterPreview || symbol != nil { showPreview(cap, symbol) } else { hidePreview() }
+        // The numpad's keys outsize a bubble, and with the bar hidden it would rise off the view.
+        if let cap, !showsNumpad, settings.characterPreview || symbol != nil { showPreview(cap, symbol) } else { hidePreview() }
     }
 
     /// `c` as shift types it: a letter uppercased, anything else as is.
@@ -1907,6 +1989,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                 if let returnTitle { title = returnTitle; label = returnTitle } else { image = "return.left"; label = "new line" }
             case .globe: image = "globe"; label = "next keyboard"
             case .emoji: image = "face.smiling"; label = "emoji"
+            case .numbers: title = showsNumpad ? "ABC" : "123"; label = showsNumpad ? "letters" : "numbers"
             }
             if blanked { title = nil; image = nil }
             cap.hint.isHidden = blanked
@@ -1977,7 +2060,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             refreshPressed()
             return
         }
-        guard tracker.hold(h.id, over: nearest(at: aimed(h.at)), symbols: layout.holdSymbol) else { return }
+        guard tracker.hold(h.id, over: nearest(at: aimed(h.at)), symbols: showsNumpad ? [:] : layout.holdSymbol) else { return }
         haptics.impactOccurred()
         haptics.prepare()
         refreshPressed()
@@ -2021,6 +2104,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         let area = keysArea.layoutFrame.insetBy(dx: Self.sideMargin, dy: 0)
         let m = Self.metrics(compact: compact, size: settings.keySize)
         emojiPicker?.frame = area
+        if showsNumpad { return layoutNumpad(in: area, m) }
         for (r, row) in caps.enumerated() {
             let y = area.minY + m.top + CGFloat(r) * (m.row + m.gap)
             // The bottom row clears the screen's rounded corners (a no-op in landscape).
@@ -2033,6 +2117,26 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             }
         }
     }
+
+    /// The numpad's grid fills the keys' area, the bar's too while lent (`lentHeight`), its rows
+    /// the letter rows' gap apart, its columns `numpadColumns`. All of it pulls in like the
+    /// bottom row, so its columns line up.
+    private func layoutNumpad(in area: CGRect, _ m: (row: CGFloat, gap: CGFloat, top: CGFloat)) {
+        let grid = area.insetBy(dx: max(0, Self.bottomRowInset - area.minX), dy: 0)
+        let n = CGFloat(caps.count)
+        let h = (grid.height - m.top - (n - 1) * m.gap) / n
+        let unit = (grid.width - CGFloat(Self.numpadColumns.count - 1) * Self.keyGap) / Self.numpadColumns.reduce(0, +)
+        for (r, row) in caps.enumerated() {
+            var x = grid.minX
+            for (cap, share) in zip(row, Self.numpadColumns) {
+                cap.frame = CGRect(x: x, y: grid.minY + m.top + CGFloat(r) * (h + m.gap), width: share * unit, height: h)
+                x += share * unit + Self.keyGap
+            }
+        }
+    }
+
+    /// The keys shown, row by row: the letters', or the numpad's.
+    var shownKeys: [[Key]] { caps.map { $0.map(\.key) } }
 
     /// Horizontal slots for one row, in a row `width` wide. A letter is one unit
     /// (`columns` units and their gaps fill the width). A row of nine or more characters

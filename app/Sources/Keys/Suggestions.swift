@@ -212,7 +212,7 @@ final class Suggestions {
     func willPress(_ key: TerminalKeyboard.Key, in doc: UITextDocumentProxy, autoShift: Bool = false) -> Bool {
         let separator: String
         switch key {
-        case .shift, .globe, .emoji: return false
+        case .shift, .globe, .emoji, .numbers: return false
         case .backspace:
             if revert(doc) { return true }
             _ = typed.popLast()
@@ -638,6 +638,8 @@ final class SuggestionBar: UIView {
     /// The app's shortcut keys in the slots' place (`addToolbar`), and the toggle at the
     /// leading edge that picks them or the slots; both nil until then.
     private(set) var toolbar: ShortcutBar?
+    /// The toolbar's one row over the slots with Numbers: Key (`show`); 0 otherwise.
+    private var toolbarBand: CGFloat = 0
     private(set) var toggle: UIButton?
     /// The clipboard history (#597), the controller's App Group store; nil in the app and
     /// tests that don't set one. Its key shows only with it and Full Access.
@@ -1583,6 +1585,7 @@ final class SuggestionBar: UIView {
             self?.refresh()
         }
         keyboard.screenWords = { [weak self] in self?.suggestions.personalWords ?? [] }
+        keyboard.rowsChanged = { [weak self] in self?.fitRows() }
         suggestions.layout = keyboard.layout
         keyboard.layoutChanged = { [weak self] layout in
             self?.suggestions.layout = layout
@@ -1614,13 +1617,27 @@ final class SuggestionBar: UIView {
             keyboard.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             keyboard.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+        fitRows()
+    }
+
+    /// Numbers: Key (#625): the bar takes the digit row's height (`numberRowHeight`), the
+    /// toolbar's second row; with Hide Toolbar on the Numpad the bar hides while the numpad
+    /// shows and lends the keys its height. The two always add up to the same.
+    func fitRows() {
+        guard let keyboard else { return }
+        let full = Self.height(compact: traitCollection.verticalSizeClass == .compact) + keyboard.numberRowHeight
+        let hides = keyboard.showsNumpad && keyboard.settings.numpadHidesToolbar
+        heightConstraint?.constant = hides ? 0 : full
+        isHidden = hides
+        keyboard.lentHeight = hides ? full : 0
+        refresh()
     }
 
     /// The height follows the size class, like the keyboard's (rotation), and so do Paste
     /// and the toolbar's.
     override func traitCollectionDidChange(_ previous: UITraitCollection?) {
         super.traitCollectionDidChange(previous)
-        heightConstraint?.constant = Self.height(compact: traitCollection.verticalSizeClass == .compact)
+        fitRows()
         refresh()
         toolbar?.reload()
     }
@@ -1732,7 +1749,11 @@ final class SuggestionBar: UIView {
         let tools = toolbar != nil && (new == .autofill ? toolbarOverAutofill : showsToolbar)
         autofillButton.isHidden = new != .autofill || tools
         pasteControl.isHidden = new != .paste || tools
-        toolbar?.isHidden = !tools
+        // Numbers: Key (#625): the toolbar in two rows, or one over the slots, never none.
+        let band = toolbar == nil || tools ? 0 : keyboard?.numberRowHeight ?? 0
+        toolbarBand = band
+        toolbar?.isHidden = !tools && band == 0
+        toolbar?.twoRows = tools && (keyboard?.numberRowHeight ?? 0) > 0
         if let toggle {
             let back = new == .autofill ? (image: "key.fill", label: "Show AutoFill") : (image: "ellipsis.bubble", label: "Show suggestions")
             toggle.configuration?.image = UIImage(systemName: tools ? back.image : "command")
@@ -1760,7 +1781,9 @@ final class SuggestionBar: UIView {
             toggle.frame = CGRect(x: area.minX, y: area.minY, width: 36, height: area.height)
             area = area.inset(by: UIEdgeInsets(top: 0, left: 40, bottom: 0, right: 0))
         }
-        toolbar?.frame = CGRect(x: area.minX, y: 0, width: bounds.width - area.minX, height: bounds.height)
+        toolbar?.frame = CGRect(x: area.minX, y: 0, width: bounds.width - area.minX,
+                                height: toolbarBand > 0 ? toolbarBand : bounds.height)
+        area = area.inset(by: UIEdgeInsets(top: toolbarBand, left: 0, bottom: 0, right: 0))   // the slots under it
         let w = area.width / 3
         for (i, b) in slotButtons.enumerated() {
             b.frame = CGRect(x: area.minX + CGFloat(i) * w, y: area.minY, width: w, height: area.height).insetBy(dx: 2, dy: 0)

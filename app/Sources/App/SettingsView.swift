@@ -76,6 +76,10 @@ struct SettingsView: View {
     private var characterPreview = KeyboardSettings().characterPreview
     @AppStorage(KeyboardSettings.Key.keySize, store: KeyboardSettings.store())
     private var keySize = KeyboardSettings().keySize
+    @AppStorage(KeyboardSettings.Key.numbers, store: KeyboardSettings.store())
+    private var numbers = KeyboardSettings().numbers
+    @AppStorage(KeyboardSettings.Key.numpadHidesToolbar, store: KeyboardSettings.store())
+    private var numpadHidesToolbar = KeyboardSettings().numpadHidesToolbar
     @AppStorage(KeyboardSettings.Key.saveCopies, store: KeyboardSettings.store())
     private var saveCopies = KeyboardSettings().saveCopies
     @AppStorage(KeyboardSettings.Key.languages, store: KeyboardSettings.store())
@@ -201,10 +205,15 @@ struct SettingsView: View {
                 Picker("Key Size", selection: $keySize) {
                     ForEach(KeyboardSettings.KeySize.allCases, id: \.self) { Text($0.rawValue.capitalized) }
                 }
+                // #625: the system keyboard only; the terminal's keeps its digit row.
+                Picker("Numbers", selection: $numbers) {
+                    ForEach(KeyboardSettings.Numbers.allCases, id: \.self) { Text($0.rawValue.capitalized) }
+                }
+                if numbers == .key { Toggle("Hide Toolbar on the Numpad", isOn: $numpadHidesToolbar) }
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows.")
+                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows. Numbers: Key swaps the digit row in other apps for a 123 key that opens a numpad, and gives the toolbar a second row in its place.")
             }
 
             // The Prosper keyboard's languages (#624); the terminal's keyboard stays English.

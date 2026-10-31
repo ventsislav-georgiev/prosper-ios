@@ -32,6 +32,7 @@ final class KeyboardViewController: UIInputViewController {
         // catches the space taps that land low (`extensionBottomInset`).
         keyboard.bottomInset = TerminalKeyboard.extensionBottomInset
         keyboard.offersEmoji = false
+        keyboard.allowsNumbersKey = true   // Numbers: Key (#625); the app's keyboard keeps its row
         bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
         bar.nextKeyboard = { [weak self] in self?.advanceToNextInputMode() }   // the toggle's menu (#623)
         bar.languageChanged = { [weak self] layout in
@@ -75,6 +76,7 @@ final class KeyboardViewController: UIInputViewController {
                                                    active: hasFullAccess ? KeyboardSettings.activeLanguage : nil)
         keyboard.languages = languages.all
         keyboard.layout = languages.shown
+        keyboard.showNumpad(false, animated: false)   // the letters first in each field, as iOS
         bar.toolbar?.reload()
         bar.showClips(false)   // the keys first, as Gboard: a panel reads afresh at its key
         bar.toolbarOverAutofill = false   // AutoFill first in a new field (#623)

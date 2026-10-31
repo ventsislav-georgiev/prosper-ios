@@ -309,9 +309,12 @@ final class ShortcutBar: UIView {
     private var modifierCaps: [ShortcutKey.Kind: KeyCapButton] = [:]
     private weak var container: UIView?
     private var caps: [KeyCapButton] = []
-    private var rows: [UIStackView] = []        // [top, bottom], or [top] for `oneRow`
+    private var rows: [UIStackView] = []        // [top, bottom]; `oneRow`'s bottom only with `twoRows`
     private let keys: () -> [ShortcutKey]
     private let oneRow: Bool
+    /// `oneRow` in two rows (Numbers: Key, #625): the keys split where the longer row is
+    /// shortest (`balancedSplit`), each row fitted as the one row is.
+    var twoRows = false { didSet { if twoRows != oldValue { arrangedWidth = -1; setNeedsLayout() } } }
     private var arrangedWidth: CGFloat = -1     // width the caps were last split for
     /// The bar's height IS its row count, so the owner never needs a number: flipping
     /// it re-asks Auto Layout for `intrinsicContentSize`.
@@ -365,15 +368,23 @@ final class ShortcutBar: UIView {
     override func layoutSubviews() {
         if bounds.width != arrangedWidth, oneRow {
             arrangedWidth = bounds.width
-            let natural = caps.map(\.naturalWidth)
-            let fixed = CGFloat(rows[0].arrangedSubviews.count - caps.count)   // the Paste caps
-            let available = bounds.width - 16 - fixed * (44 + Self.spacing)
-            let span = natural.reduce(0, +) + Self.spacing * CGFloat(max(0, caps.count - 1))
-            let cols = span <= available ? natural : Self.filled(natural, spacing: Self.spacing,
-                available: available, minScale: Self.minRowScale, pixel: 1 / max(1, traitCollection.displayScale))
-            for (cap, w) in zip(caps, cols) { cap.columnWidth = w }
+            let items = rows.flatMap(\.arrangedSubviews)
+            let k = twoRows ? Self.balancedSplit(items.map { ($0 as? KeyCapButton)?.naturalWidth ?? 44 },
+                                                 spacing: Self.spacing) : items.count
+            for (i, item) in items.enumerated() { rows[i < k ? 0 : 1].addArrangedSubview(item) }
+            rows[1].isHidden = k == items.count
+            for row in rows {
+                let caps = row.arrangedSubviews.compactMap { $0 as? KeyCapButton }
+                let natural = caps.map(\.naturalWidth)
+                let fixed = CGFloat(row.arrangedSubviews.count - caps.count)   // the Paste caps
+                let available = bounds.width - 16 - fixed * (44 + Self.spacing)
+                let span = natural.reduce(0, +) + Self.spacing * CGFloat(max(0, caps.count - 1))
+                let cols = span <= available ? natural : Self.filled(natural, spacing: Self.spacing,
+                    available: available, minScale: Self.minRowScale, pixel: 1 / max(1, traitCollection.displayScale))
+                for (cap, w) in zip(caps, cols) { cap.columnWidth = w }
+            }
         }
-        if bounds.width != arrangedWidth, rows.count == 2 {
+        if bounds.width != arrangedWidth, !oneRow {
             arrangedWidth = bounds.width
             let natural = caps.map(\.naturalWidth)
             let k = Self.rowSplit(widths: natural, spacing: Self.spacing, available: bounds.width - 16)
@@ -428,6 +439,14 @@ final class ShortcutBar: UIView {
         }
     }
 
+    /// `twoRows`' top row: the count whose longer row is the shortest, ties to the fuller top.
+    static func balancedSplit(_ widths: [CGFloat], spacing: CGFloat) -> Int {
+        guard widths.count > 1 else { return widths.count }
+        func span(_ w: ArraySlice<CGFloat>) -> CGFloat { w.reduce(0, +) + spacing * CGFloat(max(0, w.count - 1)) }
+        func longer(_ k: Int) -> CGFloat { max(span(widths[..<k]), span(widths[k...])) }
+        return (1..<widths.count).min { longer($0) < longer($1) || (longer($0) == longer($1) && $0 > $1) }!
+    }
+
     /// How many caps (in configured order) go in the TOP row. All fit in one row → all
     /// of them (natural widths, no grid). Otherwise the split whose aligned grid — the
     /// `columnWidths` plus spacing, i.e. the bar's scroll content width — is narrowest,
@@ -462,7 +481,7 @@ final class ShortcutBar: UIView {
 
         // Both rows live in ONE scroll view, so they scroll together as a block. The
         // column is as wide as its longer row (.leading, not .fill).
-        rows = (0..<(oneRow ? 1 : 2)).map { _ in
+        rows = (0..<2).map { _ in
             let row = UIStackView()
             row.axis = .horizontal
             row.spacing = Self.spacing
@@ -489,6 +508,7 @@ final class ShortcutBar: UIView {
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
         ])
 
+        rows[1].isHidden = oneRow   // `layoutSubviews` shows it for `twoRows`
         caps = []
         for key in keys() {
             if oneRow, key.kind == .pasteText {
