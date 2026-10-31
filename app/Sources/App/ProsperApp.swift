@@ -140,6 +140,7 @@ struct HomeView: View {
         .sheet(isPresented: $dictation.showing) { DictationScreen(service: dictation) }
         #endif
         .onReceive(store.$machines) { ShareInbox.save(machines: $0) }   // for Share › Prosper (#610)
+        .onReceive(store.$machines) { MacNames.save($0.map { ($0.serverDeviceId, $0.name) }) }   // the card's Mac name (#628)
         .onReceive(live.$target) { t in
             guard let t else { return }
             live.target = nil

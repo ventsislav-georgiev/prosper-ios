@@ -194,6 +194,25 @@ struct LiveTarget: Equatable {
     }
 }
 
+/// The names the user gave their Macs, by `serverDeviceId` (the push's `mac_id`), mirrored
+/// into the App Group so the card shows "primary", not the Mac's hostname (#628).
+enum MacNames {
+    static let key = "macNames"
+    static var defaults: () -> UserDefaults? = { UserDefaults(suiteName: SessionsSnapshot.group) }
+
+    /// Macs without a `serverDeviceId` are skipped; a repeated id keeps the first Mac.
+    static func save(_ macs: [(id: String?, name: String)]) {
+        let map = Dictionary(macs.compactMap { m in m.id.map { ($0, m.name) } }, uniquingKeysWith: { a, _ in a })
+        defaults()?.set(map, forKey: key)
+    }
+
+    /// The saved name for that Mac, else the push's `fallback`.
+    static func name(macId: String, fallback: String) -> String {
+        let saved = (defaults()?.dictionary(forKey: key) as? [String: String])?[macId] ?? ""
+        return saved.isEmpty ? fallback : saved
+    }
+}
+
 #if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
 import ActivityKit
 

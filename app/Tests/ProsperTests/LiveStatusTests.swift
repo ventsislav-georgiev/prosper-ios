@@ -567,3 +567,33 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertNil(LiveTarget(url: URL(string: "https://sessions")!))
     }
 }
+
+/// The card shows the name the user gave the Mac, by the push's `mac_id` (#628).
+final class MacNamesTests: XCTestCase {
+    private let suite = "MacNamesTests"
+    private var saved: (() -> UserDefaults?)!
+
+    override func setUp() {
+        saved = MacNames.defaults
+        UserDefaults().removePersistentDomain(forName: suite)
+        let d = UserDefaults(suiteName: suite)
+        MacNames.defaults = { d }
+    }
+
+    override func tearDown() {
+        MacNames.defaults = saved
+        UserDefaults().removePersistentDomain(forName: suite)
+    }
+
+    func testMirrorKeepsOnlyMacsWithADeviceId() {
+        MacNames.save([("dev-1", "primary"), (nil, "Studio"), ("dev-1", "later")])
+        XCTAssertEqual(MacNames.defaults()?.dictionary(forKey: MacNames.key) as? [String: String], ["dev-1": "primary"])
+    }
+
+    func testNameIsTheSavedOneElseThePushs() {
+        MacNames.save([("dev-1", "primary"), ("dev-2", "")])
+        XCTAssertEqual(MacNames.name(macId: "dev-1", fallback: "host.local"), "primary")
+        XCTAssertEqual(MacNames.name(macId: "dev-2", fallback: "host.local"), "host.local")
+        XCTAssertEqual(MacNames.name(macId: "dev-9", fallback: "host.local"), "host.local")
+    }
+}

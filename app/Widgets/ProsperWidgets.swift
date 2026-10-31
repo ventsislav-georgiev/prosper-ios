@@ -26,7 +26,7 @@ struct SessionsActivityWidget: Widget {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     Image(systemName: card.symbol).foregroundStyle(card.tint).accessibilityHidden(true)
-                    Text(context.attributes.macName).font(.headline).lineLimit(1)
+                    Text(MacNames.name(macId: context.attributes.macId, fallback: context.attributes.macName)).font(.headline).lineLimit(1)
                     Spacer()
                     // Big counts shrink rather than lose the last state.
                     Text(card.headline).font(.caption).foregroundStyle(.secondary)
@@ -41,7 +41,7 @@ struct SessionsActivityWidget: Widget {
             let card = SessionsCard(status: context.state, isStale: context.isStale)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label(context.attributes.macName, systemImage: card.symbol)
+                    Label(MacNames.name(macId: context.attributes.macId, fallback: context.attributes.macName), systemImage: card.symbol)
                         .font(.caption).foregroundStyle(card.tint)
                         .lineLimit(1).padding(.leading, 4)
                 }
