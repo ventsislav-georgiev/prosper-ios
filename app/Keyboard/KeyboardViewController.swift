@@ -34,6 +34,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
         bar.history = ClipboardHistory.shared()
         bar.snippets = SnippetStore.shared()
+        bar.quicklinks = QuicklinkStore.shared()
         // The stored settings before attach's first refresh: Save Copies is on by default (#601).
         bar.suggestions.settings = KeyboardSettings.current(fullAccess: hasFullAccess)
         // iOS 26's speech engines only; the app has no fallback below it.

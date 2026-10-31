@@ -227,6 +227,15 @@ struct SettingsView: View {
                 }
             }
 
+            // The keyboards' and the terminal's quicklinks key (#613).
+            if let store = QuicklinkStore.shared() {
+                Section {
+                    NavigationLink("Quicklinks") { QuicklinkList(store: store) }
+                } footer: {
+                    Text("Add Quicklinks to the System Keyboard Toolbar or the Terminal Shortcut Keys, then tap it to type a link. In the keyboard, {query} takes the selected text or the word before the cursor. Needs Full Access in other apps.")
+                }
+            }
+
             // The keyboards' mic key (#598).
             Section {
                 Picker("Keep Mic Ready", selection: $readyPeriod) {
@@ -410,6 +419,114 @@ struct SnippetForm: View {
                     if store.put(e, replacing: original?.name) { dismiss() }
                 }
                 .disabled(trimmed.isEmpty || text.isEmpty || taken)
+            }
+        }
+    }
+}
+
+/// Settings › Quicklinks (#613): the phone's own (`QuicklinkStore`), A–Z; a tap edits one, a
+/// swipe deletes it, Open opens it here, asking for its `{query}` first.
+struct QuicklinkList: View {
+    let store: QuicklinkStore
+    @State private var links: [QuicklinkStore.Entry] = []
+    @State private var asking: QuicklinkStore.Entry?
+    @State private var query = ""
+
+    var body: some View {
+        List {
+            ForEach(links, id: \.name) { link in
+                NavigationLink { QuicklinkForm(store: store, original: link) } label: {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(link.name)
+                            Text(link.url).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        Button("Open") {
+                            if QuicklinkStore.takesQuery(link.url) { query = ""; asking = link } else { open(link) }
+                        }
+                        .buttonStyle(.borderless)   // its own tap, not the row's
+                    }
+                }
+            }
+            .onDelete { rows in
+                rows.forEach { store.delete(links[$0].name) }
+                reload()
+            }
+        }
+        .overlay { if links.isEmpty { Text("No quicklinks yet").foregroundStyle(.secondary) } }
+        .alert(asking?.name ?? "", isPresented: Binding { asking != nil } set: { if !$0 { asking = nil } },
+               presenting: asking) { link in
+            TextField("Query", text: $query)
+            Button("Open") { open(link) }
+            Button("Cancel", role: .cancel) {}
+        }
+        .toolbar {
+            NavigationLink { QuicklinkForm(store: store, original: nil) } label: { Image(systemName: "plus") }
+                .accessibilityLabel("Add Quicklink")
+        }
+        .onAppear(perform: reload)   // and back from the form
+        .navigationTitle("Quicklinks")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func reload() {
+        links = store.load().quicklinks.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Filled as the keyboards fill it; a target that isn't a URL (a Mac path) opens nothing.
+    private func open(_ link: QuicklinkStore.Entry) {
+        guard let url = URL(string: QuicklinkStore.fill(link.url, with: query)) else { return }
+        store.used(link.name)
+        UIApplication.shared.open(url)
+    }
+}
+
+/// A quicklink's name and URL. Save is off while either is blank or the name is another link's
+/// (names are unique, as on the Mac). The description the Mac may have written is kept.
+struct QuicklinkForm: View {
+    let store: QuicklinkStore
+    let original: QuicklinkStore.Entry?
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var url = ""
+
+    init(store: QuicklinkStore, original: QuicklinkStore.Entry?) {
+        self.store = store
+        self.original = original
+        _name = State(initialValue: original?.name ?? "")
+        _url = State(initialValue: original?.url ?? "")
+    }
+
+    private var trimmed: String { name.trimmingCharacters(in: .whitespaces) }
+    private var taken: Bool { trimmed != original?.name && store.load().quicklinks.contains { $0.name == trimmed } }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Name") { TextField("Required", text: $name) }
+                LabeledContent("URL") {
+                    TextField("https://example.com/search?q={query}", text: $url)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+            } footer: {
+                if taken { Text("Another quicklink has this name.").foregroundStyle(.red) }
+                else { Text("{query} takes the selected text or the word before the cursor, encoded in a URL.") }
+            }
+        }
+        .navigationTitle(original == nil ? "New Quicklink" : "Edit Quicklink")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    var e = original ?? QuicklinkStore.Entry(name: "", url: "")
+                    e.name = name
+                    e.url = url
+                    if store.put(e, replacing: original?.name) { dismiss() }
+                }
+                .disabled(trimmed.isEmpty || url.trimmingCharacters(in: .whitespaces).isEmpty || taken)
             }
         }
     }

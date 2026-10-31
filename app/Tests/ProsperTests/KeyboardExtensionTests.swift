@@ -74,7 +74,8 @@ final class KeyboardExtensionTests: XCTestCase {
         /// UIKit's guess (`guesses`) shows the after-context on past the line's end where the
         /// host's own answer stops (`stopsAtLineEnd`), as QA's UITextView's did.
         var guessesPastLineEnd = false
-        var selectedText: String? { nil }
+        /// Selected text, not in `text`: an insert types over it, as a host's (#613).
+        var selectedText: String?
         var documentInputMode: UITextInputMode? { nil }
         /// The field, nil mid-way through a focus change: UIKit's getter traps there as this
         /// one does, so the keyboard reads it through KVC (`TerminalKeyboard.field`).
@@ -177,6 +178,7 @@ final class KeyboardExtensionTests: XCTestCase {
         private var held: (before: String, after: String)?
         private var late: [(at: Int, before: String, after: String)] = []
         func insertText(_ s: String) {
+            selectedText = nil
             if lagsEdits || behind { unshown.append((text, after, rest)) }
             text += s
             held?.before += s

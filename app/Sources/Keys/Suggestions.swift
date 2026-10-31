@@ -644,10 +644,14 @@ final class SuggestionBar: UIView {
     /// Snippets (#609), the controller's App Group store; nil in the app and tests that don't set
     /// one. Its key shows only with it and Full Access.
     var snippets: SnippetStore?
-    /// The panel over the keys while open: the history's (`showClips`) or the snippets'.
+    /// Quicklinks (#613), as the snippets.
+    var quicklinks: QuicklinkStore?
+    /// The panel over the keys while open: the history's (`showClips`), the snippets' or the
+    /// quicklinks'.
     private(set) var panel: KeysPanel?
     var clipsPanel: ClipboardPanel? { panel as? ClipboardPanel }
     var snippetsPanel: SnippetPanel? { panel as? SnippetPanel }
+    var quicklinksPanel: QuicklinkPanel? { panel as? QuicklinkPanel }
     /// Speech-to-text (#598), the controller's on iOS 26; nil in the app and tests that don't
     /// set one. Its key shows only with it and Full Access; its strip covers the bar.
     var dictation: DictationClient? {
@@ -741,7 +745,7 @@ final class SuggestionBar: UIView {
     /// can't use (`Shortcuts.hostKey`), in one row that scrolls, and the toggle before it.
     /// Paste only where the bar's own would show: with Full Access, and not in landscape.
     /// Copy and cut line with Full Access: a keyboard writes the pasteboard only with it; the
-    /// clipboard history and the snippets too, each with its store (#597, #609).
+    /// clipboard history, the snippets and the quicklinks too, each with its store (#597, #609, #613).
     func addToolbar(_ keys: @escaping () -> [ShortcutKey]) {
         let tools = ShortcutBar(keys: { [weak self] in
             let full = self?.suggestions.pasteboard() != nil, pastes = full && self?.suggestions.pasteFits == true
@@ -750,6 +754,7 @@ final class SuggestionBar: UIView {
                 if case .edit(let e) = action, e.copies { return full }
                 if action == .clipboard { return full && self?.history != nil }
                 if action == .snippets { return full && self?.snippets != nil }
+                if action == .quicklinks { return full && self?.quicklinks != nil }
                 if action == .dictate { return full && self?.dictation != nil }
                 return pastes || action != .paste
             }
@@ -792,6 +797,7 @@ final class SuggestionBar: UIView {
         case .edit(let e): edit(e, keyboard, doc)
         case .clipboard: showClips(clipsPanel == nil)
         case .snippets: showSnippets(snippetsPanel == nil)
+        case .quicklinks: showQuicklinks(quicklinksPanel == nil)
         case .dictate: dictation?.tap()
         }
     }
@@ -821,6 +827,45 @@ final class SuggestionBar: UIView {
         let list = on && suggestions.pasteboard() != nil ? snippets.map(SnippetPanel.init) : nil
         list?.onPick = { [weak self] in self?.insert($0) }
         cover(list)
+    }
+
+    /// The quicklinks' panel over the keys, read afresh, or the keys back (#613); Full Access only.
+    /// A `{query}` one is off where there's nothing to take for it (`query`).
+    func showQuicklinks(_ on: Bool) {
+        let doc = keyboard?.target as? UITextDocumentProxy
+        let list = on && suggestions.pasteboard() != nil
+            ? quicklinks.map { QuicklinkPanel(store: $0, hasQuery: doc.flatMap(Self.query) != nil) } : nil
+        list?.onPick = { [weak self] in self?.insert($0) }
+        cover(list)
+    }
+
+    /// A `{query}`'s argument (#613): the selected text, or else the word before the caret, back
+    /// to a blank, so "owner/repo" is one; nil with neither.
+    static func query(in doc: UITextDocumentProxy) -> (text: String, selected: Bool)? {
+        if let s = doc.selectedText, !s.isEmpty { return (s, true) }
+        let word = String((doc.documentContextBeforeInput ?? "").reversed().prefix { !$0.isWhitespace }.reversed())
+        return word.isEmpty ? nil : (word, false)
+    }
+
+    /// A quicklink pick (#613): its URL typed at the cursor, `{query}` filled (`QuicklinkStore.fill`)
+    /// from the selection, which the URL then types over, or the word before the caret, which
+    /// goes first. The keys come back.
+    private func insert(_ link: QuicklinkStore.Entry) {
+        showQuicklinks(false)
+        UIDevice.current.playInputClick()
+        keyboard?.finish { [weak self] in
+            guard let self, let keyboard = self.keyboard, let doc = keyboard.target as? UITextDocumentProxy,
+                  keyboard.writable() else { return }
+            let arg = QuicklinkStore.takesQuery(link.url) ? Self.query(in: doc) : nil
+            if QuicklinkStore.takesQuery(link.url), arg == nil { return }
+            if let arg, !arg.selected { for _ in 0..<arg.text.count { doc.deleteBackward() } }
+            doc.insertText(QuicklinkStore.fill(link.url, with: arg?.text ?? ""))
+            self.quicklinks?.used(link.name)
+            self.suggestions.caretMoved()
+            keyboard.resetWord()
+            keyboard.autoCapitalize()
+            self.refresh()
+        }
     }
 
     /// `new` over the keys in the open panel's place, or the keys back.
