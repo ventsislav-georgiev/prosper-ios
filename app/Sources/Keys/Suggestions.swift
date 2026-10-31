@@ -525,6 +525,7 @@ final class TypingMemory {
     static let wordsKey = "suggestions.learnedWords"
     static let pairsKey = "suggestions.wordPairs"
     static let clipKey = "suggestions.retiredClip"
+    static let savedClipKey = "suggestions.savedClip"
 
     let defaults: UserDefaults
     let wordCap: Int, pairCap: Int
@@ -549,6 +550,13 @@ final class TypingMemory {
     var retiredClip: Int? {
         get { defaults.object(forKey: Self.clipKey) as? Int }
         set { defaults.set(newValue, forKey: Self.clipKey) }
+    }
+
+    /// The pasteboard `changeCount` auto-save last tried (`SuggestionBar.saveCopy`), kept or
+    /// refused: never read again, so a Don't Allow isn't asked again. A reboot as above.
+    var savedClip: Int? {
+        get { defaults.object(forKey: Self.savedClipKey) as? Int }
+        set { defaults.set(newValue, forKey: Self.savedClipKey) }
     }
 
     func learn(_ word: String) {
@@ -1460,10 +1468,23 @@ final class SuggestionBar: UIView {
     /// the selection.
     func refresh() {
         assert(Thread.isMainThread, "the bar is main-only")   // debug only: an off-main caller trips in tests and QA
+        saveCopy()
         suggestions.pasteFits = traitCollection.verticalSizeClass != .compact
         suggestions.toolbarShown = toolbar != nil && showsToolbar
         guard let doc = keyboard?.target as? UITextDocumentProxy else { return show(state) }
         show(suggestions.state(doc, shift: keyboard?.shift.mode ?? .off))
+    }
+
+    /// Save Copies Automatically (#601): a clip copied elsewhere goes into the history unasked,
+    /// checked as the keyboard appears and at each key, text or selection change while it
+    /// shows (`refresh`): a copy in the host app while it shows is caught at the next of those,
+    /// no timer. A `changeCount` unchanged since the last try costs no read and no disk.
+    /// Never without the setting, Full Access (`pasteboard`) or a store.
+    private func saveCopy() {
+        guard suggestions.settings.saveCopies, let history, let pb = suggestions.pasteboard(),
+              pb.changeCount != suggestions.memory.savedClip else { return }
+        suggestions.memory.savedClip = pb.changeCount
+        history.save(pb)
     }
 
     private func tap(_ i: Int) {

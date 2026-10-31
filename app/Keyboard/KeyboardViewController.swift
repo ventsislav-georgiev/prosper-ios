@@ -33,6 +33,8 @@ final class KeyboardViewController: UIInputViewController {
         bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
         bar.history = ClipboardHistory.shared()
+        // The stored settings before attach's first refresh: Save Copies is on by default (#601).
+        bar.suggestions.settings = KeyboardSettings.current(fullAccess: hasFullAccess)
         // iOS 26's speech engines only; the app has no fallback below it.
         if #available(iOS 26, *), let store = Dictation.Store.shared() {
             let dictation = DictationClient(store: store)

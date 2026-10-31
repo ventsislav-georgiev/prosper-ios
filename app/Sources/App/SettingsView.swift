@@ -75,6 +75,8 @@ struct SettingsView: View {
     private var characterPreview = KeyboardSettings().characterPreview
     @AppStorage(KeyboardSettings.Key.keySize, store: KeyboardSettings.store())
     private var keySize = KeyboardSettings().keySize
+    @AppStorage(KeyboardSettings.Key.saveCopies, store: KeyboardSettings.store())
+    private var saveCopies = KeyboardSettings().saveCopies
     @AppStorage(Dictation.ReadyPeriod.key) private var readyPeriod = Dictation.ReadyPeriod.ten
     @ObservedObject private var dictation = DictationService.shared
     @AppStorage(AgentCommand.key) private var agentCommand = ""
@@ -203,6 +205,17 @@ struct SettingsView: View {
                 NavigationLink("Terminal Shortcut Keys") { ShortcutEditor(sheet: false) }
             } footer: {
                 Text("The System Keyboard Toolbar shows above the Prosper keyboard in other apps when you tap the toolbar toggle at the leading edge of its strip. Terminal Shortcut Keys are the bar under the terminal. The toolbar list needs Full Access; without it, the keyboard shows the default keys.")
+            }
+
+            Section {
+                Toggle("Save Copies Automatically", isOn: $saveCopies)
+                Button("Open Prosper in iOS Settings") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                }
+            } header: {
+                Text("Clipboard History")
+            } footer: {
+                Text("On by default: the Prosper keyboard keeps what you copy in other apps, the latest copy each time it shows. Needs Full Access. iOS asks before each save unless Settings › Prosper › Paste from Other Apps is set to Allow.")
             }
 
             // The keyboards' mic key (#598).

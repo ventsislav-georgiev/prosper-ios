@@ -14,11 +14,10 @@ import UniformTypeIdentifiers
 /// own Paste controls (the bar's, the toolbar's, and the panel's, which takes images too),
 /// and the keyboard's own copies (copy and cut line). Reading the pasteboard unasked raises
 /// Allow Paste, so a clip copied elsewhere shows only as the panel's Paste (`fresh`), and
-/// only the latest: a keyboard runs only while it shows. Clips marked concealed or transient
-/// (password managers) never go in.
-///
-/// ponytail: no capture without a tap. Add an opt-in read on `fresh` if a device shows that
-/// Settings › Prosper › Paste from Other Apps › Allow covers the keyboards.
+/// only the latest: a keyboard runs only while it shows. With Save Copies Automatically (on by
+/// default) the keyboard reads it unasked (`save`, #601): silent only where iOS allows
+/// Prosper to paste from other apps.
+/// Clips marked concealed or transient (password managers) never go in.
 final class ClipboardHistory {
     struct Clip: Codable, Equatable, Identifiable {
         var id = UUID()
@@ -80,6 +79,28 @@ final class ClipboardHistory {
         return base
     }
 
+    /// A clip copied elsewhere, read unasked (#601): its text, or else its image, kept as the
+    /// panel's Paste keeps them. Refused (Allow Paste's Don't Allow), the read finds nothing and
+    /// the clip stays `fresh`, for the panel's Paste.
+    func save(_ pb: UIPasteboard) {
+        guard fresh(pb) else { return }
+        let change = pb.changeCount
+        let clip = read(pb)
+        if let text = clip.text {
+            keep(text: text, change: change)
+        } else if let name = clip.image.flatMap({ storeImage(Self.source($0 as CFData)) }) {
+            keep(Clip(image: name, date: now()), change: change)
+        }
+    }
+
+    /// `save`'s one read, the one that raises Allow Paste: plain text, or else an image's
+    /// bytes. Settable for tests.
+    var read: (UIPasteboard) -> (text: String?, image: Data?) = { pb in
+        let conforming = { (type: UTType) in pb.types.first { UTType($0)?.conforms(to: type) == true } }
+        if conforming(.plainText) != nil { return (pb.string, nil) }
+        return (nil, conforming(.image).flatMap(pb.data(forPasteboardType:)))
+    }
+
     /// The panel's Paste: its clip, text or else an image, kept; then `done`, on the main queue.
     /// Text only as plain text: NSString also loads a file URL, as its path.
     func capture(_ providers: [NSItemProvider], from pb: UIPasteboard, done: @escaping () -> Void = {}) {
@@ -131,13 +152,15 @@ final class ClipboardHistory {
 
     /// A thumbnail `side` pixels at most, decoded from the file only now.
     func thumbnail(_ clip: Clip, side: CGFloat) -> UIImage? {
-        guard let name = clip.image, let cg = Self.downsample(url(name), side: side) else { return nil }
+        guard let name = clip.image, let cg = Self.downsample(Self.source(url(name)), side: side) else { return nil }
         return UIImage(cgImage: cg)
     }
 
     /// The image at `source` downsampled to `imageSide`, as PNG if it has alpha, else JPEG,
     /// in `dir`: its file's name, nil if it isn't an image.
-    func storeImage(at source: URL) -> String? {
+    func storeImage(at source: URL) -> String? { storeImage(Self.source(source)) }
+
+    private func storeImage(_ source: CGImageSource?) -> String? {
         guard let cg = Self.downsample(source, side: Self.imageSide) else { return nil }
         let alpha = ![.none, .noneSkipFirst, .noneSkipLast].contains(cg.alphaInfo)
         let type: UTType = alpha ? .png : .jpeg
@@ -154,9 +177,16 @@ final class ClipboardHistory {
 
     func url(_ name: String) -> URL { dir.appendingPathComponent(name) }
 
-    private static func downsample(_ url: URL, side: CGFloat) -> CGImage? {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
-        else { return nil }
+    private static func source(_ url: URL) -> CGImageSource? {
+        CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
+    }
+
+    private static func source(_ data: CFData) -> CGImageSource? {
+        CGImageSourceCreateWithData(data, [kCGImageSourceShouldCache: false] as CFDictionary)
+    }
+
+    private static func downsample(_ src: CGImageSource?, side: CGFloat) -> CGImage? {
+        guard let src else { return nil }
         return CGImageSourceCreateThumbnailAtIndex(src, 0, [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,

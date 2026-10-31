@@ -596,6 +596,7 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertTrue(d.predictiveText)
         XCTAssertTrue(d.characterPreview)
         XCTAssertEqual(d.keySize, .normal)
+        XCTAssertTrue(d.saveCopies, "on by default (#601)")
         XCTAssertEqual(KeyboardSettings(nil), d)
         XCTAssertEqual(TerminalKeyboard().settings, d)
         XCTAssertEqual(Suggestions().settings, d)
@@ -631,7 +632,7 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(KeyboardSettings(defaults), KeyboardSettings(), "nothing written")
         typealias K = KeyboardSettings.Key
         for key in [K.autoCapitalization, K.autoCorrection, K.capsLock, K.predictiveText,
-                    K.characterPreview] {
+                    K.characterPreview, K.saveCopies] {
             defaults.set(key == K.autoCapitalization, forKey: key)   // each flipped
         }
         var flipped = KeyboardSettings()
@@ -640,9 +641,12 @@ final class KeyboardExtensionTests: XCTestCase {
         flipped.capsLock = false
         flipped.predictiveText = false
         flipped.characterPreview = false
+        flipped.saveCopies = false
         XCTAssertEqual(KeyboardSettings(defaults), flipped)
         defaults.removeObject(forKey: K.capsLock)
         XCTAssertTrue(KeyboardSettings(defaults).capsLock, "unwritten: the default")
+        defaults.removeObject(forKey: K.saveCopies)
+        XCTAssertTrue(KeyboardSettings(defaults).saveCopies, "unwritten: on")
     }
 
     /// No Full Access, or no suite: the defaults, whatever the app wrote.

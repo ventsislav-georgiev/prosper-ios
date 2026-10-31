@@ -278,4 +278,84 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertTrue(panel.pasteControl.isHidden)
         XCTAssertEqual(h.clips, [])
     }
+
+    /// `h`'s reads counted, through its own or `fake`.
+    private func counting(_ h: ClipboardHistory, _ fake: ((UIPasteboard) -> (text: String?, image: Data?))? = nil) -> () -> Int {
+        var reads = 0
+        let real = fake ?? h.read
+        h.read = { reads += 1; return real($0) }
+        return { reads }
+    }
+
+    /// Save Copies Automatically turned off, or no Full Access: a clip copied elsewhere is
+    /// never read (Allow Paste), nor kept: as before #601.
+    func testSaveCopiesOffNeverReads() {
+        let h = ClipboardHistory(dir: dir)
+        let reads = counting(h)
+        defaults.set(false, forKey: KeyboardSettings.Key.saveCopies)
+        let (kb, off, _, _) = rig("", history: h)
+        off.suggestions.settings = KeyboardSettings(defaults)
+        let (kb2, noAccess, _, _) = rig("", history: h, fullAccess: false)
+        noAccess.suggestions.settings = KeyboardSettings.current(fullAccess: false)
+        pb.string = "elsewhere"
+        off.refresh()
+        noAccess.refresh()
+        XCTAssertEqual(reads(), 0)
+        XCTAssertEqual(h.clips, [])
+        XCTAssertTrue(h.fresh(pb), "the panel's Paste still offers it")
+        withExtendedLifetime((kb, kb2)) {}
+    }
+
+    /// On, by default: the key never written (#601). A fresh clip read once and kept once, the bar's Paste still offered and its
+    /// tap not kept twice; one refused isn't asked again, and stays the panel's to Paste; a
+    /// concealed one is never read.
+    func testSaveCopiesKeepsAFreshClipOnce() throws {
+        let h = ClipboardHistory(dir: dir)
+        var reads = counting(h)
+        let (kb, bar, doc, _) = rig("", history: h)
+        XCTAssertNil(defaults.object(forKey: KeyboardSettings.Key.saveCopies))
+        bar.suggestions.settings = KeyboardSettings(defaults)
+        pb.string = "alpha"
+        bar.refresh()
+        XCTAssertEqual(h.clips.map(\.text), ["alpha"])
+        XCTAssertEqual(reads(), 1)
+        XCTAssertEqual(bar.state, .paste, "the fresh clip's Paste stays")
+        let saved = h.clips.map(\.id)
+        bar.paste(itemProviders: [NSItemProvider(object: "alpha" as NSString)])
+        let deadline = Date() + 5
+        while doc.text != "alpha", Date() < deadline { RunLoop.main.run(until: Date() + 0.01) }
+        XCTAssertEqual(doc.text, "alpha")
+        XCTAssertEqual(h.clips.map(\.id), saved, "the Paste's clip isn't kept anew")
+        h.delete(try XCTUnwrap(h.clips.first).id)
+        bar.refresh()
+        XCTAssertEqual(reads(), 1, "the same changeCount isn't read again")
+        XCTAssertEqual(h.clips, [], "nor kept again")
+
+        reads = counting(h) { _ in (nil, nil) }   // Don't Allow
+        pb.string = "beta"
+        bar.refresh()
+        bar.refresh()
+        XCTAssertEqual(reads(), 1, "refused once, not asked again")
+        XCTAssertEqual(h.clips, [])
+        XCTAssertTrue(h.fresh(pb), "the panel's Paste still offers it")
+
+        reads = counting(h)
+        pb.setItems([[UTType.utf8PlainText.identifier: "s3cret", "org.nspasteboard.ConcealedType": Data()]])
+        bar.refresh()
+        XCTAssertEqual(reads(), 0, "concealed")
+        XCTAssertEqual(h.clips, [])
+        withExtendedLifetime(kb) {}
+    }
+
+    /// An image clip goes in downsampled, as the panel's Paste keeps it.
+    func testSaveCopiesKeepsAnImageDownsampled() throws {
+        let h = ClipboardHistory(dir: dir)
+        let (kb, bar, _, _) = rig("", history: h)
+        pb.setData(try Data(contentsOf: try jpeg(3000, 1500)), forPasteboardType: UTType.jpeg.identifier)
+        bar.refresh()
+        let clip = try XCTUnwrap(h.clips.first)
+        XCTAssertNil(clip.text)
+        XCTAssertEqual(Self.pixels(h.url(try XCTUnwrap(clip.image))), CGSize(width: 1024, height: 512))
+        withExtendedLifetime(kb) {}
+    }
 }

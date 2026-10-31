@@ -55,6 +55,7 @@ struct KeyboardSettings: Equatable {
         static let bottomOrder = "keyboard.bottomOrder"
         static let bottomHidden = "keyboard.bottomHidden"
         static let keySize = "keyboard.keySize"
+        static let saveCopies = "keyboard.saveCopies"
     }
 
     /// Shift on at a sentence start (`TerminalKeyboard.autoCapitalize`). Off by default.
@@ -67,6 +68,10 @@ struct KeyboardSettings: Equatable {
     var predictiveText = true
     /// The bubble over a pressed key; a hold's symbol still shows (`refreshPressed`).
     var characterPreview = true
+    /// The clipboard history keeps a clip copied elsewhere unasked (`SuggestionBar.saveCopy`,
+    /// #601). On by default; unless iOS allows Prosper to paste, each save asks first. Read
+    /// as `object(forKey:) as? Bool` (`init`): a key never written is on.
+    var saveCopies = true
     /// The keys beside space, space itself as " ", in the bottom row's order (`bottomRow`).
     var bottomOrder = KeyboardSettings.bottomKeys
     /// Those of them that don't show; space always does, and takes their room (`place`).
@@ -100,6 +105,7 @@ struct KeyboardSettings: Equatable {
         read(Key.capsLock, &capsLock)
         read(Key.predictiveText, &predictiveText)
         read(Key.characterPreview, &characterPreview)
+        read(Key.saveCopies, &saveCopies)
         bottomOrder = defaults?.string(forKey: Key.bottomOrder) ?? bottomOrder
         bottomHidden = defaults?.string(forKey: Key.bottomHidden) ?? bottomHidden
         keySize = defaults?.string(forKey: Key.keySize).flatMap(KeySize.init) ?? keySize
