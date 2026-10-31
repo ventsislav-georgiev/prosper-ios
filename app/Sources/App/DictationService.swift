@@ -373,6 +373,9 @@ private final class Transcription {
 /// what's heard, and Stop, which turns the mic off without the keyboard.
 struct DictationScreen: View {
     @ObservedObject var service: DictationService
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The swipe guide's arrow: left of center, sliding right, on repeat.
+    @State private var slide = false
 
     var body: some View {
         NavigationStack {
@@ -382,7 +385,7 @@ struct DictationScreen: View {
                     Label("Getting the mic ready…", systemImage: "mic")
                         .font(.title2.weight(.semibold))
                 case .listening?, .finishing?:
-                    Label("Listening — tap ◀ Back to return", systemImage: "mic.fill")
+                    Label("Listening — now go back", systemImage: "mic.fill")
                         .font(.title2.weight(.semibold))
                         .foregroundStyle(.red)
                     Text("Keep talking: the Prosper keyboard types what you say.")
@@ -410,6 +413,24 @@ struct DictationScreen: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                if service.state?.phase == .listening || service.state?.phase == .finishing {
+                    // Face ID iPhones: a swipe right along the home indicator goes back to the last app.
+                    VStack(spacing: 6) {
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 34, weight: .bold))
+                            .foregroundStyle(.tint)
+                            .offset(x: reduceMotion ? 0 : slide ? 50 : -50)
+                            .opacity(reduceMotion || !slide ? 1 : 0.3)
+                            .accessibilityHidden(true)
+                        Text("Swipe right along the bottom edge to go back")
+                            .font(.callout.weight(.semibold))
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .combine)
+                    .onAppear { withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false)) { slide = true } }
+                    .onDisappear { slide = false }
+                }
             }
             .padding()
             .navigationTitle("Dictation")
