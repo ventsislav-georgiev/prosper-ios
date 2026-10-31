@@ -524,7 +524,7 @@ struct SessionListView: View {
             Button("OK", role: .cancel) {}
         } message: { Text(failed?.message ?? "") }
         .sheet(isPresented: $showingHistory) {
-            HistorySheet(transport: transport, canRevive: ops.contains(.revive)) { await refresh() }
+            HistorySheet(transport: transport, ops: ops) { await refresh() }
         }
         .alert("New session", isPresented: $creating) {
             TextField("Name (optional)", text: $newName)
@@ -864,6 +864,8 @@ extension SessionVerb {
         case .restart: all ? "Restart all" : "Restart failed"
         case .stop:    all ? "Stop all" : "Stop failed"
         case .library: "Sync from Mac"
+        case .pin:     "Pin failed"
+        case .forget:  all ? "Clear unpinned" : "Remove failed"
         }
     }
 }
@@ -894,6 +896,23 @@ extension DchHistoryRow {
         }
     }
 
+    /// #634: a row's swipes. Pin or Unpin on `.pin`, Remove on `.forget` but never on a pinned
+    /// row (the Mac refuses it): Unpin first. An older Mac offers neither.
+    enum Action { case pin, unpin, remove }
+    static func actions(_ r: DchHistoryRow, ops: Set<SessionVerb>) -> [Action] {
+        (ops.contains(.pin) ? [r.pinned ? .unpin : .pin] : []) + (ops.contains(.forget) && !r.pinned ? [.remove] : [])
+    }
+
+    /// #634: Clear unpinned shows on `.forget`, with an unpinned row to clear.
+    static func clearShown(_ rows: [DchHistoryRow], ops: Set<SessionVerb>) -> Bool {
+        ops.contains(.forget) && rows.contains { !$0.pinned }
+    }
+
+    /// #634: "Cleared 12", plus ", 1 failed" when any did.
+    static func clearedLabel(_ c: HistoryCleared) -> String {
+        "Cleared \(c.cleared)" + (c.failed > 0 ? ", \(c.failed) failed" : "")
+    }
+
     /// #589: "Resume interrupted (N)", N the records dch's revive-all takes; nil (no button) at 0.
     static func resumeAllLabel(_ rows: [DchHistoryRow]) -> String? {
         let n = rows.filter(\.takes).count
@@ -904,10 +923,12 @@ extension DchHistoryRow {
 /// #589: the Mac's History tab (Agent Island): ended sessions, newest first, each with
 /// Resume (on `.revive`), and Resume interrupted over them. As on the Mac, neither asks
 /// first nor opens the session: the resumed one shows up in the list. After every reply,
-/// an error too, the history reloads and `changed` re-lists the sessions.
+/// an error too, the history reloads and `changed` re-lists the sessions. Pinned rows come
+/// first, as the Mac orders them; swipes pin, unpin and remove, and Clear unpinned asks first (#634).
 struct HistorySheet: View {
     let transport: SessionTransport
-    let canRevive: Bool
+    let ops: Set<SessionVerb>
+    private var canRevive: Bool { ops.contains(.revive) }
     let changed: () async -> Void
     @State private var rows: [DchHistoryRow]?
     @State private var error: String?              // the history read's, as written (dch too old)
@@ -915,6 +936,8 @@ struct HistorySheet: View {
     // revive still runs and the list still re-lists); lift into SessionListView if it matters.
     @State private var running: Set<String> = []
     @State private var failed: (title: String, message: String)?
+    @State private var confirmClear = false
+    @State private var clearing = false
     @AppStorage(RowDetails.Key.sessionName) private var sessionName = RowDetails().sessionName
     @Environment(\.dismiss) private var dismiss
 
@@ -936,13 +959,33 @@ struct HistorySheet: View {
                             .accessibilityHint("Brings back the sessions that ended abnormally in the last 3 days")
                     }
                 }
-                ForEach(rows ?? [], id: \.name) { r in row(r) }
+                if let rows, DchHistoryRow.clearShown(rows, ops: ops) {
+                    if clearing {
+                        HStack(spacing: 10) { ProgressView(); Text("Clearing…").foregroundStyle(.secondary) }
+                    } else {
+                        Button("Clear unpinned", role: .destructive) { confirmClear = true }
+                    }
+                }
+                ForEach(rows ?? [], id: \.name) { r in
+                    row(r).swipeActions(allowsFullSwipe: false) {
+                        ForEach(DchHistoryRow.actions(r, ops: ops), id: \.self) { a in
+                            switch a {
+                            case .pin:    Button("Pin") { act(r.name, .pin) }.tint(.orange)
+                            case .unpin:  Button("Unpin") { act(r.name, .unpin) }.tint(.gray)
+                            case .remove: Button("Remove", role: .destructive) { act(r.name, .remove) }
+                            }
+                        }
+                    }
+                }
             }
             .navigationTitle("History")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("Done") { dismiss() } }
             .task { await reload() }
             .refreshable { await reload() }
+            .confirmationDialog("Clear unpinned?", isPresented: $confirmClear, titleVisibility: .visible) {
+                Button("Clear unpinned", role: .destructive) { clear() }
+            } message: { Text("Removes every unpinned record from the Mac's History.") }
             .alert(failed?.title ?? "", isPresented: Binding(get: { failed != nil }, set: { if !$0 { failed = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(failed?.message ?? "") }
@@ -957,7 +1000,12 @@ struct HistorySheet: View {
             .formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .narrow, maximumUnitCount: 2))
         return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(r.title).lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(r.title).lineLimit(1)
+                    if r.pinned {
+                        Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary).accessibilityLabel("Pinned")
+                    }
+                }
                 if let dch = DchHistoryRow.dchName(r, shown: sessionName) {
                     Text(verbatim: dch).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
@@ -996,6 +1044,41 @@ struct HistorySheet: View {
     /// through, else its alert ("Resume failed" for a name, "Resume interrupted" for all).
     static func resume(_ name: String?, on t: SessionTransport) async -> (title: String, message: String)? {
         await SessionListView.attempt(SessionVerb.revive.failTitle(all: name == nil), on: t) { try await $0.revive(name: name) }
+    }
+
+    /// #634: one swipe; its error goes up through the alert, then the history reloads.
+    private func act(_ name: String, _ a: DchHistoryRow.Action) {
+        let t = transport
+        Task {
+            if let f = await Self.act(name, a, on: t) { failed = f }
+            await reload()
+        }
+    }
+
+    static func act(_ name: String, _ a: DchHistoryRow.Action, on t: SessionTransport) async -> (title: String, message: String)? {
+        switch a {
+        case .pin:    await SessionListView.attempt("Pin failed", on: t) { try await $0.pin(name: name, pin: true) }
+        case .unpin:  await SessionListView.attempt("Unpin failed", on: t) { try await $0.pin(name: name, pin: false) }
+        case .remove: await SessionListView.attempt(SessionVerb.forget.failTitle(all: false), on: t) { try await $0.forget(name: name) }
+        }
+    }
+
+    private func clear() {
+        clearing = true
+        let t = transport
+        Task {
+            failed = await Self.clear(on: t)
+            clearing = false
+            await reload()
+        }
+    }
+
+    /// #634: Clear unpinned's one alert, its tally or the Mac's error; nil only when cancelled.
+    static func clear(on t: SessionTransport) async -> (title: String, message: String)? {
+        let title = SessionVerb.forget.failTitle(all: true)
+        do { return (title, DchHistoryRow.clearedLabel(try await t.forgetAll())) } catch {
+            return isCancellation(error) ? nil : (title, error.localizedDescription)
+        }
     }
 
     private func reload() async {

@@ -27,6 +27,7 @@ final class ProsperTransport: SessionTransport {
         static let listResp: UInt8 = 0x11, exit: UInt8 = 0x12, error: UInt8 = 0x13, ok: UInt8 = 0x14
         static let machineInfoResp: UInt8 = 0x18, snapshotResp: UInt8 = 0x19, historyResp: UInt8 = 0x1b
         static let libraryResp: UInt8 = 0x1c
+        static let pin: UInt8 = 0x24, forget: UInt8 = 0x25, forgetAll: UInt8 = 0x26   // #634
     }
 
     /// One-shot identity handshake (PLAN §2a). Sends `0x08`, reads the `0x18` reply
@@ -105,6 +106,32 @@ final class ProsperTransport: SessionTransport {
         try Self.decodeNames(try await verb(F.stop, json(["names": names])))
     }
 
+    func pin(name: String, pin: Bool) async throws -> [String] {
+        try Self.passable(name)
+        return try Self.decodeNames(try await verb(F.pin, json(["name": name, "pin": pin])))
+    }
+
+    func forget(name: String) async throws -> [String] {
+        try Self.passable(name)
+        return try Self.decodeNames(try await verb(F.forget, json(["name": name])))
+    }
+
+    func forgetAll() async throws -> HistoryCleared {
+        try Self.decodeCleared(try await verb(F.forgetAll, json([:])))
+    }
+
+    /// #634: dch would read a dash-led name as a flag; refused here, nothing sent.
+    static func passable(_ name: String) throws {
+        if name.hasPrefix("-") { throw TransportError.server("a session name starting with - can't be passed to dch") }
+    }
+
+    /// #634: forgetAll's ok `{cleared, skipped, failed}`.
+    static func decodeCleared(_ payload: Data) throws -> HistoryCleared {
+        guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              let cleared = o["cleared"] as? Int else { throw TransportError.protocolError("unreadable reply") }
+        return HistoryCleared(cleared: cleared, skipped: o["skipped"] as? Int ?? 0, failed: o["failed"] as? Int ?? 0)
+    }
+
     func library(etag: String?) async throws -> LibraryReply {
         try Self.decodeLibrary(try await verb(F.library, Self.libraryRequest(etag), reply: F.libraryResp))
     }
@@ -143,8 +170,11 @@ final class ProsperTransport: SessionTransport {
         return names
     }
 
+    /// #634: dch's own pinned refusal (until Mac #633) carries a -f hint the phone can't use;
+    /// it reads as the Mac's own words instead.
     static func decodeMessage(_ payload: Data) -> String {
-        ((try? JSONSerialization.jsonObject(with: payload)) as? [String: Any])?["message"] as? String
+        (((try? JSONSerialization.jsonObject(with: payload)) as? [String: Any])?["message"] as? String)?
+            .replacingOccurrences(of: "pinned (-f forgets it anyway)", with: "pinned, unpin it first")
             ?? "The Mac refused the request."
     }
 
@@ -159,7 +189,7 @@ final class ProsperTransport: SessionTransport {
                               end: o["end"] as? String ?? "", lastSeen: o["last_seen"] as? Int ?? 0,
                               started: o["started"] as? Int ?? 0, runtime: o["runtime"] as? Int ?? 0,
                               cwd: o["cwd"] as? String, command: o["command"] as? [String],
-                              takes: o["takes"] as? Bool ?? false)
+                              takes: o["takes"] as? Bool ?? false, pinned: o["pinned"] as? Bool ?? false)
             }
         }
     }

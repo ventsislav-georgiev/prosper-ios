@@ -88,6 +88,12 @@ protocol SessionTransport: AnyObject {
     func stop(names: [String]) async throws -> [String]
     /// #614: the Mac's snippets and quicklinks, or `unchanged` when `etag` is still theirs.
     func library(etag: String?) async throws -> LibraryReply
+    /// #634: pin (or unpin) a History record; a pinned one survives Clear unpinned.
+    func pin(name: String, pin: Bool) async throws -> [String]
+    /// #634: remove one unpinned History record; the Mac refuses a pinned one.
+    func forget(name: String) async throws -> [String]
+    /// #634: Clear unpinned, over every History dir.
+    func forgetAll() async throws -> HistoryCleared
 }
 
 /// #590: the demo and the test stubs have no dch behind them. Their machine lists no
@@ -98,12 +104,16 @@ extension SessionTransport {
     func restart(names: [String]?) async throws -> [String] { throw TransportError.server("Not supported here.") }
     func stop(names: [String]) async throws -> [String] { throw TransportError.server("Not supported here.") }
     func library(etag: String?) async throws -> LibraryReply { throw TransportError.server("Not supported here.") }
+    func pin(name: String, pin: Bool) async throws -> [String] { throw TransportError.server("Not supported here.") }
+    func forget(name: String) async throws -> [String] { throw TransportError.server("Not supported here.") }
+    func forgetAll() async throws -> HistoryCleared { throw TransportError.server("Not supported here.") }
 }
 
 /// #590: a verb the Mac's server answers beyond the base frames. machineInfo lists them in
 /// `ops`; an older Mac sends no `ops`, and every control needing one stays hidden.
 enum SessionVerb: String {
     case history, revive, restart, stop, library
+    case pin, forget   // #634: "forget" covers forget 0x25 and forgetAll 0x26
 
     /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
     static func offered(_ ops: Any?) -> Set<SessionVerb> {
@@ -133,6 +143,14 @@ struct DchHistoryRow: Equatable {
     var cwd: String?
     var command: [String]?
     var takes: Bool
+    var pinned = false       // #634: "pinned": true only on a pinned row
+}
+
+/// #634: forgetAll's tally.
+struct HistoryCleared: Equatable {
+    var cleared: Int
+    var skipped: Int
+    var failed: Int
 }
 
 enum TransportError: Error, LocalizedError {

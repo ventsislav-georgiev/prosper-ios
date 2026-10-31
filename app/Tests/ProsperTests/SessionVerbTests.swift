@@ -290,4 +290,116 @@ final class SessionVerbTests: XCTestCase {
         XCTAssertEqual(SessionVerb.stop.failTitle(all: false), "Stop failed")
         XCTAssertEqual(SessionVerb.revive.failTitle(all: false), "Resume failed")
     }
+
+    // MARK: - #634: pin 0x24, forget 0x25, forgetAll 0x26
+
+    func testHistoryPinnedFlag() throws {
+        let rows = try ProsperTransport.decodeHistory(Data("""
+            [{"name":"keep","end":"exit 0","pinned":true},{"name":"docs","end":"exit 0"}]
+            """.utf8))
+        XCTAssertEqual(rows.map(\.pinned), [true, false], "an absent key is unpinned")
+        XCTAssertEqual(rows.map(\.name), ["keep", "docs"], "the Mac's order stands")
+    }
+
+    func testPinAndUnpinFrames() async throws {
+        let (on, got1, l1) = try await fakeMac(0x14, #"{"names":["docs"]}"#)
+        defer { l1.cancel() }
+        let pinned = try await on.pin(name: "docs", pin: true)
+        XCTAssertEqual(pinned, ["docs"])
+        XCTAssertEqual(sent(got1).0, 0x24)
+        XCTAssertEqual(sent(got1).1, ["name": "docs", "pin": true])
+        XCTAssertTrue((sent(got1).1?["pin"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() } ?? false,
+                      "pin is a JSON bool, as the Mac requires")
+
+        let (off, got2, l2) = try await fakeMac(0x14, #"{"names":["docs"]}"#)
+        defer { l2.cancel() }
+        let unpinned = try await off.pin(name: "docs", pin: false)
+        XCTAssertEqual(unpinned, ["docs"])
+        XCTAssertEqual(sent(got2).1, ["name": "docs", "pin": false])
+    }
+
+    func testForgetAndForgetAllFrames() async throws {
+        let (one, got1, l1) = try await fakeMac(0x14, #"{"names":["docs"]}"#)
+        defer { l1.cancel() }
+        let removed = try await one.forget(name: "docs")
+        XCTAssertEqual(removed, ["docs"])
+        XCTAssertEqual(sent(got1).0, 0x25)
+        XCTAssertEqual(sent(got1).1, ["name": "docs"])
+
+        let (all, got2, l2) = try await fakeMac(0x14, #"{"cleared":12,"skipped":2,"failed":1}"#)
+        defer { l2.cancel() }
+        let tally = try await all.forgetAll()
+        XCTAssertEqual(tally, HistoryCleared(cleared: 12, skipped: 2, failed: 1))
+        XCTAssertEqual(sent(got2).0, 0x26)
+        XCTAssertEqual(sent(got2).1, [:], "forgetAll sends {}")
+        XCTAssertThrowsError(try ProsperTransport.decodeCleared(Data(#"{"names":[]}"#.utf8)))
+    }
+
+    func testPinErrorsComeThroughAsWritten() async throws {
+        let (mac, _, l) = try await fakeMac(0x13, #"{"message":"Pin needs dch 1.25.0"}"#)
+        defer { l.cancel() }
+        do { _ = try await mac.pin(name: "docs", pin: true); XCTFail("an error reply must throw") } catch {
+            guard case TransportError.server(let m) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(m, "Pin needs dch 1.25.0")
+        }
+        let (old, _, l2) = try await fakeMac(0x13, #"{"message":"docs: pinned (-f forgets it anyway)"}"#)
+        defer { l2.cancel() }
+        let f = await HistorySheet.act("docs", .remove, on: old)
+        XCTAssertEqual(f?.title, "Remove failed")
+        XCTAssertEqual(f?.message, "docs: pinned, unpin it first", "the -f hint never shows")
+    }
+
+    func testClearUnpinnedReportsOnce() async throws {
+        let (mac, _, l) = try await fakeMac(0x14, #"{"cleared":12,"skipped":0,"failed":1}"#)
+        defer { l.cancel() }
+        let r = await HistorySheet.clear(on: mac)
+        XCTAssertEqual(r?.title, "Clear unpinned")
+        XCTAssertEqual(r?.message, "Cleared 12, 1 failed")
+        XCTAssertEqual(DchHistoryRow.clearedLabel(HistoryCleared(cleared: 3, skipped: 1, failed: 0)), "Cleared 3")
+
+        let (busy, _, l2) = try await fakeMac(0x13, #"{"message":"dch: busy with an earlier request"}"#)
+        defer { l2.cancel() }
+        let e = await HistorySheet.clear(on: busy)
+        XCTAssertEqual(e?.message, "dch: busy with an earlier request")
+    }
+
+    func testDashLedNameSendsNothing() async throws {
+        let (mac, got, l) = try await fakeMac(0x14, #"{"names":["-x"]}"#)
+        defer { l.cancel() }
+        do { _ = try await mac.forget(name: "-x"); XCTFail("a dash-led name must be refused") } catch {
+            XCTAssertEqual(error.localizedDescription, "a session name starting with - can't be passed to dch")
+        }
+        do { _ = try await mac.pin(name: "--all", pin: true); XCTFail("a dash-led name must be refused") } catch {}
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertNil(got.v, "no frame went out")
+    }
+
+    func testPinAndForgetGates() {
+        func ops(_ json: String) -> Set<SessionVerb> {
+            ProsperTransport.decodeMachineInfo(Data(json.utf8))?.ops ?? []
+        }
+        let new = ops(#"{"device_id":"d","ops":["history","revive","pin","forget"]}"#)
+        let old = ops(#"{"device_id":"d","ops":["history","revive","restart","stop","library"]}"#)
+        XCTAssertEqual(new, [.history, .revive, .pin, .forget])
+        let row = DchHistoryRow(name: "docs", alias: nil, agentName: nil, end: "exit 0", lastSeen: 2, started: 1,
+                                runtime: 1, cwd: nil, command: nil, takes: false)
+        var pinned = row
+        pinned.pinned = true
+        XCTAssertEqual(DchHistoryRow.actions(row, ops: new), [.pin, .remove])
+        XCTAssertEqual(DchHistoryRow.actions(pinned, ops: new), [.unpin], "a pinned row has no Remove")
+        XCTAssertEqual(DchHistoryRow.actions(row, ops: [.forget]), [.remove])
+        XCTAssertEqual(DchHistoryRow.actions(row, ops: [.pin]), [.pin])
+        XCTAssertEqual(DchHistoryRow.actions(row, ops: old), [], "an older Mac: no swipes")
+        XCTAssertEqual(DchHistoryRow.actions(row, ops: []), [], "no ops: no swipes")
+        XCTAssertTrue(DchHistoryRow.clearShown([pinned, row], ops: new))
+        XCTAssertFalse(DchHistoryRow.clearShown([pinned], ops: new), "nothing unpinned to clear")
+        XCTAssertFalse(DchHistoryRow.clearShown([row], ops: old), "an older Mac: no Clear unpinned")
+    }
+
+    func testDemoRefusesTheHistoryEdits() async {
+        do { _ = try await DemoTransport().pin(name: "docs", pin: true); XCTFail("demo must refuse") } catch {}
+        do { _ = try await DemoTransport().forgetAll(); XCTFail("demo must refuse") } catch {
+            XCTAssertEqual(error.localizedDescription, "Not supported here.")
+        }
+    }
 }
