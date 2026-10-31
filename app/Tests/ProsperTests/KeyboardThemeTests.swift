@@ -217,7 +217,10 @@ final class KeyboardThemeTests: XCTestCase {
             let p = Style.Palette(theme, accent: .violet)
             let c = mac.hex.map { UIColor(hex: $0) }
             XCTAssertEqual(p.key, c[8], "\(theme): card")
-            XCTAssertEqual(p.keyPressed, c[9], "\(theme): cardHi")
+            if !mac.light {
+                XCTAssertEqual(p.keyPressed, c[9], "\(theme): cardHi")
+                XCTAssertEqual(p.specialPressed, c[8], "\(theme): card")
+            }
             XCTAssertEqual(p.special, c[7], "\(theme): sidebar")
             XCTAssertEqual(p.surface, c[8], "\(theme)")
             XCTAssertEqual(p.backdrop, c[6], "\(theme): bgBottom")
@@ -233,10 +236,29 @@ final class KeyboardThemeTests: XCTestCase {
             XCTAssertEqual(Style.Palette(theme, accent: .green), p, "\(theme): its own accent")
         }
         XCTAssertEqual(Style.Palette(.neon, accent: .none).neon, UIColor(hex: 0x21CCFF))
+        XCTAssertEqual(Style.Palette(.daylight, accent: .violet).keyPressed, UIColor(hex: 0xD0D3D6), "a fifth of its text in")
         XCTAssertEqual(Style.Palette(.neon, accent: .none).backdrop, UIColor(hex: 0x05080D))
         for theme in [Theme.dark, .light, .black] {
             XCTAssertNil(Style.Palette(theme, accent: .violet).neon, "\(theme)")
             XCTAssertNotEqual(Style.Palette(theme, accent: .violet), Style.Palette(theme, accent: .green), "\(theme)")
+        }
+    }
+
+    /// A light theme's pressed fill reads (#655): clearly darker than the fill, for the letters
+    /// and the special keys, where cardHi was barely off the card and a special key went lighter.
+    func testALightThemesPressedFillIsClearlyDarker() {
+        func luminance(_ color: UIColor) -> CGFloat {
+            var (r, g, b, a) = (CGFloat(0), CGFloat(0), CGFloat(0), CGFloat(0))
+            color.getRed(&r, green: &g, blue: &b, alpha: &a)
+            let lin = { (c: CGFloat) in c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+            return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+        }
+        let light = Theme.allCases.filter { Theme.mac[$0]?.light == true }
+        XCTAssertEqual(light.count, 8)
+        for theme in light {
+            let p = Style.Palette(theme, accent: .violet)
+            XCTAssertLessThan(luminance(p.keyPressed), luminance(p.key) - 0.15, "\(theme): letters")
+            XCTAssertLessThan(luminance(p.specialPressed), luminance(p.special) - 0.15, "\(theme): special keys")
         }
     }
 
@@ -575,8 +597,9 @@ final class KeyboardThemeTests: XCTestCase {
         withExtendedLifetime((doc, view)) {}
     }
 
-    /// The accent row, for Dark, Light and True Black keys only: a pick stores keyboard.accent
-    /// and lights return in it; Neon keys hide the row, True Black brings it back.
+    /// The accent row, while the keys or the toolbar are Dark, Light or True Black: a pick
+    /// stores keyboard.accent and lights return in it; Neon keys hide the row, a Dark toolbar
+    /// brings it back (#655), and so do True Black keys.
     func testAnAccentPickLightsReturnAndTheRowIsForTheThreeOnly() throws {
         let (kb, bar, view, doc) = try appearanceRig()
         bar.showAppearance(true)
@@ -595,10 +618,26 @@ final class KeyboardThemeTests: XCTestCase {
         redrawn = try XCTUnwrap(bar.appearancePanel)
         XCTAssertTrue(redrawn.accents.isEmpty, "a Mac theme lights in its own colour")
         XCTAssertEqual(redrawn.keys.count, 24)
-        try tap(redrawn.keys, "True Black")
+        // Neon keys with a Dark toolbar: the row is back as Settings has it, its dots Dark's (#655).
+        try tap(redrawn.toolbar, "Dark")
+        redrawn = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(redrawn.accents.count, 6, "the accent lights the toolbar")
+        let none = redrawn.accents.last?.configuration?.image?.pngData()
+        XCTAssertEqual(none, AppearancePanel.dot(Style.Palette(.dark, accent: .none).accent).pngData(), "Dark's labels")
+        XCTAssertNotEqual(none, AppearancePanel.dot(Style.Palette(.neon, accent: .none).accent).pngData())
+        try tap(redrawn.toolbar, "Match Keys")
+        XCTAssertTrue(try XCTUnwrap(bar.appearancePanel).accents.isEmpty)
+        let cases: [(Theme, Theme, Theme?)] = [(.neon, .light, .light), (.black, .neon, .black), (.neon, .daylight, nil)]
+        for (keys, toolbar, lit) in cases {
+            var s = KeyboardSettings()
+            (s.theme, s.toolbarTheme) = (keys, toolbar)
+            XCTAssertEqual(s.accentTheme, lit, "\(keys) keys, \(toolbar) toolbar")
+        }
+
+        try tap(try XCTUnwrap(bar.appearancePanel).keys, "True Black")
         redrawn = try XCTUnwrap(bar.appearancePanel)
         XCTAssertEqual(redrawn.accents.count, 6)
-        XCTAssertEqual(stored, ["black", nil, "green"])
+        XCTAssertEqual(stored, ["black", "", "green"])
         withExtendedLifetime((doc, view)) {}
     }
 

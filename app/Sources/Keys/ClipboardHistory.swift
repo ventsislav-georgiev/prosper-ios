@@ -339,6 +339,8 @@ class KeysPanel: UIView {
         override func layoutSubviews() {
             super.layoutSubviews()
             if scrolled != scrolls { scrolled.toggle(); reloadSectionIndexTitles() }
+            // Over the floating headers (#655): a pinned one's material dimmed the index's top "#".
+            subviews.first { "\(type(of: $0))" == "UITableViewIndex" }?.layer.zPosition = 1
         }
     }
 

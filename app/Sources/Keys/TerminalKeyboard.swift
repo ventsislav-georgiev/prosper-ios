@@ -169,6 +169,9 @@ struct KeyboardSettings: Equatable {
     /// highlights. None is neutral, the labels' colour. Dark, Light and True Black's only:
     /// a Mac theme lights in its own blue (#642).
     var accent = Accent.violet
+    /// The theme the accent lights (#655): the keys' unless a Mac one, else the toolbar's
+    /// unless a Mac one, else none. Settings' Accent row is on by the same rule.
+    var accentTheme: Theme? { [theme, toolbarTheme ?? theme].first { !$0.isMac } }
     enum Accent: String, CaseIterable { case violet, blue, pink, orange, green, none }
 
     init() {}
@@ -1947,8 +1950,15 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                     let mac = KeyboardSettings.Theme.mac[theme]!
                     let c = mac.hex.map { UIColor(hex: $0) }
                     let (blue, blueBright, bgBottom, sidebar, card, cardHi) = (c[0], c[1], c[6], c[7], c[8], c[9])
-                    self.init(key: card, keyPressed: cardHi, special: sidebar, specialPressed: card, backdrop: bgBottom,
-                              label: c[10], hint: c[11], hairline: c[11].withAlphaComponent(0.2),
+                    // A light one presses darker (#655): its cardHi is barely off the card and a
+                    // special key went lighter, to the card; a fifth of the text's colour goes in.
+                    let ink = { (fill: Int) in UIColor(hex: [16, 8, 0].reduce(UInt32(0)) { rgb, shift in
+                        let (f, t) = (Double(mac.hex[fill] >> shift & 0xFF), Double(mac.hex[10] >> shift & 0xFF))
+                        return rgb | UInt32((f * 0.8 + t * 0.2).rounded()) << shift
+                    }) }
+                    self.init(key: card, keyPressed: mac.light ? ink(8) : cardHi, special: sidebar,
+                              specialPressed: mac.light ? ink(7) : card, backdrop: bgBottom, label: c[10],
+                              hint: c[11], hairline: c[11].withAlphaComponent(0.2),
                               surface: card, surfacePressed: cardHi, style: mac.light ? .light : .dark)
                     (accent, accentEnd, onAccent, icon, neon) = (blue, blue, bgBottom, blueBright, blue)
                     return

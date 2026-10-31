@@ -61,6 +61,11 @@ final class JumpIndexTests: XCTestCase {
         let row = table.rectForRow(at: IndexPath(row: 0, section: 1)), header = table.rectForHeader(inSection: 1)
         XCTAssertGreaterThan(header.height, 0)
         XCTAssertEqual(row.minY, table.contentOffset.y + header.height, accuracy: 1, "lands on the row, under its header")
+        // The index over All's pinned header, its "#" not dimmed by the header's material (#655).
+        table.layoutIfNeeded()
+        let index = table.subviews.first { "\(type(of: $0))" == "UITableViewIndex" }
+        XCTAssertEqual(index?.layer.zPosition, 1)
+        XCTAssertTrue(table.subviews.compactMap { $0 as? UITableViewHeaderFooterView }.allSatisfy { $0.layer.zPosition < 1 })
     }
 
     func testALetterLandsOnItsFirstRowNotTheHeader() throws {

@@ -2,8 +2,8 @@ import UIKit
 
 /// The look, from the keys (#641): the hold menu's Appearance opens it in their place
 /// (`SuggestionBar.showAppearance`). A Keys row of every theme, a Toolbar row of Match Keys and
-/// every theme, and the accent while the keys are Dark, Light or True Black (a Mac theme lights
-/// in its own colour, #642): each a strip that scrolls sideways, the current swatch ringed in
+/// every theme, and the accent while the keys or the toolbar are Dark, Light or True Black (a Mac
+/// theme lights in its own colour, #642; either, #655): each a strip that scrolls sideways, the current swatch ringed in
 /// the accent and in view. Under them a Layout group (#650): Key Size, Numbers and Numpad Hides
 /// Toolbar, in text chips. A tap hands the settings with it to `onPick`; the bar applies and
 /// stores them and draws this panel again. Without Full Access the rows are off, under a
@@ -12,7 +12,7 @@ final class AppearancePanel: KeysPanel {
     typealias Theme = KeyboardSettings.Theme
     let settings: KeyboardSettings
     var onPick: ((KeyboardSettings) -> Void)?
-    /// Each row's swatches: Keys, Toolbar (Match Keys first), Accent (none for a Mac theme).
+    /// Each row's swatches: Keys, Toolbar (Match Keys first), Accent (none when both themes are Mac ones).
     private(set) var keys: [UIButton] = [], toolbar: [UIButton] = [], accents: [UIButton] = []
     /// The Layout group's chips (#650): Key Size, Numbers, Numpad Hides Toolbar.
     private(set) var sizes: [UIButton] = [], numbers: [UIButton] = [], numpad: [UIButton] = []
@@ -37,9 +37,9 @@ final class AppearancePanel: KeysPanel {
             + Theme.allCases.map { theme in
                 swatch(theme.title, Self.chip(theme, accent), on: theme == settings.toolbarTheme) { $0.toolbarTheme = theme }
             }
-        if !settings.theme.isMac {
+        if let lights = settings.accentTheme {   // as Settings has it, either theme (#655)
             accents = KeyboardSettings.Accent.allCases.map { lit in
-                let dot = Self.dot(Style.Palette(settings.theme, accent: lit).accent)
+                let dot = Self.dot(Style.Palette(lights, accent: lit).accent)
                 return swatch(lit.rawValue.capitalized, dot, on: lit == accent) { $0.accent = lit }
             }
         }

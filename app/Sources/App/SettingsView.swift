@@ -217,11 +217,13 @@ struct SettingsView: View {
                     ForEach(KeyboardSettings.Theme.allCases, id: \.self) { ThemeLabel(theme: $0, accent: accent) }
                 }
                 .pickerStyle(.navigationLink)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }   // at the row's edge, not the swatch's (#655)
                 Picker("Toolbar Theme", selection: $toolbarTheme) {
                     Text("Match Keys").tag("")
                     ForEach(KeyboardSettings.Theme.allCases, id: \.self) { ThemeLabel(theme: $0, accent: accent).tag($0.rawValue) }
                 }
                 .pickerStyle(.navigationLink)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                 let accentApplies = [theme, KeyboardSettings.Theme(rawValue: toolbarTheme) ?? theme].contains { !$0.isMac }
                 Picker("Accent", selection: $accent) {
                     ForEach(KeyboardSettings.Accent.allCases, id: \.self) { Text($0.rawValue.capitalized) }
