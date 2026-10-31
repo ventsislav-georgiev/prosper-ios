@@ -224,9 +224,12 @@ final class AppearancePanel: KeysPanel {
             guard !placed, bounds.width > 0, contentSize.width > 0 else { return }
             placed = true
             current?.superview?.layoutIfNeeded()   // the row's stack, for `current`'s frame
-            let room = CGPoint(x: max(0, contentSize.width - bounds.width), y: max(0, contentSize.height - bounds.height))
+            // The end counts the insets: the panel's bottom one clears the keys' pad (#652).
+            let pad = adjustedContentInset
+            let room = CGPoint(x: max(0, contentSize.width + pad.left + pad.right - bounds.width),
+                               y: max(0, contentSize.height + pad.top + pad.bottom - bounds.height))
             let at = start ?? CGPoint(x: current.map { $0.convert($0.bounds, to: self).midX - bounds.width / 2 } ?? 0, y: 0)
-            contentOffset = CGPoint(x: min(max(0, at.x), room.x), y: min(max(0, at.y), room.y))
+            contentOffset = CGPoint(x: min(max(-pad.left, at.x), room.x - pad.left), y: min(max(-pad.top, at.y), room.y - pad.top))
         }
     }
 }

@@ -697,6 +697,15 @@ final class KeyboardThemeTests: XCTestCase {
         let on = panel.numpad[1].convert(panel.numpad[1].bounds, to: panel)
         XCTAssertLessThanOrEqual(on.maxY, panel.bounds.maxY - kb.bottomInset, "clear of the pad")
         XCTAssertGreaterThanOrEqual(on.minY, 42, "under the header")
+
+        // A pick there keeps the redrawn panel at its end, the bottom inset counted (#652).
+        let end = scroll.contentOffset.y
+        try tap(panel.numpad, "Off")
+        fit()
+        panel = try XCTUnwrap(bar.appearancePanel)
+        let redrawn = try XCTUnwrap(panel.subviews.first { $0 is UIScrollView && !($0 is UITableView) } as? UIScrollView)
+        XCTAssertGreaterThan(end, 0)
+        XCTAssertEqual(redrawn.contentOffset.y, end, accuracy: 1, "kept in place")
         withExtendedLifetime((doc, view)) {}
     }
 
