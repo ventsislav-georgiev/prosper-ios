@@ -226,26 +226,33 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         strip.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(strip)
         if let bar = shortcutBar {
+            let stripLeading = strip.leadingAnchor.constraint(equalTo: bar.leadingAnchor)
             let stripTrailing = strip.trailingAnchor.constraint(equalTo: bar.trailingAnchor)
-            self.stripTrailing = stripTrailing
+            (self.stripLeading, self.stripTrailing) = (stripLeading, stripTrailing)
             NSLayoutConstraint.activate([
                 strip.topAnchor.constraint(equalTo: bar.topAnchor), strip.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
-                strip.leadingAnchor.constraint(equalTo: bar.leadingAnchor), stripTrailing,
+                stripLeading, stripTrailing,
             ])
         }
         return strip
     }()
-    /// The strip's end: short of the bar's mic cap, so its tap still stops (#654).
+    /// The strip's ends: clear of the bar's mic cap, so its tap still stops (#654).
+    private var stripLeading: NSLayoutConstraint?
     private var stripTrailing: NSLayoutConstraint?
-    /// Ends the strip at the mic cap's leading edge less the bar's gap; edge to edge with no
-    /// cap. On every layout pass, so a rotation or a bar re-split moves it too (#654).
+    /// Fits the strip to the wider side of the mic cap, less the bar's gap: after a leading
+    /// cap, before a trailing one; edge to edge with no cap. On every layout pass, so a
+    /// rotation or a bar re-split moves it too (#654).
     private func fitDictationStrip() {
-        guard let bar = shortcutBar, let stripTrailing, !dictationStrip.isHidden else { return }
+        guard let bar = shortcutBar, let stripLeading, let stripTrailing, !dictationStrip.isHidden else { return }
         bar.layoutIfNeeded()
+        let b = bar.bounds
         let mic = bar.capByID[Shortcuts.dictate.id].map { $0.convert($0.bounds, to: bar) }
-        let end = mic.flatMap { bar.bounds.contains($0) ? $0.minX - 6 : nil } ?? bar.bounds.maxX
-        let constant = end - bar.bounds.maxX
-        if stripTrailing.constant != constant { stripTrailing.constant = constant }
+        var (start, end) = (b.minX, b.maxX)
+        if let mic, b.contains(mic) {
+            if b.maxX - mic.maxX > mic.minX - b.minX { start = mic.maxX + 6 } else { end = mic.minX - 6 }
+        }
+        if stripLeading.constant != start - b.minX { stripLeading.constant = start - b.minX }
+        if stripTrailing.constant != end - b.maxX { stripTrailing.constant = end - b.maxX }
     }
     /// This dictation's last send, for the next phrase's spacing.
     private var lastDictated = ""

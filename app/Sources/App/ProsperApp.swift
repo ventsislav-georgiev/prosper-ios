@@ -966,6 +966,7 @@ struct HistorySheet: View {
     @State private var clearing = false
     @AppStorage(RowDetails.Key.sessionName) private var sessionName = RowDetails().sessionName
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         NavigationStack {
@@ -1024,30 +1025,38 @@ struct HistorySheet: View {
             ? Date(timeIntervalSince1970: TimeInterval(r.lastSeen)).formatted(.relative(presentation: .named)) : nil
         let ran = Duration.seconds(r.runtime)
             .formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .narrow, maximumUnitCount: 2))
-        return HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(r.title).lineLimit(1)
-                    if r.pinned {
-                        Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary).accessibilityLabel("Pinned")
-                    }
-                }
-                if let dch = DchHistoryRow.dchName(r, shown: sessionName) {
-                    Text(verbatim: dch).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                // #585: only a crash is coloured, the island's orange.
-                (Text(end).foregroundColor(end.hasPrefix("crashed") ? .orange : .secondary)
-                    + Text([seen, "ran \(ran)"].compactMap { $0 }.map { " · \($0)" }.joined()).foregroundColor(.secondary))
-                    .font(.caption).lineLimit(2)   // #656: "ran 1h…" wraps at large type, not cut
-                if let cwd = r.cwd, !cwd.isEmpty {
-                    Text(cwd).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+        // #656: at accessibility sizes the name and caption wrap in full and Resume goes under them.
+        let ax = typeSize.isAccessibilitySize
+        let text = VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Text(r.title).lineLimit(ax ? nil : 1)
+                if r.pinned {
+                    Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary).accessibilityLabel("Pinned")
                 }
             }
-            Spacer(minLength: 0)
+            if let dch = DchHistoryRow.dchName(r, shown: sessionName) {
+                Text(verbatim: dch).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            // #585: only a crash is coloured, the island's orange.
+            (Text(end).foregroundColor(end.hasPrefix("crashed") ? .orange : .secondary)
+                + Text([seen, "ran \(ran)"].compactMap { $0 }.map { " · \($0)" }.joined()).foregroundColor(.secondary))
+                .font(.caption).lineLimit(ax ? nil : 2)   // #656: "ran 1h…" wraps at large type, not cut
+            if let cwd = r.cwd, !cwd.isEmpty {
+                Text(cwd).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
+            }
+        }
+        let action = Group {
             if running.contains(r.name) {
                 HStack(spacing: 6) { ProgressView(); Text("Resuming…").font(.caption).foregroundStyle(.secondary) }
             } else if canRevive {
                 Button("Resume") { resume(r.name) }.buttonStyle(.borderless)
+            }
+        }
+        return Group {
+            if ax {
+                VStack(alignment: .leading, spacing: 8) { text; action }
+            } else {
+                HStack(spacing: 12) { text; Spacer(minLength: 0); action }
             }
         }
     }
