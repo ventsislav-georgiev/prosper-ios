@@ -8,6 +8,8 @@ import ActivityKit
 struct ProsperWidgets: WidgetBundle {
     var body: some Widget {
         if #available(iOS 16.2, *) { SessionsActivityWidget() }
+        SessionsWidget()   // #611
+        if #available(iOS 18, *) { DictateControl(); LastSessionControl() }
     }
 }
 

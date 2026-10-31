@@ -87,8 +87,9 @@ targets:
         # ponytail: local dev builds run unsigned (no team needed). CI signs for
         # TestFlight via the App Store Connect API key (see .github/workflows).
         CODE_SIGNING_ALLOWED: NO
-  # Draws the Mac's sessions Live Activity, which only the Worker's pushes drive. Shares
-  # only Sources/Shared with the app: the system launches it, so it stays tiny.
+  # Draws the Mac's sessions Live Activity, which only the Worker's pushes drive, the
+  # sessions widget and the Control Center controls (#611). Shares only Sources/Shared and
+  # the controls' intents with the app: the system launches it, so it stays tiny.
   ProsperWidgets:
     type: app-extension
     platform: iOS
@@ -96,6 +97,7 @@ targets:
     sources:
       - path: Widgets
       - path: Sources/Shared
+      - path: Sources/Controls
     # A real NSExtension dict, for the reason in ProsperKeyboard below.
     info:
       path: Widgets/Info.plist
@@ -108,6 +110,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.widgets
+        # The app's App Group: the sessions widget's snapshot (SessionsSnapshot).
+        CODE_SIGN_ENTITLEMENTS: Widgets/Widgets.entitlements
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
         SKIP_INSTALL: YES

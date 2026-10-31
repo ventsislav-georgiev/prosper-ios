@@ -47,6 +47,22 @@ enum Route: Hashable {
     case settings
 }
 
+extension Route {
+    /// A link to one session, opened once it is listed: Share › Prosper's (#610), which also
+    /// takes its item off the disk for the terminal to paste, a widget row's and the
+    /// intents' (#611). nil for any other link, and for the last session before there is one.
+    static func opening(_ url: URL) -> Route? {
+        if let item = ShareInbox.open(url) {
+            ShareInbox.pending = item
+            return .sessions(.machine(item.target.machine), open: item.target.session, tap: UUID())
+        }
+        if url == IntentLink.last, let last = ShareInbox.last {
+            return .sessions(.machine(last.machine), open: last.session, tap: UUID())
+        }
+        return SessionsSnapshot.target(url).map { .sessions(.machine($0.machine), open: $0.session, tap: UUID()) }
+    }
+}
+
 /// What `Route.sessions` points at: a saved Machine (by id) or the offline demo.
 /// `id`-based so renames/reorders don't break an in-flight navigation.
 enum MachineRef: Hashable {
@@ -113,19 +129,12 @@ struct HomeView: View {
                 }
             }
         }
-        // The Live Activity's link and a tapped "needs you" alert: that Mac's sessions
-        // (and the session, for an alert), or just home when no saved Mac matches.
-        .onOpenURL { url in
-            // Not on the Mac: no Prosper keyboard there, and a link mustn't turn its mic on.
-            #if !targetEnvironment(macCatalyst)
-            if dictation.open(url) { return }   // the keyboard's mic key (#598): its screen, listening
-            #endif
-            // Share › Prosper (#610): that session, where its terminal pastes the item.
-            if let item = ShareInbox.open(url) {
-                ShareInbox.pending = item
-                return go(.sessions(.machine(item.target.machine), open: item.target.session, tap: UUID()))
-            }
-            if let t = LiveTarget(url: url) { live.target = t }
+        .onOpenURL { open($0) }
+        // Shortcuts, the controls and the Action Button (#611): their link, taken once. On
+        // the next turn: cleared inside the publish, the link would be stored back after.
+        .onReceive(IntentLink.shared.$url.compactMap { $0 }.receive(on: DispatchQueue.main)) { url in
+            IntentLink.shared.url = nil
+            open(url)
         }
         #if !targetEnvironment(macCatalyst)
         .sheet(isPresented: $dictation.showing) { DictationScreen(service: dictation) }
@@ -153,6 +162,18 @@ struct HomeView: View {
             Button("Turn On") { Task { if !(await live.turnOn()) { notificationsDenied = true } } }
             Button("Not now") { live.notNow() }.foregroundStyle(.secondary)
         }
+    }
+
+    /// A link the app is opened on: the mic, one session (`Route.opening`), or the Live
+    /// Activity's link and a tapped "needs you" alert: that Mac's sessions (and the
+    /// session, for an alert), or just home when no saved Mac matches.
+    private func open(_ url: URL) {
+        // Not on the Mac: no Prosper keyboard there, and a link mustn't turn its mic on.
+        #if !targetEnvironment(macCatalyst)
+        if dictation.open(url) { return }   // the keyboard's mic key (#598): its screen, listening
+        #endif
+        if let r = Route.opening(url) { return go(r) }
+        if let t = LiveTarget(url: url) { live.target = t }
     }
 
     /// Pick a machine from the picker → collapse back to a single Home → Sessions level
@@ -628,6 +649,7 @@ struct SessionListView: View {
                 try? await Task.sleep(nanoseconds: backoff)      // asleep Mac: stop hammering
                 continue
             }
+            remember(list)
             // Don't touch `sessions` unless something actually moved: an equal array still
             // marks the state dirty and redraws every row.
             if !loading, list != sessions { sessions = list }
@@ -713,6 +735,7 @@ struct SessionListView: View {
         defer { trying = nil }
         do {
             sessions = try await listWalkingAddresses()
+            remember(sessions)
             error = nil
             notice = nil
             unreachable = nil
@@ -742,6 +765,11 @@ struct SessionListView: View {
             self.error = error.localizedDescription
             unreachable = nil
         }
+    }
+
+    /// The sessions widget's snapshot (#611): a saved Mac's list, as just listed.
+    private func remember(_ list: [DchSession]) {
+        if let m = liveMachine ?? machine { SessionsSnapshot.save(SessionsSnapshot(machine: m, sessions: list)) }
     }
 
     /// List the sessions, walking the machine's addresses in priority order (PLAN §3).
