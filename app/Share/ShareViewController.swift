@@ -20,8 +20,10 @@ final class ShareViewController: UIViewController {
         host.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(host.view)
         host.didMove(toParent: self)
-        let providers = (extensionContext?.inputItems as? [NSExtensionItem] ?? []).flatMap { $0.attachments ?? [] }
-        Task { await model.load(providers) }
+        let items = extensionContext?.inputItems as? [NSExtensionItem] ?? []
+        let providers = items.flatMap { $0.attachments ?? [] }
+        let fallback = items.compactMap { $0.attributedContentText?.string }.first { !$0.isEmpty }
+        Task { await model.load(providers, fallback: fallback) }
     }
 
     private func send(_ item: ShareItem) {

@@ -86,6 +86,61 @@ final class ShareTests: XCTestCase {
         XCTAssertTrue(file.unusable, "a file is not text: the sheet says what it takes")
     }
 
+    /// A provider registered by type, as a share sheet's text arrives cross-process (#610 QA):
+    /// an attributed string, UTF-8 data, or a string under public.utf8-plain-text, all as "look".
+    func testTextRegisteredByTypeIsRead() async throws {
+        func registered(_ value: NSSecureCoding) -> NSItemProvider {
+            let p = NSItemProvider()
+            p.registerItem(forTypeIdentifier: UTType.plainText.identifier) { completion, _, _ in completion?(value, nil) }
+            return p
+        }
+        let cases: [(String, NSItemProvider)] = [
+            ("attributed", registered(NSAttributedString(string: "look"))),
+            ("data", registered(Data("look".utf8) as NSData)),
+            ("utf8 item", NSItemProvider(item: "look" as NSString, typeIdentifier: UTType.utf8PlainText.identifier)),
+        ]
+        for (name, p) in cases {
+            let model = ShareModel(machines: [])
+            await model.load([p])
+            XCTAssertEqual(model.text, "look", name)
+            XCTAssertFalse(model.unusable, name)
+        }
+
+        let joined = ShareModel(machines: [])
+        await joined.load([registered(NSAttributedString(string: "text")),
+                           NSItemProvider(object: URL(string: "https://example.com")! as NSURL)])
+        XCTAssertEqual(joined.text, "text\nhttps://example.com")
+
+        let rtf = NSItemProvider()
+        let rtfData = Data(#"{\rtf1\ansi look}"#.utf8)
+        rtf.registerItem(forTypeIdentifier: UTType.rtf.identifier) { completion, _, _ in completion?(rtfData as NSData, nil) }
+        let rich = ShareModel(machines: [])
+        await rich.load([rtf])
+        XCTAssertFalse(rich.text?.contains("rtf1") ?? false, "no RTF markup is pasted")
+
+        let file = ShareModel(machines: [])
+        await file.load([NSItemProvider(object: dir.appendingPathComponent("x.pdf") as NSURL)])
+        XCTAssertTrue(file.unusable)
+    }
+
+    /// The extension item's own text stands in only when no provider gave text or an image.
+    func testExtensionItemTextIsTheLastFallback() async throws {
+        let empty = NSItemProvider()
+        empty.registerItem(forTypeIdentifier: UTType.plainText.identifier) { completion, _, _ in completion?(nil, nil) }
+        let model = ShareModel(machines: [])
+        await model.load([empty], fallback: "one\ntwo")
+        XCTAssertEqual(model.text, "one\ntwo")
+        XCTAssertFalse(model.unusable)
+
+        let both = ShareModel(machines: [])
+        await both.load([NSItemProvider(item: "look" as NSString, typeIdentifier: UTType.utf8PlainText.identifier)], fallback: "look")
+        XCTAssertEqual(both.text, "look", "not appended twice")
+
+        let none = ShareModel(machines: [])
+        await none.load([empty], fallback: "")
+        XCTAssertTrue(none.unusable)
+    }
+
     // MARK: - Image
 
     /// The paste img key's path: the Mac's clipboard, then ^V; any text after, as its paste.

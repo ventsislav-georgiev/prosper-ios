@@ -51,7 +51,8 @@ final class ShareModel: ObservableObject {
     }
 
     /// The first image, and every text and web link a line apart. A file is none of them.
-    func load(_ providers: [NSItemProvider]) async {
+    /// `fallback`, the extension item's own text, is used only when nothing else loaded (#610 QA).
+    func load(_ providers: [NSItemProvider], fallback: String? = nil) async {
         var texts: [String] = []
         for p in providers {
             if image == nil, p.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
@@ -61,12 +62,30 @@ final class ShareModel: ObservableObject {
                 image = data.flatMap { ShareInbox.png($0) }
             } else if p.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
                 if let url = await Self.object(p, URL.self), !url.isFileURL { texts.append(url.absoluteString) }
-            } else if p.hasItemConformingToTypeIdentifier(UTType.text.identifier), let s = await Self.object(p, String.self) {
+            } else if p.hasItemConformingToTypeIdentifier(UTType.text.identifier), let s = await Self.text(p) {
                 texts.append(s)
             }
         }
+        if texts.isEmpty, image == nil, let fallback, !fallback.isEmpty { texts = [fallback] }
         text = texts.isEmpty ? nil : texts.joined(separator: "\n")
         unusable = text == nil && image == nil
+    }
+
+    /// Loads by type, not `loadObject(ofClass: String.self)`, which fails cross-process with 4864 (#610 QA).
+    private static func text(_ p: NSItemProvider) async -> String? {
+        let ids = p.registeredTypeIdentifiers.compactMap(UTType.init)
+        guard let type = ids.first(where: { $0.conforms(to: .plainText) }) ?? ids.first(where: { $0.conforms(to: .text) })
+        else { return nil }
+        let item: NSSecureCoding? = await withCheckedContinuation { c in
+            p.loadItem(forTypeIdentifier: type.identifier) { v, _ in c.resume(returning: v) }
+        }
+        switch item {
+        case let s as String: return s
+        case let a as NSAttributedString: return a.string
+        // Raw bytes only for plain text: RTF or HTML data would paste its markup.
+        case let d as Data where type.conforms(to: .plainText): return String(data: d, encoding: .utf8)
+        default: return nil
+        }
     }
 
     private static func object<T: _ObjectiveCBridgeable>(_ p: NSItemProvider, _ type: T.Type) async -> T?
