@@ -326,19 +326,37 @@ final class DictationStrip: UIView {
         cancelButton.configuration?.baseForegroundColor = .white
         cancelButton.accessibilityLabel = "Cancel dictation"
         cancelButton.addAction(UIAction { _ in cancel() }, for: .touchUpInside)
-        let row = UIStackView(arrangedSubviews: [cancelButton, dot, label, doneButton])
-        row.spacing = 8
+        // ✕ and Done hug the edges; the dot and words sit centred between them, a long tail
+        // filling the middle (#600).
+        let status = UIStackView(arrangedSubviews: [dot, label])
+        status.spacing = 8
+        status.alignment = .center
+        status.translatesAutoresizingMaskIntoConstraints = false
+        let middle = UIView()
+        middle.addSubview(status)
+        let row = UIStackView(arrangedSubviews: [cancelButton, middle, doneButton])
+        row.spacing = 4
         row.alignment = .center
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
+        let centred = status.centerXAnchor.constraint(equalTo: centerXAnchor)
+        centred.priority = .defaultLow - 1   // below the label's own width: a long tail shifts, not shrinks
         NSLayoutConstraint.activate([
             row.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 4),
             row.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -4),
             row.topAnchor.constraint(equalTo: topAnchor),
             row.bottomAnchor.constraint(equalTo: bottomAnchor),
+            middle.heightAnchor.constraint(equalTo: row.heightAnchor),
+            status.leadingAnchor.constraint(greaterThanOrEqualTo: middle.leadingAnchor),
+            status.trailingAnchor.constraint(lessThanOrEqualTo: middle.trailingAnchor),
+            status.centerYAnchor.constraint(equalTo: middle.centerYAnchor),
+            centred,
+            cancelButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
             dot.widthAnchor.constraint(equalToConstant: 10),
             dot.heightAnchor.constraint(equalToConstant: 10),
         ])
+        for b in [cancelButton, doneButton] { b.setContentHuggingPriority(.required, for: .horizontal) }
+        middle.setContentHuggingPriority(.fittingSizeLevel, for: .horizontal)
         label.setContentHuggingPriority(.defaultLow, for: .horizontal)
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }
@@ -353,6 +371,21 @@ final class DictationStrip: UIView {
         case .starting: label.text = "Starting the mic…"
         case .listening(let tail): label.text = tail.isEmpty ? "Listening…" : tail
         case .finishing(let tail): label.text = tail + "…"
+        }
+        dot.isHidden = strip == .idle || strip == .opening
+        if case .listening = strip {
+            if dot.layer.animation(forKey: "pulse") == nil {
+                let pulse = CABasicAnimation(keyPath: "opacity")
+                pulse.fromValue = 1
+                pulse.toValue = 0.3
+                pulse.duration = 0.8
+                pulse.autoreverses = true
+                pulse.repeatCount = .infinity
+                pulse.isRemovedOnCompletion = false   // survives the keyboard going to the background
+                dot.layer.add(pulse, forKey: "pulse")
+            }
+        } else {
+            dot.layer.removeAnimation(forKey: "pulse")
         }
         UIAccessibility.post(notification: .layoutChanged, argument: label)
     }

@@ -349,4 +349,24 @@ final class DictationTests: XCTestCase {
         c.disappear()
         withExtendedLifetime(kb) {}
     }
+
+    /// ✕ and Done hug the edges, the words between them, a short status or a long tail (#600).
+    func testStripLayout() {
+        let strip = DictationStrip(done: {}, cancel: {})
+        strip.frame = CGRect(x: 0, y: 0, width: 402, height: SuggestionBar.height)
+        for s in [DictationClient.Strip.listening(""), .listening(String(repeating: "and then some ", count: 9))] {
+            strip.show(s)
+            strip.setNeedsLayout()
+            strip.layoutIfNeeded()
+            let cancel = strip.cancelButton.convert(strip.cancelButton.bounds, to: strip)
+            let done = strip.doneButton.convert(strip.doneButton.bounds, to: strip)
+            let label = strip.label.convert(strip.label.bounds, to: strip)
+            XCTAssertLessThan(cancel.minX, 8)
+            XCTAssertGreaterThanOrEqual(cancel.width, 44)
+            XCTAssertLessThan(cancel.maxX, 64, "the ✕ at the edge, not centred in a wide button")
+            XCTAssertGreaterThan(done.maxX, 402 - 8)
+            XCTAssertGreaterThanOrEqual(label.minX, cancel.maxX)
+            XCTAssertLessThanOrEqual(label.maxX, done.minX)
+        }
+    }
 }
