@@ -177,6 +177,11 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Where Copy puts the selection. Tests swap in a private named one: reading the
     /// general one back can raise the paste-permission prompt.
     var pasteboard = UIPasteboard.general
+    /// The keyboards' clipboard history (#597), for the bar's clipboard key (#603). Tests swap
+    /// in a throwaway one.
+    lazy var history = ClipboardHistory.shared()
+    /// The history's panel over the terminal while open (`showClips`).
+    private(set) var clipsPanel: ClipboardPanel?
     /// Shows the Copy menu at a point in `tv`. Tests swap it to see when it would show.
     lazy var presentMenu: (CGPoint) -> Void = { [weak self] p in
         self?.editMenu?.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: p))
@@ -474,6 +479,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private func handleKey(_ key: ShortcutKey) {
         // The compact keyboard's word ends here: an arrow or tab moved on from it.
         (keyboardInputView as? TerminalKeyboard)?.resetWord()
+        if key.id == Shortcuts.clipboard.id { return showClips(clipsPanel == nil) }
+        if ["copyLine", "cutLine"].contains(key.id) { copyCaretLine() }   // cut's bytes then delete it
+        if key.kind == .bytes, key.bytes.isEmpty { return }
         switch key.kind {
         case .ctrl, .alt, .shift:
             modifiers[key.kind, default: ShiftState()].tap(at: CACurrentMediaTime())
@@ -509,6 +517,56 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         case .redraw:
             forceRedraw()
         }
+    }
+
+    /// The clipboard history's panel over the terminal, down to the bar, read afresh; or the
+    /// terminal back (#603). A clip copied elsewhere is kept first under Save Copies
+    /// Automatically (#601), as the keyboard keeps it as it appears.
+    func showClips(_ on: Bool) {
+        clipsPanel?.removeFromSuperview()
+        clipsPanel = nil
+        guard on, let history, let bar = shortcutBar else { return }
+        if KeyboardSettings.current().saveCopies { history.save(pasteboard) }
+        let panel = ClipboardPanel(history: history, pasteboard: pasteboard)
+        panel.onPick = { [weak self] in self?.pick($0) }
+        panel.onClose = { [weak self] in self?.showClips(false) }
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(panel)
+        NSLayoutConstraint.activate([
+            panel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            panel.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            panel.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            panel.bottomAnchor.constraint(equalTo: bar.topAnchor),   // rides the keyboard with the bar
+        ])
+        clipsPanel = panel
+    }
+
+    /// A history pick, as the keyboard's (`SuggestionBar.pick`): on the pasteboard, and text
+    /// sent as the paste key sends it. The pty takes no image, so a note says to paste it.
+    private func pick(_ clip: ClipboardHistory.Clip) {
+        showClips(false)
+        guard history?.copy(clip, to: pasteboard) == true else { return }
+        if let text = clip.text { sendText(text) } else { showToast("Copied — paste it") }
+    }
+
+    /// The caret's line off the screen, soft wraps joined, trailing blanks trimmed: on the
+    /// pasteboard and in the history, as the keyboard's copy line (`SuggestionBar.keep`), with
+    /// a note as the long press's. An empty line leaves the clip be. ponytail: the prompt
+    /// comes with it; the screen can't tell it from the input.
+    func copyCaretLine() {
+        let term = tv.getTerminal()
+        var i = cell(at: CGPoint(x: 0, y: tv.caretFrame.midY), term).line + term.buffer.totalLinesTrimmed
+        while term.getScrollInvariantLine(row: i)?.isWrapped == true { i -= 1 }
+        var text = ""
+        repeat {
+            text += term.getScrollInvariantLine(row: i)?.translateToString(trimRight: true, skipNullCellsFollowingWide: true) ?? ""
+            i += 1
+        } while term.getScrollInvariantLine(row: i)?.isWrapped == true
+        while text.last?.isWhitespace == true { text.removeLast() }
+        guard !text.isEmpty else { return }
+        pasteboard.string = text
+        history?.record(text, from: pasteboard)
+        showToast("Copied line\n" + (text.count > 60 ? String(text.prefix(60)) + "…" : text))
     }
 
     private var fedHostBytes = false

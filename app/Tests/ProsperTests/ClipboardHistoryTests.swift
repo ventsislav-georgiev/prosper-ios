@@ -208,12 +208,14 @@ final class ClipboardHistoryTests: XCTestCase {
         withExtendedLifetime(kb) {}
     }
 
-    /// The toolbar's alone (the terminal has no field for a pick), added in the editor, a
-    /// labelled iOS 16 symbol; only with Full Access and a store, like copy and cut line.
-    func testClipboardKeyIsToolbarOnlyAndNeedsFullAccess() throws {
+    /// The toolbar's and the terminal's (#603), added in the editor, a labelled iOS 16 symbol;
+    /// on the toolbar only with Full Access and a store, like copy and cut line.
+    func testClipboardKeyIsAddedInTheEditorAndNeedsFullAccess() throws {
         XCTAssertEqual(Shortcuts.hostKey(Shortcuts.clipboard.id), .clipboard)
         XCTAssertTrue(Shortcuts.Bar.toolbar.catalog.contains(Shortcuts.clipboard))
-        XCTAssertFalse(Shortcuts.Bar.terminal.catalog.contains { $0.id == Shortcuts.clipboard.id })
+        XCTAssertTrue(Shortcuts.Bar.terminal.catalog.contains(Shortcuts.clipboard))
+        XCTAssertFalse(Shortcuts.Bar.terminal.catalog.contains { $0.id == Shortcuts.dictate.id })
+        XCTAssertFalse(Shortcuts.Bar.terminal.defaults.contains { $0.id == Shortcuts.clipboard.id })
         XCTAssertFalse(Shortcuts.defaults.contains { $0.id == Shortcuts.clipboard.id })
         XCTAssertFalse(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.clipboard), "added in the editor")
         XCTAssertEqual(Shortcuts.clipboard.systemImage, "list.clipboard")

@@ -70,31 +70,45 @@ enum Shortcuts {
         ShortcutKey(id: "redraw",  label: "redraw", kind: .redraw, systemImage: "arrow.clockwise"),
     ]
 
-    /// The system keyboards' toolbar's text edits (`Bar.toolbar`, by `hostKey`, never the bytes).
-    /// Those with bytes are the terminal's too, as readline keystrokes: word end has none
-    /// (M-f is next word's), and delete all, copy and cut line need the text.
+    /// The system keyboards' toolbar's text edits (`Bar.toolbar`, by `hostKey`, never the bytes),
+    /// all the terminal's too (#603), as readline keystrokes. Readline's M-f stops at the word's
+    /// end, so word end sends next word's. Delete all is delete line's ^E ^U: a terminal can't
+    /// select or clear a whole multi-line input safely (Claude Code's esc esc opens its rewind
+    /// menu; ^C interrupts). Copy line has no bytes: the terminal copies the caret's line off
+    /// the screen (`TerminalHostVC.copyCaretLine`), and cut line copies it so, then deletes it.
     static let hostOnly: [ShortcutKey] = [
         ShortcutKey(id: "wordNext", label: "next word",     kind: .bytes, bytes: [0x1b, 0x66], systemImage: "chevron.right.2"),
-        ShortcutKey(id: "wordEnd",  label: "word end",      kind: .bytes, systemImage: "forward.end"),
+        ShortcutKey(id: "wordEnd",  label: "word end",      kind: .bytes, bytes: [0x1b, 0x66], systemImage: "forward.end"),
         ShortcutKey(id: "wordBack", label: "previous word", kind: .bytes, bytes: [0x1b, 0x62], systemImage: "chevron.left.2"),
         ShortcutKey(id: "delWord",  label: "delete word",   kind: .bytes, bytes: [0x17], systemImage: "delete.left"),
         // ^U: readline and Claude Code's prompt delete to the line's start; zsh's kills the whole line.
         ShortcutKey(id: "delHome",  label: "delete to line start", kind: .bytes, bytes: [0x15], systemImage: "delete.left.fill"),
         ShortcutKey(id: "delEnd",   label: "delete to line end",   kind: .bytes, bytes: [0x0b], systemImage: "delete.right.fill"),
         ShortcutKey(id: "delLine",  label: "delete line",   kind: .bytes, bytes: [0x05, 0x15], systemImage: "strikethrough"),
-        ShortcutKey(id: "delAll",   label: "delete all",    kind: .bytes, systemImage: "trash"),
+        ShortcutKey(id: "delAll",   label: "delete all",    kind: .bytes, bytes: [0x05, 0x15], systemImage: "trash"),
         ShortcutKey(id: "copyLine", label: "copy line",     kind: .bytes, systemImage: "doc.on.doc"),
-        ShortcutKey(id: "cutLine",  label: "cut line",      kind: .bytes, systemImage: "scissors"),
+        ShortcutKey(id: "cutLine",  label: "cut line",      kind: .bytes, bytes: [0x05, 0x15], systemImage: "scissors"),
     ]
 
-    /// The toolbar's clipboard history (#597). Never the terminal's: it has no field for a
-    /// picked clip to go into. Added in the editor, as the edits: the default toolbar fits a
+    /// The clipboard history (#597): the toolbar's, and the terminal's too (#603), where a
+    /// picked clip goes to the pty as a paste (`TerminalHostVC.showClips`). No bytes: each bar
+    /// acts on it by id. Added in the editor, as the edits: the default toolbar fits a
     /// portrait phone without scrolling, with no room for one more cap.
     static let clipboard = ShortcutKey(id: "clips", label: "clipboard history", kind: .bytes,
                                        systemImage: "list.clipboard")
-    /// The toolbar's speech-to-text (#598), by Prosper's mic (`DictationClient`). Never the
-    /// terminal's, and added in the editor, as the clipboard.
+    /// The toolbar's speech-to-text (#598), by Prosper's mic (`DictationClient`). Not the
+    /// terminal's yet (#604); added in the editor, as the clipboard.
     static let dictate = ShortcutKey(id: "mic", label: "dictate", kind: .bytes, systemImage: "mic")
+
+    /// The terminal bar's own keys with no bytes, which `TerminalHostVC.handleKey` acts on by
+    /// id. The clipboard not on the Mac: no Prosper keyboard there fills the history.
+    static var terminalActions: [ShortcutKey] {
+        #if targetEnvironment(macCatalyst)
+        []
+        #else
+        [clipboard]
+        #endif
+    }
 
     /// The send key: every terminal bar has it, and the editor can't remove it there.
     static let sendID = "enter"
@@ -156,10 +170,11 @@ enum Shortcuts {
         case terminal, toolbar
 
         var storageKey: String { self == .terminal ? Shortcuts.storageKey : "toolbarKeys" }
-        /// What the editor offers: on the terminal, the edits with bytes too, all of them (one
-        /// pty send each, nothing to hold back); on the toolbar, the keys a text field can use (`hostKey`).
+        /// What the editor offers: on the terminal, every toolbar key but dictate (#604), all the
+        /// edits (nothing to hold back) and its actions; on the toolbar, the keys a text field
+        /// can use (`hostKey`).
         var catalog: [ShortcutKey] {
-            self == .terminal ? Shortcuts.catalog + hostOnly.filter { !$0.bytes.isEmpty }
+            self == .terminal ? Shortcuts.catalog + hostOnly + terminalActions
                 : (Shortcuts.catalog + hostOnly + [clipboard, dictate]).filter { hostKey($0.id) != nil }
         }
         /// The toolbar's: the default bar's keys it can use, in order, less send.

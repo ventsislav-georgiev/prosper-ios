@@ -361,13 +361,102 @@ final class ImagePasteTests: XCTestCase {
     func testBarEditKeysSendTheirKeystrokes() async throws {
         let (vc, spy) = try await makeVC()
         let (bar, _) = try barAndTerminal(vc)
-        for id in ["wordNext", "wordBack", "delWord", "delHome", "delEnd", "delLine"] {
+        for id in ["wordNext", "wordBack", "delWord", "delHome", "delEnd", "delLine", "wordEnd", "delAll"] {
             let k = try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == id }, id)
             let before = spy.sent.count
             bar.onKey?(k)
             XCTAssertEqual(Array(spy.sent[before...]), [k.bytes], id)
         }
-        XCTAssertEqual(spy.sent.suffix(6), [[0x1b, 0x66], [0x1b, 0x62], [0x17], [0x15], [0x0b], [0x05, 0x15]])
+        XCTAssertEqual(spy.sent.suffix(8), [[0x1b, 0x66], [0x1b, 0x62], [0x17], [0x15], [0x0b], [0x05, 0x15],
+                                            [0x1b, 0x66], [0x05, 0x15]])
+    }
+
+    /// Copy line (#603) puts the caret's line off the screen, soft wraps joined and trailing
+    /// blanks trimmed, on the pasteboard and in the history with a note, and sends nothing;
+    /// cut line copies it so, then sends delete line's ^E ^U. An empty line copies nothing.
+    func testBarCopyAndCutLineTakeTheCaretsLine() async throws {
+        let (vc, spy) = try await makeVC()
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ImagePasteTests-\(UUID())")
+        defer { UIPasteboard.remove(withName: pb.name); try? FileManager.default.removeItem(at: dir) }
+        let h = ClipboardHistory(dir: dir)
+        vc.pasteboard = pb
+        vc.history = h
+        let (bar, tv) = try barAndTerminal(vc)
+        let long = String(repeating: "x", count: tv.getTerminal().cols)
+        tv.feed(text: "out\r\n$ echo " + long + " yz   ")
+        try await Task.sleep(nanoseconds: 100_000_000)   // the caret moves on SwiftTerm's display pass
+        let copy = try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == "copyLine" })
+        let cut = try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == "cutLine" })
+        let line = "$ echo " + long + " yz"
+
+        bar.onKey?(copy)
+        XCTAssertEqual(pb.string, line)
+        XCTAssertEqual(h.clips.map(\.text), [line])
+        XCTAssertEqual(spy.sent, [], "copy sends nothing")
+        let note = vc.view.subviews.flatMap(\.subviews).compactMap { ($0 as? UILabel)?.text }.first { $0.hasPrefix("Copied line") }
+        XCTAssertEqual(note, "Copied line\n" + line.prefix(60) + "…")
+
+        pb.string = "elsewhere"
+        bar.onKey?(cut)
+        XCTAssertEqual(pb.string, line)
+        XCTAssertEqual(spy.sent, [[0x05, 0x15]])
+        XCTAssertEqual(h.clips.map(\.text), [line], "the same line once")
+
+        tv.feed(text: "\r\n")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        pb.string = "kept"
+        bar.onKey?(copy)
+        bar.onKey?(cut)
+        XCTAssertEqual(pb.string, "kept", "an empty line leaves the clip be")
+        XCTAssertEqual(spy.sent, [[0x05, 0x15], [0x05, 0x15]])
+    }
+
+    /// The clipboard key (#603) opens the history's panel over the terminal; a text pick goes
+    /// out as the paste key's bracketed paste and is copied, an image pick is only copied. Each
+    /// pick closes the panel. A named pasteboard and a throwaway store.
+    func testBarClipboardKeySendsAPickedTextClipAndCopiesAnImage() async throws {
+        let (vc, spy) = try await makeVC()
+        spy.emit("\u{1b}[?2004h")   // the shell turned bracketed paste on
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ImagePasteTests-\(UUID())")
+        defer { UIPasteboard.remove(withName: pb.name); try? FileManager.default.removeItem(at: dir) }
+        let h = ClipboardHistory(dir: dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let source = dir.appendingPathComponent("source.png")
+        try png.write(to: source)
+        let image = ClipboardHistory.Clip(image: try XCTUnwrap(h.storeImage(at: source)), date: Date())
+        pb.string = "echo hi"
+        h.record("echo hi", from: pb)
+        vc.pasteboard = pb
+        vc.history = h
+        let (bar, _) = try barAndTerminal(vc)
+        let key = try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == Shortcuts.clipboard.id })
+
+        bar.onKey?(key)
+        var panel = try XCTUnwrap(vc.clipsPanel)
+        XCTAssertTrue(panel.superview === vc.view)
+        XCTAssertEqual(panel.clips.first?.text, "echo hi")
+        XCTAssertEqual(spy.sent, [], "opening the panel sends nothing")
+        pb.items = []
+        panel.tableView(panel.table, didSelectRowAt: IndexPath(row: 0, section: 0))
+        XCTAssertEqual(spy.sent, [Array("\u{1b}[200~echo hi\u{1b}[201~".utf8)], "the paste key's route")
+        XCTAssertEqual(pb.string, "echo hi")
+        XCTAssertNil(vc.clipsPanel, "a pick closes the panel")
+
+        bar.onKey?(key)
+        panel = try XCTUnwrap(vc.clipsPanel)
+        panel.onPick?(image)   // the image's row
+        XCTAssertEqual(spy.sent.count, 1, "an image is never sent")
+        XCTAssertTrue(pb.hasImages)
+        XCTAssertFalse(pb.hasStrings)
+        XCTAssertNil(vc.clipsPanel)
+
+        bar.onKey?(key)
+        XCTAssertNotNil(vc.clipsPanel)
+        bar.onKey?(key)
+        XCTAssertNil(vc.clipsPanel, "the key again: the terminal back")
     }
 
     /// paste and paste img never take the modifiers and never spend them.

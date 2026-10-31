@@ -233,7 +233,7 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(Shortcuts.Bar.terminal.load(store).map(\.id), ["esc", "tab", "enter"])
         XCTAssertTrue(Shortcuts.Bar.terminal.sendMandatory)
         XCTAssertEqual(Shortcuts.Bar.terminal.catalog.map(\.id), Shortcuts.catalog.map(\.id)
-                       + ["wordNext", "wordBack", "delWord", "delHome", "delEnd", "delLine"])
+                       + Shortcuts.hostOnly.map(\.id) + ["clips"])
     }
 
     /// The toolbar's Paste is the system's control, pasting into the toolbar: its clip goes
@@ -422,7 +422,7 @@ final class KeyboardToolbarTests: XCTestCase {
     }
 
     /// The edits, each an icon with a spoken label: the toolbar's keep them, and the
-    /// terminal's catalog has those with readline keystrokes (`testTerminalOffersReadlineEdits`).
+    /// terminal's catalog has them all (`testTerminalOffersReadlineEdits`).
     func testEditKeysAreToolbarOnlyIconsWithLabels() throws {
         let ids = ["wordNext", "wordEnd", "wordBack", "delWord", "delHome", "delEnd", "delLine", "delAll",
                    "copyLine", "cutLine"]
@@ -448,12 +448,15 @@ final class KeyboardToolbarTests: XCTestCase {
                        "no copy or cut without Full Access")
     }
 
-    /// The terminal's catalog offers the readline edits as their keystrokes; word end, delete
-    /// all, copy and cut line need the text and stay off. The toolbar's catalog has them all,
-    /// and a terminal bar holding a delete seeds it with that one.
+    /// The terminal's catalog offers the edits as readline keystrokes (#603: word end as next
+    /// word's M-f, delete all and cut line as delete line's ^E ^U), copy line with none (the
+    /// terminal reads the screen). The toolbar's catalog has them all, and a terminal bar
+    /// holding a delete seeds it with that one.
     func testTerminalOffersReadlineEdits() throws {
-        let want: [(String, [UInt8])] = [("wordNext", [0x1b, 0x66]), ("wordBack", [0x1b, 0x62]), ("delWord", [0x17]),
-                                         ("delHome", [0x15]), ("delEnd", [0x0b]), ("delLine", [0x05, 0x15])]
+        let want: [(String, [UInt8])] = [("wordNext", [0x1b, 0x66]), ("wordEnd", [0x1b, 0x66]), ("wordBack", [0x1b, 0x62]),
+                                         ("delWord", [0x17]), ("delHome", [0x15]), ("delEnd", [0x0b]),
+                                         ("delLine", [0x05, 0x15]), ("delAll", [0x05, 0x15]), ("copyLine", []),
+                                         ("cutLine", [0x05, 0x15])]
         let terminal = Shortcuts.Bar.terminal.catalog
         for (id, bytes) in want {
             let k = try XCTUnwrap(terminal.first { $0.id == id }, id)
@@ -461,7 +464,6 @@ final class KeyboardToolbarTests: XCTestCase {
             XCTAssertEqual(k.bytes, bytes, id)
             XCTAssertEqual(k, try XCTUnwrap(Shortcuts.hostOnly.first { $0.id == id }), "same label and icon: \(id)")
         }
-        for id in ["wordEnd", "delAll", "copyLine", "cutLine"] { XCTAssertFalse(terminal.contains { $0.id == id }, id) }
         XCTAssertEqual(Set(terminal.map(\.id)).count, terminal.count, "no duplicate ids")
         XCTAssertEqual(Shortcuts.Bar.terminal.defaults.map(\.id), Shortcuts.defaults.map(\.id), "not in the defaults")
 
@@ -479,6 +481,17 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(loaded.map(\.id), ["left", "delLine", "delWord", "enter"])
         XCTAssertEqual(loaded[2].bytes, [0x17], "a saved key takes the catalog's definition")
         XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), ["paste", "left", "delLine", "delWord", "enter"])
+    }
+
+    /// Parity (#603): every key the toolbar offers, the terminal's bar offers too, but those
+    /// named here. A new toolbar key fails this until the terminal offers it or it's listed.
+    func testTerminalOffersEveryToolbarKey() {
+        var notOnTerminal: Set<String> = [Shortcuts.dictate.id]   // #604
+        #if targetEnvironment(macCatalyst)
+        notOnTerminal.insert(Shortcuts.clipboard.id)   // no Prosper keyboard on the Mac to fill it
+        #endif
+        let terminal = Set(Shortcuts.Bar.terminal.catalog.map(\.id))
+        XCTAssertEqual(Set(Shortcuts.Bar.toolbar.catalog.map(\.id)).subtracting(terminal), notOnTerminal)
     }
 
     /// nvim's word classes: letters, digits and "_" one, other punctuation another, blanks
