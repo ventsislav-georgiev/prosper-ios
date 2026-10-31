@@ -80,6 +80,20 @@ final class DictationTests: XCTestCase {
         XCTAssertFalse(Dictation.ReadyPeriod.untilStopped.expired(since: clock, now: clock + 86_400))
     }
 
+    func testStoredReadyPeriodDefaultsToTen() throws {
+        let suite = "dictation.readyPeriod.test"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.removePersistentDomain(forName: suite)
+        XCTAssertEqual(Dictation.ReadyPeriod.stored(in: defaults), .ten)
+        defaults.set(0, forKey: Dictation.ReadyPeriod.key)
+        XCTAssertEqual(Dictation.ReadyPeriod.stored(in: defaults), .untilStopped)
+        defaults.set(2, forKey: Dictation.ReadyPeriod.key)
+        XCTAssertEqual(Dictation.ReadyPeriod.stored(in: defaults), .two)
+        defaults.set(7, forKey: Dictation.ReadyPeriod.key)
+        XCTAssertEqual(Dictation.ReadyPeriod.stored(in: defaults), .ten)
+    }
+
     func testSpacingAndEnglish() {
         XCTAssertEqual(Dictation.spaced(" Hello.", after: ""), "Hello.")
         XCTAssertEqual(Dictation.spaced("Hello.", after: "Say"), " Hello.")

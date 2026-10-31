@@ -147,7 +147,7 @@ final class DictationService: ObservableObject {
 
     private func tick() {
         guard let s = state, s.phase != .off else { return }
-        let period = Dictation.ReadyPeriod(rawValue: UserDefaults.standard.integer(forKey: Dictation.ReadyPeriod.key)) ?? .ten
+        let period = Dictation.ReadyPeriod.stored()
         if s.phase == .listening, Date().timeIntervalSince(heardAt) >= Dictation.quiet {
             Task { await finish(cancel: false) }
         } else if s.phase == .ready, period.expired(since: lastUse, now: Date()) {
@@ -232,6 +232,11 @@ extension Dictation {
         case two = 2, ten = 10, thirty = 30, untilStopped = 0
         static let key = "dictation.readyMinutes"
         var id: Int { rawValue }
+
+        /// The stored choice; absent or unknown reads as `.ten`, the Settings default.
+        static func stored(in defaults: UserDefaults = .standard) -> ReadyPeriod {
+            (defaults.object(forKey: key) as? Int).flatMap(ReadyPeriod.init) ?? .ten
+        }
         var title: String { self == .untilStopped ? "Until Stopped" : "\(rawValue) min" }
 
         func expired(since: Date, now: Date) -> Bool {
