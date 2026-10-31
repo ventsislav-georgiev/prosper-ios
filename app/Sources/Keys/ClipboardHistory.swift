@@ -274,6 +274,9 @@ class KeysPanel: UIView {
         table.tableFooterView = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 1))   // no separator under the last row
         table.rowHeight = UITableView.automaticDimension
         table.estimatedRowHeight = 52
+        table.sectionIndexColor = Style.accent   // the jump index (#639), on the card
+        table.sectionIndexBackgroundColor = .clear
+        table.sectionIndexTrackingBackgroundColor = .clear
         empty.text = note
         empty.textColor = Style.hint
         empty.font = .systemFont(ofSize: 14)
@@ -299,10 +302,43 @@ class KeysPanel: UIView {
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// The card: as tall as its rows (#626).
+    /// The card: as tall as its rows (#626). Its jump index comes and goes as it starts or
+    /// stops scrolling (#639).
     private final class Card: UITableView {
         override var contentSize: CGSize { didSet { invalidateIntrinsicContentSize() } }
         override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: contentSize.height) }
+        private var scrolled = false
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            if scrolled != scrolls { scrolled.toggle(); reloadSectionIndexTitles() }
+        }
+    }
+
+    /// The A–Z jump index of an alphabetical panel (#639), from `jumps(_:)`.
+    var jumps: [(title: String, row: IndexPath)] = []
+
+    /// Per section its names in display order, nil for one not alphabetical (the recents): each
+    /// distinct first letter, uppercased ("#" for a name not starting with one), with its first row.
+    static func jumps(_ sections: [[String]?]) -> [(title: String, row: IndexPath)] {
+        var out: [(title: String, row: IndexPath)] = []
+        for (s, names) in sections.enumerated() {
+            for (r, name) in (names ?? []).enumerated() {
+                let first = name.trimmingCharacters(in: .whitespaces).first
+                let title = first?.isLetter == true ? String(first!).uppercased() : "#"
+                if !out.contains(where: { $0.title == title }) { out.append((title, IndexPath(row: r, section: s))) }
+            }
+        }
+        return out
+    }
+
+    /// The index's titles, only while the list scrolls (#639).
+    var jumpTitles: [String]? { table.scrolls && !jumps.isEmpty ? jumps.map(\.title) : nil }
+
+    /// To the letter's first row itself, not its section's header: -1 keeps UIKit from
+    /// scrolling to the section after (#639).
+    func jump(_ index: Int) -> Int {
+        table.scrollToRow(at: jumps[index].row, at: .top, animated: false)
+        return -1
     }
 
     /// A row on the card, `text` in the label's colour or the hint's while `off` (#626).
@@ -311,6 +347,11 @@ class KeysPanel: UIView {
         content.textProperties.color = off ? Style.hint : Style.label
         content.secondaryTextProperties.color = Style.hint
     }
+}
+
+extension UITableView {
+    /// Taller rows than the table: it scrolls (#639).
+    var scrolls: Bool { contentSize.height > bounds.height + 1 }
 }
 
 /// The history in the keys' place (#597), as Gboard's: the toolbar's clipboard key opens it,

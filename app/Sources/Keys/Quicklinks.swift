@@ -163,6 +163,7 @@ final class QuicklinkPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
         table.dataSource = self
         table.delegate = self
         empty.isHidden = !sections.isEmpty
+        jumps = Self.jumps(sections.map { $0.title == "Recent" ? nil : $0.links.map(\.name) })
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
@@ -176,6 +177,10 @@ final class QuicklinkPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { sections[section].links.count }
 
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? { sections[section].title }
+
+    func sectionIndexTitles(for tableView: UITableView) -> [String]? { jumpTitles }
+
+    func tableView(_ tableView: UITableView, sectionForSectionIndexTitle title: String, at index: Int) -> Int { jump(index) }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let link = sections[indexPath.section].links[indexPath.row]

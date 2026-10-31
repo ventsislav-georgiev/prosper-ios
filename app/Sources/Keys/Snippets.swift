@@ -179,6 +179,7 @@ final class SnippetPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate 
         table.dataSource = self
         table.delegate = self
         empty.isHidden = !groups.isEmpty
+        jumps = Self.jumps(groups.map { $0.snippets.map(\.name) })
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
@@ -189,6 +190,10 @@ final class SnippetPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate 
     func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         groups[section].title.isEmpty ? nil : groups[section].title
     }
+
+    func sectionIndexTitles(for tableView: UITableView) -> [String]? { jumpTitles }
+
+    func tableView(_ tableView: UITableView, sectionForSectionIndexTitle title: String, at index: Int) -> Int { jump(index) }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let snippet = groups[indexPath.section].snippets[indexPath.row]
