@@ -652,6 +652,13 @@ final class SuggestionBar: UIView {
     var clipsPanel: ClipboardPanel? { panel as? ClipboardPanel }
     var snippetsPanel: SnippetPanel? { panel as? SnippetPanel }
     var quicklinksPanel: QuicklinkPanel? { panel as? QuicklinkPanel }
+    /// The toggle's hold menu while open (`showMenu`, #623).
+    var menuPanel: ToggleMenu? { panel as? ToggleMenu }
+    /// The controller's `advanceToNextInputMode`: the menu's Next Keyboard, the EN <-> BG hop (#623).
+    var nextKeyboard: (() -> Void)?
+    /// The toggle picked the toolbar over AutoFill (#623): only a toggle tap there sets it, so
+    /// AutoFill never shows the toolbar by itself (#599); any other state clears it (`show`).
+    var toolbarOverAutofill = false
     /// Speech-to-text (#598), the controller's on iOS 26; nil in the app and tests that don't
     /// set one. Its key shows only with it and Full Access; its strip covers the bar.
     var dictation: DictationClient? {
@@ -767,10 +774,62 @@ final class SuggestionBar: UIView {
         t.configuration?.baseForegroundColor = .white
         // Body's size at Large, fixed: a glyph growing with the text clips in the 36 pt slot.
         t.configuration?.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 17)
-        t.addAction(UIAction { [weak self] _ in self?.showsToolbar.toggle() }, for: .touchUpInside)
+        t.addAction(UIAction { [weak self] _ in self?.toggleTapped() }, for: .touchUpInside)
+        // A hold opens the menu instead (#623): the recognizer cancels the button's touch-up.
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:)))
+        hold.minimumPressDuration = 0.4
+        t.addGestureRecognizer(hold)
+        t.accessibilityCustomActions = [UIAccessibilityCustomAction(name: "More") { [weak self] _ in
+            self?.showMenu(true)
+            return true
+        }]
         addSubview(t)
         toggle = t
         refresh()
+    }
+
+    /// The toggle's tap: the menu closes if open; in AutoFill the toolbar over it or AutoFill
+    /// back, the pick untouched (#623); else the toolbar or the suggestions.
+    private func toggleTapped() {
+        if menuPanel != nil { return showMenu(false) }
+        guard state == .autofill else { return showsToolbar.toggle() }
+        toolbarOverAutofill.toggle()
+        show(state)
+    }
+
+    @objc private func held(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began else { return }
+        UIDevice.current.playInputClick()
+        showMenu(true)
+    }
+
+    /// The toggle's hold menu over the keys, or the keys back (#623).
+    func showMenu(_ on: Bool) {
+        let menu = on ? ToggleMenu(items: menuItems) : nil
+        cover(menu)
+    }
+
+    /// What the menu offers here (#623): each panel and the mic gated as its toolbar key
+    /// (`addToolbar`), on the toolbar or not, and Next Keyboard always. A pick closes the menu.
+    var menuItems: [ToggleMenu.Item] {
+        let full = suggestions.pasteboard() != nil
+        var items: [ToggleMenu.Item] = []
+        func add(_ key: ShortcutKey, _ title: String, _ run: @escaping (SuggestionBar) -> Void) {
+            items.append(.init(title: title, symbol: key.systemImage ?? "") { [weak self] in
+                guard let self else { return }
+                self.showMenu(false)
+                run(self)
+            })
+        }
+        if full, history != nil { add(Shortcuts.clipboard, "Clipboard") { $0.showClips(true) } }
+        if full, snippets != nil { add(Shortcuts.snippets, "Snippets") { $0.showSnippets(true) } }
+        if full, quicklinks != nil { add(Shortcuts.quicklinks, "Quicklinks") { $0.showQuicklinks(true) } }
+        if full, dictation != nil { add(Shortcuts.dictate, "Dictate") { $0.dictation?.tap() } }
+        items.append(.init(title: "Next Keyboard", symbol: "globe") { [weak self] in
+            self?.showMenu(false)
+            self?.nextKeyboard?()
+        })
+        return items
     }
 
     /// A toolbar key, in the keyboard's target (`Shortcuts.hostKey`), once a step pair an edit
@@ -1648,16 +1707,17 @@ final class SuggestionBar: UIView {
         let slots: [Suggestions.Slot?]
         if case .slots(let s) = new { slots = s } else { slots = [nil, nil, nil] }
         let single = new == .autofill || new == .paste   // one full-width button
-        // The toolbar shows over the paste offer (it has its own Paste), never over AutoFill
-        // (#599); the toggle stays beside Paste, so the toolbar is one tap away (#622).
-        let tools = toolbar != nil && new != .autofill && showsToolbar
-        autofillButton.isHidden = new != .autofill
+        // The toolbar shows over the paste offer (it has its own Paste), over AutoFill only at
+        // the toggle's tap there (#599, #623); the toggle stays beside both (#622, #623).
+        if new != .autofill { toolbarOverAutofill = false }
+        let tools = toolbar != nil && (new == .autofill ? toolbarOverAutofill : showsToolbar)
+        autofillButton.isHidden = new != .autofill || tools
         pasteControl.isHidden = new != .paste || tools
         toolbar?.isHidden = !tools
         if let toggle {
-            toggle.isHidden = new == .autofill
-            toggle.configuration?.image = UIImage(systemName: tools ? "ellipsis.bubble" : "command")
-            toggle.accessibilityLabel = tools ? "Show suggestions" : "Show toolbar"
+            let back = new == .autofill ? (image: "key.fill", label: "Show AutoFill") : (image: "ellipsis.bubble", label: "Show suggestions")
+            toggle.configuration?.image = UIImage(systemName: tools ? back.image : "command")
+            toggle.accessibilityLabel = tools ? back.label : "Show toolbar"
             setNeedsLayout()
         }
         for (b, slot) in zip(slotButtons, slots) {
@@ -1693,5 +1753,88 @@ final class SuggestionBar: UIView {
         autofillButton.frame = area
         pasteControl.frame = area
         if dictation != nil { dictationStrip.frame = bounds; bringSubviewToFront(dictationStrip) }
+    }
+}
+
+/// The toolbar toggle's hold menu in the keys' place (#623): a panel (`SuggestionBar.cover`)
+/// of rounded icon tiles, three a row, a tile a pick. Drawn in the keyboard's own view, not a
+/// UIMenu, which an extension clips. A tap off the tiles, the keyboard button or the toggle
+/// closes it.
+final class ToggleMenu: KeysPanel {
+    struct Item {
+        let title: String
+        let symbol: String
+        let run: () -> Void
+    }
+    let items: [Item]
+    private(set) var tiles: [UIButton] = []
+
+    init(items: [Item]) {
+        self.items = items
+        super.init(title: "Switch to", empty: "")
+        table.isHidden = true
+        empty.isHidden = true
+        tiles = items.map(Self.tile)
+        let columns = 3
+        let rows = stride(from: 0, to: tiles.count, by: columns).map { start -> UIStackView in
+            let row = Array(tiles[start..<min(start + columns, tiles.count)])
+            let pad = (row.count..<columns).map { _ in UIView() }   // a short row keeps the tiles' width
+            let stack = UIStackView(arrangedSubviews: row + pad)
+            stack.spacing = 8
+            stack.distribution = .fillEqually
+            let height = stack.heightAnchor.constraint(equalToConstant: 72)
+            height.priority = .defaultHigh   // gives way where landscape's keys are shorter
+            height.isActive = true
+            return stack
+        }
+        let grid = UIStackView(arrangedSubviews: rows)
+        grid.axis = .vertical
+        grid.spacing = 8
+        grid.distribution = .fillEqually
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(grid)
+        NSLayoutConstraint.activate([
+            grid.topAnchor.constraint(equalTo: topAnchor, constant: 46),
+            grid.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 8),
+            grid.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            grid.bottomAnchor.constraint(lessThanOrEqualTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
+        ])
+        // A button's own tap wins over its superview's recognizer, so only taps off the tiles close.
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tappedOff)))
+        for (tile, item) in zip(tiles, items) {
+            tile.addAction(UIAction { _ in
+                UIDevice.current.playInputClick()
+                item.run()
+            }, for: .touchUpInside)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    @objc private func tappedOff() { onClose?() }
+
+    private static func tile(_ item: Item) -> UIButton {
+        var cfg = UIButton.Configuration.plain()
+        cfg.image = UIImage(systemName: item.symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold))
+        cfg.imagePlacement = .top
+        cfg.imagePadding = 6
+        cfg.baseForegroundColor = ShortcutBar.Neon.blueBright
+        cfg.title = item.title
+        cfg.titleLineBreakMode = .byTruncatingTail
+        cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
+            var a = $0
+            a.font = .systemFont(ofSize: 13, weight: .medium)
+            a.foregroundColor = ShortcutBar.Neon.text
+            return a
+        }
+        cfg.background.cornerRadius = 14
+        cfg.background.strokeColor = ShortcutBar.Neon.blue.withAlphaComponent(0.25)
+        cfg.background.strokeWidth = 1
+        let b = UIButton(configuration: cfg)
+        b.configurationUpdateHandler = { b in
+            b.configuration?.background.backgroundColor = b.isHighlighted
+                ? TerminalKeyboard.Style.specialPressed : TerminalKeyboard.Style.special
+        }
+        b.accessibilityLabel = item.title
+        return b
     }
 }

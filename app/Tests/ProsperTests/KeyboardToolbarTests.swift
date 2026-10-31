@@ -116,7 +116,7 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(again.toolbar).isHidden)
     }
 
-    /// A login field shows AutoFill over the toolbar, the toggle out of the way; away from it
+    /// A login field shows AutoFill over the toolbar, the toggle beside it (#623); away from it
     /// the toolbar is back, and the pick never changed. A fresh clip doesn't: the toolbar has
     /// its own Paste (#553), and the bar's shows over the suggestions only.
     func testAutoFillShowsOverTheToolbarAndPasteDoesnt() throws {
@@ -127,7 +127,7 @@ final class KeyboardToolbarTests: XCTestCase {
         bar.refresh()
         XCTAssertEqual(bar.state, .autofill)
         XCTAssertTrue(toolbar.isHidden)
-        XCTAssertTrue(toggle.isHidden)
+        XCTAssertFalse(toggle.isHidden, "the way to the toolbar (#623)")
         XCTAssertFalse(bar.autofillButton.isHidden)
         doc.isSecureTextEntry = false
         bar.refresh()
@@ -156,7 +156,7 @@ final class KeyboardToolbarTests: XCTestCase {
 
     /// #622: the paste offer keeps the toggle, laid out beside it, and the toggle goes from
     /// the offer to the toolbar and back; a fresh clip at a word start with the toolbar
-    /// chosen keeps the toolbar. AutoFill still hides both.
+    /// chosen keeps the toolbar. AutoFill hides the toolbar and Paste, not the toggle (#623).
     func testThePasteOfferKeepsTheToggle() throws {
         let (_, bar, doc) = rig()
         let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
@@ -189,9 +189,161 @@ final class KeyboardToolbarTests: XCTestCase {
         doc.isSecureTextEntry = true
         bar.refresh()
         XCTAssertEqual(bar.state, .autofill)
-        XCTAssertTrue(toggle.isHidden)
+        XCTAssertFalse(toggle.isHidden)
         XCTAssertTrue(toolbar.isHidden)
         XCTAssertTrue(bar.pasteControl.isHidden)
+    }
+
+    // MARK: - The toggle's hold menu (#623)
+
+    /// `rig`, the bar hosted in a view so a panel can cover the keys, with Full Access on a
+    /// named pasteboard and all four stores, or none of them.
+    private func hostedRig(fullAccess: Bool = true, stores: Bool = true)
+        throws -> (TerminalKeyboard, SuggestionBar, Proxy, UIView, DictationClient) {
+        let (kb, bar, doc) = rig()
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: 390, height: 300))
+        bar.host(kb, in: view)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ToggleMenu-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let dictation = DictationClient(store: Dictation.Store(dir: dir.appendingPathComponent("Dictation")))
+        dictation.polls = false
+        dictation.ping = { _ in }
+        dictation.open = { _, done in done(false) }
+        if stores {
+            bar.history = ClipboardHistory(dir: dir.appendingPathComponent("Clips"))
+            bar.snippets = SnippetStore(url: dir.appendingPathComponent("Snippets/snippets.json"))
+            bar.quicklinks = QuicklinkStore(url: dir.appendingPathComponent("Quicklinks/quicklinks.json"))
+            bar.dictation = dictation
+        }
+        if fullAccess {
+            let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+            addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+            bar.suggestions.pasteboard = { pb }
+        }
+        return (kb, bar, doc, view, dictation)
+    }
+
+    /// A hold (0.4 s) on the toggle opens the menu over the keys: each panel and the mic with
+    /// Full Access and its store, as their toolbar keys, whether on the toolbar or not; Next
+    /// Keyboard always. VoiceOver's "More" opens the same.
+    func testAHoldOnTheToggleOpensTheMenuOfWhatWorksHere() throws {
+        let (kb, bar, _, view, _) = try hostedRig()
+        let toggle = try XCTUnwrap(bar.toggle)
+        let hold = try XCTUnwrap(toggle.gestureRecognizers?.compactMap { $0 as? UILongPressGestureRecognizer }.first)
+        XCTAssertEqual(hold.minimumPressDuration, 0.4, accuracy: 0.01)
+        XCTAssertNil(bar.menuPanel)
+        bar.showMenu(true)
+        let menu = try XCTUnwrap(bar.menuPanel)
+        XCTAssertTrue(menu.superview === view, "over the keys")
+        XCTAssertEqual(menu.items.map(\.title), ["Clipboard", "Snippets", "Quicklinks", "Dictate", "Next Keyboard"])
+        XCTAssertEqual(menu.tiles.map(\.accessibilityLabel), menu.items.map(\.title))
+        for item in menu.items { XCTAssertNotNil(UIImage(systemName: item.symbol), item.title) }
+        XCTAssertFalse(Self.caps(try XCTUnwrap(bar.toolbar)).contains { $0.accessibilityLabel == "clipboard history" },
+                       "the clipboard isn't on the toolbar, and is in the menu")
+
+        bar.showMenu(false)
+        XCTAssertNil(bar.menuPanel)
+        let more = try XCTUnwrap(toggle.accessibilityCustomActions?.first { $0.name == "More" })
+        XCTAssertTrue(more.actionHandler?(more) == true)
+        XCTAssertNotNil(bar.menuPanel, "VoiceOver's way to the hold")
+
+        for (full, stores) in [(false, true), (true, false)] {
+            let (kb2, bar2, _, _, _) = try hostedRig(fullAccess: full, stores: stores)
+            XCTAssertEqual(bar2.menuItems.map(\.title), ["Next Keyboard"], "full \(full) stores \(stores)")
+            withExtendedLifetime(kb2) {}
+        }
+        withExtendedLifetime((kb, view)) {}
+    }
+
+    /// Each pick does its thing and closes the menu: the clipboard, snippets and quicklinks
+    /// panels in its place, the mic starts, Next Keyboard is the controller's advance.
+    func testEachMenuPickDoesItsThingAndClosesTheMenu() throws {
+        let (kb, bar, _, view, dictation) = try hostedRig()
+        var advanced = 0
+        bar.nextKeyboard = { advanced += 1 }
+        func pick(_ title: String) throws {
+            bar.showMenu(true)
+            let menu = try XCTUnwrap(bar.menuPanel)
+            try XCTUnwrap(menu.tiles.first { $0.accessibilityLabel == title }).sendActions(for: .touchUpInside)
+            XCTAssertNil(bar.menuPanel, "\(title) closes the menu")
+        }
+        try pick("Clipboard")
+        XCTAssertNotNil(bar.clipsPanel)
+        try pick("Snippets")
+        XCTAssertNotNil(bar.snippetsPanel)
+        try pick("Quicklinks")
+        XCTAssertNotNil(bar.quicklinksPanel)
+        try pick("Dictate")
+        XCTAssertNil(bar.panel, "the keys back")
+        XCTAssertNotNil(dictation.store.request, "the mic started")
+        XCTAssertEqual(advanced, 0)
+        try pick("Next Keyboard")
+        XCTAssertEqual(advanced, 1)
+        XCTAssertNil(bar.panel)
+        withExtendedLifetime((kb, view)) {}
+    }
+
+    /// A tap still switches the toolbar and the suggestions, and opens no menu; with the menu
+    /// open it only closes it, as the keyboard button and a tap off the tiles do.
+    func testATapOnTheToggleSwitchesOrClosesTheMenu() throws {
+        let (kb, bar, _, view, _) = try hostedRig()
+        let toggle = try XCTUnwrap(bar.toggle)
+        toggle.sendActions(for: .touchUpInside)
+        XCTAssertTrue(bar.showsToolbar)
+        XCTAssertNil(bar.menuPanel)
+        bar.showMenu(true)
+        toggle.sendActions(for: .touchUpInside)
+        XCTAssertNil(bar.menuPanel)
+        XCTAssertTrue(bar.showsToolbar, "the tap closed the menu, no switch")
+        bar.showMenu(true)
+        try XCTUnwrap(bar.menuPanel).backButton.sendActions(for: .touchUpInside)
+        XCTAssertNil(bar.menuPanel, "the keyboard button")
+        withExtendedLifetime((kb, view)) {}
+    }
+
+    /// From a stale AutoFill bar there's a way to the toolbar (#599 QA): the toggle beside the
+    /// AutoFill button, a tap shows the toolbar over it and a second tap AutoFill again; a
+    /// refresh keeps what the tap chose, and AutoFill never shows the toolbar by itself, even
+    /// with it picked elsewhere. The hold menu opens there too.
+    func testTheToggleShowsTheToolbarOverAutoFillOnlyAtItsTap() throws {
+        let (kb, bar, doc, view, _) = try hostedRig()
+        let toolbar = try XCTUnwrap(bar.toolbar), toggle = try XCTUnwrap(bar.toggle)
+        doc.textContentType = .username
+        bar.refresh()
+        XCTAssertEqual(bar.state, .autofill)
+        bar.layoutIfNeeded()
+        XCTAssertFalse(toggle.isHidden)
+        XCTAssertFalse(bar.autofillButton.isHidden)
+        XCTAssertTrue(toolbar.isHidden)
+        XCTAssertFalse(toggle.frame.intersects(bar.autofillButton.frame), "beside AutoFill")
+
+        toggle.sendActions(for: .touchUpInside)
+        XCTAssertFalse(toolbar.isHidden, "the toolbar over AutoFill")
+        XCTAssertTrue(bar.autofillButton.isHidden)
+        XCTAssertEqual(toggle.accessibilityLabel, "Show AutoFill")
+        XCTAssertFalse(bar.showsToolbar, "the pick elsewhere unchanged")
+        bar.refresh()
+        XCTAssertFalse(toolbar.isHidden, "the user chose it")
+        toggle.sendActions(for: .touchUpInside)
+        XCTAssertTrue(toolbar.isHidden, "AutoFill back")
+        XCTAssertFalse(bar.autofillButton.isHidden)
+        XCTAssertEqual(toggle.accessibilityLabel, "Show toolbar")
+
+        bar.showsToolbar = true
+        XCTAssertTrue(toolbar.isHidden, "never by itself (#599)")
+        toggle.sendActions(for: .touchUpInside)
+        XCTAssertFalse(toolbar.isHidden)
+        doc.textContentType = nil
+        bar.refresh()
+        XCTAssertFalse(toolbar.isHidden, "a plain field: the pick")
+        doc.textContentType = .username
+        bar.refresh()
+        XCTAssertTrue(toolbar.isHidden, "a login field again: AutoFill, the tap was for that one")
+        XCTAssertTrue(bar.showsToolbar)
+
+        bar.showMenu(true)
+        XCTAssertEqual(try XCTUnwrap(bar.menuPanel).items.last?.title, "Next Keyboard")
+        withExtendedLifetime((kb, view)) {}
     }
 
     /// #622: the keyboard's toolbar sits on the keyboard's backdrop, no blur band; the

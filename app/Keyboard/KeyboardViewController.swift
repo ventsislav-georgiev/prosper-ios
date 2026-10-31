@@ -31,6 +31,7 @@ final class KeyboardViewController: UIInputViewController {
         keyboard.bottomInset = TerminalKeyboard.extensionBottomInset
         keyboard.offersEmoji = false
         bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
+        bar.nextKeyboard = { [weak self] in self?.advanceToNextInputMode() }   // the toggle's menu (#623)
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
         bar.history = ClipboardHistory.shared()
         bar.snippets = SnippetStore.shared()
@@ -66,6 +67,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.suggestions.settings = settings
         bar.toolbar?.reload()
         bar.showClips(false)   // the keys first, as Gboard: a panel reads afresh at its key
+        bar.toolbarOverAutofill = false   // AutoFill first in a new field (#623)
         bar.dictation?.appear()
         sync()
     }
