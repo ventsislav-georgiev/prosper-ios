@@ -62,6 +62,7 @@ struct HomeView: View {
     @StateObject private var store = MachineStore()
     @StateObject private var account = AccountStore()
     @ObservedObject private var live = LiveStatus.shared
+    @ObservedObject private var dictation = DictationService.shared
     @State private var path: NavigationPath
     @State private var showHelp = false
     @State private var notificationsDenied = false   // Turn On met an earlier "Don't Allow"
@@ -114,7 +115,11 @@ struct HomeView: View {
         }
         // The Live Activity's link and a tapped "needs you" alert: that Mac's sessions
         // (and the session, for an alert), or just home when no saved Mac matches.
-        .onOpenURL { url in if let t = LiveTarget(url: url) { live.target = t } }
+        .onOpenURL { url in
+            if dictation.open(url) { return }   // the keyboard's mic key (#598): its screen, listening
+            if let t = LiveTarget(url: url) { live.target = t }
+        }
+        .sheet(isPresented: $dictation.showing) { DictationScreen(service: dictation) }
         .onReceive(live.$target) { t in
             guard let t else { return }
             live.target = nil

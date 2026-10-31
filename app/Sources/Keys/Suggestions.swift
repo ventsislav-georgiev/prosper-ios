@@ -635,6 +635,21 @@ final class SuggestionBar: UIView {
     var history: ClipboardHistory?
     /// The history's panel over the keys while open (`showClips`).
     private(set) var clipsPanel: ClipboardPanel?
+    /// Speech-to-text (#598), the controller's on iOS 26; nil in the app and tests that don't
+    /// set one. Its key shows only with it and Full Access; its strip covers the bar.
+    var dictation: DictationClient? {
+        didSet {
+            dictation?.insert = { [weak self] in self?.dictated($0) }
+            dictation?.onStrip = { [weak self] in self?.dictationStrip.show($0) }
+            dictation?.hint = { [weak self] in self?.hint($0) }
+        }
+    }
+    private(set) lazy var dictationStrip: DictationStrip = {
+        let strip = DictationStrip(done: { [weak self] in self?.dictation?.done() },
+                                   cancel: { [weak self] in self?.dictation?.cancel() })
+        addSubview(strip)
+        return strip
+    }()
     /// The toggle's pick, in the extension's own defaults (the suggestions' memory's), so it
     /// holds without Full Access. AutoFill shows over the toolbar whatever it says (`show`),
     /// and never changes it; the bar's Paste doesn't (`Suggestions.toolbarShown`).
@@ -721,6 +736,7 @@ final class SuggestionBar: UIView {
                 guard let action = Shortcuts.hostKey(key.id) else { return false }
                 if case .edit(let e) = action, e.copies { return full }
                 if action == .clipboard { return full && self?.history != nil }
+                if action == .dictate { return full && self?.dictation != nil }
                 return pastes || action != .paste
             }
         }, oneRow: true)
@@ -761,6 +777,20 @@ final class SuggestionBar: UIView {
             if n > 0 { keyboard.caret(dir * n) }
         case .edit(let e): edit(e, keyboard, doc)
         case .clipboard: showClips(clipsPanel == nil)
+        case .dictate: dictation?.tap()
+        }
+    }
+
+    /// Dictated phrases at the cursor, spaced from what's before (#598).
+    private func dictated(_ text: String) {
+        keyboard?.finish { [weak self] in
+            guard let self, let keyboard = self.keyboard, let doc = keyboard.target as? UITextDocumentProxy,
+                  keyboard.writable() else { return }
+            doc.insertText(Dictation.spaced(text, after: doc.documentContextBeforeInput ?? ""))
+            self.suggestions.caretMoved()
+            keyboard.resetWord()
+            keyboard.autoCapitalize()
+            self.refresh()
         }
     }
 
@@ -1523,5 +1553,6 @@ final class SuggestionBar: UIView {
         }
         autofillButton.frame = area
         pasteControl.frame = area
+        if dictation != nil { dictationStrip.frame = bounds; bringSubviewToFront(dictationStrip) }
     }
 }

@@ -65,6 +65,12 @@ targets:
         # Standard TLS only (no proprietary crypto) → exempt; skips the
         # export-compliance prompt on every TestFlight build.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        # The keyboards' mic key (#598, DictationService): only the app records. What has no
+        # INFOPLIST_KEY_ (the `prosper` URL scheme the keyboard opens it by, background audio
+        # to keep the mic ready) is in Sources/Info.plist, merged into the generated one.
+        INFOPLIST_FILE: Sources/Info.plist
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Prosper turns the mic on when you dictate with the Prosper keyboard's mic key, and keeps it ready for the time you choose in Settings."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "What you dictate is turned into text on this iPhone, never sent anywhere."
         SWIFT_VERSION: "5.9"
         # Catalyst gives same-app e2e on the Mac (PLAN §8). Client is connect-only;
         # com.apple.security.network.client (in Prosper.entitlements) lets the

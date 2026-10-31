@@ -11,7 +11,8 @@ import UIKit
 /// Launched by the system under a tight memory cap: two views, no network, the pasteboard
 /// only with Full Access (the bar's and the toolbar's Paste), nothing held beyond the
 /// keyboard, the shared spell checker and what it learned. The clipboard history (#597)
-/// lives on disk in the App Group, shared by both extensions (`ClipboardHistory`).
+/// lives on disk in the App Group, shared by both extensions (`ClipboardHistory`). Dictation
+/// (#598) hops to Prosper for the mic, then talks to it there (`DictationClient`).
 ///
 /// Two extensions run this controller, both "Prosper", English and Bulgarian: each takes
 /// its letters and dictionary from its own Info.plist's `PrimaryLanguage`.
@@ -32,6 +33,12 @@ final class KeyboardViewController: UIInputViewController {
         bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
         bar.history = ClipboardHistory.shared()
+        // iOS 26's speech engines only; the app has no fallback below it.
+        if #available(iOS 26, *), let store = Dictation.Store.shared() {
+            let dictation = DictationClient(store: store)
+            dictation.open = { [weak self] url, done in self?.openApp(url, done) ?? done(false) }
+            bar.dictation = dictation
+        }
         bar.attach(keyboard)
         bar.host(keyboard, in: view)
         // The app's editor writes them to the App Group: without Full Access, the defaults.
@@ -55,7 +62,13 @@ final class KeyboardViewController: UIInputViewController {
         bar.suggestions.settings = settings
         bar.toolbar?.reload()
         bar.showClips(false)   // the keys first, as Gboard: the history reads afresh at its key
+        bar.dictation?.appear()
         sync()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        bar.dictation?.disappear()
     }
 
     /// AutoFill on the sibling Prosper keyboard just advanced here: advance once more, past
@@ -92,5 +105,16 @@ final class KeyboardViewController: UIInputViewController {
         keyboard.returnTitle = TerminalKeyboard.returnTitle(for: textDocumentProxy.returnKeyType ?? .default)
         keyboard.autoCapitalize()
         bar.refresh()
+    }
+
+    /// Prosper, through the responder chain's `UIApplication`: an extension can't name
+    /// `UIApplication.shared`, and `extensionContext.open` is a widget's only (#598).
+    private func openApp(_ url: URL, _ done: @escaping (Bool) -> Void) {
+        var responder: UIResponder? = self
+        while let r = responder {
+            if let app = r as? UIApplication { return app.open(url, options: [:], completionHandler: done) }
+            responder = r.next
+        }
+        done(false)
     }
 }

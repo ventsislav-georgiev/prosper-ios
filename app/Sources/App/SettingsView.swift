@@ -75,6 +75,8 @@ struct SettingsView: View {
     private var characterPreview = KeyboardSettings().characterPreview
     @AppStorage(KeyboardSettings.Key.keySize, store: KeyboardSettings.store())
     private var keySize = KeyboardSettings().keySize
+    @AppStorage(Dictation.ReadyPeriod.key) private var readyPeriod = Dictation.ReadyPeriod.ten
+    @ObservedObject private var dictation = DictationService.shared
     @AppStorage(AgentCommand.key) private var agentCommand = ""
     @AppStorage(DchSession.sidekickKey) private var sidekickPattern = DchSession.sidekickDefault
     // Session list rows (`RowDetails`), on this device only.
@@ -201,6 +203,20 @@ struct SettingsView: View {
                 NavigationLink("Terminal Shortcut Keys") { ShortcutEditor(sheet: false) }
             } footer: {
                 Text("The System Keyboard Toolbar shows above the Prosper keyboard in other apps when you tap the toolbar toggle at the leading edge of its strip. Terminal Shortcut Keys are the bar under the terminal. The toolbar list needs Full Access; without it, the keyboard shows the default keys.")
+            }
+
+            // The keyboards' mic key (#598).
+            Section {
+                Picker("Keep Mic Ready", selection: $readyPeriod) {
+                    ForEach(Dictation.ReadyPeriod.allCases) { Text($0.title).tag($0) }
+                }
+                if dictation.warm {
+                    Button("Stop the Mic", role: .destructive) { dictation.stop() }
+                }
+            } header: {
+                Text("Dictation")
+            } footer: {
+                Text("Add Dictate to the System Keyboard Toolbar, then tap it in any app to type what you say, in English. The first tap opens Prosper to turn the mic on; tap ◀ to go back and keep talking. Prosper keeps the mic ready in the background for this long after you last dictate, with the orange dot showing, so the next tap starts at once. Needs Full Access and iOS 26.")
             }
             #endif
 

@@ -92,6 +92,9 @@ enum Shortcuts {
     /// portrait phone without scrolling, with no room for one more cap.
     static let clipboard = ShortcutKey(id: "clips", label: "clipboard history", kind: .bytes,
                                        systemImage: "list.clipboard")
+    /// The toolbar's speech-to-text (#598), by Prosper's mic (`DictationClient`). Never the
+    /// terminal's, and added in the editor, as the clipboard.
+    static let dictate = ShortcutKey(id: "mic", label: "dictate", kind: .bytes, systemImage: "mic")
 
     /// The send key: every terminal bar has it, and the editor can't remove it there.
     static let sendID = "enter"
@@ -157,7 +160,7 @@ enum Shortcuts {
         /// pty send each, nothing to hold back); on the toolbar, the keys a text field can use (`hostKey`).
         var catalog: [ShortcutKey] {
             self == .terminal ? Shortcuts.catalog + hostOnly.filter { !$0.bytes.isEmpty }
-                : (Shortcuts.catalog + hostOnly + [clipboard]).filter { hostKey($0.id) != nil }
+                : (Shortcuts.catalog + hostOnly + [clipboard, dictate]).filter { hostKey($0.id) != nil }
         }
         /// The toolbar's: the default bar's keys it can use, in order, less send.
         var defaults: [ShortcutKey] {
@@ -206,6 +209,8 @@ enum Shortcuts {
         /// The clipboard history's panel in the keys' place, or the keys back (#597); only
         /// with Full Access.
         case clipboard
+        /// Dictation's start, or its Done (#598); only with Full Access, on iOS 26.
+        case dictate
     }
 
     /// nvim's motions and deletes, and its yank and cut of a line (`SuggestionBar.edit`).
@@ -233,6 +238,7 @@ enum Shortcuts {
         case "snl", sendID: return .key(.ret)
         case "paste": return .paste
         case clipboard.id: return .clipboard
+        case dictate.id: return .dictate
         case "wordNext": return .edit(.wordNext)
         case "wordEnd": return .edit(.wordEnd)
         case "wordBack": return .edit(.wordBack)
