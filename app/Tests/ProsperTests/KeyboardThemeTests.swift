@@ -467,4 +467,236 @@ final class KeyboardThemeTests: XCTestCase {
         XCTAssertNil(KeyboardSettings.current().toolbarTheme, "unknown is Match keys")
         XCTAssertEqual(KeyboardSettings.current().theme, .dark, "unknown is Dark")
     }
+
+    // MARK: - Appearance from the keys (#641)
+
+    /// A hosted keyboard and bar on the isolated store, its settings read from it, with Full
+    /// Access on a named pasteboard or without.
+    private func appearanceRig(fullAccess: Bool = true) throws -> (TerminalKeyboard, SuggestionBar, UIView, Proxy) {
+        let doc = Proxy()
+        let kb = TerminalKeyboard()
+        kb.target = doc
+        kb.offersEmoji = false
+        let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: UserDefaults(suiteName: suite + ".memory")!)))
+        addTeardownBlock { [suite] in UserDefaults().removePersistentDomain(forName: suite + ".memory") }
+        bar.attach(kb)
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: 402, height: 400))
+        bar.host(kb, in: view)
+        bar.addToolbar { Shortcuts.Bar.toolbar.defaults }
+        if fullAccess {
+            let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+            addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+            bar.suggestions.pasteboard = { pb }
+        }
+        kb.settings = .current(fullAccess: fullAccess)
+        return (kb, bar, view, doc)
+    }
+
+    private func selected(_ row: [UIButton]) -> [String?] {
+        row.filter { $0.accessibilityTraits.contains(.selected) }.map(\.accessibilityLabel)
+    }
+
+    private func tap(_ row: [UIButton], _ name: String) throws {
+        try XCTUnwrap(row.first { $0.accessibilityLabel == name }, name).sendActions(for: .touchUpInside)
+    }
+
+    private var stored: [String?] {
+        [KeyboardSettings.Key.theme, KeyboardSettings.Key.toolbarTheme, KeyboardSettings.Key.accent].map(defaults.string)
+    }
+
+    /// The menu's Appearance, before Next Keyboard, opens the panel; Light from it stores
+    /// "light" for the app's Settings, the keys and the toolbar (Match Keys) turn Light, and the
+    /// panel is drawn again in Light with Light ringed.
+    func testALightPickAppliesLiveStoresAndRedrawsThePanel() throws {
+        let (kb, bar, view, doc) = try appearanceRig()
+        bar.showMenu(true)
+        let menu = try XCTUnwrap(bar.menuPanel)
+        XCTAssertEqual(menu.items.suffix(2).map(\.title), ["Appearance", "Next Keyboard"])
+        XCTAssertEqual(menu.items.first { $0.title == "Appearance" }?.symbol, "paintpalette")
+        XCTAssertNotNil(UIImage(systemName: "paintpalette"))
+        try tap(menu.tiles, "Appearance")
+        XCTAssertNil(bar.menuPanel)
+        let panel = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertTrue(panel.superview === view, "over the keys")
+        XCTAssertEqual(panel.title.text, "Appearance")
+        XCTAssertTrue(panel.note.isHidden)
+        XCTAssertEqual(selected(panel.keys), ["Dark"])
+
+        try tap(panel.keys, "Light")
+        let light = Style.Palette(.light, accent: .violet)
+        XCTAssertEqual(stored, ["light", nil, nil], "only the theme, as Settings' picker stores it")
+        XCTAssertEqual(KeyboardSettings.current().theme, .light, "the app's Settings follow")
+        XCTAssertEqual(kb.settings.theme, .light)
+        XCTAssertEqual(Style.palette, light)
+        XCTAssertEqual(Style.bar, light, "Match Keys")
+        XCTAssertEqual(try cap(kb, "q").backgroundColor, light.key, "the keys")
+        XCTAssertEqual(view.backgroundColor, light.backdrop)
+        XCTAssertEqual(bar.toggle?.configuration?.background.backgroundColor, light.surface, "the bar")
+        let redrawn = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertFalse(redrawn === panel, "drawn again")
+        XCTAssertNil(panel.superview)
+        XCTAssertEqual(redrawn.backgroundColor, light.backdrop, "the panel in Light")
+        XCTAssertEqual(redrawn.overrideUserInterfaceStyle, .light)
+        XCTAssertEqual(redrawn.title.textColor, light.label)
+        XCTAssertEqual(selected(redrawn.keys), ["Light"])
+        let ring = try XCTUnwrap(redrawn.keys.first { $0.accessibilityLabel == "Light" }).configuration?.background
+        XCTAssertEqual(ring?.strokeColor, light.accent, "ringed in the accent")
+        XCTAssertEqual(ring?.strokeWidth, 2)
+        withExtendedLifetime((doc, view)) {}
+    }
+
+    /// A toolbar pick stores keyboard.toolbarTheme and turns only the toolbar (`Style.bar`);
+    /// Match Keys, first, stores Settings' "" and the toolbar follows the keys again.
+    func testAToolbarPickRestylesOnlyTheToolbarAndMatchKeysClearsIt() throws {
+        let (kb, bar, view, doc) = try appearanceRig()
+        bar.showAppearance(true)
+        let panel = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(panel.toolbar.first?.accessibilityLabel, "Match Keys")
+        XCTAssertEqual(selected(panel.toolbar), ["Match Keys"])
+        let neon = Style.Palette(.neon, accent: .violet), dark = Style.Palette(.dark, accent: .violet)
+        try tap(panel.toolbar, "Neon")
+        XCTAssertEqual(stored, [nil, "neon", nil])
+        XCTAssertEqual(KeyboardSettings.current().toolbarTheme, .neon)
+        XCTAssertEqual(Style.palette, dark, "the keys unchanged")
+        XCTAssertEqual(Style.bar, neon)
+        XCTAssertEqual(try cap(kb, "q").backgroundColor, dark.key)
+        XCTAssertEqual(bar.toggle?.configuration?.background.backgroundColor, neon.surface, "the toolbar's toggle")
+        let redrawn = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(selected(redrawn.toolbar), ["Neon"])
+        XCTAssertEqual(selected(redrawn.keys), ["Dark"])
+        XCTAssertEqual(redrawn.backgroundColor, dark.backdrop, "the panel is the keys'")
+
+        try tap(redrawn.toolbar, "Match Keys")
+        XCTAssertEqual(stored, [nil, "", nil], "Settings' Match Keys")
+        XCTAssertNil(KeyboardSettings.current().toolbarTheme)
+        XCTAssertNil(kb.settings.toolbarTheme)
+        XCTAssertEqual(Style.bar, dark)
+        XCTAssertEqual(selected(try XCTUnwrap(bar.appearancePanel).toolbar), ["Match Keys"])
+        withExtendedLifetime((doc, view)) {}
+    }
+
+    /// The accent row, for Dark, Light and True Black keys only: a pick stores keyboard.accent
+    /// and lights return in it; Neon keys hide the row, True Black brings it back.
+    func testAnAccentPickLightsReturnAndTheRowIsForTheThreeOnly() throws {
+        let (kb, bar, view, doc) = try appearanceRig()
+        bar.showAppearance(true)
+        let panel = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(panel.accents.map(\.accessibilityLabel), ["Violet", "Blue", "Pink", "Orange", "Green", "None"])
+        XCTAssertEqual(selected(panel.accents), ["Violet"])
+        try tap(panel.accents, "Green")
+        XCTAssertEqual(stored, [nil, nil, "green"])
+        XCTAssertEqual(KeyboardSettings.current().accent, .green)
+        XCTAssertEqual(try cap(kb, "new line").backgroundColor, UIColor(hex: 0x34D399), "return in green")
+        var redrawn = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(selected(redrawn.accents), ["Green"])
+        XCTAssertEqual(redrawn.accents[4].configuration?.background.strokeColor, UIColor(hex: 0x34D399))
+
+        try tap(redrawn.keys, "Neon")
+        redrawn = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertTrue(redrawn.accents.isEmpty, "a Mac theme lights in its own colour")
+        XCTAssertEqual(redrawn.keys.count, 24)
+        try tap(redrawn.keys, "True Black")
+        redrawn = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(redrawn.accents.count, 6)
+        XCTAssertEqual(stored, ["black", nil, "green"])
+        withExtendedLifetime((doc, view)) {}
+    }
+
+    /// Without Full Access the tile is there, the rows are off under the note, and a tap
+    /// writes nothing and changes nothing.
+    func testWithoutFullAccessTheRowsAreOffAndNothingIsWritten() throws {
+        let (kb, bar, view, doc) = try appearanceRig(fullAccess: false)
+        XCTAssertTrue(bar.menuItems.contains { $0.title == "Appearance" })
+        bar.showAppearance(true)
+        let panel = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertFalse(panel.note.isHidden)
+        XCTAssertEqual(panel.note.text, "Turn on Full Access to change the look here")
+        let all = panel.keys + panel.toolbar + panel.accents
+        XCTAssertEqual(all.count, 24 + 25 + 6)
+        XCTAssertFalse(all.contains { $0.isEnabled })
+        try tap(panel.keys, "Light")
+        try tap(panel.toolbar, "Neon")
+        try tap(panel.accents, "Green")
+        XCTAssertEqual(stored, [nil, nil, nil], "nothing written")
+        XCTAssertEqual(kb.settings, KeyboardSettings())
+        XCTAssertEqual(Style.palette, Style.Palette(KeyboardSettings()))
+        XCTAssertTrue(bar.appearancePanel === panel, "nothing to redraw")
+        withExtendedLifetime((doc, view)) {}
+    }
+
+    /// VoiceOver: every swatch a button named for its theme or accent, the current one
+    /// selected. Each row starts with the current one in view, and a pick's redraw keeps the
+    /// rows where they were.
+    func testEachSwatchIsANamedButtonAndTheCurrentOneIsInView() throws {
+        defaults.set("violet", forKey: KeyboardSettings.Key.theme)   // the Keys row's last
+        defaults.set("teal", forKey: KeyboardSettings.Key.toolbarTheme)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 500))
+        window.isHidden = false
+        defer { window.isHidden = true }
+        let (_, bar, view, doc) = try appearanceRig()
+        window.addSubview(view)
+        bar.showAppearance(true)
+        view.layoutIfNeeded()
+        view.layoutIfNeeded()
+        let panel = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(panel.keys.map(\.accessibilityLabel), Theme.allCases.map(\.title))
+        XCTAssertEqual(panel.toolbar.map(\.accessibilityLabel), ["Match Keys"] + Theme.allCases.map(\.title))
+        XCTAssertTrue(panel.accents.isEmpty, "Violet keys are a Mac theme")
+        for b in panel.keys + panel.toolbar { XCTAssertTrue(b.accessibilityTraits.contains(.button), "\(b.accessibilityLabel!)") }
+        XCTAssertEqual(selected(panel.keys), ["Violet"])
+        XCTAssertEqual(selected(panel.toolbar), ["Teal"])
+        func strip(_ b: UIButton) throws -> UIScrollView { try XCTUnwrap(b.superview?.superview as? UIScrollView) }
+        for row in [panel.keys, panel.toolbar] {
+            let on = try XCTUnwrap(row.first { $0.accessibilityTraits.contains(.selected) })
+            let s = try strip(on)
+            XCTAssertGreaterThan(s.contentSize.width, s.bounds.width, "it scrolls sideways")
+            XCTAssertGreaterThan(s.contentOffset.x, 0, "\(on.accessibilityLabel!): scrolled to")
+            XCTAssertTrue(s.bounds.contains(on.convert(on.bounds, to: s)), "\(on.accessibilityLabel!) in view")
+        }
+        let keysOffset = try strip(panel.keys[0]).contentOffset
+        try tap(panel.toolbar, "Neon")
+        view.layoutIfNeeded()
+        let redrawn = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(try strip(redrawn.keys[0]).contentOffset, keysOffset, "kept where it was")
+        withExtendedLifetime((doc, view)) {}
+    }
+
+    /// The menu's seven or eight tiles fit the keys at every Key Size, Numbers: Key too, on a
+    /// 375 pt portrait and a 750 pt landscape (its safe area off an 874 pt screen): inside the
+    /// panel under its caption, none overlapping, each as tall as its content and as wide as
+    /// its title. Six in portrait keep #626's three a row at 72 pt.
+    func testTheMenuFitsSevenOrEightTilesInPortraitAndLandscape() {
+        let titles = ["Clipboard", "Snippets", "Quicklinks", "Dictate", "Emoji", "Български", "Appearance", "Next Keyboard"]
+        for count in [7, 8] {
+            for compact in [false, true] {
+                for size in KeyboardSettings.KeySize.allCases {
+                    for rows in [5, 4] {
+                        let note = "\(count) tiles, \(compact ? "landscape" : "portrait") \(size) \(rows) rows"
+                        let menu = ToggleMenu(items: titles.prefix(count).map { .init(title: $0, symbol: "paintpalette") {} })
+                        menu.frame = CGRect(x: 0, y: 0, width: compact ? 750 : 375,
+                                            height: TerminalKeyboard.keysHeight(compact: compact, size: size, rows: rows)
+                                                + TerminalKeyboard.extensionBottomInset)
+                        menu.layoutIfNeeded()
+                        let frames = menu.tiles.map(\.frame)
+                        for (tile, frame) in zip(menu.tiles, frames) {
+                            XCTAssertTrue(menu.bounds.insetBy(dx: 7.9, dy: 7.9).contains(frame), note)   // 8 pt in, give or take rounding
+                            XCTAssertGreaterThanOrEqual(frame.minY, 46, "\(note): under the caption")
+                            let fits = tile.intrinsicContentSize
+                            XCTAssertLessThanOrEqual(fits.height, frame.height + 0.5, "\(note): \(tile.accessibilityLabel!)")
+                            // ponytail's corner (`ToggleMenu.layoutSubviews`): one row in landscape.
+                            if !(compact && rows == 4) {
+                                XCTAssertLessThanOrEqual(fits.width, frame.width + 0.5, "\(note): \(tile.accessibilityLabel!)")
+                            }
+                        }
+                        for (i, a) in frames.enumerated() { for b in frames[(i + 1)...] { XCTAssertFalse(a.intersects(b), note) } }
+                    }
+                }
+            }
+        }
+        let six = ToggleMenu(items: titles.prefix(6).map { .init(title: $0, symbol: "globe") {} })
+        six.frame = CGRect(x: 0, y: 0, width: 375, height: TerminalKeyboard.keysHeight(compact: false) + TerminalKeyboard.extensionBottomInset)
+        six.layoutIfNeeded()
+        XCTAssertEqual(six.tiles.map(\.frame.height), Array(repeating: 72, count: 6))
+        XCTAssertEqual(Set(six.tiles.map(\.frame.minY)).count, 2, "three a row")
+    }
 }
