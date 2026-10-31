@@ -173,6 +173,11 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     private var grabOffset = CGPoint.zero
     private var editMenu: UIEditMenuInteraction?
     private weak var toast: UIView?
+    /// After a turn: UIKit places the keyboard afresh, as a raise does, and posts the frame
+    /// it lands at (#607). Tests swap it for the frame a system keyboard would post.
+    lazy var replaceKeyboard: () -> Void = { [unowned self] in
+        if self.tv.isFirstResponder { self.tv.reloadInputViews() }
+    }
     /// Where a tapped link goes: the default browser. Tests swap it so nothing leaves.
     var openURL: (URL) -> Void = { UIApplication.shared.open($0) }
     /// Where Copy puts the selection. Tests swap in a private named one: reading the
@@ -533,6 +538,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             // row at the new width, and the lift must be measured on that final grid.
             self.repairAfterSizeChange()
             self.relift()
+            // A system keyboard's frame for the turn can come out short by the new bottom
+            // inset, and only the keyboard's next placement posts the right one (#607 QA).
+            // Place it afresh once the turn is over (UIKit drops a reload mid-turn).
+            DispatchQueue.main.async { [weak self] in self?.replaceKeyboard() }
         }
     }
 
@@ -1058,6 +1067,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         if let kb = keyboardInputView as? TerminalKeyboard, kb.window != nil {
             end = CGRect(x: end.minX, y: end.maxY - kb.bounds.height, width: end.width, height: kb.bounds.height)
         }
+        // #607 evidence: `log stream --level debug --predicate 'subsystem == "eu.illegible.prosper"'`.
+        Logger(subsystem: "eu.illegible.prosper", category: "keyboard").debug(
+            "\(n.name.rawValue, privacy: .public) end \(NSCoder.string(for: end), privacy: .public) view \(NSCoder.string(for: self.view.frame), privacy: .public) safe \(self.view.safeAreaInsets.bottom, privacy: .public)")
         kbFrame = end
         applyKeyboard(end, notification: n)
     }

@@ -133,6 +133,72 @@ final class RotationResizeTests: XCTestCase {
             "landscape never reached the pty: \(spy.resizes)")
     }
 
+    /// #607 QA, on the system keyboard: the frame posted for a turn came out short by the
+    /// new orientation's bottom safe inset, so the bar sat that much low (19 pt landscape,
+    /// 34 portrait) until the keyboard rose again, whose frame was right. Emulates that
+    /// system around a real turn of the app's own host: the turn posts the short frame,
+    /// a fresh placement (`replaceKeyboard`) the true one.
+    func testBarRidesTheSystemKeyboardThroughATurn() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone only")
+        guard #available(iOS 16, *) else { throw XCTSkip("requestGeometryUpdate is iOS 16") }
+        let saved = TerminalKeyboard.hardwareKeyboardConnected
+        TerminalKeyboard.hardwareKeyboardConnected = { true }   // the system keyboard's path
+        defer { TerminalKeyboard.hardwareKeyboardConnected = saved }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let host = UIHostingController(rootView: NavigationStack {
+            TerminalScreen(transport: SpyTransport(), session: DchSession(name: "t", alias: nil))
+        })
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        func spin(_ s: TimeInterval) { RunLoop.main.run(until: Date().addingTimeInterval(s)) }
+        spin(0.5)
+        func find(_ vc: UIViewController) -> TerminalHostVC? {
+            vc as? TerminalHostVC ?? vc.children.lazy.compactMap(find).first
+        }
+        let vc = try XCTUnwrap(find(host), "no host VC under the navigation stack")
+        XCTAssertNil(vc.keyboardInputView, "the system keyboard's path")
+        let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar })
+
+        /// The keyboard as it sits, its bottom inset under the keys; `short` drops the inset.
+        func frame(short: Bool = false) -> CGRect {
+            let b = window.bounds
+            let h: CGFloat = (b.width > b.height ? 200 : 300) - (short ? window.safeAreaInsets.bottom : 0)
+            return CGRect(x: 0, y: b.maxY - h, width: b.width, height: h)
+        }
+        func post(_ r: CGRect) {
+            NotificationCenter.default.post(
+                name: UIResponder.keyboardWillChangeFrameNotification, object: nil,
+                userInfo: [UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect: r)])
+        }
+        vc.replaceKeyboard = { post(frame()) }
+        func turn(_ o: UIInterfaceOrientationMask) {
+            let wide = o == .landscapeRight
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: o)) { XCTFail("rotation: \($0)") }
+            let started = Date().addingTimeInterval(2)
+            while (window.bounds.width > window.bounds.height) != wide, Date() < started { spin(0.01) }
+            post(frame(short: true))   // the turn's own frame
+            spin(1.5)
+        }
+        defer { turn(.portrait) }
+        func check(_ what: String, line: UInt = #line) {
+            let top = frame().minY
+            let barBottom = bar.convert(bar.bounds, to: window).maxY
+            XCTAssertEqual(barBottom, top, accuracy: 0.5,
+                           "\(what): bar bottom \(barBottom), keyboard top \(top), inset \(window.safeAreaInsets.bottom)",
+                           line: line)
+        }
+        post(frame())
+        spin(0.5)
+        check("portrait")
+        turn(.landscapeRight)
+        check("turned to landscape")
+        turn(.portrait)
+        check("turned back")
+        post(CGRect(x: 0, y: window.bounds.maxY, width: window.bounds.width, height: 300))
+    }
+
     func testSnapshotWaitsForOutputToGoQuiet() async throws {
         let transport = SpyTransport()
         let conn = SessionConnection(transport: transport,
