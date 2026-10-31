@@ -638,7 +638,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// terminal has no selection to fill a `{query}`, so those are off.
     func showQuicklinks(_ on: Bool) {
         let list = on ? quicklinks.map { QuicklinkPanel(store: $0, hasQuery: false) } : nil
-        list?.onPick = { [weak self] in self?.send($0) }
+        list?.onPick = { [weak self] link, _ in self?.send(link) }
         cover(list)
     }
 

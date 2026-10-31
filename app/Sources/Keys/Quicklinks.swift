@@ -77,9 +77,14 @@ final class QuicklinkStore {
 
     var recents: [String] { (try? JSONDecoder().decode([String].self, from: Data(contentsOf: recentsURL))) ?? [] }
 
-    /// `name` picked: first of the recents, which keep `recentsKept`.
-    func used(_ name: String) {
-        let list = Array(([name] + recents.filter { $0 != name }).prefix(Self.recentsKept))
+    /// A link's key in the recents: its name, a Mac copy's under "mac:" (#658), so a name on both
+    /// counts only the one picked. Older builds read the list as names and match no "mac:" one.
+    static func recentKey(_ name: String, mac: Bool) -> String { mac ? "mac:" + name : name }
+
+    /// `name` picked (`mac`: the Mac's copy): first of the recents, which keep `recentsKept`.
+    func used(_ name: String, mac: Bool = false) {
+        let key = Self.recentKey(name, mac: mac)
+        let list = Array(([key] + recents.filter { $0 != key }).prefix(Self.recentsKept))
         try? JSONEncoder().encode(list).write(to: recentsURL, options: .atomic)
     }
 
@@ -87,21 +92,21 @@ final class QuicklinkStore {
     /// and no search field (v1), the ones in use stay one tap away.
     func ordered() -> (recent: [Entry], rest: [Entry]) { ordered(load().quicklinks) }
 
-    func ordered(_ links: [Entry]) -> (recent: [Entry], rest: [Entry]) {
+    func ordered(_ links: [Entry], mac: Bool = false) -> (recent: [Entry], rest: [Entry]) {
         let used = recents
-        let recent = used.compactMap { name in links.first { $0.name == name } }
-        let rest = links.filter { !used.contains($0.name) }
+        let recent = used.compactMap { key in links.first { Self.recentKey($0.name, mac: mac) == key } }
+        let rest = links.filter { !used.contains(Self.recentKey($0.name, mac: mac)) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         return (recent, rest)
     }
 
     /// The last-synced Mac's (#614), read-only beside these, under its title, recently used
-    /// first (the recents are by name, shared), then A–Z; nil with none.
+    /// first (their recents keyed apart, #658), then A–Z; nil with none.
     func fromMac() -> (title: String, links: [Entry])? {
         let root = MacLibrary.root(of: url)
         guard let lib = MacLibrary.load(root), let data = try? Data(contentsOf: MacLibrary.quicklinksURL(root)),
               let doc = Self.decode(data) else { return nil }
-        let (recent, rest) = ordered(doc.quicklinks)
+        let (recent, rest) = ordered(doc.quicklinks, mac: true)
         return (lib.title, recent + rest)
     }
 
@@ -149,7 +154,10 @@ final class QuicklinkStore {
 /// ponytail: no search field in v1, typing into the panel from the keyboard itself is its own
 /// project; the recents are the answer to a long list for now.
 final class QuicklinkPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
-    var onPick: ((QuicklinkStore.Entry) -> Void)?
+    /// The link and whether it's the Mac's (#658).
+    var onPick: ((QuicklinkStore.Entry, _ mac: Bool) -> Void)?
+    /// The Mac's section, last when there is one (#658).
+    let macSection: Int?
     let sections: [(title: String?, links: [QuicklinkStore.Entry])]
     /// A `{query}` has its argument where the panel opened.
     let hasQuery: Bool
@@ -158,6 +166,7 @@ final class QuicklinkPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
         let (recent, rest) = store.ordered()
         let mac = store.fromMac().map { [($0.title as String?, $0.links)] } ?? []
         sections = ((recent.isEmpty ? [(nil, rest)] : [("Recent", recent), ("All", rest)]) + mac).filter { !$0.1.isEmpty }
+        macSection = mac.first?.1.isEmpty == false ? sections.count - 1 : nil
         self.hasQuery = hasQuery
         super.init(title: "Quicklinks", empty: "Add quicklinks in Prosper's Settings.")
         table.dataSource = self
@@ -208,6 +217,6 @@ final class QuicklinkPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         let link = sections[indexPath.section].links[indexPath.row]
-        if unavailable(link) == nil { onPick?(link) }
+        if unavailable(link) == nil { onPick?(link, indexPath.section == macSection) }
     }
 }

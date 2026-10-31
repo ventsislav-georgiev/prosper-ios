@@ -998,7 +998,7 @@ final class SuggestionBar: UIView {
         let doc = keyboard?.target as? UITextDocumentProxy
         let list = on && suggestions.pasteboard() != nil
             ? quicklinks.map { QuicklinkPanel(store: $0, hasQuery: doc.flatMap(Self.query) != nil) } : nil
-        list?.onPick = { [weak self] in self?.insert($0) }
+        list?.onPick = { [weak self] in self?.insert($0, mac: $1) }
         cover(list)
     }
 
@@ -1013,7 +1013,7 @@ final class SuggestionBar: UIView {
     /// A quicklink pick (#613): its URL typed at the cursor, `{query}` filled (`QuicklinkStore.fill`)
     /// from the selection, which the URL then types over, or the word before the caret, which
     /// goes first. The keys come back.
-    private func insert(_ link: QuicklinkStore.Entry) {
+    private func insert(_ link: QuicklinkStore.Entry, mac: Bool) {
         showQuicklinks(false)
         UIDevice.current.playInputClick()
         keyboard?.finish { [weak self] in
@@ -1023,7 +1023,7 @@ final class SuggestionBar: UIView {
             if QuicklinkStore.takesQuery(link.url), arg == nil { return }
             if let arg, !arg.selected { for _ in 0..<arg.text.count { doc.deleteBackward() } }
             doc.insertText(QuicklinkStore.fill(link.url, with: arg?.text ?? ""))
-            self.quicklinks?.used(link.name)
+            self.quicklinks?.used(link.name, mac: mac)
             self.suggestions.caretMoved()
             keyboard.resetWord()
             keyboard.autoCapitalize()

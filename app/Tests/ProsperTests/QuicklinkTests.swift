@@ -264,12 +264,20 @@ final class QuicklinkTests: XCTestCase {
         panel.tableView(panel.table, didSelectRowAt: IndexPath(row: 0, section: 1))
         for _ in 1...50 { doc.catchUp(); kb.pollCaret() }
         XCTAssertEqual(doc.text, "see a ~/notes/b.md")
-        XCTAssertEqual(store.recents, ["docs"])
+        XCTAssertEqual(store.recents, ["mac:docs"], "keyed apart from the phone's docs (#658)")
 
         bar.press(Shortcuts.quicklinks)
         panel = try XCTUnwrap(bar.quicklinksPanel)
-        XCTAssertEqual(panel.sections.map(\.title), ["Recent", "All", "From Studio"])
-        XCTAssertEqual(panel.sections[2].links.map(\.url), ["~/notes/{query}.md", "tracker://open"], "the recent first")
+        XCTAssertEqual(panel.sections.map(\.title), [nil, "From Studio"], "the phone's docs isn't recent")
+        XCTAssertEqual(panel.sections[1].links.map(\.url), ["~/notes/{query}.md", "tracker://open"], "the recent first")
+
+        // #658, the reverse: the phone's docs picked, the Mac's stays where it was.
+        panel.tableView(panel.table, didSelectRowAt: IndexPath(row: 0, section: 0))
+        for _ in 1...50 { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(store.recents, ["docs", "mac:docs"])
+        store.used("Tracker", mac: true)
+        XCTAssertEqual(store.ordered().recent.map(\.name), ["docs"])
+        XCTAssertEqual(store.fromMac()?.links.map(\.name), ["Tracker", "docs"], "a local pick moves no Mac link")
         withExtendedLifetime((kb, view)) {}
     }
 
