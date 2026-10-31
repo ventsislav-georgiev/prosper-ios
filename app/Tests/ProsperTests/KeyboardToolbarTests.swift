@@ -116,6 +116,66 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(again.toolbar).isHidden)
     }
 
+    /// #648: with Full Access the pick is the App Group's, so the other Prosper keyboard
+    /// (its own defaults) shows it at its next appearance; without, each keeps its own.
+    func testThePickIsSharedWithFullAccess() throws {
+        let groupSuite = "KeyboardToolbarTests.group.\(UUID().uuidString)"
+        let group = try XCTUnwrap(UserDefaults(suiteName: groupSuite))
+        addTeardownBlock { group.removePersistentDomain(forName: groupSuite) }
+        let otherSuite = "KeyboardToolbarTests.other.\(UUID().uuidString)"
+        let other = try XCTUnwrap(UserDefaults(suiteName: otherSuite))
+        addTeardownBlock { other.removePersistentDomain(forName: otherSuite) }
+        var fullAccess = true
+        let (_, en, _) = rig()
+        en.shared = { fullAccess ? group : nil }
+        let bg = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: other), layout: .bulgarian))
+        bg.attach(TerminalKeyboard(layout: .bulgarian))
+        bg.addToolbar { Shortcuts.defaults }
+        bg.shared = { fullAccess ? group : nil }
+
+        XCTAssertFalse(bg.showsToolbar, "nothing shared yet: its own")
+        try XCTUnwrap(en.toggle).sendActions(for: .touchUpInside)
+        XCTAssertTrue(group.bool(forKey: SuggestionBar.toolbarKey), "written to the group")
+        XCTAssertTrue(defaults.bool(forKey: SuggestionBar.toolbarKey), "and to its own")
+        XCTAssertFalse(other.bool(forKey: SuggestionBar.toolbarKey))
+        bg.hostChanged()   // its appearance (`sync`)
+        XCTAssertTrue(bg.showsToolbar, "the other keyboard's pick")
+        XCTAssertFalse(try XCTUnwrap(bg.toolbar).isHidden)
+        try XCTUnwrap(bg.toggle).sendActions(for: .touchUpInside)
+        en.hostChanged()
+        XCTAssertFalse(en.showsToolbar, "and back")
+        XCTAssertTrue(try XCTUnwrap(en.toolbar).isHidden)
+
+        fullAccess = false
+        XCTAssertTrue(en.showsToolbar, "its own, the last it wrote")
+        XCTAssertFalse(bg.showsToolbar)
+        en.showsToolbar = false
+        bg.showsToolbar = true
+        XCTAssertFalse(en.showsToolbar, "no group: no sharing")
+        XCTAssertTrue(bg.showsToolbar)
+        XCTAssertFalse(group.bool(forKey: SuggestionBar.toolbarKey), "the group untouched")
+        fullAccess = true
+        XCTAssertFalse(bg.showsToolbar, "the group's over its own")
+    }
+
+    /// #648: the language key keeps the pick, both ways.
+    func testTheLanguageKeyKeepsThePick() throws {
+        let (kb, bar, _) = rig()
+        kb.languages = [.english, .bulgarian]
+        for pick in [true, false] {
+            bar.showsToolbar = pick
+            kb.press(.language)
+            XCTAssertEqual(kb.layout, .bulgarian)
+            XCTAssertEqual(bar.showsToolbar, pick)
+            XCTAssertEqual(try XCTUnwrap(bar.toolbar).isHidden, !pick)
+            XCTAssertEqual(bar.slotButtons[0].isHidden, pick)
+            XCTAssertEqual(try XCTUnwrap(bar.toggle).accessibilityLabel, pick ? "Show suggestions" : "Show toolbar")
+            kb.press(.language)
+            XCTAssertEqual(kb.layout, .english)
+            XCTAssertEqual(try XCTUnwrap(bar.toggle).accessibilityLabel, pick ? "Show suggestions" : "Show toolbar")
+        }
+    }
+
     /// A login field shows AutoFill over the toolbar, the toggle beside it (#623); away from it
     /// the toolbar is back, and the pick never changed. A fresh clip doesn't: the toolbar has
     /// its own Paste (#553), and the bar's shows over the suggestions only.

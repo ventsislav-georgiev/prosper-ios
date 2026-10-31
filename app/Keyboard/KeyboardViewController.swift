@@ -47,6 +47,7 @@ final class KeyboardViewController: UIInputViewController {
             if self?.onScreen == true, self?.hasFullAccess == true { KeyboardSettings.activeLanguage = layout }
         }
         bar.suggestions.pasteboard = { [weak self] in self?.hasFullAccess == true ? .general : nil }
+        bar.shared = { [weak self] in self?.hasFullAccess == true ? KeyboardSettings.store() : nil }   // the toggle's pick (#648)
         bar.history = ClipboardHistory.shared()
         bar.snippets = SnippetStore.shared()
         bar.quicklinks = QuicklinkStore.shared()

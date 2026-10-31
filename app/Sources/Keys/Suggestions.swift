@@ -689,11 +689,22 @@ final class SuggestionBar: UIView {
     /// The toggle's pick, in the extension's own defaults (the suggestions' memory's), so it
     /// holds without Full Access. AutoFill shows over the toolbar whatever it says (`show`),
     /// and never changes it; the bar's Paste doesn't (`Suggestions.toolbarShown`).
+    /// With Full Access it's also in `shared`, read first: both Prosper keyboards show the
+    /// same pick (#648). Read at each `refresh`, so a keyboard shows the other's at appearing.
     static let toolbarKey = "keyboard.showsToolbar"
     var showsToolbar: Bool {
-        get { suggestions.memory.defaults.bool(forKey: Self.toolbarKey) }
-        set { suggestions.memory.defaults.set(newValue, forKey: Self.toolbarKey); refresh() }
+        get {
+            shared()?.object(forKey: Self.toolbarKey) as? Bool
+                ?? suggestions.memory.defaults.bool(forKey: Self.toolbarKey)
+        }
+        set {
+            suggestions.memory.defaults.set(newValue, forKey: Self.toolbarKey)
+            shared()?.set(newValue, forKey: Self.toolbarKey)
+            refresh()
+        }
     }
+    /// The App Group's defaults with Full Access (`KeyboardSettings.store`), else nil (#648).
+    var shared: () -> UserDefaults? = { nil }
     let autofillButton = UIButton(configuration: .plain())
     /// The system's secure Paste (it draws its own icon and "Paste"): a tap hands the clip
     /// to `paste(itemProviders:)` with no Allow Paste prompt, where reading
