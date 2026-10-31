@@ -154,6 +154,42 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertTrue(bar.showsToolbar, "the pick stays the user's")
     }
 
+    /// #599: from a textarea to a login field whose traits catch up after `textDidChange`, as
+    /// Safari's do, AutoFill shows once they have, with no further host call, whatever the
+    /// toolbar's keys: Paste alone (QA's failing config) or the arrows.
+    func testALoginFieldsLateTraitsReachAutoFillOverAnyToolbar() throws {
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+        pb.string = "clip"
+        for keys in [[try key("paste")], Shortcuts.Bar.toolbar.defaults.filter { $0.id != "paste" }] {
+            let (kb, bar, doc) = rig(keys: keys)
+            bar.suggestions.pasteboard = { pb }
+            try XCTUnwrap(bar.toolbar).reload()
+            bar.showsToolbar = true
+            bar.hostChanged()   // the switch: the textarea's traits still
+            XCTAssertNotEqual(bar.state, .autofill)
+            doc.textContentType = .username
+            let deadline = Date() + 2
+            while bar.state != .autofill, Date() < deadline { RunLoop.main.run(until: Date() + 0.05) }
+            XCTAssertEqual(bar.state, .autofill, "\(keys.map(\.id))")
+            XCTAssertTrue(try XCTUnwrap(bar.toolbar).isHidden)
+            withExtendedLifetime(kb) {}
+        }
+    }
+
+    /// #599 review: a host text change in the same field, its traits unchanged, leaves a shift
+    /// the user tapped right after it alone: the late re-read is for a field switch only.
+    func testAShiftTappedAfterATextChangeOutlivesTheTraitReRead() {
+        let (kb, bar, doc) = rig("word ")
+        doc.autocapitalizationType = .sentences
+        kb.settings.autoCapitalization = true
+        bar.hostChanged()
+        kb.press(.shift)
+        XCTAssertEqual(kb.shift.mode, .once)
+        RunLoop.main.run(until: Date() + SuggestionBar.traitLag + 0.3)
+        XCTAssertEqual(kb.shift.mode, .once, "the user's shift stays")
+    }
+
     /// The bar the app kept in its own defaults is copied to the App Group once; one already
     /// there wins. No group access (the extension without Full Access): the default set.
     func testTheKeysMoveToTheAppGroupOnce() throws {

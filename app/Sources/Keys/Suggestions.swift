@@ -1464,6 +1464,33 @@ final class SuggestionBar: UIView {
         toolbar?.reload()
     }
 
+    /// The host moved to another field, or changed its text (the extension's `textDidChange`):
+    /// a refresh now, and shift and a refresh again `traitLag` on if the field's traits changed
+    /// by then. Unchanged, it's the same field: shift stays as the user may have tapped it.
+    ///
+    /// ponytail: Safari reports the previous field's traits (capitalization, textContentType,
+    /// which picks AutoFill) for up to ~500 ms after `textDidChange` on a field switch, and
+    /// sends nothing when they catch up: read once, a login field kept the toolbar (#599).
+    /// One re-read is a guess at that lag; a slower host still shows the stale bar. A shift
+    /// tapped in a new field before its changed traits are re-read is undone by the re-read.
+    func hostChanged() {
+        refresh()
+        let traits = (keyboard?.target as? UITextDocumentProxy).map(Self.traits)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.traitLag) { [weak self] in
+            guard let self, let doc = self.keyboard?.target as? UITextDocumentProxy,
+                  let traits, Self.traits(doc) != traits else { return }
+            self.keyboard?.autoCapitalize()
+            self.refresh()
+        }
+    }
+    static let traitLag: TimeInterval = 0.6
+
+    /// What the bar and shift read of a field (`Suggestions.state`, `autoCapitalize`).
+    private static func traits(_ doc: UITextDocumentProxy) -> [AnyHashable?] {
+        [doc.textContentType ?? nil, doc.isSecureTextEntry, doc.autocapitalizationType, doc.keyboardType,
+         doc.autocorrectionType, doc.spellCheckingType]
+    }
+
     /// Recompute from the text: after each key, and when the host changes the text or
     /// the selection.
     func refresh() {

@@ -98,15 +98,14 @@ final class KeyboardViewController: UIInputViewController {
         bar.refresh()
     }
 
-    /// ponytail: Safari reports the previous field's traits (return key, capitalization,
-    /// and so textContentType, which picks the login key button) for up to ~500 ms after
-    /// `textDidChange` on a field switch; this reads them once. A re-sync after a short
-    /// delay would catch up if a stale bar ever shows on device.
+    /// ponytail: Safari reports the previous field's traits for up to ~500 ms after
+    /// `textDidChange` on a field switch. The bar and shift read them again after that
+    /// (`SuggestionBar.hostChanged`, #599); the return key's title still reads them once.
     private func sync() {
         keyboard.showsGlobe = needsInputModeSwitchKey
         keyboard.returnTitle = TerminalKeyboard.returnTitle(for: textDocumentProxy.returnKeyType ?? .default)
         keyboard.autoCapitalize()
-        bar.refresh()
+        bar.hostChanged()
     }
 
     /// Prosper, through the responder chain's `UIApplication`: an extension can't name
