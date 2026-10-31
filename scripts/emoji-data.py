@@ -41,4 +41,21 @@ for name, emoji in groups.items():
     print(f'        ("{name}", """')
     print("\n".join("            " + l for l in lines))
     print('            """),')
-print("    ]\n}")
+# The system keyboards' page (#629): hand-picked, at most 150, every one in the groups above.
+FREQUENT = """
+    😀 😃 😄 😁 😆 😅 🤣 😂 🙂 🙃 😉 😊 😇 🥰 😍 🤩
+    😘 😋 😛 😜 🤪 🤗 🤭 🤫 🤔 🤨 😐 😏 😒 🙄 😬 😌
+    😔 😴 😷 🤒 🤯 🥳 😎 🤓 😕 🥺 😢 😭 😱 😩 😤 😡
+    😈 💀 💩 🤡 👻 🤖 🙈 🙊 💯 💥 💫 💦 💤 💬 👀 🧠
+    ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 💕 💖 💗 💘 💝 ❤️‍🔥 💋
+    👋 👌 🤌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ 👍 👎 ✊
+    👊 👏 🙌 🤲 🤝 🙏 💪 🤷 🤦 🙋 🙇 🔥 ✨ ⭐ 🌟 🌈
+    ☀️ ⚡ 🌸 🌹 🍀 🎉 🎊 🎁 🎂 🍕 🍺 ☕ 🏆 🎵 💻 💡
+    ✅ ❌ ❗ ❓ ⚠️ 🚫 ➡️ ⬅️ 🆗 🆕 🔴 🟢 🔵 📌 ⏰ 🚀
+"""
+print("    ]\n")
+print("""    /// The system keyboards' one page beside Recents (#629): the full grid's glyphs outgrow
+    /// an extension's memory (#515), so the common faces, hearts, hands and symbols only.
+    static let frequent = \"\"\"""")
+print("\n".join("        " + l.strip() for l in FREQUENT.strip().splitlines()))
+print("        \"\"\"\n}")

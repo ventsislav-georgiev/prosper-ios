@@ -1,8 +1,8 @@
 import UIKit
 
 /// The emoji most recently typed from the picker: newest first, each once, at most
-/// `limit`. Kept in the App Group beside the Keyboard settings: the picker is the app's
-/// keyboard's only (`TerminalKeyboard.offersEmoji`).
+/// `limit`. Kept in the App Group beside the Keyboard settings, so the app's keyboard and
+/// the extension's (the toggle's menu, #629) share them.
 struct EmojiRecents: Equatable {
     static let key = "keyboard.emojiRecents"
     static let limit = 32
@@ -14,14 +14,18 @@ struct EmojiRecents: Equatable {
         emoji = Array(([e] + emoji.filter { $0 != e }).prefix(Self.limit))
     }
 
-    static func load() -> EmojiRecents {
-        EmojiRecents(KeyboardSettings.store()?.stringArray(forKey: key) ?? [])
+    static func load(fullAccess: Bool = true) -> EmojiRecents {
+        EmojiRecents(store(fullAccess: fullAccess)?.stringArray(forKey: key) ?? [])
     }
-    func save() { KeyboardSettings.store()?.set(emoji, forKey: Self.key) }
+    func save(fullAccess: Bool = true) { Self.store(fullAccess: fullAccess)?.set(emoji, forKey: Self.key) }
+    /// The App Group with Full Access; without it the group may not keep a write, so the
+    /// extension's own defaults (#629).
+    static func store(fullAccess: Bool) -> UserDefaults? { fullAccess ? KeyboardSettings.store() : .standard }
 }
 
-/// The emoji key's page (`TerminalKeyboard.Key.emoji`), in the app's keyboard only: the
-/// terminal asks for an ASCII keyboard, which leaves out iOS's own emoji. It takes the
+/// The emoji key's page (`TerminalKeyboard.Key.emoji`) in the app's keyboard, whose ASCII
+/// field leaves out iOS's own emoji, and the toggle menu's Emoji in the extension's, which
+/// can't switch to iOS's (#629). It takes the
 /// caps' place at their height: a grid scrolling sideways through Recents and the nine
 /// Unicode groups (`EmojiData`), over a bar of ABC (back to the letters), a button per
 /// group and delete. Its touches stay its own: the keyboard's tracker ignores every touch
@@ -37,16 +41,24 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     var letters: () -> Void = {}
 
     static let groups = EmojiData.groups.map { $0.emoji.split(whereSeparator: \.isWhitespace).map(String.init) }
+    static let frequent = EmojiData.frequent.split(whereSeparator: \.isWhitespace).map(String.init)
     /// Recents, then each of `EmojiData.groups`.
     static let symbols = ["clock", "face.smiling", "hand.wave", "pawprint", "fork.knife", "car",
                           "sportscourt", "lightbulb", "heart", "flag"]
     private(set) var recents = EmojiRecents()
+    /// Every group after Recents (the app's keyboard), or `frequent` only (the system
+    /// keyboards', #629): drawn glyphs stay decoded for the process's life, and the full
+    /// grid's outgrow an extension's memory (#515).
+    let full: Bool
+    /// Where recents are kept (`EmojiRecents.store`): the keyboard's, set before `reload`.
+    var fullAccess = true
     /// What the grid shows: recents as they were when the picker opened, then the groups.
     private(set) var sections: [[String]] = []
     let grid = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewFlowLayout())
     private let bar = UIStackView()
 
-    override init(frame: CGRect) {
+    init(frame: CGRect = .zero, full: Bool = true) {
+        self.full = full
         super.init(frame: frame)
         let flow = grid.collectionViewLayout as! UICollectionViewFlowLayout
         flow.scrollDirection = .horizontal
@@ -62,8 +74,8 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         bar.distribution = .fillEqually
         bar.spacing = 2
         bar.addArrangedSubview(button(title: "ABC", label: "letters", fill: Style.special) { [weak self] in self?.letters() })
-        let names = ["Recents"] + EmojiData.groups.map(\.name)
-        for (section, (symbol, name)) in zip(Self.symbols, names).enumerated() {
+        let names = ["Recents"] + (full ? EmojiData.groups.map(\.name) : ["Frequent"])
+        for (section, (symbol, name)) in zip(full ? Self.symbols : ["clock", "star"], names).enumerated() {
             bar.addArrangedSubview(button(image: symbol, label: name) { [weak self] in self?.show(section) })
         }
         bar.addArrangedSubview(button(image: "delete.left", label: "delete", fill: Style.special) { [weak self] in self?.delete() })
@@ -91,8 +103,8 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
 
     /// Recents read again, from what this or another keyboard typed since.
     func reload() {
-        recents = EmojiRecents.load()
-        sections = [recents.emoji] + Self.groups
+        recents = EmojiRecents.load(fullAccess: fullAccess)
+        sections = [recents.emoji] + (full ? Self.groups : [Self.frequent])
         grid.reloadData()
     }
 
@@ -136,7 +148,7 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         collectionView.deselectItem(at: indexPath, animated: false)
         let e = sections[indexPath.section][indexPath.item]
         recents.add(e)
-        recents.save()
+        recents.save(fullAccess: fullAccess)
         pick(e)
     }
 

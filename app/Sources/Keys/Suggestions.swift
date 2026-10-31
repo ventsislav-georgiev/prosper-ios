@@ -816,8 +816,9 @@ final class SuggestionBar: UIView {
     }
 
     /// What the menu offers here (#623): each panel and the mic gated as its toolbar key
-    /// (`addToolbar`), on the toolbar or not, each other language with two or more on (#624),
-    /// and Next Keyboard always. A pick closes the menu.
+    /// (`addToolbar`), on the toolbar or not, Emoji always (#629: no API picks iOS's own),
+    /// each other language with two or more on (#624), and Next Keyboard always. A pick
+    /// closes the menu.
     var menuItems: [ToggleMenu.Item] {
         let full = suggestions.pasteboard() != nil
         var items: [ToggleMenu.Item] = []
@@ -832,6 +833,10 @@ final class SuggestionBar: UIView {
         if full, snippets != nil { add(Shortcuts.snippets, "Snippets") { $0.showSnippets(true) } }
         if full, quicklinks != nil { add(Shortcuts.quicklinks, "Quicklinks") { $0.showQuicklinks(true) } }
         if full, dictation != nil { add(Shortcuts.dictate, "Dictate") { $0.dictation?.tap() } }
+        items.append(.init(title: "Emoji", symbol: "face.smiling") { [weak self] in
+            self?.showMenu(false)
+            self?.keyboard?.showEmoji(true)
+        })
         if let keyboard, keyboard.languages.count > 1 {
             for language in keyboard.languages where language != keyboard.layout {
                 items.append(.init(title: language.name, symbol: "character.bubble") { [weak self] in

@@ -145,4 +145,18 @@ enum EmojiData {
             🇻🇳 🇻🇺 🇼🇫 🇼🇸 🇽🇰 🇾🇪 🇾🇹 🇿🇦 🇿🇲 🇿🇼 🏴󠁧󠁢󠁥󠁮󠁧󠁿 🏴󠁧󠁢󠁳󠁣󠁴󠁿 🏴󠁧󠁢󠁷󠁬󠁳󠁿
             """),
     ]
+
+    /// The system keyboards' one page beside Recents (#629): the full grid's glyphs outgrow
+    /// an extension's memory (#515), so the common faces, hearts, hands and symbols only.
+    static let frequent = """
+        😀 😃 😄 😁 😆 😅 🤣 😂 🙂 🙃 😉 😊 😇 🥰 😍 🤩
+        😘 😋 😛 😜 🤪 🤗 🤭 🤫 🤔 🤨 😐 😏 😒 🙄 😬 😌
+        😔 😴 😷 🤒 🤯 🥳 😎 🤓 😕 🥺 😢 😭 😱 😩 😤 😡
+        😈 💀 💩 🤡 👻 🤖 🙈 🙊 💯 💥 💫 💦 💤 💬 👀 🧠
+        ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 💕 💖 💗 💘 💝 ❤️‍🔥 💋
+        👋 👌 🤌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ 👍 👎 ✊
+        👊 👏 🙌 🤲 🤝 🙏 💪 🤷 🤦 🙋 🙇 🔥 ✨ ⭐ 🌟 🌈
+        ☀️ ⚡ 🌸 🌹 🍀 🎉 🎊 🎁 🎂 🍕 🍺 ☕ 🏆 🎵 💻 💡
+        ✅ ❌ ❗ ❓ ⚠️ 🚫 ➡️ ⬅️ 🆗 🆕 🔴 🟢 🔵 📌 ⏰ 🚀
+        """
 }

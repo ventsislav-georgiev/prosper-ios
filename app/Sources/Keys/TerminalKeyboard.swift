@@ -1072,9 +1072,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// own under the keyboard). The app never shows it.
     var showsGlobe = false { didSet { if showsGlobe != oldValue { build() } } }
     /// The emoji key, where `settings.bottomRow` has it: the app's keyboard only. The
-    /// extension clears it: its picker's glyphs outgrew an extension's memory (#515), and
-    /// a system keyboard reaches iOS's own emoji through the globe or iOS's switcher.
+    /// extension clears it (#515) and reaches the picker through the toggle's hold menu
+    /// instead, with Recents and Frequent only (`EmojiPicker.full`, #629): every group's
+    /// glyphs outgrow an extension's memory. Set before the picker's first build.
     var offersEmoji = true { didSet { if offersEmoji != oldValue { build() } } }
+    /// The extension's Full Access, its controller's on each appearance: where the picker's
+    /// recents are kept (`EmojiRecents.store`, #629). The app's keyboard has the group.
+    var fullAccess = true
     /// The app's Keyboard settings: the extension's controller sets them when it appears,
     /// the terminal when it takes focus. A new bottom row rebuilds the caps; a new key size
     /// resizes them.
@@ -1117,6 +1121,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// touch the caps were tracking is dropped.
     func showNumpad(_ on: Bool, animated: Bool = true) {
         guard on != showsNumpad, numbersKey || !on else { return }
+        if on, showsEmoji { showEmoji(false) }   // never both (#629)
         stopRepeat(); stopHold(); tracker.reset()
         showsNumpad = on
         if animated, window != nil, !UIAccessibility.isReduceMotionEnabled {
@@ -1163,7 +1168,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private var caps: [[Cap]] = []
     private let keysArea = UILayoutGuide()
-    /// Built the first time the emoji key opens it; showing, it hides the caps.
+    /// Built the first time the emoji key or the menu's Emoji opens it; showing, it hides the caps.
     private(set) var emojiPicker: EmojiPicker?
     var showsEmoji: Bool { emojiPicker?.isHidden == false }
     /// One generator, kept warm — same pattern as `ShortcutBar`.
@@ -1317,17 +1322,20 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     /// The picker in place of the caps, or the caps back. Whatever touch the caps were
-    /// tracking is dropped, so none types after the swap.
+    /// tracking is dropped, so none types after the swap. Opened over the numpad (the
+    /// menu's Emoji, #629) it closes the numpad, so ABC goes back to the letters and a bar
+    /// hidden for the numpad comes back.
     func showEmoji(_ on: Bool) {
+        if on { showNumpad(false, animated: false) }
         if on, emojiPicker == nil {
-            let picker = EmojiPicker()
+            let picker = EmojiPicker(full: offersEmoji)
             picker.pick = { [weak self] e in self?.typeEmoji(e) }
             picker.delete = { [weak self] in self?.feedback(); self?.press(.backspace) }
             picker.letters = { [weak self] in self?.feedback(); self?.showEmoji(false) }
             addSubview(picker)
             emojiPicker = picker
         }
-        if on { emojiPicker?.reload() }
+        if on { emojiPicker?.fullAccess = fullAccess; emojiPicker?.reload() }
         stopRepeat(); stopHold(); tracker.reset(); refreshPressed()
         if blanked { refreshLabels() }
         emojiPicker?.isHidden = !on

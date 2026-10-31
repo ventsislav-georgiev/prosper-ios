@@ -225,7 +225,7 @@ final class KeyboardToolbarTests: XCTestCase {
 
     /// A hold (0.4 s) on the toggle opens the menu over the keys: each panel and the mic with
     /// Full Access and its store, as their toolbar keys, whether on the toolbar or not; Next
-    /// Keyboard always. VoiceOver's "More" opens the same.
+    /// Keyboard and Emoji (#629) always. VoiceOver's "More" opens the same.
     func testAHoldOnTheToggleOpensTheMenuOfWhatWorksHere() throws {
         let (kb, bar, _, view, _) = try hostedRig()
         let toggle = try XCTUnwrap(bar.toggle)
@@ -235,7 +235,7 @@ final class KeyboardToolbarTests: XCTestCase {
         bar.showMenu(true)
         let menu = try XCTUnwrap(bar.menuPanel)
         XCTAssertTrue(menu.superview === view, "over the keys")
-        XCTAssertEqual(menu.items.map(\.title), ["Clipboard", "Snippets", "Quicklinks", "Dictate", "Next Keyboard"])
+        XCTAssertEqual(menu.items.map(\.title), ["Clipboard", "Snippets", "Quicklinks", "Dictate", "Emoji", "Next Keyboard"])
         XCTAssertEqual(menu.tiles.map(\.accessibilityLabel), menu.items.map(\.title))
         for item in menu.items { XCTAssertNotNil(UIImage(systemName: item.symbol), item.title) }
         XCTAssertFalse(Self.caps(try XCTUnwrap(bar.toolbar)).contains { $0.accessibilityLabel == "clipboard history" },
@@ -249,7 +249,7 @@ final class KeyboardToolbarTests: XCTestCase {
 
         for (full, stores) in [(false, true), (true, false)] {
             let (kb2, bar2, _, _, _) = try hostedRig(fullAccess: full, stores: stores)
-            XCTAssertEqual(bar2.menuItems.map(\.title), ["Next Keyboard"], "full \(full) stores \(stores)")
+            XCTAssertEqual(bar2.menuItems.map(\.title), ["Emoji", "Next Keyboard"], "full \(full) stores \(stores)")
             withExtendedLifetime(kb2) {}
         }
         withExtendedLifetime((kb, view)) {}

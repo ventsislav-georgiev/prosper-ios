@@ -71,6 +71,7 @@ final class KeyboardViewController: UIInputViewController {
         super.viewWillAppear(animated)
         let settings = KeyboardSettings.current(fullAccess: hasFullAccess)
         keyboard.settings = settings
+        keyboard.fullAccess = hasFullAccess   // the emoji recents' store (#629)
         bar.suggestions.settings = settings
         let languages = KeyboardSettings.languages(fixed: Self.fixed, settings: settings,
                                                    active: hasFullAccess ? KeyboardSettings.activeLanguage : nil)
