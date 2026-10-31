@@ -294,6 +294,8 @@ final class CommandsTests: XCTestCase {
         XCTAssertTrue(SessionVerb.menuShown(SessionVerb.offered(["commands"])), "commands alone shows the menu")
         XCTAssertTrue(SessionVerb.menuShown([.commands, .library, .clipboard]))
         XCTAssertFalse(SessionVerb.menuShown([.library, .clipboard]))
+        // #656: revive, pin and forget have no item in the menu: no empty ⋯.
+        XCTAssertFalse(SessionVerb.menuShown([.revive, .pin, .forget, .library, .clipboard]))
         XCTAssertEqual(SessionVerb.commands.failTitle(all: false), "Commands")
     }
 }

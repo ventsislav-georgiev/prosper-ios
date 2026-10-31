@@ -231,6 +231,8 @@ final class ChatTests: XCTestCase {
         XCTAssertTrue(SessionVerb.menuShown(SessionVerb.offered(["chat"])), "chat alone shows the menu")
         XCTAssertTrue(SessionVerb.menuShown([.chat, .library, .clipboard]))
         XCTAssertFalse(SessionVerb.menuShown([.library, .clipboard]))
+        // #656: revive, pin and forget have no item in the menu: no empty ⋯.
+        XCTAssertFalse(SessionVerb.menuShown([.revive, .pin, .forget, .library, .clipboard]))
         XCTAssertEqual(SessionVerb.chat.failTitle(all: false), "Chat")
     }
 }

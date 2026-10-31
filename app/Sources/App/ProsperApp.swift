@@ -583,22 +583,24 @@ struct SessionListView: View {
     /// #589: and History, on any of the Mac's verbs. #646: and Chat, on `.chat`. #615: and
     /// Commands, on `.commands`.
     @ViewBuilder private var controlsMenu: some View {
-        if SessionVerb.menuShown(ops) {
+        // #656: items only from `menuItems`, so the gate and the menu can't drift.
+        let items = ops.intersection(SessionVerb.menuItems)
+        if !items.isEmpty {
             Menu {
-                if ops.contains(.history) {
+                if items.contains(.history) {
                     Button { showingHistory = true } label: { Label("History", systemImage: "clock.arrow.circlepath") }
                 }
-                if ops.contains(.chat) {
+                if items.contains(.chat) {
                     Button { showingChat = true } label: { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
                 }
-                if ops.contains(.commands) {
+                if items.contains(.commands) {
                     Button { showingCommands = true } label: { Label("Commands", systemImage: "command") }
                 }
-                if ops.contains(.restart) {
+                if items.contains(.restart) {
                     Button("Restart all agents") { confirmingRestartAll = true }
                         .disabled(sessions.isEmpty || running[""] != nil)
                 }
-                if ops.contains(.stop) {
+                if items.contains(.stop) {
                     let tab = shownTab, names = tab.sessions.map(\.name).filter { running[$0] == nil }
                     Button("Stop all in \(tab.name)…", role: .destructive) { stoppingAll = names }
                         .disabled(names.isEmpty)
@@ -866,9 +868,13 @@ extension DchSession {
 }
 
 extension SessionVerb {
-    /// #590: the ⋯ menu shows on any verb with an item in it; library and clipboard have none.
+    /// #590: the verbs with an item in the ⋯ menu, which builds from these alone. #656: revive,
+    /// pin and forget have their own buttons, library and clipboard none.
+    static let menuItems: Set<SessionVerb> = [.history, .chat, .commands, .restart, .stop]
+
+    /// #590: the ⋯ menu shows on any verb with an item in it, never empty (#656).
     static func menuShown(_ ops: Set<SessionVerb>) -> Bool {
-        !ops.subtracting([.library, .clipboard]).isEmpty
+        !ops.isDisjoint(with: menuItems)
     }
 
     /// #589: an error alert's title. A named row's verb is "Resume failed", "Restart failed",
@@ -1032,7 +1038,7 @@ struct HistorySheet: View {
                 // #585: only a crash is coloured, the island's orange.
                 (Text(end).foregroundColor(end.hasPrefix("crashed") ? .orange : .secondary)
                     + Text([seen, "ran \(ran)"].compactMap { $0 }.map { " · \($0)" }.joined()).foregroundColor(.secondary))
-                    .font(.caption).lineLimit(1)
+                    .font(.caption).lineLimit(2)   // #656: "ran 1h…" wraps at large type, not cut
                 if let cwd = r.cwd, !cwd.isEmpty {
                     Text(cwd).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle)
                 }

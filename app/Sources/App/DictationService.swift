@@ -22,6 +22,9 @@ final class DictationService: ObservableObject {
     @Published private(set) var state: Dictation.State?
     /// Permissions and the model's download, while they hold up the start.
     @Published private(set) var status: String?
+    /// #656: the engine runs. A Done or ✕ while preparing writes `.ready` before the mic is
+    /// on (the keyboards key off that), so the screen waits for this to say so.
+    @Published private(set) var micOn = false
 
     var warm: Bool { state.map { $0.phase != .off } ?? false }
 
@@ -50,6 +53,7 @@ final class DictationService: ObservableObject {
             // restart it in the foreground if that bites.
             Task { @MainActor in
                 let me = DictationService.shared
+                me.micOn = me.engine.isRunning
                 if !me.engine.isRunning, me.state?.phase != .preparing { me.end("The audio route changed — tap the mic to start again") }
             }
         }
@@ -93,6 +97,7 @@ final class DictationService: ObservableObject {
         guard await AVAudioApplication.requestRecordPermission() else {
             return end("Microphone access is off — allow it in Settings › Apps › Prosper")
         }
+        status = "Asking for Speech Recognition…"   // #656: the second prompt, its own words
         guard await withCheckedContinuation({ c in SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0) } }) == .authorized else {
             return end("Speech Recognition is off — allow it in Settings › Apps › Prosper")
         }
@@ -121,6 +126,7 @@ final class DictationService: ObservableObject {
         input.installTap(onBus: 0, bufferSize: 4096, format: input.outputFormat(forBus: 0), block: Self.tap(feed))
         engine.prepare()
         try engine.start()
+        micOn = true
         lastUse = Date()
     }
 
@@ -198,6 +204,7 @@ final class DictationService: ObservableObject {
         guard warm else { return }
         halt()
         if engine.isRunning { engine.stop() }
+        micOn = false
         engine.inputNode.removeTap(onBus: 0)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         beat?.invalidate()
@@ -382,7 +389,7 @@ struct DictationScreen: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
-                switch service.state?.phase {
+                switch Self.shown(service.state?.phase, micOn: service.micOn) {
                 case .preparing?:
                     Label("Getting the mic ready…", systemImage: "mic")
                         .font(.title2.weight(.semibold))
@@ -438,5 +445,11 @@ struct DictationScreen: View {
             .navigationTitle("Dictation")
             .navigationBarTitleDisplayMode(.inline)
         }
+    }
+
+    /// #656: the phase the screen shows: ready only once the mic is on, until then still
+    /// getting ready (a Done or ✕ under a permission alert writes `.ready` early).
+    static func shown(_ phase: Dictation.State.Phase?, micOn: Bool) -> Dictation.State.Phase? {
+        phase == .ready && !micOn ? .preparing : phase
     }
 }

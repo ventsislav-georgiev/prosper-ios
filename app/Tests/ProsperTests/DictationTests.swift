@@ -108,6 +108,17 @@ final class DictationTests: XCTestCase {
         }
     }
 
+    /// #656: that early `.ready` reads as still getting ready on the screen until the mic is
+    /// on; every other phase shows as written.
+    func testScreenSaysReadyOnlyWithTheMicOn() {
+        XCTAssertEqual(DictationScreen.shown(.ready, micOn: false), .preparing)
+        XCTAssertEqual(DictationScreen.shown(.ready, micOn: true), .ready)
+        for phase in [Dictation.State.Phase.preparing, .listening, .finishing, .off] {
+            XCTAssertEqual(DictationScreen.shown(phase, micOn: false), phase, "\(phase)")
+        }
+        XCTAssertNil(DictationScreen.shown(nil, micOn: false))
+    }
+
     func testSpacingAndEnglish() {
         XCTAssertEqual(Dictation.spaced(" Hello.", after: ""), "Hello.")
         XCTAssertEqual(Dictation.spaced("Hello.", after: "Say"), " Hello.")
