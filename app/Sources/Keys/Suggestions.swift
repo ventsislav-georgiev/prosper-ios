@@ -1644,6 +1644,7 @@ final class SuggestionBar: UIView {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
         }
+        keyboard.hosted = true   // the view's backdrop, under the glow's overflow (#642)
         let height = heightAnchor.constraint(equalToConstant: Self.height(compact: traitCollection.verticalSizeClass == .compact))
         heightConstraint = height
         NSLayoutConstraint.activate([

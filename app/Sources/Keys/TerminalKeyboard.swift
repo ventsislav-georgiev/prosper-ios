@@ -1939,10 +1939,14 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
     }
 
+    /// Under `SuggestionBar.host` the host view paints the backdrop and the keyboard none: its
+    /// fill would cut the toolbar caps' glow off in a line at the bar's bottom edge (#642).
+    var hosted = false { didSet { backgroundColor = hosted ? .clear : Style.backdrop } }
+
     private func build() {
         drawn = [Style.palette, Style.bar]
         overrideUserInterfaceStyle = Style.palette.style
-        backgroundColor = Style.backdrop   // the app's too, over the system's (#626)
+        (hosted ? superview : self)?.backgroundColor = Style.backdrop   // the app's too, over the system's (#626)
         hidePreview()
         caps.joined().forEach { $0.removeFromSuperview() }
         var rows = layout.rows

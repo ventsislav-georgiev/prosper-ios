@@ -406,6 +406,49 @@ final class KeyboardThemeTests: XCTestCase {
         }
     }
 
+    /// Hosted under the bar the keyboard paints no backdrop of its own, the host view does: an
+    /// opaque keyboard cut a Neon toolbar's glow off in a line at the bar's bottom edge (#642).
+    /// Through a rebuild that isn't a restyle too; on its own (the app's) it keeps its backdrop.
+    func testTheHostedKeyboardLeavesTheToolbarsGlowUncut() throws {
+        XCTAssertEqual(laidOut().backgroundColor, Style.Palette.dark.backdrop, "not hosted: its own backdrop (#626)")
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 400))
+        window.isHidden = false
+        defer { window.isHidden = true }
+        let doc = Proxy()
+        let kb = TerminalKeyboard()
+        kb.target = doc
+        kb.offersEmoji = false
+        let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: defaults)))
+        bar.attach(kb)
+        let view = UIView(frame: window.bounds)
+        window.addSubview(view)
+        bar.host(kb, in: view)
+        bar.addToolbar { Shortcuts.Bar.toolbar.defaults }
+        bar.showsToolbar = true
+        var settings = KeyboardSettings()
+        settings.toolbarTheme = .neon   // Dark keys under a Neon toolbar
+        kb.settings = settings
+        kb.languages = [.english, .bulgarian]   // a rebuild that isn't a restyle
+        let backdrop = Style.Palette.dark.backdrop
+        XCTAssertEqual(kb.backgroundColor, .clear, "hosted: no fill of its own")
+        XCTAssertEqual(view.backgroundColor, backdrop, "the host view's instead")
+        let format = UIGraphicsImageRendererFormat()
+        format.preferredRange = .standard   // 8-bit RGBA, read below
+        let shot = { UIGraphicsImageRenderer(bounds: view.bounds, format: format).image { _ in _ = view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) } }
+        _ = shot()   // the bar settles its height in the window's traits
+        let image = try XCTUnwrap(shot().cgImage), scale = CGFloat(image.width) / view.bounds.width
+        let tab = try XCTUnwrap(Self.all(try XCTUnwrap(bar.toolbar)).compactMap { $0 as? KeyCapButton }.first { $0.accessibilityLabel == "tab" })
+        XCTAssertEqual(tab.layer.shadowRadius, 5, "Neon's glow")
+        let data = try XCTUnwrap(image.dataProvider?.data as Data?)
+        let edge = Int((bar.convert(bar.bounds, to: view).maxY + 1) * scale)   // just past the bar's bottom edge
+        let row = (0..<image.width).map { x in (0..<3).map { data[edge * image.bytesPerRow + x * image.bitsPerPixel / 8 + $0] }.max()! }
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        backdrop.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let flat = Int(([r, g, b].max()! * 255).rounded())
+        XCTAssertGreaterThan(Int(row.max()!) - flat, 8, "the glow, not the flat backdrop, past the bar's edge")
+        withExtendedLifetime((doc, kb)) {}
+    }
+
     func testToolbarThemeRoundTripsAndUnknownValuesReadAsTheDefaults() {
         XCTAssertNil(KeyboardSettings.current().toolbarTheme, "absent is Match keys")
         defaults.set("neon", forKey: "keyboard.theme")
