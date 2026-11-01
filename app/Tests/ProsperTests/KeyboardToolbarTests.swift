@@ -2461,6 +2461,104 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
+    /// A context agrees with a move's guess where each side shows the same text as far as both
+    /// show some: windows of any length over the same caret do, an empty side tells nothing,
+    /// and other text where both show some, as a step pair's guesses against a later leg's
+    /// answer, doesn't (#689: `lateBy` counted from a move the answer can't show).
+    func testAContextAgreesWithAGuessOverTheSameCaret() {
+        let agrees = TerminalKeyboard.agrees
+        // The same caret, windows of other lengths either side (a UITextView's sentence cut,
+        // Safari's 6 units).
+        XCTAssertTrue(agrees(["One. ", "Two"], ["", "Two. Three"]))
+        XCTAssertTrue(agrees(["abcd", "efghij"], ["bcd", "ef"]))
+        XCTAssertTrue(agrees(["bcd", "ef"], ["abcd", "efghij"]))
+        XCTAssertTrue(agrees(["", "One. "], ["", "One. Two"]))
+        // QA's UITextView at the text's end: the leg's answer against the step pair's guesses
+        // and against its own.
+        XCTAssertFalse(agrees(["\n", "one"], ["on", "e"]))
+        XCTAssertFalse(agrees(["\n", "one"], ["one", ""]))
+        XCTAssertTrue(agrees(["\n", "one"], ["", "one"]))
+        // One side empty or nil: that side tells nothing.
+        XCTAssertTrue(agrees(["", "xyz"], ["abc", "xyz"]))
+        XCTAssertTrue(agrees([nil, "xyz"], ["abc", "xy"]))
+        XCTAssertTrue(agrees(["abc", ""], ["bc", "zzz"]))
+        XCTAssertTrue(agrees(["abc", nil], ["abc", "zzz"]))
+        // Other text where both show some, either side.
+        XCTAssertFalse(agrees(["abc", "def"], ["abx", "def"]))
+        XCTAssertFalse(agrees(["abc", "def"], ["abc", "dxf"]))
+        XCTAssertFalse(agrees(["abc", "def"], ["abc", "efg"]))
+    }
+
+    /// On a host answering 10 polls a move, its windows 6 units either side (Safari's), a step
+    /// away and, 4 polls on, back: the step's answer shows a window other than UIKit's guess
+    /// for it, the after-context one longer, and the same as the step back's guess there.
+    /// `lateBy` counts from the step, the move the answer may show first, not the step back:
+    /// a host as late as it is, never less (#689 review: a strict after side counted it 4
+    /// ticks less late).
+    func testLateByCountsFromTheFirstMoveAnAnswerCutOtherwiseMayShow() throws {
+        let (kb, _, doc) = rig("aaa", after: "aaaaaaaaa")
+        doc.answersLate = true; doc.moveCost = 10; doc.window = 6
+        var sent: Int?, asked = 0
+        kb.finish {   // as a toolbar press, its step pair sent on a poll as an edit's are
+            kb.wait {
+                kb.caret(away: 1, back: { asked += 1; return asked < 5 ? nil : true }) {
+                    kb.wait { false }   // an edit still under way: its moves' answers are counted
+                }
+                sent = kb.ticks
+                return true
+            }
+        }
+        var shown: Int?
+        for _ in 1...40 {
+            if sent == nil { XCTAssertEqual(doc.documentContextAfterInput, "aaaaaa") }
+            doc.catchUp(); kb.pollCaret()
+            if sent == kb.ticks { XCTAssertEqual(doc.documentContextAfterInput, "aaaaa", "UIKit's guess for the step") }
+            if shown == nil, doc.documentContextBeforeInput == "aaaa", doc.documentContextAfterInput == "aaaaaa" {
+                shown = kb.ticks
+            }
+        }
+        XCTAssertEqual(doc.moves, [1, -1])
+        let late = try XCTUnwrap(shown, "the step's answer") - XCTUnwrap(sent, "the step")
+        XCTAssertGreaterThanOrEqual(late, 10, "the host's cost")
+        XCTAssertEqual(kb.lateBy, late, "ticks late, from the step")
+    }
+
+    /// dd and cut line at the text's end on QA's hosts: an answer is counted from the move it
+    /// may show, not from a step pair before it whose answers were its guesses, unseen, and a
+    /// walk goes on once the host's answer shows it landed. On the UITextView answering a poll
+    /// on the line goes within 25 polls, `lateBy` that poll; on the one blocking 150 ms a move
+    /// within 45; on every one the line and no more (#689: 55 polls, `lateBy` 17 from the
+    /// pair, and 65 polls, 0.3 s quiet after each answer; QA's UITextView took 1.4 s).
+    func testDdAndCutLineAtTheTextEndCountAnswersFromTheMoveTheyShow() throws {
+        for (h, (name, host)) in Self.qaHosts().enumerated() {
+            for (text, goes) in [("one\ntwo\nthree", "one\ntwo|"), ("top\none", "top|")] {
+                for id in ["delLine", "cutLine"] {
+                    let (kb, bar, doc) = rig(text, keys: Shortcuts.hostOnly)
+                    host(doc)
+                    let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                    addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                    pb.string = "old"
+                    bar.suggestions.pasteboard = { pb }
+                    bar.toolbar?.reload()
+                    bar.press(try key(Shortcuts.hostOnly, id))
+                    var took = 0
+                    for i in 1...3_000 {
+                        doc.catchUp(); kb.pollCaret()
+                        if took == 0, Self.at(doc) == goes { took = i }
+                    }
+                    let what = "\(id) on \(name) from \(text.debugDescription)"
+                    XCTAssertEqual(Self.at(doc), goes, what)
+                    XCTAssertEqual(pb.string, id == "cutLine" ? text.components(separatedBy: "\n").last : "old", what)
+                    if h == 0 {
+                        XCTAssertLessThan(took, 25, "polls: \(what)")
+                        XCTAssertEqual(kb.lateBy, 1, "ticks late: \(what)")
+                    }
+                    if h == 1 { XCTAssertLessThan(took, 45, "polls: \(what)") }
+                }
+            }
+        }
+    }
+
     /// dd and cut line on a line of a long run of one Character: where the walk to its end
     /// stops short, a leg reading the same in the host's window (Safari's 6 units here; a
     /// blocking host's 300), nothing goes, the caret back where the press found it and the

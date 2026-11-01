@@ -1685,17 +1685,17 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if Self.field(doc) != walkField {
             walkField = Self.field(doc)
             walk = CaretWalk()
-            lateBy = 0; moveShows = nil; movedAt = nil
+            lateBy = 0; moveShows = nil; moved = []
         }
         walk.wrap = wrapGuess
         let units = walk.step(steps, lines: lines, before: doc.documentContextBeforeInput ?? "",
                               after: doc.documentContextAfterInput ?? "", settled: walkPolls >= 3)
         if units != 0 {
             doc.adjustTextPosition(byCharacterOffset: units)
-            let owed = movedAt
+            let owed = moved
             wrote()
             moveShows = [doc.documentContextBeforeInput, doc.documentContextAfterInput]
-            movedAt = owed ?? ticks
+            moved = owed + [(ticks, moveShows ?? [])]
             pair?.units += units
             walkPolls = 0
             if lineAsked { lineAsked = false; caretMoved() }
@@ -1739,16 +1739,31 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// A toolbar edit wrote to the host just now: an answer `stallTicks` past the first write
     /// it owes ends a stall, unless it comes within `wakeTicks` of the last (`pollCaret`).
-    func wrote() { wroteAt = ticks; owedAt = owedAt ?? ticks; moveShows = nil; movedAt = nil }
+    func wrote() { wroteAt = ticks; owedAt = owedAt ?? ticks; moveShows = nil; moved = [] }
 
     /// The most ticks the field took to answer a move of a toolbar edit's on a later poll,
     /// with another context than the one the move showed at once (UIKit's guess), counted
-    /// from the first move since the host last showed a new context, 60 at most; 0 till it
+    /// from the first move since the host last showed a new context that it may answer
+    /// (`moved`), 60 at most; 0 till it
     /// did: a busy host, whose answers the edit's walks wait for that long
     /// (`SuggestionBar.settled`). Kept till the field changes. `moveShows`: the context the
     /// last move showed at once.
     private(set) var lateBy = 0
-    private var moveShows: [String?]?, movedAt: Int?
+    private var moveShows: [String?]?
+    /// The moves since the host last showed a new context, each with the context it showed at
+    /// once (UIKit's guess): an answer is counted from the first whose guess it agrees with
+    /// either side, as one disagreeing there was answered before, unseen (#689: a step pair's
+    /// answers, its guesses, left QA's UITextView 17 ticks late where it answered in one).
+    private var moved: [(at: Int, shows: [String?])] = []
+
+    /// Whether a context `x` may show where the caret was in `y`: each side the same text as
+    /// far as both show some, as two windows over it are, of any length; an empty side tells
+    /// nothing.
+    static func agrees(_ x: [String?], _ y: [String?]) -> Bool {
+        let b = x.first.flatMap { $0 } ?? "", a = x.last.flatMap { $0 } ?? ""
+        let gb = y.first.flatMap { $0 } ?? "", ga = y.last.flatMap { $0 } ?? ""
+        return (b.hasSuffix(gb) || gb.hasSuffix(b)) && (a.hasPrefix(ga) || ga.hasPrefix(a))
+    }
 
     /// The poll timer's tick; tests call it in place of waiting.
     ///
@@ -1772,11 +1787,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         let doc = target as? UITextDocumentProxy
         let shows = { [doc?.documentContextBeforeInput, doc?.documentContextAfterInput] }
         if let m = moveShows, shows() != m, landed != nil || pair != nil, doc.map(Self.field) == walkField {
-            lateBy = min(max(lateBy, ticks - (movedAt ?? ticks)), 60)
+            let from = moved.first { Self.agrees(shows(), $0.shows) }?.at ?? moved.first?.at ?? ticks
+            lateBy = min(max(lateBy, ticks - from), 60)
             moveShows = shows()
         }
         if shows() != hostShows {
-            movedAt = nil
+            moved = []
             // A stall's end: the first new context after `stallTicks` of none, the edit's own
             // writes' counted, or after the edit's first write since the last went unanswered
             // `stallTicks`, its last `wakeTicks` or more before (#575 QA r2: ctrl-u's step pair,

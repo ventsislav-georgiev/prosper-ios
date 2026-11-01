@@ -1487,7 +1487,9 @@ final class SuggestionBar: UIView {
     /// dd held 1 s before its deletes); one seen answering within `wakeTicks` (a UITextView, its
     /// answer to a move a poll late and other than UIKit's guess) once as many ticks passed
     /// (#662 QA: QAHost's dd held 0.8 s); one slower waits as long as it took, quiet (#662: a
-    /// host taking 1 s a move answered the walk back after 0.3 s quiet).
+    /// host taking 1 s a move answered the walk back after 0.3 s quiet), or till a context
+    /// other than the one the wait began on, its answer and no guess, reads as landed (#689:
+    /// a host blocking 150 ms a move held 0.3 s quiet after each answer).
     private func settled(_ moved: Bool, _ quietFor: Int = 15, walked: (dir: Int, crossed: String)? = nil,
                          _ go: @escaping (_ answered: Bool) -> Void) {
         guard moved, let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return go(false) }
@@ -1507,7 +1509,7 @@ final class SuggestionBar: UIView {
         keyboard.wait { [weak keyboard] in
             let ticks = keyboard?.ticks ?? .max
             let over = quiet.over(read(), quietFor, at: ticks)
-            guard over || soon.map({ ticks - start >= $0 }) == true && landed() else { return false }
+            guard over || (soon.map({ ticks - start >= $0 }) == true || read() != was) && landed() else { return false }
             go(read() != was)
             return true
         }
