@@ -924,49 +924,19 @@ final class SuggestionBar: UIView {
         cover(menu)
     }
 
-    /// What the menu offers here (#623): each panel (Rewrite's too, #612) and the mic gated as its toolbar key
-    /// (`addToolbar`), on the toolbar or not, Emoji always (#629: no API picks iOS's own),
-    /// Numbers where no 123 key is (Numbers: Row, #650), each other language with two or more
-    /// on (#624), Appearance (#641) and Next Keyboard always. A pick closes the menu.
+    /// What the menu offers here (#623), in the terminal's order (`ToggleMenu.items`, #691): each
+    /// panel (Rewrite's too, #612) and the mic gated as its toolbar key (`addToolbar`), on the
+    /// toolbar or not, Appearance (#641) and Next Keyboard always.
     var menuItems: [ToggleMenu.Item] {
         let full = suggestions.pasteboard() != nil
-        var items: [ToggleMenu.Item] = []
-        func add(_ key: ShortcutKey, _ title: String, _ run: @escaping (SuggestionBar) -> Void) {
-            items.append(.init(title: title, symbol: key.systemImage ?? "") { [weak self] in
-                guard let self else { return }
-                self.showMenu(false)
-                run(self)
-            })
-        }
-        if full, history != nil { add(Shortcuts.clipboard, "Clipboard") { $0.showClips(true) } }
-        if full, snippets != nil { add(Shortcuts.snippets, "Snippets") { $0.showSnippets(true) } }
-        if full, quicklinks != nil { add(Shortcuts.quicklinks, "Quicklinks") { $0.showQuicklinks(true) } }
-        if full, dictation != nil { add(Shortcuts.dictate, "Dictate") { $0.dictation?.tap() } }
-        if rewrites { add(Shortcuts.rewrite, "Rewrite") { $0.showRewrite(true) } }
-        items.append(.init(title: "Emoji", symbol: "face.smiling") { [weak self] in
-            self?.showMenu(false)
-            self?.keyboard?.showEmoji(true)
-        })
-        if let keyboard, !keyboard.numbersKey {
-            items.append(.init(title: "Numbers", symbol: "textformat.123") { [weak self] in
-                self?.showMenu(false)
-                self?.keyboard?.showNumpad(true)
-            })
-        }
-        if let keyboard, keyboard.languages.count > 1 {
-            for language in keyboard.languages where language != keyboard.layout {
-                items.append(.init(title: language.name, symbol: "character.bubble") { [weak self] in
-                    self?.showMenu(false)
-                    self?.keyboard?.layout = language
-                })
-            }
-        }
-        items.append(.init(title: "Appearance", symbol: "paintpalette") { [weak self] in self?.showAppearance(true) })
-        items.append(.init(title: "Next Keyboard", symbol: "globe") { [weak self] in
-            self?.showMenu(false)
-            self?.nextKeyboard?()
-        })
-        return items
+        func run(_ act: @escaping (SuggestionBar) -> Void) -> () -> Void { { [weak self] in self.map(act) } }
+        return ToggleMenu.items(keyboard: keyboard, close: { [weak self] in self?.showMenu(false) },
+                                clipboard: full && history != nil ? run { $0.showClips(true) } : nil,
+                                snippets: full && snippets != nil ? run { $0.showSnippets(true) } : nil,
+                                quicklinks: full && quicklinks != nil ? run { $0.showQuicklinks(true) } : nil,
+                                dictate: full && dictation != nil ? run { $0.dictation?.tap() } : nil,
+                                rewrite: rewrites ? run { $0.showRewrite(true) } : nil,
+                                appearance: run { $0.showAppearance(true) }, nextKeyboard: run { $0.nextKeyboard?() })
     }
 
     /// A toolbar key, in the keyboard's target (`Shortcuts.hostKey`), once a step pair an edit
@@ -1184,14 +1154,7 @@ final class SuggestionBar: UIView {
     /// pick (#650) re-lays the keys as Settings' does, and the panel is drawn again for its ring.
     private func applyLook(_ new: KeyboardSettings) {
         guard let keyboard, suggestions.pasteboard() != nil, let store = KeyboardSettings.store() else { return }
-        typealias Key = KeyboardSettings.Key
-        let old = keyboard.settings
-        if new.theme != old.theme { store.set(new.theme.rawValue, forKey: Key.theme) }
-        if new.toolbarTheme != old.toolbarTheme { store.set(new.toolbarTheme?.rawValue ?? "", forKey: Key.toolbarTheme) }
-        if new.accent != old.accent { store.set(new.accent.rawValue, forKey: Key.accent) }
-        if new.keySize != old.keySize { store.set(new.keySize.rawValue, forKey: Key.keySize) }
-        if new.numbers != old.numbers { store.set(new.numbers.rawValue, forKey: Key.numbers) }
-        if new.numpadHidesToolbar != old.numpadHidesToolbar { store.set(new.numpadHidesToolbar, forKey: Key.numpadHidesToolbar) }
+        new.store(over: keyboard.settings, in: store)
         keyboard.settings = new
         if appearancePanel?.settings != new { showAppearance(true) }   // no new look to redraw it (`restyle`)
     }
@@ -2374,6 +2337,39 @@ final class ToggleMenu: KeysPanel {
 
     @objc private func tappedOff() { onClose?() }
 
+    /// Both keyboards' menu (#691), one list so they can't drift: each panel its host gives (nil:
+    /// not there); with `keyboard`, Emoji (#629: no API picks iOS's own), Numbers, beside a 123 key
+    /// too (#650, #691), and each other language with two or more on (#624); then Appearance (#641)
+    /// and Next Keyboard where given. A pick `close`s the menu first, but Appearance's, which
+    /// takes its place.
+    static func items(keyboard: TerminalKeyboard?, close: @escaping () -> Void,
+                      clipboard: (() -> Void)?, snippets: (() -> Void)?, quicklinks: (() -> Void)?,
+                      dictate: (() -> Void)?, rewrite: (() -> Void)? = nil,
+                      appearance: (() -> Void)?, nextKeyboard: (() -> Void)?) -> [Item] {
+        var items: [Item] = []
+        func add(_ title: String, _ symbol: String?, closes: Bool = true, _ run: (() -> Void)?) {
+            guard let run else { return }
+            items.append(Item(title: title, symbol: symbol ?? "") { if closes { close() }; run() })
+        }
+        add("Clipboard", Shortcuts.clipboard.systemImage, clipboard)
+        add("Snippets", Shortcuts.snippets.systemImage, snippets)
+        add("Quicklinks", Shortcuts.quicklinks.systemImage, quicklinks)
+        add("Dictate", Shortcuts.dictate.systemImage, dictate)
+        add("Rewrite", Shortcuts.rewrite.systemImage, rewrite)
+        if let keyboard {
+            add("Emoji", "face.smiling") { [weak keyboard] in keyboard?.showEmoji(true) }
+            add("Numbers", "textformat.123") { [weak keyboard] in keyboard?.showNumpad(true) }
+            if keyboard.languages.count > 1 {
+                for language in keyboard.languages where language != keyboard.layout {
+                    add(language.name, "character.bubble") { [weak keyboard] in keyboard?.layout = language }
+                }
+            }
+        }
+        add("Appearance", "paintpalette", closes: false, appearance)
+        add("Next Keyboard", "globe", nextKeyboard)
+        return items
+    }
+
     /// A tile's height at most, and the least that takes its badge over its title.
     static let (tileHeight, tall): (CGFloat, CGFloat) = (72, 64)
 
@@ -2387,9 +2383,9 @@ final class ToggleMenu: KeysPanel {
         super.layoutSubviews()
         let area = bounds.inset(by: safeAreaInsets).inset(by: UIEdgeInsets(top: 46, left: 8, bottom: 8, right: 8))
         guard !tiles.isEmpty, area.width > 0, area.height > 0 else { return }
-        let gap: CGFloat = 8
-        let fit = max(1, Int((area.height + gap) / (44 + gap)))
+        let fit = max(1, Int((area.height + 8) / (44 + 8)))
         let columns = max(3, (tiles.count + fit - 1) / fit)
+        let gap: CGFloat = columns < 10 ? 8 : 6   // ten in landscape's one row keep 10 pt titles (#691)
         let rows = (tiles.count + columns - 1) / columns
         let h = min(Self.tileHeight, (area.height - CGFloat(rows - 1) * gap) / CGFloat(rows))
         let w = (area.width - CGFloat(columns - 1) * gap) / CGFloat(columns)

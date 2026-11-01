@@ -109,6 +109,9 @@ enum Shortcuts {
     /// Fix, Rewrite and Summarize (#612): their panel (`AIPanel`), the toolbar's only: the
     /// terminal's text is a shell's. Added in the editor, as the clipboard.
     static let rewrite = ShortcutKey(id: "rewrite", label: "rewrite", kind: .bytes, systemImage: "wand.and.stars")
+    /// The system keyboard toggle's menu (#691), in the terminal: `TerminalHostVC.showMenu`.
+    /// Added in the editor, as the clipboard.
+    static let menu = ShortcutKey(id: "menu", label: "menu", kind: .bytes, systemImage: "command")
 
     /// The terminal bar's own keys with no bytes, which `TerminalHostVC.handleKey` acts on by
     /// id. None on the Mac: no Prosper keyboard there fills the history, dictation is off there
@@ -119,8 +122,8 @@ enum Shortcuts {
         #if targetEnvironment(macCatalyst)
         []
         #else
-        guard #available(iOS 26, *) else { return [clipboard, snippets, quicklinks] }
-        return [clipboard, snippets, quicklinks, dictate]
+        guard #available(iOS 26, *) else { return [clipboard, snippets, quicklinks, menu] }
+        return [clipboard, snippets, quicklinks, dictate, menu]
         #endif
     }
 

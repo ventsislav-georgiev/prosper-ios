@@ -569,6 +569,106 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertNil(vc.snippetsPanel, "the key again: the terminal back")
     }
 
+    /// The menu key (#691), not in the defaults: the system keyboard toggle's menu over the
+    /// terminal, the key again or a tap off closing it. The panels with the keyboard down; up,
+    /// Prosper's Emoji, Numbers and Appearance too, Next Keyboard with two system keyboards, never
+    /// Rewrite. Each pick does its thing and closes the menu; Next Keyboard puts the system's in
+    /// Prosper's place till the keyboard next rises, and from the system's, always offered, puts
+    /// Prosper's back. Throwaway stores, a named pasteboard, no mic.
+    func testBarMenuKeyOpensTheToggleMenuOverTheTerminal() async throws {
+        let saved = (TerminalKeyboard.hardwareKeyboardConnected, TerminalHostVC.systemKeyboards, KeyboardSettings.store)
+        TerminalKeyboard.hardwareKeyboardConnected = { false }
+        let suite = "ImagePasteTests.menu.\(UUID())", group = try XCTUnwrap(UserDefaults(suiteName: suite))
+        KeyboardSettings.store = { group }
+        var systemKeyboards = 1
+        TerminalHostVC.systemKeyboards = { systemKeyboards }
+        defer {
+            (TerminalKeyboard.hardwareKeyboardConnected, TerminalHostVC.systemKeyboards, KeyboardSettings.store) = saved
+            group.removePersistentDomain(forName: suite)
+        }
+        try XCTSkipUnless(TerminalKeyboard.appliesHere, "iPhone only")
+        let (vc, _) = try await makeVC()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = vc
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("ImagePasteTests-\(UUID())")
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        defer { UIPasteboard.remove(withName: pb.name); try? FileManager.default.removeItem(at: dir) }
+        vc.pasteboard = pb
+        vc.history = ClipboardHistory(dir: dir)
+        vc.snippets = SnippetStore(url: dir.appendingPathComponent("snippets.json"))
+        vc.quicklinks = QuicklinkStore(url: dir.appendingPathComponent("Quicklinks/quicklinks.json"))
+        vc.dictation = nil
+        vc.clipsRoom = { 400 }
+        let (bar, tv) = try barAndTerminal(vc)
+        let key = try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == Shortcuts.menu.id })
+        XCTAssertNotNil(UIImage(systemName: try XCTUnwrap(key.systemImage)))
+        XCTAssertFalse(Shortcuts.defaults.contains(key), "added in the editor")
+        func titles() throws -> [String] { try XCTUnwrap(vc.menuPanel).items.map(\.title) }
+        func pick(_ title: String) throws {
+            if vc.menuPanel == nil { bar.onKey?(key) }
+            try XCTUnwrap(vc.menuPanel?.tiles.first { $0.accessibilityLabel == title }, title).sendActions(for: .touchUpInside)
+            XCTAssertNil(vc.menuPanel, "\(title) closes the menu")
+        }
+
+        bar.onKey?(key)
+        XCTAssertTrue(vc.menuPanel?.superview === vc.view, "over the terminal")
+        XCTAssertEqual(try titles(), ["Clipboard", "Snippets", "Quicklinks"], "the keyboard down")
+        bar.onKey?(key)
+        XCTAssertNil(vc.menuPanel, "the key again: the terminal back")
+
+        XCTAssertTrue(tv.becomeFirstResponder())
+        let kb = try XCTUnwrap(vc.keyboardInputView as? TerminalKeyboard)
+        kb.settings.numbers = .key
+        kb.allowsNumbersKey = true
+        XCTAssertTrue(kb.numbersKey)
+        bar.onKey?(key)
+        XCTAssertEqual(try titles(), ["Clipboard", "Snippets", "Quicklinks", "Emoji", "Numbers", "Appearance"],
+                       "Numbers beside a 123 key too; one system keyboard: no Next Keyboard")
+        try XCTUnwrap(vc.menuPanel).onClose?()
+        XCTAssertNil(vc.menuPanel, "a tap off the tiles")
+        systemKeyboards = 2
+        bar.onKey?(key)
+        XCTAssertEqual(try titles(), ["Clipboard", "Snippets", "Quicklinks", "Emoji", "Numbers", "Appearance", "Next Keyboard"])
+        for item in try XCTUnwrap(vc.menuPanel).items { XCTAssertNotNil(UIImage(systemName: item.symbol), item.title) }
+
+        try pick("Clipboard")
+        XCTAssertNotNil(vc.clipsPanel)
+        try pick("Snippets")
+        XCTAssertNotNil(vc.snippetsPanel)
+        try pick("Quicklinks")
+        XCTAssertNotNil(vc.quicklinksPanel)
+        try pick("Emoji")
+        XCTAssertNil(vc.quicklinksPanel)
+        XCTAssertTrue(kb.showsEmoji)
+        try pick("Numbers")
+        XCTAssertTrue(kb.showsNumpad)
+        try pick("Appearance")
+        let look = try XCTUnwrap(vc.appearancePanel)
+        try XCTUnwrap(look.keys.first { $0.accessibilityLabel == "Light" }).sendActions(for: .touchUpInside)
+        XCTAssertEqual(group.string(forKey: KeyboardSettings.Key.theme), "light", "stored for both keyboards")
+        XCTAssertEqual(kb.settings.theme, .light)
+        XCTAssertFalse(vc.appearancePanel === look, "drawn again")
+        try pick("Next Keyboard")
+        XCTAssertTrue(tv.isFirstResponder)
+        XCTAssertNil(vc.keyboardInputView, "the system's keyboard")
+        XCTAssertTrue(tv.becomeFirstResponder())
+        XCTAssertNil(vc.keyboardInputView, "a tap while up keeps it")
+        bar.onKey?(key)
+        XCTAssertEqual(try titles(), ["Clipboard", "Snippets", "Quicklinks", "Next Keyboard"], "the way back")
+        systemKeyboards = 1
+        try pick("Next Keyboard")
+        XCTAssertTrue(vc.keyboardInputView === kb, "Prosper's back, whatever the system has")
+        systemKeyboards = 2
+        try pick("Next Keyboard")
+        XCTAssertNil(vc.keyboardInputView)
+        XCTAssertTrue(tv.resignFirstResponder())
+        XCTAssertTrue(tv.becomeFirstResponder())
+        XCTAssertTrue(vc.keyboardInputView === kb, "Prosper's again the next time up")
+    }
+
     /// The mic key (#604): cold, the service starts in place (no hop, no sheet) and the strip
     /// covers the bar; finished phrases go out as bracketed pastes, spaced, never a newline;
     /// the key again is Done, its final in. Warm, a ping starts it afresh, never taking up a

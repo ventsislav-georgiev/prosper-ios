@@ -263,6 +263,17 @@ struct KeyboardSettings: Equatable {
             .map { $0 == " " ? .space : $0 == Self.emojiKey ? .emoji : .char(String($0)) } + [.ret]
     }
 
+    /// Each look value changed from `old`, stored as the app's Settings pickers store it (Match
+    /// Keys is their ""): an Appearance pick (#641), on both keyboards (#691).
+    func store(over old: KeyboardSettings, in store: UserDefaults) {
+        if theme != old.theme { store.set(theme.rawValue, forKey: Key.theme) }
+        if toolbarTheme != old.toolbarTheme { store.set(toolbarTheme?.rawValue ?? "", forKey: Key.toolbarTheme) }
+        if accent != old.accent { store.set(accent.rawValue, forKey: Key.accent) }
+        if keySize != old.keySize { store.set(keySize.rawValue, forKey: Key.keySize) }
+        if numbers != old.numbers { store.set(numbers.rawValue, forKey: Key.numbers) }
+        if numpadHidesToolbar != old.numpadHidesToolbar { store.set(numpadHidesToolbar, forKey: Key.numpadHidesToolbar) }
+    }
+
     /// The shared values. Without Full Access an extension can't reach the group: defaults.
     static func current(fullAccess: Bool = true) -> KeyboardSettings {
         KeyboardSettings(fullAccess ? store() : nil)

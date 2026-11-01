@@ -792,8 +792,8 @@ final class KeyboardThemeTests: XCTestCase {
     /// Numbers: Key too, on a 375 and a 402 pt portrait and a 750 pt landscape (its safe area off
     /// an 874 pt screen): inside the
     /// panel under its caption, none overlapping, each as tall as its content and as wide as
-    /// its title, landscape's one row with Numbers: Key too (#649). Numbers is a tile with the
-    /// digit row only (#650). Six in portrait keep #626's three a row at 72 pt.
+    /// its title, landscape's one row with Numbers: Key too (#649). Numbers is a tile with a 123
+    /// key too (#691), so ten fit four rows' keys. Six in portrait keep #626's three a row at 72 pt.
     func testTheMenuFitsSevenToTenTilesInPortraitAndLandscape() {
         let all = ["Clipboard", "Snippets", "Quicklinks", "Dictate", "Rewrite", "Emoji", "Numbers", "Български", "Appearance",
                    "Next Keyboard"]
@@ -801,10 +801,8 @@ final class KeyboardThemeTests: XCTestCase {
             for (compact, width) in [(false, 375), (false, 402), (true, 750)] as [(Bool, CGFloat)] {
                 for size in KeyboardSettings.KeySize.allCases {
                     for rows in [5, 4] {
-                        let titles = rows == 5 ? all : all.filter { $0 != "Numbers" }
-                        guard count <= titles.count else { continue }
                         let note = "\(count) tiles, \(compact ? "landscape" : "portrait") \(width) \(size) \(rows) rows"
-                        let menu = ToggleMenu(items: titles.suffix(count).map { .init(title: $0, symbol: "paintpalette") {} })
+                        let menu = ToggleMenu(items: all.suffix(count).map { .init(title: $0, symbol: "paintpalette") {} })
                         menu.frame = CGRect(x: 0, y: 0, width: width,
                                             height: TerminalKeyboard.keysHeight(compact: compact, size: size, rows: rows)
                                                 + TerminalKeyboard.extensionBottomInset)
@@ -817,8 +815,12 @@ final class KeyboardThemeTests: XCTestCase {
                             XCTAssertLessThanOrEqual(fits.height, frame.height + 0.5, "\(note): \(tile.accessibilityLabel!)")
                             XCTAssertLessThanOrEqual(fits.width, frame.width + 0.5, "\(note): \(tile.accessibilityLabel!) whole")
                         }
+                        // #691: Numbers beside a 123 key reaches ten tiles over four rows. Portrait's
+                        // four a row can't take "Next Keyboard" at 13 pt (92 pt in a 76 pt tile), nor
+                        // wrap it in a 48 pt tile, so only the floor holds there.
+                        let ten = count == 10 && rows == 4
                         XCTAssertGreaterThanOrEqual(menu.titleSize, 10, "\(note): still legible")
-                        if !compact { XCTAssertTrue([13, 15].contains(menu.titleSize), "\(note): portrait's sizes as they were") }
+                        if !compact, !ten { XCTAssertTrue([13, 15].contains(menu.titleSize), "\(note): portrait's sizes as they were") }
                         for (i, a) in frames.enumerated() { for b in frames[(i + 1)...] { XCTAssertFalse(a.intersects(b), note) } }
                     }
                 }

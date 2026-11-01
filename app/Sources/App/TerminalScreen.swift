@@ -197,6 +197,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     var clipsPanel: ClipboardPanel? { panel as? ClipboardPanel }
     var snippetsPanel: SnippetPanel? { panel as? SnippetPanel }
     var quicklinksPanel: QuicklinkPanel? { panel as? QuicklinkPanel }
+    var menuPanel: ToggleMenu? { panel as? ToggleMenu }
+    var appearancePanel: AppearancePanel? { panel as? AppearancePanel }
+    /// The system's keyboards, for the menu's Next Keyboard (#691). Tests stub it.
+    static var systemKeyboards: () -> Int = { UITextInputMode.activeInputModes.count }
     /// The panel's room with the keyboard as it is: the safe area's top to the bar. Tests stub it.
     lazy var clipsRoom: () -> CGFloat = { [weak self] in
         guard let self else { return 0 }
@@ -577,6 +581,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         if key.id == Shortcuts.snippets.id { return showSnippets(snippetsPanel == nil) }
         if key.id == Shortcuts.quicklinks.id { return showQuicklinks(quicklinksPanel == nil) }
         if key.id == Shortcuts.dictate.id { return dictate() }
+        if key.id == Shortcuts.menu.id { return showMenu(menuPanel == nil) }
         if ["copyLine", "cutLine"].contains(key.id) { copyCaretLine(cut: key.id == "cutLine") }   // cut's bytes then delete it
         if key.kind == .bytes, key.bytes.isEmpty { return }
         switch key.kind {
@@ -640,6 +645,39 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let list = on ? quicklinks.map { QuicklinkPanel(store: $0, hasQuery: false) } : nil
         list?.onPick = { [weak self] link, _ in self?.send(link) }
         cover(list)
+    }
+
+    /// The system keyboard toggle's menu over the terminal, or the terminal back (#691): its items
+    /// (`ToggleMenu.items`), Prosper's keys' own while they're up, Next Keyboard there with more
+    /// than one system keyboard: the system's in their place till the keyboard next goes down,
+    /// or till Next Keyboard, which the system's always has, puts them back.
+    func showMenu(_ on: Bool) {
+        let kb = tv.isFirstResponder ? keyboardInputView as? TerminalKeyboard : nil
+        let system = tv.isFirstResponder && tv.systemKeys
+        let next = system || kb != nil && Self.systemKeyboards() > 1
+        cover(on ? ToggleMenu(items: ToggleMenu.items(
+            keyboard: kb, close: { [weak self] in self?.cover(nil) },
+            clipboard: history.map { _ in { [weak self] in self?.showClips(true) } },
+            snippets: snippets.map { _ in { [weak self] in self?.showSnippets(true) } },
+            quicklinks: quicklinks.map { _ in { [weak self] in self?.showQuicklinks(true) } },
+            dictate: dictation.map { _ in { [weak self] in self?.dictate() } },
+            appearance: kb.map { _ in { [weak self] in self?.showAppearance(true) } },
+            nextKeyboard: next ? { [weak self] in self?.tv.systemKeys = !system; self?.tv.refreshInputView() } : nil)) : nil)
+    }
+
+    /// The menu's Appearance over the terminal (#691), as the keyboard's (`SuggestionBar.showAppearance`):
+    /// a pick stored for both keyboards, the keys and the bar restyled, the panel drawn again.
+    func showAppearance(_ on: Bool) {
+        guard on, let kb = keyboardInputView as? TerminalKeyboard else { return cover(nil) }
+        let look = AppearancePanel(settings: kb.settings, enabled: true)
+        look.onPick = { [weak self, weak kb] new in
+            guard let kb, let store = KeyboardSettings.store() else { return }
+            new.store(over: kb.settings, in: store)
+            kb.settings = new
+            self?.showAppearance(true)
+        }
+        look.keep(appearancePanel)
+        cover(look)
     }
 
     /// `new` over the terminal down to the bar, in the open panel's place, or the terminal back.
@@ -1758,11 +1796,14 @@ private final class DchTerminalView: TerminalView {
     /// Install the compact keyboard where it applies, the system one elsewhere. Runs at
     /// setup, before the keyboard rises, and when a hardware keyboard comes or goes.
     func refreshInputView() {
-        let want: UIView? = TerminalKeyboard.appliesHere ? compactKeyboard : nil
+        let want: UIView? = TerminalKeyboard.appliesHere && !systemKeys ? compactKeyboard : nil
         guard inputView !== want else { return }
         inputView = want
         if isFirstResponder { reloadInputViews() }
     }
+
+    /// The menu's Next Keyboard (#691): the system's keyboard, till the keyboard next goes down.
+    var systemKeys = false
 
     /// Set while the session is `.failed`: taps and the toolbar toggle can't raise the keyboard.
     var inputLocked = false
@@ -1770,6 +1811,7 @@ private final class DchTerminalView: TerminalView {
 
     override func becomeFirstResponder() -> Bool {
         guard !inputLocked else { return false }
+        if !isFirstResponder { systemKeys = false }   // a tap while up keeps the system's (#691)
         refreshInputView()
         (inputView as? TerminalKeyboard)?.settings = .current()   // the app's Keyboard settings
         return super.becomeFirstResponder()

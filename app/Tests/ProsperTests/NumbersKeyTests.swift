@@ -246,7 +246,7 @@ final class NumbersKeyTests: XCTestCase {
 
     // MARK: Bulgarian
 
-    /// The hold menu's Numbers (#650), beside Emoji, only where no 123 key is: it opens the
+    /// The hold menu's Numbers (#650), beside Emoji, beside a 123 key too (#691): it opens the
     /// numpad as 123 does, pushed in, the bar hidden with Hide Toolbar on the Numpad and the
     /// height kept; ABC brings the digit row, the bottom row and the bar back.
     func testTheMenusNumbersOpensTheNumpadWithTheDigitRow() throws {
@@ -274,9 +274,8 @@ final class NumbersKeyTests: XCTestCase {
         XCTAssertEqual(doc.text, "7")
 
         kb.settings.numbers = .key
-        XCTAssertFalse(bar.menuItems.contains { $0.title == "Numbers" }, "123 is on the keys")
-        kb.allowsNumbersKey = false
-        XCTAssertTrue(bar.menuItems.contains { $0.title == "Numbers" }, "the digit row again")
+        XCTAssertTrue(kb.numbersKey)
+        XCTAssertEqual(bar.menuItems.map(\.title), titles, "beside a 123 key too (#691)")
         let app = TerminalKeyboard()   // without `allowsNumbersKey` the numpad works too
         app.showNumpad(true, animated: false)
         XCTAssertEqual(app.shownKeys, TerminalKeyboard.numpadRows)
