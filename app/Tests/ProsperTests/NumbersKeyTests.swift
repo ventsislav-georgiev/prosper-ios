@@ -45,7 +45,7 @@ final class NumbersKeyTests: XCTestCase {
         window.isHidden = false
         addTeardownBlock { window.isHidden = true }
         bar.host(kb, in: view)
-        bar.addToolbar { Shortcuts.Bar.toolbar.defaults }
+        bar.addToolbar { Shortcuts.Bar.arrowsToolbar }
         kb.allowsNumbersKey = true
         kb.settings.numbers = numbers
         fit(view)
@@ -179,7 +179,7 @@ final class NumbersKeyTests: XCTestCase {
             sets.append(shown.map { $0.accessibilityLabel ?? $0.title(for: .normal) ?? "" })
         }
         XCTAssertEqual(Set(sets).count, 1, "the same keys at every width: \(sets)")
-        XCTAssertEqual(sets.first?.count, Shortcuts.Bar.toolbar.defaults.filter { $0.kind != .pasteText }.count)
+        XCTAssertEqual(sets.first?.count, Shortcuts.Bar.arrowsToolbar.filter { $0.kind != .pasteText }.count)
     }
 
     // MARK: Numpad

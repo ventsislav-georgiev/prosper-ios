@@ -323,7 +323,11 @@ final class DictationTests: XCTestCase {
         XCTAssertTrue(Shortcuts.Bar.toolbar.catalog.contains(Shortcuts.dictate))
         XCTAssertTrue(Shortcuts.Bar.terminal.catalog.contains(Shortcuts.dictate))
         XCTAssertFalse(Shortcuts.Bar.terminal.defaults.contains(Shortcuts.dictate))
-        XCTAssertFalse(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.dictate), "added in the editor")
+        if #available(iOS 26, *) {
+            XCTAssertTrue(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.dictate), "in the default toolbar (#690)")
+        } else {
+            XCTAssertFalse(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.dictate), "no dead mic below iOS 26")
+        }
         XCTAssertNotNil(UIImage(systemName: try XCTUnwrap(Shortcuts.dictate.systemImage)))
 
         let label = Shortcuts.dictate.label

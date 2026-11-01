@@ -216,7 +216,7 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertTrue(Shortcuts.Bar.terminal.catalog.contains(Shortcuts.clipboard))
         XCTAssertFalse(Shortcuts.Bar.terminal.defaults.contains { $0.id == Shortcuts.clipboard.id })
         XCTAssertFalse(Shortcuts.defaults.contains { $0.id == Shortcuts.clipboard.id })
-        XCTAssertFalse(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.clipboard), "added in the editor")
+        XCTAssertTrue(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.clipboard), "in the default toolbar (#690)")
         XCTAssertEqual(Shortcuts.clipboard.systemImage, "list.clipboard")
         XCTAssertNotNil(UIImage(systemName: "list.clipboard"))
 

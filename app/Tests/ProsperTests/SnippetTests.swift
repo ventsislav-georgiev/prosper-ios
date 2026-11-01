@@ -153,7 +153,7 @@ final class SnippetTests: XCTestCase {
         #if !targetEnvironment(macCatalyst)
         XCTAssertTrue(Shortcuts.Bar.terminal.catalog.contains(Shortcuts.snippets))
         #endif
-        XCTAssertFalse(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.snippets), "added in the editor")
+        XCTAssertTrue(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.snippets), "in the default toolbar (#690)")
         XCTAssertFalse(Shortcuts.Bar.terminal.defaults.contains(Shortcuts.snippets))
         XCTAssertNotNil(UIImage(systemName: try XCTUnwrap(Shortcuts.snippets.systemImage)))
 

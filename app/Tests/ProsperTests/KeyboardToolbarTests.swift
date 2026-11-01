@@ -62,7 +62,7 @@ final class KeyboardToolbarTests: XCTestCase {
         for (id, action) in want { XCTAssertEqual(Shortcuts.hostKey(id), action, id) }
         let (_, bar, _) = rig()
         XCTAssertEqual(Self.caps(try XCTUnwrap(bar.toolbar)).compactMap(\.accessibilityLabel),
-                       ["↑", "↓", "tab", "home", "←", "→", "end", "send"], "the hidden ones aren't caps, nor Paste without Full Access")
+                       ["↑", "↓", "tab", "→", "home", "previous word", "next word", "end", "send"], "the hidden ones aren't caps, nor Paste without Full Access")
     }
 
     /// The keys in the field: sideways and to the line's ends through the caret walk, ↑
@@ -485,12 +485,13 @@ final class KeyboardToolbarTests: XCTestCase {
         v.subviews.flatMap { ($0 as? UIPasteControl).map { [$0] } ?? pasteControls($0) }
     }
 
-    /// Nothing saved, terminal bar untouched: the default bar's keys a text field can use, in
-    /// its order, less send, Paste first; saved, so the terminal bar no longer feeds it. No
-    /// group (no Full Access): the same default.
-    func testToolbarListDefaultsToTheHostKeysWithPasteAndNoSend() throws {
+    /// Nothing saved, terminal bar untouched: the toolbar's own default (#690), the mic only
+    /// on iOS 26; saved, so the terminal bar no longer feeds it. No group (no Full Access):
+    /// the same default.
+    func testToolbarListDefaultsToItsOwnList() throws {
         let store = try suiteStore(".default")
-        let want = ["paste", "up", "down", "tab", "home", "left", "right", "end"]
+        var want = ["home", "wordBack", "wordNext", "end", "mic", "qlinks", "snips", "clips"]
+        if #unavailable(iOS 26) { want.removeAll { $0 == "mic" } }
         XCTAssertEqual(Shortcuts.Bar.toolbar.defaults.map(\.id), want)
         XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), want)
         XCTAssertNotNil(store.string(forKey: Shortcuts.Bar.toolbar.storageKey), "seeded once")
@@ -498,6 +499,34 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), want, "a later terminal edit doesn't reach it")
         XCTAssertEqual(Shortcuts.Bar.toolbar.load(nil).map(\.id), want)
         XCTAssertNotEqual(Shortcuts.Bar.toolbar.storageKey, Shortcuts.storageKey)
+    }
+
+    /// #690: a saved bar or toolbar that is exactly a past default (the toolbar's, the old bar's
+    /// seed) was never customised: it loads today's default. Anything else is kept as saved,
+    /// a toolbar seeded from a customised bar too.
+    func testPastDefaultsMigrateAndCustomisedListsStay() throws {
+        let oldBar = ["paste", "pasteImg", "up", "down", "tab", "shift", "home", "insert",
+                      "esc", "ctrl", "left", "right", "pgup", "pgdn", "end", "enter"]
+        let oldToolbar = ["paste", "up", "down", "tab", "home", "left", "right", "end"]
+        let store = try suiteStore(".migrate")
+        Shortcuts.save(try oldBar.map(key), to: store)
+        XCTAssertEqual(Shortcuts.load(store).map(\.id), Shortcuts.defaults.map(\.id))
+        Shortcuts.save(try oldToolbar.map(key), to: store, key: Shortcuts.Bar.toolbar.storageKey)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), Shortcuts.Bar.toolbar.defaults.map(\.id))
+
+        let custom = try suiteStore(".customLists")
+        Shortcuts.save(try oldBar.dropLast().map(key), to: custom)
+        XCTAssertEqual(Shortcuts.load(custom).map(\.id), oldBar, "one key off: kept, send back")
+        Shortcuts.save(try oldToolbar.reversed().map(key), to: custom, key: Shortcuts.Bar.toolbar.storageKey)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(custom).map(\.id), oldToolbar.reversed())
+
+        let seeded = try suiteStore(".seededCustom")
+        Shortcuts.save(try ["esc", "left", "enter", "ctlc", "pipe"].map(key), to: seeded)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(seeded).map(\.id), ["paste", "left", "enter", "pipe"])
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(seeded).map(\.id), ["paste", "left", "enter", "pipe"], "seed kept")
+
+        XCTAssertEqual(Shortcuts.load(nil).map(\.id), Shortcuts.defaults.map(\.id))
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(nil).map(\.id), Shortcuts.Bar.toolbar.defaults.map(\.id))
     }
 
     /// A customised terminal bar seeds the toolbar once: its keys a text field can use, in
@@ -541,7 +570,7 @@ final class KeyboardToolbarTests: XCTestCase {
         let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
         addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
         pb.string = "clip"
-        let (kb, bar, doc) = rig("say h", keys: Shortcuts.Bar.toolbar.defaults)   // mid-word: no bar Paste
+        let (kb, bar, doc) = rig("say h", keys: Shortcuts.Bar.arrowsToolbar)   // mid-word: no bar Paste
         let toolbar = try XCTUnwrap(bar.toolbar)
         XCTAssertTrue(Self.pasteControls(toolbar).isEmpty, "no Full Access")
         bar.suggestions.pasteboard = { pb }
@@ -577,7 +606,7 @@ final class KeyboardToolbarTests: XCTestCase {
     /// The Paste cap looks like the others whatever the system draws the control as: a
     /// container with a cap's fill, border, radius and halo, the control inside it (#558).
     func testToolbarPasteSitsInACapStyledContainer() throws {
-        let toolbar = ShortcutBar(keys: { Shortcuts.Bar.toolbar.defaults }, oneRow: true)
+        let toolbar = ShortcutBar(keys: { Shortcuts.Bar.arrowsToolbar }, oneRow: true)
         let control = try XCTUnwrap(Self.pasteControls(toolbar).first)
         XCTAssertTrue(control.target === toolbar)
         let box = try XCTUnwrap(control.superview), cap = try XCTUnwrap(Self.caps(toolbar).first)
@@ -598,7 +627,7 @@ final class KeyboardToolbarTests: XCTestCase {
     private func shown(at size: UIContentSizeCategory) throws -> (UIWindow, SuggestionBar, TerminalKeyboard) {
         let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
         addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
-        let (kb, bar, _) = rig("say h", keys: Shortcuts.Bar.toolbar.defaults)
+        let (kb, bar, _) = rig("say h", keys: Shortcuts.Bar.arrowsToolbar)
         bar.suggestions.pasteboard = { pb }
         try XCTUnwrap(bar.toolbar).reload()
         bar.showsToolbar = true
@@ -665,7 +694,7 @@ final class KeyboardToolbarTests: XCTestCase {
         guard #available(iOS 17, *) else { throw XCTSkip("traitOverrides is iOS 17") }
         let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
         addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
-        let (kb, bar, _) = rig("say h", keys: Shortcuts.Bar.toolbar.defaults)
+        let (kb, bar, _) = rig("say h", keys: Shortcuts.Bar.arrowsToolbar)
         bar.suggestions.pasteboard = { pb }
         let toolbar = try XCTUnwrap(bar.toolbar)
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
@@ -734,7 +763,7 @@ final class KeyboardToolbarTests: XCTestCase {
         }
         XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.catalog.map(\.id)))
         XCTAssertTrue(Set(ids).isSubset(of: Shortcuts.Bar.toolbar.catalog.map(\.id)))
-        XCTAssertTrue(Set(ids).isDisjoint(with: Shortcuts.Bar.toolbar.defaults.map(\.id)), "added in the editor")
+        XCTAssertEqual(Set(ids).intersection(Shortcuts.Bar.toolbar.defaults.map(\.id)), ["wordBack", "wordNext"], "the rest added in the editor")
 
         let store = try suiteStore(".edits")
         let saved = Shortcuts.hostOnly.prefix(3) + [try key("left")]
@@ -2509,5 +2538,13 @@ final class KeyboardToolbarTests: XCTestCase {
         var caps: [String: UIButton] = [:]
         for case let b as UIButton in kb.subviews { caps[b.accessibilityLabel ?? ""] = b }
         return caps
+    }
+}
+
+extension Shortcuts.Bar {
+    /// The toolbar's default before #690 (Paste, the arrows, tab, home, end): the fixture the
+    /// Paste, theme and two-row tests were written on, none of its keys needing a store.
+    static var arrowsToolbar: [ShortcutKey] {
+        Shortcuts.previousToolbarIDs[0].compactMap { id in toolbar.catalog.first { $0.id == id } }
     }
 }

@@ -6,7 +6,7 @@ import UIKit
 final class ShortcutCapTests: XCTestCase {
 
     private func key(_ id: String) throws -> ShortcutKey {
-        try XCTUnwrap(Shortcuts.catalog.first { $0.id == id }, "no \(id) in the catalog")
+        try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == id }, "no \(id) in the catalog")
     }
 
     // MARK: what the caps say
@@ -42,8 +42,8 @@ final class ShortcutCapTests: XCTestCase {
     /// Every default resolves to a real catalog entry, and ids are unique — a typo here
     /// silently drops a key off the bar.
     func testDefaultsResolveAndIdsAreUnique() {
-        XCTAssertEqual(Shortcuts.defaults.map(\.id), ["paste", "pasteImg", "up", "down", "tab", "shift", "home", "insert",
-                                                       "esc", "ctrl", "left", "right", "pgup", "pgdn", "end", "enter"])
+        XCTAssertEqual(Shortcuts.defaults.map(\.id), ["paste", "pasteImg", "up", "down", "tab", "right", "home", "insert",
+                                                       "esc", "ctrl", "wordBack", "wordNext", "pgup", "pgdn", "end", "enter"])
         XCTAssertEqual(Set(Shortcuts.catalog.map(\.id)).count, Shortcuts.catalog.count)
     }
 
@@ -323,7 +323,7 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(top.compactMap(\.accessibilityLabel), Shortcuts.defaults.prefix(8).map(\.label))
     }
 
-    /// A grid at most 6% too wide squeezes to fit instead of scrolling; wider still scrolls.
+    /// A grid at most 8% too wide squeezes to fit instead of scrolling; wider still scrolls.
     func testFilledSqueezesASmallOverflow() {
         let w: [CGFloat] = [40, 60, 100]                 // span 212
         let f = ShortcutBar.filled(w, spacing: 6, available: 200)
@@ -418,13 +418,14 @@ final class ShortcutCapTests: XCTestCase {
         return (bar, row, try XCTUnwrap(row.superview?.superview as? UIScrollView))
     }
 
-    /// #561: the default toolbar, with Paste and without, fits portrait phones at Large text:
-    /// the end cap sits inside the strip, nothing scrolls or truncates, Paste stays 44, and a
-    /// row that already fits keeps its natural widths.
+    /// #561: the default toolbar (#690, eight keys), and the one before it with Paste, fit
+    /// portrait phones at Large text: the end cap sits inside the strip, nothing scrolls or
+    /// truncates, Paste stays 44, and a row that already fits keeps its natural widths.
     @MainActor
     func testDefaultToolbarFitsPortraitPhones() throws {
+        XCTAssertEqual(Shortcuts.Bar.toolbar.defaults.count, ProcessInfo().isOperatingSystemAtLeast(.init(majorVersion: 26, minorVersion: 0, patchVersion: 0)) ? 8 : 7)
         for paste in [true, false] {
-            let keys = Shortcuts.Bar.toolbar.defaults.filter { paste || $0.id != "paste" }
+            let keys = paste ? Shortcuts.Bar.arrowsToolbar : Shortcuts.Bar.toolbar.defaults
             XCTAssertEqual(keys.first?.id == "paste", paste)
             for width: CGFloat in [375, 393, 402, 440] {
                 let (bar, row, sv) = try makeToolbar(keys, width: width)

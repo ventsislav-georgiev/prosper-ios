@@ -129,7 +129,7 @@ final class KeyboardThemeTests: XCTestCase {
         bar.attach(kb)
         let view = UIView(frame: CGRect(x: 0, y: 0, width: 402, height: 400))
         bar.host(kb, in: view)
-        bar.addToolbar { Shortcuts.Bar.toolbar.defaults }
+        bar.addToolbar { Shortcuts.Bar.arrowsToolbar }
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("Theme-\(UUID())")
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
         bar.history = ClipboardHistory(dir: dir.appendingPathComponent("Clips"))
@@ -307,7 +307,7 @@ final class KeyboardThemeTests: XCTestCase {
         bar.attach(kb)
         let view = UIView(frame: CGRect(x: 0, y: 0, width: 402, height: 400))
         bar.host(kb, in: view)
-        bar.addToolbar { Shortcuts.Bar.toolbar.defaults }
+        bar.addToolbar { Shortcuts.Bar.arrowsToolbar }
         bar.showsToolbar = true
         let neon = Style.Palette(.neon, accent: .violet), dark = Style.Palette(.dark, accent: .violet)
         func toolCap() throws -> KeyCapButton {
@@ -445,7 +445,7 @@ final class KeyboardThemeTests: XCTestCase {
         let view = UIView(frame: window.bounds)
         window.addSubview(view)
         bar.host(kb, in: view)
-        bar.addToolbar { Shortcuts.Bar.toolbar.defaults }
+        bar.addToolbar { Shortcuts.Bar.arrowsToolbar }
         bar.showsToolbar = true
         var settings = KeyboardSettings()
         settings.toolbarTheme = .neon   // Dark keys under a Neon toolbar
@@ -504,7 +504,7 @@ final class KeyboardThemeTests: XCTestCase {
         bar.attach(kb)
         let view = UIView(frame: CGRect(x: 0, y: 0, width: 402, height: 400))
         bar.host(kb, in: view)
-        bar.addToolbar { Shortcuts.Bar.toolbar.defaults }
+        bar.addToolbar { Shortcuts.Bar.arrowsToolbar }
         if fullAccess {
             let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
             addTeardownBlock { UIPasteboard.remove(withName: pb.name) }

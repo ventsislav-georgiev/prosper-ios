@@ -135,7 +135,7 @@ final class QuicklinkTests: XCTestCase {
         #else
         XCTAssertTrue(Shortcuts.Bar.terminal.catalog.contains(Shortcuts.quicklinks))
         #endif
-        XCTAssertFalse(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.quicklinks), "added in the editor")
+        XCTAssertTrue(Shortcuts.Bar.toolbar.defaults.contains(Shortcuts.quicklinks), "in the default toolbar (#690)")
         XCTAssertFalse(Shortcuts.Bar.terminal.defaults.contains(Shortcuts.quicklinks))
         XCTAssertNotNil(UIImage(systemName: try XCTUnwrap(Shortcuts.quicklinks.systemImage)))
 

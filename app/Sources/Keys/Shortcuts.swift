@@ -92,19 +92,19 @@ enum Shortcuts {
 
     /// The clipboard history (#597): the toolbar's, and the terminal's too (#603), where a
     /// picked clip goes to the pty as a paste (`TerminalHostVC.showClips`). No bytes: each bar
-    /// acts on it by id. Added in the editor, as the edits: the default toolbar fits a
-    /// portrait phone without scrolling, with no room for one more cap.
+    /// acts on it by id. In the default toolbar, which fits a portrait phone without scrolling
+    /// (`ShortcutCapTests.testDefaultToolbarFitsPortraitPhones`).
     static let clipboard = ShortcutKey(id: "clips", label: "clipboard history", kind: .bytes,
                                        systemImage: "list.clipboard")
     /// Speech-to-text (#598) by Prosper's mic (`DictationClient`): the toolbar's, and the
     /// terminal's too (#604), where the mic is the app's own (`TerminalHostVC.dictate`).
-    /// Added in the editor, as the clipboard.
+    /// In the default toolbar on iOS 26 only, where it runs.
     static let dictate = ShortcutKey(id: "mic", label: "dictate", kind: .bytes, systemImage: "mic")
     /// Snippets (#609): their panel, the toolbar's and the terminal's, where a pick goes to the pty
-    /// as a paste (`TerminalHostVC.showSnippets`). Added in the editor, as the clipboard.
+    /// as a paste (`TerminalHostVC.showSnippets`). In the default toolbar, as the clipboard.
     static let snippets = ShortcutKey(id: "snips", label: "snippets", kind: .bytes, systemImage: "text.quote")
     /// Quicklinks (#613): their panel, as the snippets', a pick typing the filled URL
-    /// (`TerminalHostVC.showQuicklinks`). Added in the editor, as the clipboard.
+    /// (`TerminalHostVC.showQuicklinks`). In the default toolbar, as the clipboard.
     static let quicklinks = ShortcutKey(id: "qlinks", label: "quicklinks", kind: .bytes, systemImage: "link")
     /// Fix, Rewrite and Summarize (#612): their panel (`AIPanel`), the toolbar's only: the
     /// terminal's text is a shell's. Added in the editor, as the clipboard.
@@ -127,18 +127,27 @@ enum Shortcuts {
     /// The send key: every terminal bar has it, and the editor can't remove it there.
     static let sendID = "enter"
 
-    /// Two rows of eight on a phone, columns paired: paste/esc, paste img/ctrl, ↑/←, ↓/→,
-    /// tab/pgup, shift/pgdn, home/end, insert/send.
+    /// Two rows of eight on a phone, columns paired: paste/esc, paste img/ctrl, ↑/previous
+    /// word, ↓/next word, tab/pgup, →/pgdn, home/end, insert/send. The word keys are `hostOnly`,
+    /// so the ids resolve from all the terminal bar offers.
+    static let defaultIDs = ["paste", "pasteImg", "up", "down", "tab", "right", "home", "insert",
+                             "esc", "ctrl", "wordBack", "wordNext", "pgup", "pgdn", "end", "enter"]
     static var defaults: [ShortcutKey] {
-        ["paste", "pasteImg", "up", "down", "tab", "shift", "home", "insert",
-         "esc", "ctrl", "left", "right", "pgup", "pgdn", "end", "enter"]
-            .compactMap { id in catalog.first { $0.id == id } }
+        defaultIDs.compactMap { id in Bar.terminal.catalog.first { $0.id == id } }
     }
 
-    /// The default bar before ctrl/alt/shift were sticky and enter became send. A saved
-    /// bar that is exactly this was never customized, so it loads as today's default.
-    static let previousDefaultIDs = ["paste", "pasteImg", "up", "down", "stab", "snl", "enter",
-                                     "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"]
+    /// Past default bars, newest first: before the word keys (#690), and before ctrl/alt/shift
+    /// were sticky and enter became send. A saved bar that is exactly one was never
+    /// customised, so it loads as today's default.
+    static let previousDefaultIDs = [
+        ["paste", "pasteImg", "up", "down", "tab", "shift", "home", "insert",
+         "esc", "ctrl", "left", "right", "pgup", "pgdn", "end", "enter"],
+        ["paste", "pasteImg", "up", "down", "stab", "snl", "enter",
+         "esc", "ctlc", "left", "right", "pgup", "pgdn", "insert"],
+    ]
+    /// The toolbars seeded from those bars (their keys a text field can use, less send), which
+    /// were saved on first load: one exactly so was never customised either.
+    static let previousToolbarIDs = [["paste", "up", "down", "tab", "home", "left", "right", "end"]]
 
     /// The App Group's defaults (`KeyboardSettings.store`), so the keyboard extension reads
     /// what the editor wrote. A bar the app kept in its own defaults before is copied over,
@@ -155,7 +164,7 @@ enum Shortcuts {
     /// The saved bar from `store`; nil (the extension without Full Access) is the default set.
     static func load(_ store: UserDefaults? = shared()) -> [ShortcutKey] {
         guard let keys = decode(store?.string(forKey: storageKey)), !keys.isEmpty else { return defaults }
-        if keys.map(\.id) == previousDefaultIDs { return defaults }
+        if previousDefaultIDs.contains(keys.map(\.id)) { return defaults }
         // Keep the user's SET and ORDER, but take each key's definition from the
         // catalog: a saved bar from an older build otherwise pins the old bytes/kind
         // forever (an image-paste key stuck on plain ctrl-V, say). A bar without the
@@ -191,10 +200,13 @@ enum Shortcuts {
             self == .terminal ? Shortcuts.catalog + hostOnly + terminalActions
                 : (Shortcuts.catalog + hostOnly + [clipboard, snippets, quicklinks, dictate, rewrite]).filter { hostKey($0.id) != nil }
         }
-        /// The toolbar's: the default bar's keys it can use, in order, less send.
+        /// The toolbar's own (#690). The mic only on iOS 26, where it runs: below it the
+        /// keyboard hides it (`SuggestionBar.addToolbar`), so the editor shouldn't list it.
         var defaults: [ShortcutKey] {
-            self == .terminal ? Shortcuts.defaults
-                : Shortcuts.defaults.filter { $0.id != sendID && hostKey($0.id) != nil }
+            guard self == .toolbar else { return Shortcuts.defaults }
+            var ids = ["home", "wordBack", "wordNext", "end", "mic", "qlinks", "snips", "clips"]
+            if #unavailable(iOS 26) { ids.removeAll { $0 == dictate.id } }
+            return ids.compactMap { id in catalog.first { $0.id == id } }
         }
         /// Only the terminal's: there it is the only way to submit.
         var sendMandatory: Bool { self == .terminal }
@@ -206,6 +218,7 @@ enum Shortcuts {
             guard self == .toolbar else { return Shortcuts.load(store) }
             guard let store else { return defaults }
             if let keys = decode(store.string(forKey: storageKey)) {
+                if previousToolbarIDs.contains(keys.map(\.id)) { return defaults }
                 return keys.compactMap { saved in catalog.first { $0.id == saved.id } }
             }
             let bar = Shortcuts.load(store)
@@ -374,7 +387,7 @@ final class ShortcutBar: UIView {
     /// Two rows → both caps of column i get that column's width, so the edges line up;
     /// one row → natural widths. A fitting row/grid has every column scaled by one factor
     /// (`filled`) so it spans the bar exactly — one row is kept only when it fits, so it is
-    /// only ever widened; a two-row grid overflowing by under 6% is squeezed the same way,
+    /// only ever widened; a two-row grid overflowing by under 8% is squeezed the same way,
     /// and a wider overflow keeps its widths and scrolls. The split always reads natural widths,
     /// never the widened or squeezed ones. `oneRow` is never widened: it keeps natural widths,
     /// left-aligned, unless it overflows by under 14% (`minRowScale`), then its caps squeeze
@@ -426,8 +439,8 @@ final class ShortcutBar: UIView {
     }
 
     /// The narrowest `filled` squeezes a bar instead of scrolling it: the default 8+8 grid
-    /// needs 0.943 on a 375 pt phone; a squeezed cap takes it out of its side padding.
-    static let minFillScale: CGFloat = 0.94
+    /// needs 0.927 on a 375 pt phone (#690); a squeezed cap takes it out of its side padding.
+    static let minFillScale: CGFloat = 0.92
     /// `oneRow`'s: the default toolbar with Paste needs 0.873 on a 375 pt phone (an arrow cap
     /// 31.4 pt). A cap keeps 86% of its glyph plus 16 pt, so a glyph under 98 pt never truncates.
     static let minRowScale: CGFloat = 0.86
@@ -737,7 +750,7 @@ final class KeyCapButton: UIButton {
     var led: UIView?
     /// The width the cap's content wants, ignoring `columnWidth` — never narrower than the
     /// 36pt cap is tall, so a lone arrow or ^C starts square (a squeeze can still take it
-    /// to about 34x36, 31x36 in `oneRow`).
+    /// to about 33x36, 31x36 in `oneRow`).
     var naturalWidth: CGFloat { max(contentWidth, 36) }
     /// Content plus full padding, whatever padding a squeeze left on the cap.
     private var contentWidth: CGFloat {
