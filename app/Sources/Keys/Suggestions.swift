@@ -1691,6 +1691,22 @@ final class SuggestionBar: UIView {
                 self?.walk(dir, legs: legs - 1, limit: limit, crossed: dir < 0 ? leg + crossed : crossed + leg, seen: (b, a),
                            count, done: done)
             }
+            // A leg back landing on text after the caret that isn't the leg's is a late answer
+            // to an earlier move, no leg's: its own is waited for, `answerPolls` at most (#682:
+            // at 0.36 s a move, rewindow's step away answered after its wait, and dd's walk to
+            // the line's start read it and went on into the line above).
+            if dir < 0, let kb = self?.keyboard, let doc = kb.target as? UITextDocumentProxy {
+                let late = { () -> Bool in
+                    let a = doc.documentContextAfterInput ?? ""
+                    return !a.isEmpty && !a.hasPrefix(leg) && !leg.hasPrefix(a)
+                }
+                guard late() else { return on() }
+                let from = kb.ticks
+                return kb.wait { [weak kb] in
+                    guard late(), (kb?.ticks ?? .max) - from <= Self.answerPolls else { on(); return true }
+                    return false
+                }
+            }
             // A leg over all of an after-context cut after a sentence's space lands, in UIKit's
             // guess, on an empty one: no line's end till the host's answer shows none either
             // (#553 QA: a blocking host's ctrl-k took a sentence, dd stepped over its next's first).

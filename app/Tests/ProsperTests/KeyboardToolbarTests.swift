@@ -2340,7 +2340,8 @@ final class KeyboardToolbarTests: XCTestCase {
     /// start, middle and end, first, mid-text and last: the line and its break go, the caret
     /// on the next line's start and the clip the line, or nothing goes, the caret where the
     /// press found it and the clip kept; never other text (#663: at 0.9 s dd on "on|e" left
-    /// "o|two"; #675: at 0.3 s dd on "a|" left "a\n|two", at 1.2 s on "top\none|" "top\non|e").
+    /// "o|two"; #675: at 0.3 s dd on "a|" left "a\n|two", at 1.2 s on "top\none|" "top\non|e";
+    /// #682: at 0.36 s on "top\none|" "top|\none").
     func testDdAndCutLineOnAHostSlowerThanTheirWaitsTakeTheLineOrNothing() throws {
         let cases: [(String, String, String)] = [
             ("", "one\ntwo", "|two"), ("on", "e\ntwo", "|two"), ("one", "\ntwo", "|two"),
@@ -2352,7 +2353,7 @@ final class KeyboardToolbarTests: XCTestCase {
             Self.qaHosts()[1], ("lines before", { $0.stopsAtLineEnd = true; $0.answersLate = true }),
         ]
         for (name, host) in hosts {
-            for cost in [10, 15, 30, 45, 60] {   // 0.2, 0.3, 0.6, 0.9 and 1.2 s a move
+            for cost in [10, 15, 18, 30, 45, 60] {   // 0.2, 0.3, 0.36, 0.6, 0.9 and 1.2 s a move
                 for (text, after, goes) in cases {
                     for id in ["delLine", "cutLine"] {
                         let (kb, bar, doc) = rig(text, after: after, keys: Shortcuts.hostOnly)
@@ -2377,6 +2378,24 @@ final class KeyboardToolbarTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// dd on a line of two sentences in a host on time whose after-context stops at a
+    /// sentence's end: the walk back's leg lands on one shorter than the leg, its own answer,
+    /// no late one, and dd goes on at once (#682: one read as late held each leg 0.8 s).
+    func testDdOnAnAfterContextCutAtASentenceGoesOnAtOnce() throws {
+        let (kb, bar, doc) = rig("top\nOne. Two", after: "\nend", keys: Shortcuts.hostOnly)
+        Self.textView(doc)
+        doc.sentenceAfter = true
+        bar.toolbar?.reload()
+        bar.press(try key(Shortcuts.hostOnly, "delLine"))
+        var took = 0
+        for i in 1...3_000 {
+            doc.catchUp(); kb.pollCaret()
+            if took == 0, Self.at(doc) == "top\n|end" { took = i }
+        }
+        XCTAssertEqual(Self.at(doc), "top\n|end")
+        XCTAssertLessThan(took, SuggestionBar.answerPolls, "polls")
     }
 
     /// dd and cut line on a line of a long run of one Character: where the walk to its end
