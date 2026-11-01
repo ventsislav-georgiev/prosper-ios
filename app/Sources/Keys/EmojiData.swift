@@ -2,9 +2,10 @@
 // (https://unicode.org/Public/emoji/latest/emoji-test.txt): fully-qualified emoji up to
 // Emoji 18.0, skin tones apart (#667), no Component group; and from Unicode CLDR's
 // annotations (https://github.com/unicode-org/cldr, common/annotations and
-// common/annotationsDerived, en and bg). Don't edit; run the script again.
+// common/annotationsDerived, en and bg); and from unicodetools' emoji-freq.txt
+// (https://github.com/unicode-org/unicodetools). Don't edit; run the script again.
 //
-// The emoji data and CLDR annotations are Unicode's, under the Unicode License v3:
+// The emoji data, CLDR annotations and emoji-freq.txt are Unicode's, under the Unicode License v3:
 //
 // UNICODE LICENSE V3
 //
@@ -249,6 +250,64 @@ enum EmojiData {
         👊 👏 🙌 🤲 🤝 🙏 💪 🤷 🤦 🙋 🙇 🔥 ✨ ⭐ 🌟 🌈
         ☀️ ⚡ 🌸 🌹 🍀 🎉 🎊 🎁 🎂 🍕 🍺 ☕ 🏆 🎵 💻 💡
         ✅ ❌ ❗ ❓ ⚠️ 🚫 ➡️ ⬅️ 🆗 🆕 🔴 🟢 🔵 📌 ⏰ 🚀
+        """
+
+    /// The emoji by how often they're used, most first (#684, unicodetools' emoji-freq.txt):
+    /// the search's last tie-break (`EmojiKeywords`), those not here tied last.
+    static let popular = """
+        ♥️ 😂 ☺️ ❤️ 😒 😍 👌 😘 😊 😔 😏 😩 😁 😭 😳 💕
+        ✌️ 👍 😉 💁 🙌 😌 😎 🙈 😑 😜 😋 😞 🙏 🎶 ✋ 😄
+        🙊 😕 😡 👏 😢 😴 👀 😐 😱 😫 😝 ☀️ 💜 💔 💋 😃
+        💯 ✔️ 😪 😣 🌹 💙 😤 👋 👊 😷 🌸 😠 😖 😬 💗 🙅
+        😈 🔫 😅 👎 😥 🙋 😆 😓 ✨ 🎉 💪 💖 😶 😚 💛 🎧
+        💚 ☑️ 😛 💃 💞 😀 😰 ✊ 💩 💘 ☝️ 😻 🚶 ©️ 👯 🔥
+        😟 ✈️ 👉 💤 👈 💀 😇 😨 🎀 👐 🌚 🙆 👑 🌺 🏃 ❗
+        🎵 🙍 😮 🐶 👫 🇺🇸 😯 🍻 🙉 🌞 🙇 🏈 💰 👭 🏀 ✖️
+        😵 💅 🐱 🎈 😲 💨 ☎️ 💓 ▶️ 💦 🌴 💏 👆 👇 😹 👻
+        ✅ 😧 ⚽ 🍕 👅 🌟 👼 💎 ☕ 🎤 👸 ☁️ 🍀 🌙 💥 💍
+        🔴 💭 👶 💐 😦 ⭐ ™️ ☔ 😙 💫 👿 🍃 ▪️ ⭕ 🌻 🙀
+        🎂 😿 🌝 😼 🌵 ♦️ 👽 ⚡ 1️⃣ 🚗 💸 🌀 🎊 🍺 🎁 🍆
+        🍩 🏊 💆 🌷 ♣️ ❄️ 🐢 🍁 🐯 ✉️ 🔪 🍴 😸 ⚾ 🐷 👹
+        💣 2️⃣ 🍦 🌊 💑 💂 🎥 😽 ❌ 💵 👨 ®️ 😗 🍪 👄 🍷
+        🌍 🍌 ⛅ 💇 👳 🌎 🍔 ♻️ 🍹 📱 🍸 😾 🍰 🍂 3️⃣ 💝
+        🚬 🙎 💢 🌕 🚿 🍟 👣 📲 🍉 🐼 🏆 🍭 💉 📷 ♠️ 👵
+        🎃 🌑 😺 ➡️ ✂️ 👙 🐳 🐧 🐍 🐣 🐻 🍫 4️⃣ 🐒 ‼️ 👃
+        🚘 🐬 🐝 〰️ 🌓 👟 👬 👴 🌒 🌼 🌔 👂 🌗 🌾 👪 🍓
+        ⚪ 📺 🍝 📚 🌘 🐠 🐥 🏡 🌖 🚫 🌈 🍗 🇮🇹 👠 👩 🎣
+        🐸 🐙 🎓 🚀 💄 💟 🐾 💬 🍒 👰 🇬🇧 ✳️ 🐰 ⚠️ ⛳ 👓
+        💊 🍎 ⚫ 🐘 🔊 ↙️ ⚓ 🐟 🐴 🌿 👲 🚙 5️⃣ ⛄ 🍜 🎾
+        👧 🎮 🐪 👗 📖 📝 🍍 🔲 👦 🎼 Ⓜ️ 🔝 💌 🏠 ⬇️ 🌅
+        🍤 ❓ 🐔 🎨 📢 ⬅️ 🎬 🆒 ◀️ 🍳 🚨 ↗️ 🏄 🐮 ↪️ ✏️
+        👺 🍧 🐫 🚲 🍇 ◾ 👾 🇫🇷 ❕ 🔵 🐽 🛀 🌏 🐭 🐋 🎸
+        🍬 🍞 🐵 🐦 🐨 🍑 🐺 🔮 🐎 🍊 🔑 📞 👖 ⌚ 6️⃣ 💡
+        🇪🇸 🌜 🌌 👮 🍄 ↘️ 🔐 7️⃣ 🌛 🍣 ♋ 👱 🍼 🍲 🎩 💧
+        🆗 🚣 🐛 ⬆️ 🌃 🍖 🐑 ↩️ 🌳 🎅 🍋 ⏰ 🗿 🔆 🚽 🌽
+        🎆 🐤 💺 🐌 🚂 🐊 🍥 🍚 🐓 🐜 🍮 ♏ 👜 🔋 🔌 🚴
+        🍨 🍱 🍛 🐹 🔨 🎢 🏁 🎭 ♨️ 🐚 🆘 🚼 🚌 ↖️ 🌲 🎯
+        ♌ 👔 🔒 ⛽ 🎳 ➰ 🐅 ⛵ 🚓 💠 ✒️ 🔹 👕 🎎 🏉 ♍
+        🐈 ♈ 📓 🐩 🔺 🍏 ↔️ 👞 🅰️ 🍵 🗽 🔻 🐄 👥 ♉ 👤
+        💳 0️⃣ 🔓 🎄 🌰 💻 🔞 💷 🍅 🚔 🌱 🐞 ⛔ 👢 🆙 👷
+        ♎ ⛺ 🔃 🔘 🏥 🚪 🇩🇪 💈 🔙 🚤 🍯 🌆 🐉 🔱 🌄 🅾️
+        🏇 ✴️ 🚑 8️⃣ 👛 🐗 📦 🅱️ 🌇 🎱 🐏 🚢 🇯🇵 🔜 🔄 9️⃣
+        🍢 🐐 ♒ ⁉️ ♊ 🚍 ◼️ 📣 🎹 🌂 🆔 ♐ 🚕 💲 🎡 ➕
+        🔶 🐀 ⛪ 🐲 🔔 🐖 🔸 🗻 🏢 💿 🔁 📍 👡 ♓ 〽️ 🚦
+        📶 💒 🐕 👚 🚜 🚩 📩 🎇 🏂 ➖ 🌋 🐂 🐇 🔇 🍐 🕐
+        🔭 ♑ ⬛ 👒 🔅 🔷 💮 🃏 🔦 🎻 💼 🍡 💶 📕 🏩 🔳
+        🚊 🚁 🐆 #️⃣ 🎋 ⌛ 🔟 💴 🐡 ⏳ 🚒 ◻️ 🏫 🚃 📅 🔛
+        ❔ 📌 🌉 🚖 🎲 🚉 💽 🌐 ♿ 🚚 🔩 📹 📒 🕑 🍈 🇨🇳
+        🏰 👘 🎒 🕛 📻 ↕️ 🆚 🎷 🎐 🍠 🔰 🚷 🍙 📀 🇰🇷 ❎
+        🕒 🛁 📰 🚺 🔚 ❇️ ▫️ 🚭 🌁 📵 🎽 🎍 🚛 📴 🔎 🕓
+        🎺 🐃 🏤 🇷🇺 🚮 🍶 ⏩ ⤵️ 🚧 ◽ 🗼 🔧 🎏 📜 🔯 🚐
+        📬 🔂 📗 🎪 🔗 📡 📛 🚄 🔍 🔬 🕘 🔼 🕔 🏨 📘 🎌
+        🚾 🐁 🎠 🎿 🚎 🍘 ⬜ 🚵 🎰 📼 📆 🆓 🕙 ⏪ 🚥 🚇
+        🚆 📄 ⤴️ 📔 🆕 🔢 🚹 🔽 📙 🔕 🏧 📎 🕗 🆎 📋 📯
+        🏪 👝 🉐 📈 🕕 🕢 🕚 🕖 🎫 🚻 🏦 📃 🏯 🕜 📊 📐
+        🅿️ 🕦 ⏬ 💾 🚅 🚰 📮 🔖 📧 🕧 📏 🎦 🔉 🕥 📟 🚈
+        ➿ 🕝 🎴 🚸 📳 ⛲ ℹ️ 📠 🚝 📨 ㊗️ 🏮 🕟 📑 📇 📫
+        🗾 🀄 🕤 🏬 🎑 📁 🕞 📉 🕠 🚞 ㊙️ 🏣 🈹 🕣 🔀 🆑
+        🔏 🔤 💱 🆖 💹 🈳 🈵 ➗ 🚱 🈲 🈯 📥 📭 🔠 🏭 🔣
+        🕡 📂 ⛎ 🚏 🈴 🚯 ⏫ 🚡 📪 🚳 🔡 📤 🚠 🈂️ 🈺 🉑
+        🈶 🈚 🛃 🚟 🛂 🈷️ 🈸 🈁 🛄 🛅
         """
 
     /// Each emoji's CLDR name and keywords by language (#666), a line each in `groups`' order:

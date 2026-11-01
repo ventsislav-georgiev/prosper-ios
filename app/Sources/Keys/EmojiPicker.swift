@@ -261,14 +261,14 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         keywords = nil
         if on {
             var seen = Set<String>()
-            let all = sections.joined().filter { seen.insert($0).inserted }
+            let all = sections.joined().filter { seen.insert($0).inserted }, recents = Set(sections.first ?? []).count
             keywords = EmojiKeywords(layout)
             let flow = UICollectionViewFlowLayout()
             flow.itemSize = CGSize(width: PanelFilter.rowHeight, height: PanelFilter.rowHeight)
             let results = UICollectionView(frame: .zero, collectionViewLayout: flow)
             setUp(results)
             let f = PanelFilter(placeholder: searchRow.accessibilityLabel ?? "", layout: layout, fields: all.map { [$0] },
-                                grid: results) { [weak self] in self?.keywords?.rank($0, all) ?? [] }
+                                grid: results) { [weak self] in self?.keywords?.rank($0, all, recents: recents) ?? [] }
             f.pick = { [weak self] i in self.map { $0.choose($0.tones.apply(all[i])) } }
             f.onDone = { [weak self] in self?.search(false) }
             f.frame = bounds
@@ -531,6 +531,8 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
 /// literals, which stay in the binary's pages: nothing is copied but the emoji.
 struct EmojiKeywords {
     private var words: [String: [(name: Substring, keywords: Substring)]] = [:]
+    /// Each emoji's place in `EmojiData.popular` (#684), most used first.
+    private let popularity = Dictionary(uniqueKeysWithValues: zip(EmojiData.popular.split(whereSeparator: \.isWhitespace).map(String.init), 0...))
 
     init(_ layout: TerminalKeyboard.Layout) {
         for language in layout == .bulgarian ? ["bg", "en"] : ["en"] {
@@ -543,9 +545,10 @@ struct EmojiKeywords {
 
     /// `emoji`'s indices matching `query`, best first: the name itself (#679, as the system
     /// keyboard's "cat" gives 🐈 then 🐱), the name's first words (shorter names first), an exact keyword, a keyword's
-    /// prefix, then a name's word's, in any language; ties, and every emoji for a blank
-    /// query, keep `emoji`'s order. Bytes against bytes: both folded (`PanelFilter.fold`) and composed.
-    func rank(_ query: String, _ emoji: [String]) -> [Int] {
+    /// prefix, then a name's word's, in any language; ties `emoji`'s first `recents` (the user's), then
+    /// the more used (#684: 🚗 of the "car"s), then, and every emoji for a blank query, in `emoji`'s
+    /// order. Bytes against bytes: both folded (`PanelFilter.fold`) and composed.
+    func rank(_ query: String, _ emoji: [String], recents: Int = 0) -> [Int] {
         let q = Array(PanelFilter.fold(query).precomposedStringWithCanonicalMapping.utf8)
         guard q.contains(where: { $0 != 32 }) else { return Array(emoji.indices) }
         let bar: UInt8 = 124, space: UInt8 = 32
@@ -562,9 +565,10 @@ struct EmojiKeywords {
             if w.name.utf8.starts(with: q) || w.name.utf8.firstRange(of: word) != nil { return keyword + 2 }
             return nil
         }
+        func used(_ i: Int, _ e: String) -> Int { i < recents ? -1 : popularity[e, default: .max] }
         return emoji.enumerated()
-            .compactMap { i, e in words[e]?.compactMap(tier).min().map { ($0, i) } }
+            .compactMap { i, e in words[e]?.compactMap(tier).min().map { ($0, used(i, e), i) } }
             .sorted { $0 < $1 }
-            .map(\.1)
+            .map(\.2)
     }
 }

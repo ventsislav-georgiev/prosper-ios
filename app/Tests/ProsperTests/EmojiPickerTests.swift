@@ -407,7 +407,7 @@ final class EmojiPickerTests: XCTestCase {
     /// The name, then a name's prefix, then an exact keyword, then a keyword's prefix, then a
     /// name's word: "pie" is 🥧's name and keyword,
     /// starts 🥟's "pierogi" and 🧩's "piece", and is a word of 🇵🇲's name only. Folded as the
-    /// query is; ties keep the order given (recents first). The Bulgarian keys match
+    /// query is; ties recents first, the more used next (#684), then in the order given. The Bulgarian keys match
     /// Bulgarian's words and English's; the English keys English's only.
     func testSearchRanksAnExactKeywordThenAPrefixThenANameWord() {
         let all = Array(EmojiPicker.groups.joined())
@@ -421,9 +421,9 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertEqual(ranked("qzx", en), [])
         XCTAssertEqual(ranked("ден", en), [], "no Bulgarian on the English keys")
 
-        // "ден" (day) is 🌞's keyword, starts 🧖's "ден за спа", 🦃's "денят на благодарността",
-        // 🏪's "денонощен" and 🪥's "дентален", and is a word of 🎂's name only.
-        XCTAssertEqual(ranked("ден", bg), ["🌞", "🧖", "🦃", "🏪", "🪥", "🎂"])
+        // "ден" (day) is 🌞's keyword, starts 🏪's "денонощен" (the more used, #684), 🧖's "ден за спа",
+        // 🦃's "денят на благодарността" and 🪥's "дентален", and is a word of 🎂's name only.
+        XCTAssertEqual(ranked("ден", bg), ["🌞", "🏪", "🧖", "🦃", "🪥", "🎂"])
         XCTAssertEqual(ranked("ДЕН", bg), ranked("ден", bg))
         XCTAssertEqual(ranked("пуйка", bg).first, "🦃", "й folded as CLDR's is")
         XCTAssertEqual(ranked("pie", bg), ranked("pie", en), "English's too")
@@ -432,17 +432,23 @@ final class EmojiPickerTests: XCTestCase {
 
         // #679: the name itself, then the name's first words, shorter first, then the keywords:
         // 🐈 is "cat", 🐱 "cat face", 😼 "cat with wry smile", 😹 "cat with tears of joy",
-        // and the other cat faces have "cat" as a keyword only.
-        XCTAssertEqual(Array(ranked("cat", en).prefix(5)), ["🐈", "🐱", "😼", "😹", "😺"])
+        // and the other cat faces have "cat" as a keyword only, 😻 the most used (#684).
+        XCTAssertEqual(Array(ranked("cat", en).prefix(5)), ["🐈", "🐱", "😼", "😹", "😻"])
         XCTAssertEqual(ranked("Cat", bg).prefix(4), ranked("cat", en).prefix(4))
         // A whole word only: "car" is 🚗's keyword and only starts 🥕's "carrot", a name's word.
         let car = ranked("car", en)
         XCTAssertLessThan(car.firstIndex(of: "🚗") ?? .max, car.firstIndex(of: "🥕") ?? .max)
+        // #684: 🚗 🚃 🚞 🚋 🚓 🚔 🚕 all have "car" as a keyword, nothing else between them: the
+        // most used first. "star": ✨ and 🌟 before 🤩 and 🧑‍🎤, newer than the counts.
+        XCTAssertEqual(car.first, "🚗")
+        XCTAssertEqual(Array(ranked("star", en).prefix(5)), ["⭐", "✡️", "☪️", "✨", "🌟"])
+        XCTAssertEqual(en.rank("car", ["🚓"] + all, recents: 1).first, 0, "recents before the more used")
         // 🐈 is "котка", 🐱 "муцуна на котка" with "котка" a keyword; ☀️ is "слънце", then
         // 🌞 "слънце с лице" before ⛅ "слънце зад облак", the shorter first.
         XCTAssertEqual(ranked("котка", bg).first, "🐈")
-        // #683: among the keyword ties, 🐱 says "котка" twice (the keyword and its name), the cat faces once.
-        XCTAssertEqual(Array(ranked("котка", bg).prefix(3)), ["🐈", "🐱", "😺"])
+        // #683: among the keyword ties, 🐱 says "котка" twice (the keyword and its name), the cat
+        // faces once, then 😻 the most used (#684).
+        XCTAssertEqual(Array(ranked("котка", bg).prefix(3)), ["🐈", "🐱", "😻"])
         XCTAssertEqual(Array(ranked("слънце", bg).prefix(3)), ["☀️", "🌞", "⛅"])
     }
 
@@ -504,6 +510,21 @@ final class EmojiPickerTests: XCTestCase {
         picker.search(true)
         kb.showEmoji(false)
         XCTAssertNil(picker.filter, "ABC's way out closes it too")
+    }
+
+    /// The user's recents lead their ties, before the more used (#684): "car" gives 🚓 once
+    /// typed, 🚗 with no recents.
+    func testSearchRecentsLeadTheirTies() throws {
+        func first(_ recents: [String]) throws -> String? {
+            defaults.set(recents, forKey: EmojiRecents.key)
+            let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight))
+            picker.search(true)
+            let filter = try XCTUnwrap(picker.filter)
+            filter.type("car")
+            return filter.matches.first.map { filter.fields[$0][0] }
+        }
+        XCTAssertEqual(try first(["🚓"]), "🚓")
+        XCTAssertEqual(try first([]), "🚗")
     }
 
     /// On the Bulgarian keys the language key types English's words (#680): "pie" finds 🥧.
