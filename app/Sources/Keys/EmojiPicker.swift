@@ -541,18 +541,22 @@ struct EmojiKeywords {
         }
     }
 
-    /// `emoji`'s indices matching `query`, best first: an exact keyword, then a keyword's
+    /// `emoji`'s indices matching `query`, best first: the name itself (#679, as the system
+    /// keyboard's "cat" gives 🐈 then 🐱), the name's first words (shorter names first), an exact keyword, a keyword's
     /// prefix, then a name's word's, in any language; ties, and every emoji for a blank
     /// query, keep `emoji`'s order. Bytes against bytes: both folded (`PanelFilter.fold`) and composed.
     func rank(_ query: String, _ emoji: [String]) -> [Int] {
         let q = Array(PanelFilter.fold(query).precomposedStringWithCanonicalMapping.utf8)
         guard q.contains(where: { $0 != 32 }) else { return Array(emoji.indices) }
         let bar: UInt8 = 124, space: UInt8 = 32
-        let exact = [bar] + q + [bar], prefix = [bar] + q, word = [space] + q
+        let exact = [bar] + q + [bar], prefix = [bar] + q, word = [space] + q, lead = q + [space]
+        let keyword = 1 << 16
         func tier(_ w: (name: Substring, keywords: Substring)) -> Int? {
-            if w.keywords.utf8.firstRange(of: exact) != nil { return 0 }
-            if w.keywords.utf8.firstRange(of: prefix) != nil { return 1 }
-            if w.name.utf8.starts(with: q) || w.name.utf8.firstRange(of: word) != nil { return 2 }
+            if w.name.utf8.elementsEqual(q) { return 0 }
+            if w.name.utf8.starts(with: lead) { return w.name.utf8.count }   // the shorter the closer
+            if w.keywords.utf8.firstRange(of: exact) != nil { return keyword }
+            if w.keywords.utf8.firstRange(of: prefix) != nil { return keyword + 1 }
+            if w.name.utf8.starts(with: q) || w.name.utf8.firstRange(of: word) != nil { return keyword + 2 }
             return nil
         }
         return emoji.enumerated()

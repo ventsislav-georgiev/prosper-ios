@@ -404,7 +404,8 @@ final class EmojiPickerTests: XCTestCase {
         }
     }
 
-    /// An exact keyword, then a keyword's prefix, then a name's word: "pie" is 🥧's keyword,
+    /// The name, then a name's prefix, then an exact keyword, then a keyword's prefix, then a
+    /// name's word: "pie" is 🥧's name and keyword,
     /// starts 🥟's "pierogi" and 🧩's "piece", and is a word of 🇵🇲's name only. Folded as the
     /// query is; ties keep the order given (recents first). The Bulgarian keys match
     /// Bulgarian's words and English's; the English keys English's only.
@@ -428,6 +429,19 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertEqual(ranked("pie", bg), ranked("pie", en), "English's too")
         XCTAssertEqual(ranked("балон", bg).first, "🎈")
         XCTAssertEqual(ranked("балон", bg).last, "🐡", "риба балон: a name's word only")
+
+        // #679: the name itself, then the name's first words, shorter first, then the keywords:
+        // 🐈 is "cat", 🐱 "cat face", 😼 "cat with wry smile", 😹 "cat with tears of joy",
+        // and the other cat faces have "cat" as a keyword only.
+        XCTAssertEqual(Array(ranked("cat", en).prefix(5)), ["🐈", "🐱", "😼", "😹", "😺"])
+        XCTAssertEqual(ranked("Cat", bg).prefix(4), ranked("cat", en).prefix(4))
+        // A whole word only: "car" is 🚗's keyword and only starts 🥕's "carrot", a name's word.
+        let car = ranked("car", en)
+        XCTAssertLessThan(car.firstIndex(of: "🚗") ?? .max, car.firstIndex(of: "🥕") ?? .max)
+        // 🐈 is "котка", 🐱 "муцуна на котка" with "котка" a keyword; ☀️ is "слънце", then
+        // 🌞 "слънце с лице" before ⛅ "слънце зад облак", the shorter first.
+        XCTAssertEqual(ranked("котка", bg).first, "🐈")
+        XCTAssertEqual(Array(ranked("слънце", bg).prefix(3)), ["☀️", "🌞", "⛅"])
     }
 
     /// The app's keyboard: the search row over the grid opens filter mode over the picker,
