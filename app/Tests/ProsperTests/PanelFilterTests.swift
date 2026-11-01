@@ -228,7 +228,7 @@ final class PanelFilterTests: XCTestCase {
         filter.layoutIfNeeded()
         let table = filter.results
         table.layoutIfNeeded()
-        let row = table.rowHeight, end = table.contentSize.height - table.bounds.height
+        let row = table.rowHeight, end = 8 * row - table.bounds.height   // the last row's top-aligned rest (#678)
         XCTAssertGreaterThan(end, 2 * row, "enough rows to scroll")
         func rest(_ y: CGFloat, _ view: UIScrollView? = nil) -> CGFloat {
             var p = CGPoint(x: 0, y: y)
@@ -238,6 +238,10 @@ final class PanelFilterTests: XCTestCase {
         XCTAssertEqual(rest(1.4 * row), row, accuracy: 0.01)
         XCTAssertEqual(rest(1.6 * row), 2 * row, accuracy: 0.01)
         XCTAssertEqual(rest(end + 3 * row), end, accuracy: 0.01, "clamped to the end")
+        let last = filter.tableView(table, cellForRowAt: IndexPath(row: 7, section: 0))
+        XCTAssertGreaterThanOrEqual(last.separatorInset.right, table.bounds.width, "no hairline under the last row")
+        XCTAssertLessThan(filter.tableView(table, cellForRowAt: IndexPath(row: 6, section: 0)).separatorInset.right,
+                          table.bounds.width, "the other rows keep theirs")
         XCTAssertEqual(rest(1.4 * row, filter), 1.4 * row, accuracy: 0.01, "another scroll view's target is its own")
     }
 

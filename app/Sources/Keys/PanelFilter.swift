@@ -84,7 +84,7 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         results.layer.cornerRadius = 14
         results.rowHeight = Self.rowHeight
         results.contentInsetAdjustmentBehavior = .never   // whole rows from the card's top (#674)
-        results.tableFooterView = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 1))
+        results.tableFooterView = UIView()   // no empty-row separators; zero height, so the end rests on a row top (#678)
         results.dataSource = self
         results.delegate = self
         none.text = "No matches"
@@ -320,6 +320,8 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         let cell = cell(matches[indexPath.row])
         cell.accessoryView = nil
         cell.accessibilityCustomActions = nil
+        // No hairline under the last row against the card's edge (#678).
+        cell.separatorInset.right = indexPath.row == matches.count - 1 ? tableView.bounds.width : tableView.separatorInset.right
         if var content = cell.contentConfiguration as? UIListContentConfiguration {
             content.textProperties.numberOfLines = 1
             content.secondaryTextProperties.font = .systemFont(ofSize: 11)   // clear of the separator (#674)
@@ -335,7 +337,8 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
     func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
                                    targetContentOffset target: UnsafeMutablePointer<CGPoint>) {
         guard scrollView === results else { return }
-        let row = results.rowHeight, end = max(0, results.contentSize.height - results.bounds.height)
+        // The end from the rows, not contentSize, which can carry a footer or a stale height (#678).
+        let row = results.rowHeight, end = max(0, CGFloat(matches.count) * row - results.bounds.height)
         target.pointee.y = min((target.pointee.y / row).rounded() * row, end)
     }
 
