@@ -218,6 +218,50 @@ final class PanelFilterTests: XCTestCase {
         XCTAssertEqual(grid.frame, emoji.results.frame)
     }
 
+    /// The emoji search's grid in whole rows, columns no wider than 38 pt (#686), at each Key Size, on
+    /// English and Bulgarian, under either toolbar, in portrait and landscape: no band between rows (38 pt cells in
+    /// 108 pt spread two over three's room), the last inside, a smaller cell's glyph inside it.
+    func testEmojiResultsFillTheGridInWholeRows() throws {
+        for size in KeyboardSettings.KeySize.allCases {
+            for (layout, numbers) in [(TerminalKeyboard.Layout.english, KeyboardSettings.Numbers.key), (.bulgarian, .row), (.english, .row)] {
+                for landscape in [false, true] {
+                    let label = "\(size) \(layout) \(numbers) \(landscape ? "landscape" : "portrait")"
+                    let (kb, _, view) = hostedRig(size: size, numbers: numbers, layout: layout, landscape: landscape)
+                    kb.showEmoji(true)
+                    let picker = try XCTUnwrap(kb.emojiPicker, label)
+                    picker.search(true)
+                    let filter = try XCTUnwrap(picker.filter, label)
+                    view.layoutIfNeeded()
+                    filter.type(layout == .english ? "a" : "а")
+                    filter.layoutIfNeeded()
+                    let grid = try XCTUnwrap(filter.grid, label)
+                    grid.layoutIfNeeded()
+                    let height = grid.bounds.height
+                    let rows = Int((height / PanelFilter.cellSide).rounded(.down))
+                    let cells = grid.visibleCells.sorted { ($0.frame.minX, $0.frame.minY) < ($1.frame.minX, $1.frame.minY) }
+                    let column = cells.filter { abs($0.frame.minX - cells[0].frame.minX) < 0.5 }
+                    XCTAssertGreaterThan(filter.matches.count, 3 * rows, label)
+                    XCTAssertEqual(column.count, rows, "\(label): whole rows in \(height) pt")
+                    for (a, b) in zip(column, column.dropFirst()) {
+                        XCTAssertLessThan(abs(b.frame.minY - a.frame.maxY), 1, "\(label): no gap between rows")
+                    }
+                    XCTAssertLessThan(column.first?.frame.minY ?? .infinity, 1, label)
+                    XCTAssertLessThanOrEqual(column.last?.frame.maxY ?? .infinity, height + 0.5, "\(label): the last row inside")
+                    XCTAssertGreaterThan(column.last?.frame.maxY ?? 0, height - 1, "\(label): the rows fill the grid")
+                    let columns = Set(cells.map { ($0.frame.minX * 2).rounded() }).count
+                    XCTAssertGreaterThanOrEqual(columns, Int(grid.bounds.width / PanelFilter.rowHeight), "\(label): no fewer columns than 38 pt ones")
+                    for cell in column {
+                        XCTAssertEqual(cell.frame.width, min(cell.frame.height, PanelFilter.rowHeight), accuracy: 0.01, "\(label): no wider than 38")
+                        // A cell under 38 pt still holds its glyph's advance (the image's height is the line's).
+                        let glyph = try XCTUnwrap((cell.contentView.subviews.first as? UIImageView)?.image?.size, label)
+                        if cell.frame.width < PanelFilter.rowHeight { XCTAssertLessThanOrEqual(glyph.width, cell.frame.width, "\(label): the glyph inside") }
+                    }
+                    withExtendedLifetime(kb) {}
+                }
+            }
+        }
+    }
+
     /// A drag comes to rest on a row's top, the nearer one, never past the end (#674).
     func testAScrollRestsOnARowsTop() throws {
         let store = SnippetStore(url: dir.appendingPathComponent("Snippets/snippets.json"))
@@ -493,21 +537,23 @@ final class PanelFilterTests: XCTestCase {
 
     /// The extension's keyboard and bar in a window at `size` and `numbers`, the view at the
     /// height they add up to, as NumbersKeyTests' rig.
-    private func hostedRig(size: KeyboardSettings.KeySize, numbers: KeyboardSettings.Numbers)
+    private func hostedRig(size: KeyboardSettings.KeySize, numbers: KeyboardSettings.Numbers,
+                           layout: TerminalKeyboard.Layout = .english, landscape: Bool = false)
         -> (TerminalKeyboard, SuggestionBar, UIView) {
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
-        if #available(iOS 17, *) { window.traitOverrides.verticalSizeClass = .regular }
-        let view = UIView(frame: CGRect(x: 0, y: 0, width: 402, height: 400))
+        let width: CGFloat = landscape ? 874 : 402
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: width, height: landscape ? 402 : 874))
+        if #available(iOS 17, *) { window.traitOverrides.verticalSizeClass = landscape ? .compact : .regular }
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: width, height: 400))
         window.addSubview(view)
         window.isHidden = false
         addTeardownBlock { window.isHidden = true }
-        let (kb, bar, _, _) = rig("", in: view)
+        let (kb, bar, _, _) = rig("", layout: layout, in: view)
         kb.bottomInset = TerminalKeyboard.extensionBottomInset
         kb.allowsNumbersKey = true
         kb.settings.keySize = size
         kb.settings.numbers = numbers
         bar.showsToolbar = true
-        view.frame.size.height = view.systemLayoutSizeFitting(CGSize(width: 402, height: 0), withHorizontalFittingPriority: .required,
+        view.frame.size.height = view.systemLayoutSizeFitting(CGSize(width: width, height: 0), withHorizontalFittingPriority: .required,
                                                               verticalFittingPriority: .fittingSizeLevel).height
         view.layoutIfNeeded()
         return (kb, bar, view)

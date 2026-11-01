@@ -16,6 +16,8 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
     typealias Style = TerminalKeyboard.Style
     static let fieldHeight: CGFloat = 34
     static let rowHeight: CGFloat = 38
+    /// The emoji grid's least cell (#686): three rows in 108 pt, the glyph inside at 36.
+    static let cellSide: CGFloat = 34
     static let keyRow: ClosedRange<CGFloat> = 26...40
     static let gap: CGFloat = 5
 
@@ -313,8 +315,15 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         none.frame = results.frame
         grid?.frame = results.frame
         // The card shared out in whole rows, none under `rowHeight`: no partial row peeks at its
-        // foot, and a two-line row gets the slack (#674). The grid keeps its own.
+        // foot, and a two-line row gets the slack (#674).
         results.rowHeight = resultsHeight / max(1, (resultsHeight / Self.rowHeight).rounded(.down))
+        // The grid too, in rows none under `cellSide`, columns no wider than `rowHeight`: 38 pt
+        // cells in 108 pt left a row's band between two, the flow spreading them over it (#686).
+        if let flow = grid?.collectionViewLayout as? UICollectionViewFlowLayout {
+            let side = resultsHeight / max(1, (resultsHeight / Self.cellSide).rounded(.down))
+            let item = CGSize(width: min(side, Self.rowHeight), height: side)
+            if flow.itemSize != item { flow.itemSize = item; flow.invalidateLayout() }
+        }
         clipFoot()
 
         // Keys a column wide, the longest row's (Bulgarian's 11) or 10, English's too on
