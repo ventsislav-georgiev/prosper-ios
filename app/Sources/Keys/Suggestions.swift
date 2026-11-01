@@ -659,6 +659,8 @@ final class SuggestionBar: UIView {
     var clipsPanel: ClipboardPanel? { panel as? ClipboardPanel }
     var snippetsPanel: SnippetPanel? { panel as? SnippetPanel }
     var quicklinksPanel: QuicklinkPanel? { panel as? QuicklinkPanel }
+    /// Fix, Rewrite and Summarize's while open (`showRewrite`, #612).
+    var rewritePanel: AIPanel? { panel as? AIPanel }
     /// The toggle's hold menu while open (`showMenu`, #623).
     var menuPanel: ToggleMenu? { panel as? ToggleMenu }
     /// The menu's Appearance while open (`showAppearance`, #641).
@@ -679,6 +681,18 @@ final class SuggestionBar: UIView {
             dictation?.onStrip = { [weak self] in self?.dictationStrip.show($0) }
             dictation?.hint = { [weak self] in self?.hint($0) }
         }
+    }
+    /// The on-device model (#612), the controller's on iOS 26 with Foundation Models; nil in the
+    /// app and tests that don't set one. Its tile and key show only with it (`rewrites`).
+    var rewrite: ((Rewrite.Command, String) async throws -> String)?
+    /// Whether the model can run now, read as the menu, the toolbar or the panel opens.
+    var rewriteAvailability: () -> Rewrite.Availability = { .available }
+    /// Rewrite's tile and key (#612): with the model and Full Access, on the English layout (the
+    /// model has no Bulgarian), and on an iPhone that has Apple Intelligence; where it's only off
+    /// or still downloading, the panel says so.
+    var rewrites: Bool {
+        rewrite != nil && suggestions.pasteboard() != nil && suggestions.layout == .english
+            && rewriteAvailability() != .deviceNotEligible
     }
     private(set) lazy var dictationStrip: DictationStrip = {
         let strip = DictationStrip(done: { [weak self] in self?.dictation?.done() },
@@ -816,6 +830,7 @@ final class SuggestionBar: UIView {
                 if action == .snippets { return full && self?.snippets != nil }
                 if action == .quicklinks { return full && self?.quicklinks != nil }
                 if action == .dictate { return full && self?.dictation != nil }
+                if action == .rewrite { return self?.rewrites == true }
                 return pastes || action != .paste
             }
         }, oneRow: true)
@@ -862,7 +877,7 @@ final class SuggestionBar: UIView {
         cover(menu)
     }
 
-    /// What the menu offers here (#623): each panel and the mic gated as its toolbar key
+    /// What the menu offers here (#623): each panel (Rewrite's too, #612) and the mic gated as its toolbar key
     /// (`addToolbar`), on the toolbar or not, Emoji always (#629: no API picks iOS's own),
     /// Numbers where no 123 key is (Numbers: Row, #650), each other language with two or more
     /// on (#624), Appearance (#641) and Next Keyboard always. A pick closes the menu.
@@ -880,6 +895,7 @@ final class SuggestionBar: UIView {
         if full, snippets != nil { add(Shortcuts.snippets, "Snippets") { $0.showSnippets(true) } }
         if full, quicklinks != nil { add(Shortcuts.quicklinks, "Quicklinks") { $0.showQuicklinks(true) } }
         if full, dictation != nil { add(Shortcuts.dictate, "Dictate") { $0.dictation?.tap() } }
+        if rewrites { add(Shortcuts.rewrite, "Rewrite") { $0.showRewrite(true) } }
         items.append(.init(title: "Emoji", symbol: "face.smiling") { [weak self] in
             self?.showMenu(false)
             self?.keyboard?.showEmoji(true)
@@ -932,6 +948,7 @@ final class SuggestionBar: UIView {
         case .snippets: showSnippets(snippetsPanel == nil)
         case .quicklinks: showQuicklinks(quicklinksPanel == nil)
         case .dictate: dictation?.tap()
+        case .rewrite: showRewrite(rewritePanel == nil)
         }
     }
 
@@ -946,6 +963,45 @@ final class SuggestionBar: UIView {
             keyboard.autoCapitalize()
             self.refresh()
         }
+    }
+
+    /// Fix, Rewrite and Summarize's panel over the keys, or the keys back (#612): gated as its key
+    /// (`rewrites`). A command takes the field's text as `Rewrite.plan` reads it at the tap.
+    func showRewrite(_ on: Bool) {
+        guard on, rewrites, let rewrite else { return cover(nil) }
+        let ai = AIPanel(availability: rewriteAvailability(), rewrite: rewrite)
+        ai.source = { [weak self] in
+            (self?.keyboard?.target as? UITextDocumentProxy).flatMap {
+                Rewrite.plan(before: $0.documentContextBeforeInput, after: $0.documentContextAfterInput, selected: $0.selectedText)
+            }
+        }
+        ai.onWrite = { [weak self] in self?.write($0, $1, replace: $2) }
+        cover(ai)
+    }
+
+    /// Replace or Insert (#612), once a toolbar edit under way has landed, in its field
+    /// (`TerminalKeyboard.finish`, `writable`), the field read again (`Rewrite.replace`): the
+    /// keys back, or the panel says why not and stays.
+    private func write(_ source: Rewrite.Source, _ result: String, replace: Bool) {
+        UIDevice.current.playInputClick()
+        keyboard?.finish { [weak self] in
+            guard let self, let keyboard = self.keyboard, let doc = keyboard.target as? UITextDocumentProxy,
+                  keyboard.writable() else { return }
+            guard replace ? Rewrite.replace(source, with: result, in: doc) : Rewrite.insert(result, in: doc) else {
+                self.rewritePanel?.refused(replace ? "The text changed. Select it to replace it" : "Tap where it goes, then Insert")
+                return
+            }
+            self.cover(nil)
+            self.suggestions.caretMoved()
+            keyboard.resetWord()
+            keyboard.autoCapitalize()
+            self.refresh()
+        }
+    }
+
+    /// The keyboard goes (#612): Rewrite's panel closes, its request with it.
+    func disappear() {
+        if rewritePanel != nil { cover(nil) }
     }
 
     /// The clipboard history's panel over the keys, read afresh, or the keys back (#597).
@@ -1680,6 +1736,7 @@ final class SuggestionBar: UIView {
         keyboard.layoutChanged = { [weak self] layout in
             self?.suggestions.layout = layout
             self?.languageChanged?(layout)
+            self?.toolbar?.reload()   // Rewrite's key is the English layout's (#612)
             self?.refresh()
         }
         refresh()
@@ -1906,6 +1963,8 @@ final class ToggleMenu: KeysPanel {
     /// The tiles' smaller look, under `tall`, and their titles' size (`layoutSubviews`).
     private var small = false
     private(set) var titleSize: CGFloat = 15
+    /// The titles a line a word (`layoutSubviews`, #612).
+    private(set) var wraps = false
 
     init(items: [Item]) {
         self.items = items
@@ -1942,6 +2001,8 @@ final class ToggleMenu: KeysPanel {
     /// won't fit the keys (landscape, Numbers: Key, a short Key Size with seven tiles or more),
     /// as many rows as fit at 44 pt and more a row, the tiles' badge and title smaller under `tall`.
     /// Every title as small as the widest needs to fit its tile whole (#649): landscape's one row.
+    /// Where that's under 10 pt in a full-height tile, each title a line a word instead (#612:
+    /// Rewrite's tile, nine in landscape's one row with Numbers: Key, "Next Keyboard" at 8.5 pt).
     override func layoutSubviews() {
         super.layoutSubviews()
         let area = bounds.inset(by: safeAreaInsets).inset(by: UIEdgeInsets(top: 46, left: 8, bottom: 8, right: 8))
@@ -1952,10 +2013,14 @@ final class ToggleMenu: KeysPanel {
         let rows = (tiles.count + columns - 1) / columns
         let h = min(Self.tileHeight, (area.height - CGFloat(rows - 1) * gap) / CGFloat(rows))
         let w = (area.width - CGFloat(columns - 1) * gap) / CGFloat(columns)
-        let size = Self.titleSize(items.map(\.title), small: h < Self.tall, room: w - 8)   // the tile's insets
-        if (h < Self.tall) != small || size != titleSize {
-            (small, titleSize) = (h < Self.tall, size)
-            for (tile, item) in zip(tiles, items) { tile.configuration = Self.tile(item, small: small, size: size).configuration }
+        var size = Self.titleSize(items.map(\.title), small: h < Self.tall, room: w - 8)   // the tile's insets
+        let wrap = size < 10 && h >= Self.tileHeight
+        if wrap { size = Self.titleSize(items.flatMap { $0.title.split(separator: " ").map(String.init) }, small: false, room: w - 8) }
+        if (h < Self.tall) != small || size != titleSize || wrap != wraps {
+            (small, titleSize, wraps) = (h < Self.tall, size, wrap)
+            for (tile, item) in zip(tiles, items) {
+                tile.configuration = Self.tile(item, small: small, size: size, wraps: wrap).configuration
+            }
         }
         for (i, tile) in tiles.enumerated() {
             tile.frame = CGRect(x: area.minX + CGFloat(i % columns) * (w + gap), y: area.minY + CGFloat(i / columns) * (h + gap),
@@ -1989,16 +2054,17 @@ final class ToggleMenu: KeysPanel {
     }
 
     /// A tile (#626): its icon in the accent on a badge of it, the title under it; `small` for a
-    /// short row (#641), its title at `size` (`titleSize`). The content centres, so its insets
-    /// only keep it off the edges.
-    private static func tile(_ item: Item, small: Bool, size: CGFloat) -> UIButton {
+    /// short row (#641), its title at `size` (`titleSize`), a line a word with `wraps` (#612). The
+    /// content centres, so its insets only keep it off the edges.
+    private static func tile(_ item: Item, small: Bool, size: CGFloat, wraps: Bool = false) -> UIButton {
         var cfg = UIButton.Configuration.plain()
         cfg.image = badge(item.symbol, small: small)
         cfg.imagePlacement = .top
         cfg.imagePadding = small ? 2 : 4
         cfg.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4)   // "Next Keyboard" at 15 pt
-        cfg.title = item.title
+        cfg.title = wraps ? item.title.replacingOccurrences(of: " ", with: "\n") : item.title
         cfg.titleLineBreakMode = .byTruncatingTail
+        cfg.titleAlignment = .center
         cfg.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
             var a = $0
             a.font = .systemFont(ofSize: size, weight: .medium)

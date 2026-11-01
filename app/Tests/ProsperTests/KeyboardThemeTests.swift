@@ -788,22 +788,24 @@ final class KeyboardThemeTests: XCTestCase {
         withExtendedLifetime((doc, view)) {}
     }
 
-    /// The menu's seven to nine tiles fit the keys at every Key Size, Numbers: Key too, on a
-    /// 375 pt portrait and a 750 pt landscape (its safe area off an 874 pt screen): inside the
+    /// The menu's seven to ten tiles (Rewrite's the tenth, #612) fit the keys at every Key Size,
+    /// Numbers: Key too, on a 375 and a 402 pt portrait and a 750 pt landscape (its safe area off
+    /// an 874 pt screen): inside the
     /// panel under its caption, none overlapping, each as tall as its content and as wide as
     /// its title, landscape's one row with Numbers: Key too (#649). Numbers is a tile with the
     /// digit row only (#650). Six in portrait keep #626's three a row at 72 pt.
-    func testTheMenuFitsSevenToNineTilesInPortraitAndLandscape() {
-        let all = ["Clipboard", "Snippets", "Quicklinks", "Dictate", "Emoji", "Numbers", "Български", "Appearance", "Next Keyboard"]
-        for count in [7, 8, 9] {
-            for compact in [false, true] {
+    func testTheMenuFitsSevenToTenTilesInPortraitAndLandscape() {
+        let all = ["Clipboard", "Snippets", "Quicklinks", "Dictate", "Rewrite", "Emoji", "Numbers", "Български", "Appearance",
+                   "Next Keyboard"]
+        for count in [7, 8, 9, 10] {
+            for (compact, width) in [(false, 375), (false, 402), (true, 750)] as [(Bool, CGFloat)] {
                 for size in KeyboardSettings.KeySize.allCases {
                     for rows in [5, 4] {
                         let titles = rows == 5 ? all : all.filter { $0 != "Numbers" }
                         guard count <= titles.count else { continue }
-                        let note = "\(count) tiles, \(compact ? "landscape" : "portrait") \(size) \(rows) rows"
+                        let note = "\(count) tiles, \(compact ? "landscape" : "portrait") \(width) \(size) \(rows) rows"
                         let menu = ToggleMenu(items: titles.suffix(count).map { .init(title: $0, symbol: "paintpalette") {} })
-                        menu.frame = CGRect(x: 0, y: 0, width: compact ? 750 : 375,
+                        menu.frame = CGRect(x: 0, y: 0, width: width,
                                             height: TerminalKeyboard.keysHeight(compact: compact, size: size, rows: rows)
                                                 + TerminalKeyboard.extensionBottomInset)
                         menu.layoutIfNeeded()

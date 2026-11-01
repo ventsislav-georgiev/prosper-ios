@@ -106,6 +106,9 @@ enum Shortcuts {
     /// Quicklinks (#613): their panel, as the snippets', a pick typing the filled URL
     /// (`TerminalHostVC.showQuicklinks`). Added in the editor, as the clipboard.
     static let quicklinks = ShortcutKey(id: "qlinks", label: "quicklinks", kind: .bytes, systemImage: "link")
+    /// Fix, Rewrite and Summarize (#612): their panel (`AIPanel`), the toolbar's only: the
+    /// terminal's text is a shell's. Added in the editor, as the clipboard.
+    static let rewrite = ShortcutKey(id: "rewrite", label: "rewrite", kind: .bytes, systemImage: "wand.and.stars")
 
     /// The terminal bar's own keys with no bytes, which `TerminalHostVC.handleKey` acts on by
     /// id. None on the Mac: no Prosper keyboard there fills the history, dictation is off there
@@ -186,7 +189,7 @@ enum Shortcuts {
         /// use (`hostKey`).
         var catalog: [ShortcutKey] {
             self == .terminal ? Shortcuts.catalog + hostOnly + terminalActions
-                : (Shortcuts.catalog + hostOnly + [clipboard, snippets, quicklinks, dictate]).filter { hostKey($0.id) != nil }
+                : (Shortcuts.catalog + hostOnly + [clipboard, snippets, quicklinks, dictate, rewrite]).filter { hostKey($0.id) != nil }
         }
         /// The toolbar's: the default bar's keys it can use, in order, less send.
         var defaults: [ShortcutKey] {
@@ -241,6 +244,9 @@ enum Shortcuts {
         case snippets
         /// The quicklinks' panel in the keys' place, or the keys back (#613); only with Full Access.
         case quicklinks
+        /// Fix, Rewrite and Summarize's panel, or the keys back (#612); only with Full Access, on
+        /// iOS 26, the English layout.
+        case rewrite
     }
 
     /// nvim's motions and deletes, and its yank and cut of a line (`SuggestionBar.edit`).
@@ -271,6 +277,7 @@ enum Shortcuts {
         case dictate.id: return .dictate
         case snippets.id: return .snippets
         case quicklinks.id: return .quicklinks
+        case rewrite.id: return .rewrite
         case "wordNext": return .edit(.wordNext)
         case "wordEnd": return .edit(.wordEnd)
         case "wordBack": return .edit(.wordBack)

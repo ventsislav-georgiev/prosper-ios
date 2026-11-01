@@ -768,7 +768,7 @@ final class KeyboardToolbarTests: XCTestCase {
         let toolbar = Shortcuts.Bar.toolbar.catalog.map(\.id)
         XCTAssertEqual(toolbar, ["tab", "up", "down", "left", "right", "home", "end", "slash", "pipe", "paste", "snl",
                                  "enter", "wordNext", "wordEnd", "wordBack", "delWord", "delHome", "delEnd", "delLine",
-                                 "delAll", "copyLine", "cutLine", "clips", "snips", "qlinks", "mic"])
+                                 "delAll", "copyLine", "cutLine", "clips", "snips", "qlinks", "mic", "rewrite"])
         XCTAssertEqual(Set(toolbar).count, toolbar.count, "no duplicate ids")
 
         let store = try suiteStore(".terminalEdits")
@@ -783,12 +783,13 @@ final class KeyboardToolbarTests: XCTestCase {
 
     /// Parity (#603, #604): every key the toolbar offers, the terminal's bar offers too, but
     /// those named here. A new toolbar key fails this until the terminal offers it or it's listed.
+    /// Rewrite (#612) never: a shell's text isn't prose.
     func testTerminalOffersEveryToolbarKey() {
-        var notOnTerminal: Set<String> = []
+        var notOnTerminal: Set<String> = [Shortcuts.rewrite.id]
         #if targetEnvironment(macCatalyst)
         // No Prosper keyboard on the Mac; dictation off there; the Mac's Prosper expands snippets
         // and opens quicklinks.
-        notOnTerminal = [Shortcuts.clipboard.id, Shortcuts.dictate.id, Shortcuts.snippets.id, Shortcuts.quicklinks.id]
+        notOnTerminal.formUnion([Shortcuts.clipboard.id, Shortcuts.dictate.id, Shortcuts.snippets.id, Shortcuts.quicklinks.id])
         #endif
         if #unavailable(iOS 26) { notOnTerminal.insert(Shortcuts.dictate.id) }   // no SpeechAnalyzer
         let terminal = Set(Shortcuts.Bar.terminal.catalog.map(\.id))

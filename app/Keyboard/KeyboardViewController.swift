@@ -1,4 +1,7 @@
 import UIKit
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 
 /// The Prosper keyboard in every other app: the terminal's compact keyboard
 /// (`TerminalKeyboard`, Sources/Keys) typing into the host field through
@@ -12,7 +15,8 @@ import UIKit
 /// only with Full Access (the bar's and the toolbar's Paste), nothing held beyond the
 /// keyboard, the shared spell checker and what it learned. The clipboard history (#597)
 /// lives on disk in the App Group, shared by both extensions (`ClipboardHistory`). Dictation
-/// (#598) hops to Prosper for the mic, then talks to it there (`DictationClient`).
+/// (#598) hops to Prosper for the mic, then talks to it there (`DictationClient`). Fix, Rewrite
+/// and Summarize (#612) run Apple's on-device model, out of process: weak-linked, iOS 26 only.
 ///
 /// Two extensions run this controller, Prosper and Prosper (Bulgarian), each its Info.plist's
 /// `PrimaryLanguage`, so the system globe can switch language (#640). Prosper always has the
@@ -59,6 +63,9 @@ final class KeyboardViewController: UIInputViewController {
             dictation.open = { [weak self] url, done in self?.openApp(url, done) ?? done(false) }
             bar.dictation = dictation
         }
+        #if canImport(FoundationModels)
+        if #available(iOS 26, *) { Self.model(bar) }
+        #endif
         bar.attach(keyboard)
         bar.host(keyboard, in: view)
         // The app's editor writes them to the App Group: without Full Access, the defaults.
@@ -97,7 +104,28 @@ final class KeyboardViewController: UIInputViewController {
         super.viewWillDisappear(animated)
         onScreen = false
         bar.dictation?.disappear()
+        bar.disappear()   // a rewrite under way is dropped (#612)
     }
+
+    #if canImport(FoundationModels)
+    /// The bar's model (#612): a session a request, the command's instructions, the permissive
+    /// guardrails meant for transforming the user's own text. Any error is the panel's one line.
+    @available(iOS 26, *)
+    private static func model(_ bar: SuggestionBar) {
+        bar.rewrite = { command, text in
+            let model = SystemLanguageModel(guardrails: .permissiveContentTransformations)
+            return try await LanguageModelSession(model: model, instructions: command.instructions).respond(to: text).content
+        }
+        bar.rewriteAvailability = {
+            switch SystemLanguageModel.default.availability {
+            case .available: return .available
+            case .unavailable(.deviceNotEligible): return .deviceNotEligible
+            case .unavailable(.appleIntelligenceNotEnabled): return .appleIntelligenceNotEnabled
+            case .unavailable: return .modelNotReady   // and any reason a later iOS adds
+            }
+        }
+    }
+    #endif
 
     /// AutoFill on the sibling Prosper keyboard just advanced here: advance once more, past
     /// it, toward Apple's keyboard (`KeyboardSettings.hops`). Else this extension is the one
