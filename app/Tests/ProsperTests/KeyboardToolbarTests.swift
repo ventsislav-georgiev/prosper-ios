@@ -2398,6 +2398,40 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertLessThan(took, SuggestionBar.answerPolls, "polls")
     }
 
+    /// dd and cut line at the text's end: the line and the break before it go, the clip the
+    /// line, on the poll the step past the end is sent, so within 1 s on a host on time (#685:
+    /// the step, which can't move there and shows no answer, was waited out, 0.3 s for it to
+    /// land and `answerPolls` for its answer, and dd took 2.2 s on QA's host).
+    func testDdAndCutLineAtTheTextEndGoWithTheStep() throws {
+        let hosts: [(String, (Proxy) -> Void)] = [("on time", { _ in }), ("text view", Self.textView)] + Self.qaHosts()
+        for (h, (name, host)) in hosts.enumerated() {
+            for (text, goes) in [("one\ntwo\nthree", "one\ntwo|"), ("top\none", "top|")] {
+                for id in ["delLine", "cutLine"] {
+                    let (kb, bar, doc) = rig(text, keys: Shortcuts.hostOnly)
+                    host(doc)
+                    let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                    addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                    pb.string = "old"
+                    bar.suggestions.pasteboard = { pb }
+                    bar.toolbar?.reload()
+                    bar.press(try key(Shortcuts.hostOnly, id))
+                    var took = 0, stepped = 0
+                    for i in 1...3_000 {
+                        let moves = doc.moves.count
+                        doc.catchUp(); kb.pollCaret()
+                        if took == 0, doc.moves.count != moves { stepped = i }
+                        if took == 0, Self.at(doc) == goes { took = i }
+                    }
+                    let what = "\(id) on \(name) from \(text.debugDescription)"
+                    XCTAssertEqual(Self.at(doc), goes, what)
+                    XCTAssertEqual(pb.string, id == "cutLine" ? text.components(separatedBy: "\n").last : "old", what)
+                    XCTAssertEqual(took, stepped, "polls from the step to the deletes: \(what)")
+                    if h < 2 { XCTAssertLessThan(took, 50, "polls: \(what)") }
+                }
+            }
+        }
+    }
+
     /// dd and cut line on a line of a long run of one Character: where the walk to its end
     /// stops short, a leg reading the same in the host's window (Safari's 6 units here; a
     /// blocking host's 300), nothing goes, the caret back where the press found it and the

@@ -1611,6 +1611,11 @@ final class SuggestionBar: UIView {
         // it was, UIKit's guess for a step over an empty after-context, only `answerPolls` on,
         // or as long as the host took to answer a move (#662: a slow host's answer to the step
         // came after, and dd took a Character too few).
+        // At the line's end the press found, its fresh context none after, the step lands on no
+        // window's end, and the deletes count the same over a break as at the text's end: they
+        // follow it at once, its landing and answer, which at the text's end never show, not
+        // waited for (#685: dd there held 2.2 s, `answerPolls` and the walk's 0.3 s of it).
+        let ends = walked == 0 && seen.1.isEmpty && (breaks || !line.isEmpty)
         let sent = keyboard.ticks
         let landed = { [weak self] (go: @escaping () -> Void) in
             guard let doc = self?.keyboard?.target as? UITextDocumentProxy else { return }
@@ -1633,7 +1638,11 @@ final class SuggestionBar: UIView {
                 return true
             })
         }
-        keyboard.caret(1) { [weak self] in landed {
+        let step = { (go: @escaping () -> Void) in
+            guard !ends else { keyboard.caret(1); return go() }
+            keyboard.caret(1) { landed(go) }
+        }
+        step { [weak self] in
             guard let self, let kb = self.keyboard, let doc = kb.target as? UITextDocumentProxy else { return }
             let b = Self.before(doc), a = doc.documentContextAfterInput ?? ""
             let joins = (b, a) != seen && b.last?.isNewline == true
@@ -1668,7 +1677,7 @@ final class SuggestionBar: UIView {
                 self.edited()
                 return true
             }
-        } }
+        }
     }
 
     /// Walks the caret `dir` by `count(before, after)` Characters a leg at a time, each sized
