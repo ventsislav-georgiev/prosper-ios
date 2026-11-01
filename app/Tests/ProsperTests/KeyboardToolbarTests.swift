@@ -2591,6 +2591,39 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
+    /// dd and cut line pressed right after a backspace at the text's end: the press's step away
+    /// and back waits for the host's answer, which shows the delete the context didn't yet, and
+    /// the line goes as the host shows it. On a fresh context that answer is the context as it
+    /// was, which no poll can tell from UIKit's guess: the wait runs its 0.3 s out (#695: cut to
+    /// 2 polls, the kit at 60 ms a move sized its walk back from the "one" still shown and left
+    /// "top|\non", BLOCK from "b" left "a|\n", and STALL at 0.4 s a move took " Two thre").
+    func testDdAndCutLineRightAfterABackspaceWaitForTheHostToShowIt() throws {
+        let cases: [(host: Int, cost: Int, text: String, gap: Int, goes: String, line: String)] = [
+            (0, 3, "top\none", 0, "top|", "on"), (1, 8, "a\nb", 0, "a|", ""),
+            (6, 20, "top\nOne. Two three", 30, "top|", "One. Two thre"),
+        ]
+        for c in cases {
+            let (name, host) = Self.qaHosts()[c.host]
+            for id in ["delLine", "cutLine"] {
+                let (kb, bar, doc) = rig(c.text, keys: Shortcuts.hostOnly)
+                host(doc)
+                doc.moveCost = c.cost
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                pb.string = "old"
+                bar.suggestions.pasteboard = { pb }
+                bar.toolbar?.reload()
+                kb.press(.backspace)
+                for _ in 0..<c.gap { doc.catchUp(); kb.pollCaret() }
+                bar.press(try key(Shortcuts.hostOnly, id))
+                for _ in 1...3_000 { doc.catchUp(); kb.pollCaret() }
+                let what = "\(id) on \(name), \(c.cost) polls a move, \(c.gap) polls after a backspace on \(c.text.debugDescription)"
+                XCTAssertEqual(Self.at(doc), c.goes, what)
+                XCTAssertEqual(pb.string, id == "cutLine" && !c.line.isEmpty ? c.line : "old", what)
+            }
+        }
+    }
+
     /// dd and cut line on a line of a long run of one Character: where the walk to its end
     /// stops short, a leg reading the same in the host's window (Safari's 6 units here; a
     /// blocking host's 300), nothing goes, the caret back where the press found it and the
