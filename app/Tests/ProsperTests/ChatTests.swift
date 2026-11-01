@@ -31,11 +31,7 @@ final class ChatTests: XCTestCase {
                          reply: [(UInt8, String)], later: [(UInt8, String)] = []) async throws -> FakeMac {
         let mac = FakeMac()
         let requests = mac.requests, ended = mac.ended
-        let p = NWParameters.tcp
-        p.requiredInterfaceType = .loopback
-        let listener = try NWListener(using: p, on: .any)
-        listener.newConnectionHandler = { c in
-            c.start(queue: .main)
+        let listener = try loopbackServer { c in
             let buf = Box(Data())
             let type = Box<UInt8?>(nil)
             func read() {
@@ -60,7 +56,6 @@ final class ChatTests: XCTestCase {
             }
             read()
         }
-        listener.start(queue: .main)
         let end = Date().addingTimeInterval(3)
         while (listener.port?.rawValue ?? 0) == 0 {
             if Date() > end { throw XCTSkip("loopback listener never came up") }

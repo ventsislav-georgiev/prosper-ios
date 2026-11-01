@@ -257,11 +257,7 @@ final class ClipboardSyncTests: XCTestCase {
     private func loopMac(_ answer: @escaping ((UInt8, Data), @escaping (Data) -> Void) -> Void) async throws
         -> (ProsperTransport, Box<[[(UInt8, Data)]]>, NWListener) {
         let got = Box<[[(UInt8, Data)]]>([])
-        let p = NWParameters.tcp
-        p.requiredInterfaceType = .loopback
-        let listener = try NWListener(using: p, on: .any)
-        listener.newConnectionHandler = { c in
-            c.start(queue: .main)
+        let listener = try loopbackServer { c in
             let n = got.v.count
             got.v.append([])
             let buf = Box(Data())
@@ -277,7 +273,6 @@ final class ClipboardSyncTests: XCTestCase {
             }
             read()
         }
-        listener.start(queue: .main)
         try await waitUntil("listener") { (listener.port?.rawValue ?? 0) != 0 }
         return (ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue), got, listener)
     }

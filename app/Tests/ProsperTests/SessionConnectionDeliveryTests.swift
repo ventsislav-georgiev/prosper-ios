@@ -1078,12 +1078,9 @@ final class SessionConnectionDeliveryTests: XCTestCase {
     /// The real stream: once the server hangs up, input is refused (so the caller keeps
     /// it) instead of vanishing into a cancelled NWConnection.
     func testProsperStreamRefusesInputOnceTheLinkIsGone() async throws {
-        let listener = try loopbackListener()
-        listener.newConnectionHandler = { c in
-            c.start(queue: .main)
+        let listener = try loopbackServer { c in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { c.cancel() }
         }
-        listener.start(queue: .main)
         defer { listener.cancel() }
         try await waitUntil("listener") { (listener.port?.rawValue ?? 0) != 0 }
 
@@ -1095,19 +1092,11 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertFalse(stream.putClipboard(Data([1])))
     }
 
-    private func loopbackListener() throws -> NWListener {
-        let p = NWParameters.tcp
-        p.requiredInterfaceType = .loopback
-        return try NWListener(using: p, on: .any)
-    }
-
     /// A real ProsperStream to a loopback host that says "$ " and records what it reads.
     /// `q` is the stream's callback queue: suspended, no send completion can report.
     private func loopbackStream(on q: DispatchQueue) async throws -> (ProsperStream, Wire, NWListener) {
         let host = Wire()
-        let listener = try loopbackListener()
-        listener.newConnectionHandler = { c in
-            c.start(queue: .main)
+        let listener = try loopbackServer { c in
             c.send(content: FrameCodec.encode(0x10, Data("$ ".utf8)), completion: .idempotent)
             func read() {
                 c.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { d, _, done, err in
@@ -1117,7 +1106,6 @@ final class SessionConnectionDeliveryTests: XCTestCase {
             }
             read()
         }
-        listener.start(queue: .main)
         try await waitUntil("listener") { (listener.port?.rawValue ?? 0) != 0 }
         let c = NWConnection(host: "127.0.0.1", port: listener.port!, using: .tcp)
         c.start(queue: q)

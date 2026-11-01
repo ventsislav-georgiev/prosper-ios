@@ -11,11 +11,7 @@ final class SessionVerbTests: XCTestCase {
     private func fakeMac(_ type: UInt8, _ reply: String, delay: TimeInterval = 0) async throws
         -> (ProsperTransport, Box<(UInt8, Data)?>, NWListener) {
         let got = Box<(UInt8, Data)?>(nil)
-        let p = NWParameters.tcp
-        p.requiredInterfaceType = .loopback
-        let listener = try NWListener(using: p, on: .any)
-        listener.newConnectionHandler = { c in
-            c.start(queue: .main)
+        let listener = try loopbackServer { c in
             let buf = Box(Data())
             func read() {
                 c.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { d, _, done, err in
@@ -30,7 +26,6 @@ final class SessionVerbTests: XCTestCase {
             }
             read()
         }
-        listener.start(queue: .main)
         let end = Date().addingTimeInterval(3)
         while (listener.port?.rawValue ?? 0) == 0 {
             if Date() > end { throw XCTSkip("loopback listener never came up") }
