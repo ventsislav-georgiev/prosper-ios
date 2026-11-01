@@ -987,7 +987,7 @@ final class SuggestionBar: UIView {
         case .line(let n): keyboard.line(n)
         case .lineEdge(let dir):
             // ponytail: only as far as the context shows the line; a second press goes on.
-            let n = dir < 0 ? Self.toLineStart(doc.documentContextBeforeInput ?? "")
+            let n = dir < 0 ? Self.toHome(doc.documentContextBeforeInput ?? "")
                 : Self.toLineEnd(doc.documentContextAfterInput ?? "")
             if n > 0 { keyboard.caret(dir * n) }
         case .edit(let e): edit(e, keyboard, doc)
@@ -1309,11 +1309,20 @@ final class SuggestionBar: UIView {
         }
     }
 
-    /// Characters back to the line's start in `before`, as far as it shows. Safari's space
-    /// after a break isn't in the text, as `CaretWalk.step` reads it.
+    /// Characters back to the line's start in `before`, as far as it shows, Safari's space
+    /// after a break already out (`unspaced`): taken out twice, an indent kept a space (#547).
     static func toLineStart(_ before: String) -> Int {
-        let n = before.reversed().prefix { !$0.isNewline }.count
-        return before.hasPrefix("\n ") && n == before.count - 1 ? n - 1 : n
+        before.reversed().prefix { !$0.isNewline }.count
+    }
+
+    /// Home's, from the raw before-context: to the line's start, but from one opening on the
+    /// line's break and a space, Safari's or the line's own (a whole text whose first line is
+    /// empty), to the line's first non-blank, the same Character either way, never inside its
+    /// indent (#547). ponytail: from within the indent nothing; Safari's col 0 is out of reach there.
+    static func toHome(_ before: String) -> Int {
+        let line = before.dropFirst()
+        guard before.hasPrefix("\n "), !line.contains(where: \.isNewline) else { return toLineStart(before) }
+        return line.drop(while: \.isWhitespace).count
     }
 
     static func toLineEnd(_ after: String) -> Int { after.prefix { !$0.isNewline }.count }
@@ -1414,7 +1423,7 @@ final class SuggestionBar: UIView {
         case .copyLine:
             guard let copy else { return }
             // To the line's start, over it to its end, and back: the caret ends where it was.
-            walk(-1, { b, _ in Self.toLineStart(b) }) { [weak self] head in
+            walk(-1, { b, _ in Self.toLineStart(Self.unspaced(b)) }) { [weak self] head in
                 self?.walk(1, { Self.toLineEnd($1) }) { line in
                     guard !line.isEmpty else { return }   // an empty line leaves the clip be
                     self?.keep(line, in: copy)
@@ -1451,7 +1460,12 @@ final class SuggestionBar: UIView {
             }
         }
         let seen = (Self.before(doc), doc.documentContextAfterInput ?? "")
-        guard seen.1.isEmpty || seen.1.first?.isNewline == true else { return }   // the walk stopped short
+        // The walk stopped short (a run of one Character in a window reads the same after a
+        // leg): nothing goes, the caret back where the press found it (#547: it stayed on).
+        guard seen.1.isEmpty || seen.1.first?.isNewline == true else {
+            if walked > 0 { keyboard.caret(-walked) }
+            return edited()
+        }
         // A context past the break, or none new for 0.3 s, the host clamping at the text's end:
         // a busy host's answers to the walk come first (#553 QA: one to the walk's last leg
         // was taken for the step's, and dd took the line's end and the break).
@@ -1492,7 +1506,7 @@ final class SuggestionBar: UIView {
                 if !joins, line.first?.isNewline == true { line.removeFirst() }
                 if !line.isEmpty { base = self?.keep(String(line), in: copy, over: base) }
             } }, done: { [weak self] gone in
-                if !joins, gone.first?.isNewline == true { self?.walk(-1, { b, _ in Self.toLineStart(b) }) { _ in } }
+                if !joins, gone.first?.isNewline == true { self?.walk(-1, { b, _ in Self.toLineStart(Self.unspaced(b)) }) { _ in } }
             })
         } }
     }
@@ -1850,10 +1864,8 @@ final class SuggestionBar: UIView {
 
     /// The before-context, Safari's space after a break that isn't in the text taken out, as
     /// `CaretWalk.step` reads it.
-    private static func before(_ doc: UITextDocumentProxy) -> String {
-        let b = doc.documentContextBeforeInput ?? ""
-        return b.hasPrefix("\n ") ? "\n" + b.dropFirst(2) : b
-    }
+    private static func before(_ doc: UITextDocumentProxy) -> String { unspaced(doc.documentContextBeforeInput ?? "") }
+    private static func unspaced(_ b: String) -> String { b.hasPrefix("\n ") ? "\n" + b.dropFirst(2) : b }
 
     /// After an edit the bar's own: the word and the autocorrect it could undo are gone.
     private func edited() {

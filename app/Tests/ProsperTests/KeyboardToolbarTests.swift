@@ -2206,6 +2206,117 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(bar.state, .paste)
     }
 
+    /// Home from a before-context opening on a break and a space, Safari's or the line's own (a
+    /// whole text whose first line is empty): to the line's first non-blank either way, and a
+    /// second press stays, never inside the indent; with the line before in sight, to the
+    /// line's start (#547: "\n  indented" went to "\n | indented").
+    func testHomeNeverSplitsAnIndent() throws {
+        func home(_ text: String, _ after: String, _ host: (Proxy) -> Void = { _ in }) throws -> String {
+            let (kb, bar, doc) = rig(text, after: after)
+            host(doc)
+            for _ in 0..<2 {
+                bar.press(try key("home"))
+                for _ in 0..<60 { doc.catchUp(); kb.pollCaret() }
+            }
+            return Self.at(doc)
+        }
+        XCTAssertEqual(try home("\n  ind", "ented\nz"), "\n  |indented\nz", "a whole text, its first line empty")
+        XCTAssertEqual(try home("\n \tind", "ented"), "\n \t|indented", "a tab in the indent")
+        XCTAssertEqual(try home("\n  ind", "ented\nz", { $0.breakSpace = true }), "\n  |indented\nz", "Safari's")
+        XCTAssertEqual(try home("top\n  ind", "ented", { $0.breakSpace = true }), "top\n  |indented", "Safari's")
+        XCTAssertEqual(try home("top\n  ind", "ented"), "top\n|  indented", "the line above in sight")
+    }
+
+    /// ctrl-u and cut line on an indented line where the context opens on its break and
+    /// Safari's space: the indent goes whole, and the clip has it (#547: the space was taken
+    /// out twice, once by the context's read and once by the line's count, and one stayed).
+    func testLineDeletesTakeAnIndentWhole() throws {
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+        for (name, host) in [("safari", Self.safari), ("safari, no window", { $0.breakSpace = true }), ("text view", Self.textView)] {
+            let (kb, bar, doc) = rig("top\n  abc", after: "\nz")
+            host(doc)
+            bar.suggestions.pasteboard = { pb }
+            try edit("delHome", kb, bar, doc)
+            XCTAssertEqual(Self.at(doc), "top\n|\nz", "ctrl-u: \(name)")
+            doc.text = "top\n  abc"; doc.after = "\nz"; doc.catchUp()
+            try edit("cutLine", kb, bar, doc)
+            XCTAssertEqual(Self.at(doc), "top\n|z", "cut line: \(name)")
+            XCTAssertEqual(pb.string, "  abc", "cut line's clip: \(name)")
+            guard name != "text view" else { continue }   // its caret ends on the empty line above: a gap of its own
+            doc.text = "\n  abc"; doc.after = "\nz"; doc.catchUp()
+            try edit("delHome", kb, bar, doc)
+            XCTAssertEqual(Self.at(doc), "\n|\nz", "ctrl-u, the first line empty: \(name)")
+        }
+    }
+
+    /// dd and cut line on a line of a long run of one Character: where the walk to its end
+    /// stops short, a leg reading the same in the host's window (Safari's 6 units here; a
+    /// blocking host's 300), nothing goes, the caret back where the press found it and the
+    /// clip kept; where it gets there, the line and its break go, the clip the line (#547 QA
+    /// r10: the caret stayed where the walk stopped).
+    func testDdAndCutLineOverALongRunTakeTheLineOrNothing() throws {
+        let run = String(repeating: "a", count: 160), text = "top\n" + run, after = run + run + "\nend"
+        let hosts: [(String, Bool, (Proxy) -> Void)] = [
+            ("Safari", false, Self.safari), ("BLOCK, 300", false, { Self.qaHosts()[1].1($0); $0.window = 300 }),
+            ("Safari, 300", true, { Self.safari($0); $0.window = 300 }),
+            ("kit, 300", true, { Self.qaHosts()[0].1($0); $0.window = 300 }),
+            ("text view, 300", true, { Self.textView($0); $0.window = 300 }),
+        ]
+        for (name, goes, host) in hosts {
+            for id in ["delLine", "cutLine"] {
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                pb.string = "old"
+                let (kb, bar, doc) = rig(text, after: after)
+                host(doc)
+                bar.suggestions.pasteboard = { pb }
+                try edit(id, kb, bar, doc)
+                XCTAssertEqual(Self.at(doc), goes ? "top\n|end" : text + "|" + after, "\(id): \(name)")
+                XCTAssertEqual(pb.string, goes && id == "cutLine" ? run + run + run : "old", "\(id)'s clip: \(name)")
+            }
+        }
+    }
+
+    /// Cut line on an empty line, mid-text and last, takes it and a break and keeps the clip:
+    /// no empty line takes its place (QA's M1053).
+    func testCutLineOnAnEmptyLineKeepsTheClip() throws {
+        for (name, host) in [("text view", Self.textView), ("safari", Self.safari), Self.qaHosts()[0]] {
+            for (text, after, want) in [("one\n", "\ntwo", "one\n|two"), ("one\n", "", "|one")] {
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                pb.string = "old"
+                let (kb, bar, doc) = rig(text, after: after)
+                host(doc)
+                bar.suggestions.pasteboard = { pb }
+                try edit("cutLine", kb, bar, doc)
+                XCTAssertEqual(Self.at(doc), want, name)
+                XCTAssertEqual(pb.string, "old", "the clip kept: \(name), \(want)")
+            }
+        }
+    }
+
+    /// A host showing a new context every poll and never the batch: the wait for it ends 1.2 s
+    /// on, ahead of the keyboard's 2 s limit, with a step for a fresh context, and the edit goes
+    /// on from there (`Quiet`; QA's M1075/1076: such a host held it till the limit dropped it).
+    func testAWaitEndsAtOnePointTwoSecondsOnAHostCyclingContexts() throws {
+        let (kb, bar, doc) = rig("top\nX" + String(repeating: "abcdefghij", count: 15))
+        doc.lagsEdits = true; doc.window = 150
+        bar.press(try key(Shortcuts.hostOnly, "delHome"))
+        XCTAssertEqual(doc.calls.count, 149, "the batch, its anchor kept")
+        var stepped: Int?
+        for i in 1...99 where stepped == nil {
+            doc.window = 150 - i   // a context not shown before, the batch never in it
+            kb.pollCaret()
+            if !doc.moves.isEmpty { stepped = i }
+        }
+        XCTAssertEqual(doc.moves, [-1], "the step for a fresh context")
+        XCTAssertTrue((55...65).contains(stepped ?? 0), "1.2 s on, not before: \(stepped ?? 0)")
+        doc.window = nil
+        try edit("delHome", kb, bar, doc)
+        XCTAssertEqual(Self.at(doc), "top\n|")
+    }
+
     private func key(_ keys: [ShortcutKey], _ id: String) throws -> ShortcutKey {
         try XCTUnwrap(keys.first { $0.id == id }, id)
     }
