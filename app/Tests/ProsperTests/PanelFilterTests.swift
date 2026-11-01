@@ -1,0 +1,333 @@
+import XCTest
+import UIKit
+@testable import Prosper
+
+/// The list panels' filter mode (#665, `PanelFilter`): its ranking, its keys typing into the
+/// query and never into the host, a pick through the list's own tap, the layout at each Key
+/// Size, and the list back as it was.
+@MainActor
+final class PanelFilterTests: XCTestCase {
+    typealias Proxy = KeyboardExtensionTests.FakeProxy
+
+    private var suite = ""
+    private var dir: URL!
+    private var pb: UIPasteboard!
+
+    override func setUpWithError() throws {
+        suite = "PanelFilterTests.\(UUID().uuidString)"
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+    }
+
+    override func tearDown() {
+        UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: dir)
+        UIPasteboard.remove(withName: pb.name)
+        super.tearDown()
+    }
+
+    // MARK: - Ranking
+
+    func testRanksPrefixThenWordStartThenSubstringThenSubsequence() {
+        let rows = [["Zebra cat"], ["category"], ["Concat"], ["c-a-t"], ["dog"], ["Cat"], ["bobcat"], ["Çatal"]]
+        XCTAssertEqual(PanelFilter.rank("cat", rows), [1, 5, 7, 0, 2, 6, 3], "ties keep the list's order")
+        XCTAssertEqual(PanelFilter.rank("CAT", rows), PanelFilter.rank("cat", rows), "case-insensitive")
+        XCTAssertEqual(PanelFilter.rank("çàt", rows), PanelFilter.rank("cat", rows), "diacritic-insensitive")
+        XCTAssertEqual(PanelFilter.rank("", rows), Array(rows.indices), "a blank query keeps every row")
+        XCTAssertEqual(PanelFilter.rank("  ", rows), Array(rows.indices))
+        XCTAssertEqual(PanelFilter.rank("xyz", rows), [])
+        XCTAssertEqual(PanelFilter.rank("git", [["https://example.com/legit"], ["https://github.com"], ["g-i-t"]]), [1, 0, 2],
+                       "after a / is a word's start")
+        XCTAssertEqual(PanelFilter.rank("пис", [["отпис"], ["Писмо"], ["п и с"]]), [1, 0, 2])
+    }
+
+    /// A row ranks by its best field, the earlier field on a tie: a snippet's name over its text.
+    func testARowRanksByItsBestFieldNameFirst() {
+        let rows = [["Deploy", "kubectl apply"], ["notes", "apply now"], ["Apply patch", "git am"], ["Reapply", "x"]]
+        XCTAssertEqual(PanelFilter.rank("apply", rows), [2, 1, 0, 3])
+    }
+
+    // MARK: - The keys never reach the host
+
+    func testSnippetFilterTypesIntoTheQueryAndReturnInsertsTheFirst() throws {
+        let store = SnippetStore(url: dir.appendingPathComponent("Snippets/snippets.json"))
+        XCTAssertTrue(store.save(.init(snippets: [.init(name: "Address", text: "1 Main St"),
+                                                  .init(name: "Greeting", text: "Hi there"),
+                                                  .init(name: "Sign-off", text: "Regards")])))
+        let (kb, bar, doc, view) = rig("x ")
+        bar.snippets = store
+        bar.showSnippets(true)
+        let panel = try XCTUnwrap(bar.snippetsPanel)
+        let filter = try open(panel)
+        XCTAssertEqual(filter.matches.count, 3, "every row before a key")
+
+        doc.calls = []
+        try type("re", filter)
+        XCTAssertEqual(doc.calls, [], "no key reaches the host")
+        XCTAssertEqual(doc.text, "x ")
+        XCTAssertEqual(filter.query, "re")
+        XCTAssertEqual(names(filter, panel), ["Sign-off", "Address", "Greeting"], "its text's prefix, then the names' substrings")
+        XCTAssertEqual(filter.count, "3 results")
+        filter.delete.sendActions(for: .touchDown)
+        filter.delete.sendActions(for: .touchUpInside)
+        filter.space.sendActions(for: .touchUpInside)
+        filter.toggle.sendActions(for: .touchUpInside)
+        XCTAssertEqual(filter.rows.first?.map { $0.configuration?.title }, "1234567890".map { String($0) })
+        filter.rows[0][1].sendActions(for: .touchUpInside)
+        XCTAssertEqual(filter.query, "r 2")
+        XCTAssertEqual(filter.count, "No matches")
+        XCTAssertFalse(filter.none.isHidden)
+        filter.clear.sendActions(for: .touchUpInside)
+        XCTAssertEqual(filter.query, "")
+        XCTAssertEqual(doc.calls, [], "nor 123, space, delete or clear")
+
+        filter.toggle.sendActions(for: .touchUpInside)
+        try type("gr", filter)
+        filter.go.sendActions(for: .touchUpInside)
+        for _ in 1...50 { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(doc.text, "x Hi there", "return inserts the first result")
+        XCTAssertNil(bar.snippetsPanel, "a pick closes the panel")
+        withExtendedLifetime((kb, view)) {}
+    }
+
+    func testClipboardFilterPastesAPickedResult() throws {
+        let history = ClipboardHistory(dir: dir.appendingPathComponent("Clips"))
+        for s in ["older note", "make test", "newest"] { pb.string = s; history.record(s, from: pb) }
+        let (kb, bar, doc, view) = rig("")
+        bar.history = history
+        bar.showClips(true)
+        let panel = try XCTUnwrap(bar.clipsPanel)
+        let filter = try open(panel)
+        doc.calls = []
+        try type("te", filter)
+        XCTAssertEqual(doc.calls, [])
+        XCTAssertEqual(filter.matches.map { panel.clips[$0].text }, ["make test", "older note"])
+        let cell = filter.tableView(filter.results, cellForRowAt: IndexPath(row: 0, section: 0))
+        XCTAssertEqual(cell.accessibilityLabel, "make test")
+        XCTAssertNil(cell.accessoryView, "no pin or delete in a short row")
+        filter.tableView(filter.results, didSelectRowAt: IndexPath(row: 1, section: 0))
+        for _ in 1...50 { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(doc.text, "older note", "a tap on a result is the list's tap")
+        XCTAssertEqual(pb.string, "older note")
+        withExtendedLifetime((kb, view)) {}
+    }
+
+    /// Return skips a dimmed result (a `{query}` link with nothing to fill it) for the first that goes.
+    func testQuicklinkFilterReturnOpensTheFirstThatGoes() throws {
+        let store = QuicklinkStore(url: dir.appendingPathComponent("Quicklinks/quicklinks.json"))
+        XCTAssertTrue(store.save(.init(quicklinks: [.init(name: "Search docs", url: "https://docs.example.com/?q={query}"),
+                                                    .init(name: "Dashboard", url: "https://dash.example.com")])))
+        let (kb, bar, doc, view) = rig("")
+        bar.quicklinks = store
+        bar.showQuicklinks(true)
+        let panel = try XCTUnwrap(bar.quicklinksPanel)
+        let filter = try open(panel)
+        doc.calls = []
+        try type("d", filter)
+        XCTAssertEqual(doc.calls, [])
+        XCTAssertEqual(filter.matches.map { panel.searchable[$0].fields[0] }, ["Dashboard", "Search docs"])
+        try type("o", filter)
+        XCTAssertEqual(filter.matches.map { panel.searchable[$0].fields[0] }, ["Search docs", "Dashboard"])
+        XCTAssertNil(filter.tableView(filter.results, willSelectRowAt: IndexPath(row: 0, section: 0)), "dimmed as in the list")
+        filter.go.sendActions(for: .touchUpInside)
+        for _ in 1...50 { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(doc.text, "https://dash.example.com")
+        withExtendedLifetime((kb, view)) {}
+    }
+
+    // MARK: - Layout and leaving
+
+    /// Over the bar and the keys at each Key Size in portrait, under a one-row toolbar (the
+    /// digit row) or a two-row one (Numbers: Key): the field, two whole rows and four rows of
+    /// keys, no scroll, the keys what's left up to their cap. Done gives the bar back.
+    func testFitsOverTheBarAtEveryKeySize() throws {
+        let store = SnippetStore(url: dir.appendingPathComponent("Snippets/snippets.json"))
+        XCTAssertTrue(store.save(.init(snippets: [.init(name: "Address", text: "1 Main St")])))
+        for size in KeyboardSettings.KeySize.allCases {
+            for numbers in KeyboardSettings.Numbers.allCases {
+                let label = "\(size) \(numbers)"
+                let (kb, bar, view) = hostedRig(size: size, numbers: numbers)
+                XCTAssertEqual(bar.toolbar?.twoRows, numbers == .key, label)
+                bar.snippets = store
+                bar.showSnippets(true)
+                let panel = try XCTUnwrap(bar.snippetsPanel)
+                view.layoutIfNeeded()
+                XCTAssertEqual(panel.frame.minY, kb.frame.minY, label)
+                let filter = try open(panel)
+                filter.layoutIfNeeded()
+                XCTAssertEqual(panel.frame.minY, bar.frame.minY, "over the bar, \(label)")
+                XCTAssertEqual(panel.frame.maxY, kb.frame.maxY, label)
+                XCTAssertEqual(filter.shown, 2, label)
+                XCTAssertLessThanOrEqual(filter.contentSize.height, filter.bounds.height + 0.5, "no scroll, \(label)")
+                XCTAssertGreaterThanOrEqual(filter.results.frame.height, 2 * PanelFilter.rowHeight, label)
+                XCTAssertLessThanOrEqual(filter.go.frame.maxY, filter.bounds.height, label)
+                XCTAssertTrue(PanelFilter.keyRow.contains(filter.go.frame.height), label)
+                XCTAssertGreaterThan(filter.rows[0][0].frame.minY, filter.results.frame.maxY, label)
+                XCTAssertEqual(filter.space.frame.minY, filter.go.frame.minY)
+                print("#665 \(label): over \(filter.bounds.height), key row \(filter.go.frame.height), results \(filter.results.frame.height)")
+                filter.done.sendActions(for: .touchUpInside)
+                XCTAssertEqual(panel.frame.minY, kb.frame.minY, "Done gives the bar back, \(label)")
+                withExtendedLifetime(kb) {}
+            }
+        }
+    }
+
+    /// The app's terminal: filter mode covers its shortcut bar too, so no bar key reaches the
+    /// terminal mid-filter; Done gives the bar back.
+    func testTheAppsFilterCoversItsShortcutBar() throws {
+        let store = SnippetStore(url: dir.appendingPathComponent("Snippets/snippets.json"))
+        XCTAssertTrue(store.save(.init(snippets: [.init(name: "Address", text: "1 Main St")])))
+        let vc = TerminalHostVC(conn: SessionConnection(transport: SpyTransport(), session: DchSession(name: "t", alias: nil)),
+                                handle: TermHandle())
+        vc.pasteboard = pb
+        vc.snippets = store
+        vc.view.frame = CGRect(x: 0, y: 0, width: 390, height: 700)
+        vc.view.layoutIfNeeded()
+        let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar })
+        vc.showSnippets(true)
+        let panel = try XCTUnwrap(vc.snippetsPanel)
+        vc.view.layoutIfNeeded()
+        XCTAssertEqual(panel.frame.maxY, bar.frame.minY, accuracy: 0.5, "the list stops at the bar")
+        let filter = try open(panel)
+        let mid = CGPoint(x: bar.frame.midX, y: bar.frame.midY)
+        XCTAssertEqual(panel.frame.maxY, bar.frame.maxY, accuracy: 0.5, "over the bar")
+        XCTAssertEqual(vc.view.hitTest(mid, with: nil)?.isDescendant(of: filter), true, "the bar takes no tap")
+        filter.done.sendActions(for: .touchUpInside)
+        XCTAssertEqual(panel.frame.maxY, bar.frame.minY, accuracy: 0.5, "Done gives the bar back")
+        XCTAssertNotEqual(vc.view.hitTest(mid, with: nil)?.isDescendant(of: panel), true)
+    }
+
+    /// The search row shows only over rows it can match: an empty list, or one of images,
+    /// has none; a clip captured while the panel is open brings it.
+    func testSearchRowOnlyOverRowsItCanMatch() throws {
+        let history = ClipboardHistory(dir: dir.appendingPathComponent("Clips"))
+        let clips = ClipboardPanel(history: history, pasteboard: pb)
+        XCTAssertEqual(clips.search?.isHidden, true)
+        clips.paste(itemProviders: [NSItemProvider(object: "fresh" as NSString)])
+        let deadline = Date() + 5
+        while clips.clips.isEmpty, Date() < deadline { RunLoop.main.run(until: Date() + 0.01) }
+        XCTAssertEqual(clips.search?.isHidden, false, "shown at the capture's reload")
+        let store = SnippetStore(url: dir.appendingPathComponent("Snippets/snippets.json"))
+        XCTAssertEqual(SnippetPanel(store: store).search?.isHidden, true)
+        XCTAssertTrue(store.save(.init(snippets: [.init(name: "Address", text: "1 Main St")])))
+        XCTAssertEqual(SnippetPanel(store: store).search?.isHidden, false)
+        let links = QuicklinkStore(url: dir.appendingPathComponent("Quicklinks/quicklinks.json"))
+        XCTAssertEqual(QuicklinkPanel(store: links, hasQuery: true).search?.isHidden, true)
+    }
+
+    /// Delete takes one on touch-down, then repeats while held at the keys' pace, and stops
+    /// at the lift; a letter shows the keys' press bubble while down.
+    func testDeleteRepeatsWhileHeldAndALetterShowsItsBubble() throws {
+        let panel = SnippetPanel(store: SnippetStore(url: dir.appendingPathComponent("none.json")))
+        panel.frame = CGRect(x: 0, y: 0, width: 390, height: 308)
+        let filter = try open(panel)
+        filter.layoutIfNeeded()
+        try type("abcdefghij", filter)
+        filter.delete.sendActions(for: .touchDown)
+        XCTAssertEqual(filter.query, "abcdefghi", "one at touch-down")
+        RunLoop.main.run(until: Date() + 0.3)
+        XCTAssertEqual(filter.query, "abcdefghi", "nothing more before 0.4 s")
+        RunLoop.main.run(until: Date() + 0.4)
+        let held = filter.query.count
+        XCTAssertLessThan(held, 9, "repeating")
+        filter.delete.sendActions(for: .touchUpInside)
+        RunLoop.main.run(until: Date() + 0.3)
+        XCTAssertEqual(filter.query.count, held, "stopped at the lift")
+
+        let q = try XCTUnwrap(filter.rows[0].first)
+        q.sendActions(for: .touchDown)
+        XCTAssertTrue(filter.preview.superview === filter)
+        XCTAssertEqual(filter.preview.label.text, q.configuration?.title)
+        XCTAssertLessThan(filter.preview.frame.minY, q.frame.minY, "above the key")
+        q.sendActions(for: .touchUpInside)
+        XCTAssertNil(filter.preview.superview)
+    }
+
+    /// The covered keyboard's layout; Done gives the list back, scrolled where it was.
+    func testBulgarianKeysAndDoneRestoresTheList() throws {
+        let store = SnippetStore(url: dir.appendingPathComponent("Snippets/snippets.json"))
+        XCTAssertTrue(store.save(.init(snippets: (1...30).map { .init(name: "Snippet \($0)", text: "t\($0)") })))
+        let (kb, bar, _, view) = rig("", layout: .bulgarian)
+        bar.snippets = store
+        bar.showSnippets(true)
+        XCTAssertEqual(bar.snippetsPanel?.layout, .bulgarian, "the covered keys' layout")
+        withExtendedLifetime((kb, view)) {}
+
+        let panel = SnippetPanel(store: store)
+        panel.frame = CGRect(x: 0, y: 0, width: 390, height: 264)
+        panel.layout = .bulgarian
+        panel.layoutIfNeeded()
+        panel.table.contentOffset.y = 120
+        let filter = try open(panel)
+        XCTAssertEqual(filter.rows.map { $0.compactMap { $0.configuration?.title }.joined() },
+                       ["явертъуиопю", "асдфгхйклшщ", "зьцжбнмч"])
+        filter.done.sendActions(for: .touchUpInside)
+        XCTAssertNil(panel.filter)
+        XCTAssertNil(filter.superview)
+        XCTAssertEqual(panel.table.contentOffset.y, 120)
+        XCTAssertNil(AppearancePanel(settings: KeyboardSettings(), enabled: true).search, "a panel with no list has no search row")
+    }
+
+    // MARK: - Helpers
+
+    /// A keyboard on a fake field, the bar hosted in `view` so a panel can cover the keys, Full Access on.
+    private func rig(_ text: String, layout: TerminalKeyboard.Layout = .english,
+                     in view: UIView = UIView(frame: CGRect(x: 0, y: 0, width: 390, height: 300)))
+        -> (TerminalKeyboard, SuggestionBar, Proxy, UIView) {
+        let doc = Proxy()
+        doc.text = text
+        doc.autocapitalizationType = .none
+        let kb = TerminalKeyboard(layout: layout)
+        kb.target = doc
+        let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: UserDefaults(suiteName: suite)!)))
+        let pb = self.pb!
+        bar.suggestions.pasteboard = { pb }
+        bar.attach(kb)
+        bar.host(kb, in: view)
+        bar.addToolbar { Shortcuts.Bar.toolbar.defaults }
+        return (kb, bar, doc, view)
+    }
+
+    /// The extension's keyboard and bar in a window at `size` and `numbers`, the view at the
+    /// height they add up to, as NumbersKeyTests' rig.
+    private func hostedRig(size: KeyboardSettings.KeySize, numbers: KeyboardSettings.Numbers)
+        -> (TerminalKeyboard, SuggestionBar, UIView) {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+        if #available(iOS 17, *) { window.traitOverrides.verticalSizeClass = .regular }
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: 402, height: 400))
+        window.addSubview(view)
+        window.isHidden = false
+        addTeardownBlock { window.isHidden = true }
+        let (kb, bar, _, _) = rig("", in: view)
+        kb.bottomInset = TerminalKeyboard.extensionBottomInset
+        kb.allowsNumbersKey = true
+        kb.settings.keySize = size
+        kb.settings.numbers = numbers
+        bar.showsToolbar = true
+        view.frame.size.height = view.systemLayoutSizeFitting(CGSize(width: 402, height: 0), withHorizontalFittingPriority: .required,
+                                                              verticalFittingPriority: .fittingSizeLevel).height
+        view.layoutIfNeeded()
+        return (kb, bar, view)
+    }
+
+    /// The search row tapped: filter mode over the whole panel.
+    private func open(_ panel: KeysPanel) throws -> PanelFilter {
+        try XCTUnwrap(panel.search).sendActions(for: .touchUpInside)
+        let filter = try XCTUnwrap(panel.filter)
+        XCTAssertTrue(filter.superview === panel)
+        XCTAssertEqual(filter.frame, panel.bounds)
+        return filter
+    }
+
+    /// Each character's key tapped.
+    private func type(_ text: String, _ filter: PanelFilter) throws {
+        for c in text {
+            let key = try XCTUnwrap(filter.rows.joined().first { $0.configuration?.title == String(c) }, "no \(c) key")
+            key.sendActions(for: .touchUpInside)
+        }
+    }
+
+    private func names(_ filter: PanelFilter, _ panel: SnippetPanel) -> [String] {
+        filter.matches.map { panel.searchable[$0].fields[0] }
+    }
+}

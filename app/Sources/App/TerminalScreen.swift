@@ -657,11 +657,30 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         new.onClose = { [weak self] in self?.cover(nil) }
         new.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(new)
+        // Filter mode (#665) covers the bar too, and the keyboard goes for its time (a close
+        // brings it back as above, Done at once): no key reaches the terminal mid-filter.
+        let overList = new.bottomAnchor.constraint(equalTo: bar.topAnchor)   // rides the keyboard with the bar
+        let overBar = new.bottomAnchor.constraint(equalTo: bar.bottomAnchor)
+        var lowered = false
+        new.overBar = { [weak self] on in
+            guard let self else { return }
+            NSLayoutConstraint.deactivate([on ? overList : overBar])
+            NSLayoutConstraint.activate([on ? overBar : overList])
+            if on, self.tv.isFirstResponder {
+                lowered = self.tv.resignFirstResponder()
+                self.panelLoweredKeyboard = self.panelLoweredKeyboard || lowered
+            } else if !on, lowered {
+                lowered = false
+                self.panelLoweredKeyboard = false
+                _ = self.tv.becomeFirstResponder()
+            }
+            self.view.layoutIfNeeded()
+        }
         NSLayoutConstraint.activate([
             new.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             new.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             new.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            new.bottomAnchor.constraint(equalTo: bar.topAnchor),   // rides the keyboard with the bar
+            overList,
         ])
         panel = new
     }

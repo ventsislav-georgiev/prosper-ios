@@ -48,6 +48,29 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(TerminalKeyboard.holdSymbol["m"], "/")
     }
 
+    /// A held backspace, through the touch path: one delete at touch-down, nothing more for
+    /// 0.4 s, then a delete each 0.08 s until the lift (`TerminalKeyboard.Repeat`, shared with
+    /// the panels' filter since #665).
+    func testHeldBackspaceRepeatsAfterAPauseUntilTheLift() throws {
+        let (kb, caps) = laidOut()
+        let spy = SpyInput()
+        kb.target = spy
+        let back = try XCTUnwrap(caps.values.map(\.frame).first { kb.key(at: CGPoint(x: $0.midX, y: $0.midY)) == .backspace })
+        let at = CGPoint(x: back.midX, y: back.midY)
+        func spin(_ s: TimeInterval) { RunLoop.main.run(until: Date() + s) }
+        kb.track(.began, id: 1, at: at)
+        XCTAssertEqual(spy.calls, ["⌫"], "one at touch-down")
+        spin(0.3)
+        XCTAssertEqual(spy.calls, ["⌫"], "nothing more before 0.4 s")
+        spin(0.5)
+        let held = spy.calls.count
+        XCTAssertGreaterThanOrEqual(held, 3, "repeating after the pause")
+        XCTAssertEqual(Set(spy.calls), ["⌫"])
+        kb.track(.ended, id: 1, at: at)
+        spin(0.3)
+        XCTAssertEqual(spy.calls.count, held, "none after the lift")
+    }
+
     func testDigitsLeadAndShiftLeavesThem() throws {
         XCTAssertEqual(chars(TerminalKeyboard.rows[0]), "1234567890".map(String.init))
         let (kb, caps) = laidOut()

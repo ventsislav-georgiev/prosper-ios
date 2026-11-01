@@ -1289,7 +1289,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     var showsEmoji: Bool { emojiPicker?.isHidden == false }
     /// One generator, kept warm — same pattern as `ShortcutBar`.
     private let haptics = UIImpactFeedbackGenerator(style: .light)
-    private var repeatTimer: Timer?
+    private let repeater = Repeat()
     private let preview = KeyPreview()
     private weak var previewCap: Cap?
     private var tracker = KeyTouchTracker()
@@ -2333,24 +2333,34 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     // Backspace: the tracker deletes once on touch-down; this repeats after a pause while held.
-    private func startRepeat() {
-        stopRepeat()
-        let delay = Timer(timeInterval: 0.4, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            let tick = Timer(timeInterval: 0.08, repeats: true) { [weak self] _ in
-                UIDevice.current.playInputClick()
-                self?.press(.backspace)
-            }
-            RunLoop.main.add(tick, forMode: .common)
-            self.repeatTimer = tick
-        }
-        RunLoop.main.add(delay, forMode: .common)
-        repeatTimer = delay
-    }
+    private func startRepeat() { repeater.start { [weak self] in self?.press(.backspace) } }
 
-    private func stopRepeat() {
-        repeatTimer?.invalidate()
-        repeatTimer = nil
+    private func stopRepeat() { repeater.stop() }
+
+    /// A held delete's repeat, these keys' and the panels' filter's (#665): `tick` after
+    /// 0.4 s, then every 0.08 s with a click, until `stop`.
+    final class Repeat {
+        private var timer: Timer?
+
+        func start(_ tick: @escaping () -> Void) {
+            stop()
+            let delay = Timer(timeInterval: 0.4, repeats: false) { [weak self] _ in
+                guard let self else { return }
+                let each = Timer(timeInterval: 0.08, repeats: true) { _ in
+                    UIDevice.current.playInputClick()
+                    tick()
+                }
+                RunLoop.main.add(each, forMode: .common)
+                self.timer = each
+            }
+            RunLoop.main.add(delay, forMode: .common)
+            timer = delay
+        }
+
+        func stop() {
+            timer?.invalidate()
+            timer = nil
+        }
     }
 
     override func didMoveToWindow() {
@@ -2553,7 +2563,7 @@ extension TerminalKeyboard {
     /// The enlarged character above a pressed key, joined to the key like the system
     /// keyboard's: one shape, the bubble on top and the key below as its stem. The bubble
     /// slides sideways to stay inside `limit`, so edge keys keep it on screen.
-    fileprivate final class KeyPreview: UIView {
+    final class KeyPreview: UIView {
         static let extra: CGFloat = 10    // bubble overhang past each side of the key
         static let rise: CGFloat = 48     // bubble height above the key's top
         /// Landscape's shorter bar and top pad leave the extension 35 pt over the digits.

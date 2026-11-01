@@ -151,8 +151,7 @@ final class QuicklinkStore {
 /// One whose `{query}` has nothing to take (no selection, no word before the caret; always in
 /// the terminal) is dimmed, with why, and takes no tap. The Mac's (#614) follow the phone's, in
 /// one section, picked as they are.
-/// ponytail: no search field in v1, typing into the panel from the keyboard itself is its own
-/// project; the recents are the answer to a long list for now.
+/// Its search row filters it with keys of its own (#665, `PanelFilter`).
 final class QuicklinkPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
     /// The link and whether it's the Mac's (#658).
     var onPick: ((QuicklinkStore.Entry, _ mac: Bool) -> Void)?
@@ -168,13 +167,21 @@ final class QuicklinkPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
         sections = ((recent.isEmpty ? [(nil, rest)] : [("Recent", recent), ("All", rest)]) + mac).filter { !$0.1.isEmpty }
         macSection = mac.first?.1.isEmpty == false ? sections.count - 1 : nil
         self.hasQuery = hasQuery
-        super.init(title: "Quicklinks", empty: "Add quicklinks in Prosper's Settings.")
+        super.init(title: "Quicklinks", empty: "Add quicklinks in Prosper's Settings.", search: "Search quicklinks")
         table.dataSource = self
         table.delegate = self
         empty.isHidden = !sections.isEmpty
+        showSearch()
         jumps = Self.jumps(sections.map { $0.title == "Recent" ? nil : $0.links.map(\.name) })
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// On the name, then the URL.
+    override var searchable: [(row: IndexPath, fields: [String])] {
+        sections.enumerated().flatMap { s, section in
+            section.links.enumerated().map { (IndexPath(row: $0, section: s), [$1.name, $1.url]) }
+        }
+    }
 
     /// Why `link` can't go, nil if it can.
     func unavailable(_ link: QuicklinkStore.Entry) -> String? {

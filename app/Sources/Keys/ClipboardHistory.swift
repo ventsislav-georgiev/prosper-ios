@@ -273,8 +273,17 @@ class KeysPanel: UIView {
     let backButton = UIButton(configuration: .plain())
     let title = UILabel()
     let empty = UILabel()
+    /// The search row under the header (#665), on the panels that filter: a tap opens filter mode.
+    private(set) var search: UIButton?
+    private var searchHeight: NSLayoutConstraint?
+    /// Filter mode over the list, which stays as it was under it.
+    private(set) var filter: PanelFilter?
+    /// The letters of the keys the panel covers, for filter mode's own (`SuggestionBar.cover`).
+    var layout = TerminalKeyboard.Layout.english
+    /// Stretches the panel over the bar for filter mode and back (`SuggestionBar.cover`).
+    var overBar: ((Bool) -> Void)?
 
-    init(title text: String, empty note: String, trailing: [UIView] = []) {
+    init(title text: String, empty note: String, trailing: [UIView] = [], search placeholder: String? = nil) {
         super.init(frame: .zero)
         backgroundColor = Style.backdrop
         overrideUserInterfaceStyle = Style.palette.style
@@ -304,16 +313,29 @@ class KeysPanel: UIView {
         empty.font = .systemFont(ofSize: 14)
         empty.numberOfLines = 0
         empty.textAlignment = .center
-        for v in [header, table, empty] {
+        search = placeholder.map(PanelFilter.field)
+        search?.addAction(UIAction { [weak self] _ in self?.filter(true) }, for: .touchUpInside)
+        search?.accessibilityHint = "Filters with keys of its own"
+        let row = search ?? header
+        for v in [header, table, empty] + (search.map { [$0] } ?? []) {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
+        }
+        if let search {
+            searchHeight = search.heightAnchor.constraint(equalToConstant: PanelFilter.fieldHeight)
+            NSLayoutConstraint.activate([
+                search.topAnchor.constraint(equalTo: header.bottomAnchor),
+                search.leadingAnchor.constraint(equalTo: table.leadingAnchor),
+                search.trailingAnchor.constraint(equalTo: table.trailingAnchor),
+                searchHeight!,
+            ])
         }
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: topAnchor, constant: 2),
             header.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 4),
             header.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -4),
             header.heightAnchor.constraint(equalToConstant: 40),
-            table.topAnchor.constraint(equalTo: header.bottomAnchor),
+            table.topAnchor.constraint(equalTo: row.bottomAnchor, constant: search == nil ? 0 : 6),
             table.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 8),
             table.trailingAnchor.constraint(equalTo: safeAreaLayoutGuide.trailingAnchor, constant: -8),
             table.bottomAnchor.constraint(lessThanOrEqualTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
@@ -376,6 +398,41 @@ class KeysPanel: UIView {
         return -1
     }
 
+    /// What filter mode matches, each row's fields in the list's order (`PanelFilter.rank`):
+    /// the panels with a search row say.
+    var searchable: [(row: IndexPath, fields: [String])] { [] }
+
+    /// The search row only over rows it can match, its room the list's without: the panels
+    /// call it as their rows change.
+    func showSearch() {
+        search?.isHidden = searchable.isEmpty
+        searchHeight?.constant = searchable.isEmpty ? 0 : PanelFilter.fieldHeight
+    }
+
+    /// Filter mode over the list, or the list back as it was. Its results are the list's own
+    /// rows, drawn and picked through the table's data source and delegate.
+    func filter(_ on: Bool) {
+        filter?.removeFromSuperview()
+        filter = nil
+        overBar?(on && search != nil)
+        guard on, let search else { return UIAccessibility.post(notification: .screenChanged, argument: search) }
+        let rows = searchable
+        let f = PanelFilter(placeholder: search.accessibilityLabel ?? "", layout: layout, fields: rows.map(\.fields))
+        let table = table
+        f.cell = { table.dataSource?.tableView(table, cellForRowAt: rows[$0].row) ?? UITableViewCell() }
+        f.pickable = {
+            guard table.delegate?.responds(to: #selector(UITableViewDelegate.tableView(_:willSelectRowAt:))) == true else { return true }
+            return table.delegate?.tableView?(table, willSelectRowAt: rows[$0].row) != nil
+        }
+        f.pick = { table.delegate?.tableView?(table, didSelectRowAt: rows[$0].row) }
+        f.onDone = { [weak self] in self?.filter(false) }
+        f.frame = bounds
+        f.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        addSubview(f)
+        filter = f
+        UIAccessibility.post(notification: .screenChanged, argument: f.field)
+    }
+
     /// A row on the card, `text` in the label's colour or the hint's while `off` (#626).
     static func card(_ cell: UITableViewCell, _ content: inout UIListContentConfiguration, off: Bool = false) {
         cell.backgroundColor = .clear
@@ -413,7 +470,8 @@ final class ClipboardPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
     init(history: ClipboardHistory, pasteboard: UIPasteboard) {
         self.history = history
         self.pasteboard = pasteboard
-        super.init(title: "Clipboard", empty: "What you copy or paste shows here.", trailing: [pasteControl, clearButton])
+        super.init(title: "Clipboard", empty: "What you copy or paste shows here.", trailing: [pasteControl, clearButton],
+                   search: "Search clipboard")
         pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.plainText.identifier,
                                                                               UTType.image.identifier])
         pasteControl.target = self
@@ -435,7 +493,13 @@ final class ClipboardPanel: KeysPanel, UITableViewDataSource, UITableViewDelegat
         pasteControl.isHidden = !history.fresh(pasteboard)
         clearButton.isEnabled = clips.contains { !$0.pinned }
         empty.isHidden = !clips.isEmpty
+        showSearch()
         table.reloadData()
+    }
+
+    /// Text clips, on their text; an image has none to match.
+    override var searchable: [(row: IndexPath, fields: [String])] {
+        clips.enumerated().compactMap { i, clip in clip.text.map { (IndexPath(row: i, section: 0), [$0]) } }
     }
 
     override func paste(itemProviders: [NSItemProvider]) {

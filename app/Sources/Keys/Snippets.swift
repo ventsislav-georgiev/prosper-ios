@@ -175,13 +175,21 @@ final class SnippetPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate 
 
     init(store: SnippetStore) {
         groups = SnippetStore.grouped(store.load().snippets) + SnippetStore.grouped(fromMac: store.fromMac())
-        super.init(title: "Snippets", empty: "Add snippets in Prosper's Settings.")
+        super.init(title: "Snippets", empty: "Add snippets in Prosper's Settings.", search: "Search snippets")
         table.dataSource = self
         table.delegate = self
         empty.isHidden = !groups.isEmpty
+        showSearch()
         jumps = Self.jumps(groups.map { $0.snippets.map(\.name) })
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// On the name, then the text.
+    override var searchable: [(row: IndexPath, fields: [String])] {
+        groups.enumerated().flatMap { s, group in
+            group.snippets.enumerated().map { (IndexPath(row: $0, section: s), [$1.name, $1.text]) }
+        }
+    }
 
     func numberOfSections(in tableView: UITableView) -> Int { groups.count }
 

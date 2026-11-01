@@ -1,0 +1,365 @@
+import UIKit
+
+/// A list panel's filter mode (#665), as the system's emoji search, over the bar too
+/// (`KeysPanel.overBar`): the search row on top, two rows of live results (`shown`), then compact keys of the covered keyboard's layout (`KeysPanel.layout`)
+/// that type into the query, never into the host. Each key ranks the rows again (`rank`); a tap
+/// on a result is the list's own tap, return the first pickable result's. Done hands the list
+/// back as it was (`KeysPanel.filter`). Rows, picks and fields are the caller's, by index, so a
+/// panel of any kind can use it. Laid out by hand: the keys take what the field and two rows
+/// leave, between `keyRow`'s bounds, and a taller panel (the app's) gives the rest to the
+/// results.
+///
+/// ponytail: where even one row leaves the keys under their minimum (landscape) the whole
+/// mode scrolls; a side-by-side layout would fit landscape.
+final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegate, UIInputViewAudioFeedback {
+    typealias Style = TerminalKeyboard.Style
+    static let fieldHeight: CGFloat = 34
+    static let rowHeight: CGFloat = 38
+    static let keyRow: ClosedRange<CGFloat> = 26...40
+    static let gap: CGFloat = 5
+
+    var cell: (Int) -> UITableViewCell = { _ in UITableViewCell() }
+    var pickable: (Int) -> Bool = { _ in true }
+    var pick: (Int) -> Void = { _ in }
+    var onDone: (() -> Void)?
+
+    let placeholder: String
+    let layout: TerminalKeyboard.Layout
+    let fields: [[String]]
+    private(set) var query = ""
+    /// Indices into `fields`, best first.
+    private(set) var matches: [Int]
+    /// The 123 keys in the letters' place.
+    private(set) var digits = false
+    /// Result rows the keys leave room for: one where two would take them under their
+    /// minimum (a panel not stretched over the bar, `KeysPanel.overBar`).
+    private(set) var shown = 2
+
+    let field: UIButton
+    let clear = UIButton(configuration: .plain())
+    let done = UIButton(configuration: .plain())
+    let results = UITableView(frame: .zero, style: .plain)
+    let none = UILabel()
+    private let repeater = TerminalKeyboard.Repeat()
+    /// The keys' press bubble over a pressed letter or symbol.
+    let preview = TerminalKeyboard.KeyPreview()
+    /// The letter or symbol keys, by row; the specials stay.
+    private(set) var rows: [[UIButton]] = []
+    let toggle = Key(special: true), delete = Key(special: true), space = Key(special: false), go = Key(special: false)
+
+    init(placeholder: String, layout: TerminalKeyboard.Layout, fields: [[String]]) {
+        self.placeholder = placeholder
+        self.layout = layout
+        self.fields = fields
+        matches = Array(fields.indices)
+        field = Self.field(placeholder)
+        super.init(frame: .zero)
+        backgroundColor = Style.backdrop
+        overrideUserInterfaceStyle = Style.palette.style
+        showsVerticalScrollIndicator = false
+        alwaysBounceVertical = false
+        delaysContentTouches = false
+        accessibilityViewIsModal = true   // VoiceOver stays off the list under it
+
+        field.accessibilityTraits = .searchField
+        clear.configuration?.image = UIImage(systemName: "xmark.circle.fill")
+        clear.configuration?.baseForegroundColor = Style.hint
+        clear.accessibilityLabel = "Clear"
+        clear.addAction(UIAction { [weak self] _ in self?.type(nil) }, for: .touchUpInside)
+        field.addSubview(clear)
+        done.configuration?.title = "Done"
+        done.configuration?.baseForegroundColor = Style.accent
+        done.accessibilityHint = "Back to the list"
+        done.addAction(UIAction { [weak self] _ in self?.onDone?() }, for: .touchUpInside)
+
+        results.backgroundColor = Style.surface
+        results.separatorColor = Style.hairline
+        results.layer.cornerRadius = 14
+        results.rowHeight = Self.rowHeight
+        results.tableFooterView = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 1))
+        results.dataSource = self
+        results.delegate = self
+        none.text = "No matches"
+        none.textColor = Style.hint
+        none.font = .systemFont(ofSize: 14)
+        none.textAlignment = .center
+
+        toggle.accessibilityLabel = "Numbers"
+        toggle.addAction(UIAction { [weak self] _ in self?.switchKeys() }, for: .touchUpInside)
+        delete.configuration?.image = UIImage(systemName: "delete.left", withConfiguration: Style.symbol)
+        delete.accessibilityLabel = "Delete"
+        // Delete on touch-down, then repeating while held, as the keys' backspace.
+        delete.addAction(UIAction { [weak self] _ in
+            self?.type("\u{8}")
+            self?.repeater.start { self?.edit("\u{8}") }
+        }, for: .touchDown)
+        delete.addAction(UIAction { [weak self] _ in self?.repeater.stop() },
+                         for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        space.configuration?.title = "space"
+        space.accessibilityLabel = "Space"
+        space.addAction(UIAction { [weak self] _ in self?.type(" ") }, for: .touchUpInside)
+        go.wash()
+        go.configuration?.image = UIImage(systemName: "return", withConfiguration: Style.symbol)
+        go.accessibilityLabel = "Pick the first result"
+        go.addAction(UIAction { [weak self] _ in self?.pickFirst() }, for: .touchUpInside)
+        for v in [field, done, results, none, toggle, delete, space, go] { addSubview(v) }
+        buildKeys()
+        refilter(announce: false)
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    var enableInputClicksWhenVisible: Bool { true }
+
+    /// The search row's look, the list's and this mode's: a magnifier and the placeholder.
+    static func field(_ placeholder: String) -> UIButton {
+        var config = UIButton.Configuration.filled()
+        config.baseBackgroundColor = Style.surface
+        config.baseForegroundColor = Style.hint
+        config.image = UIImage(systemName: "magnifyingglass", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium))
+        config.imagePadding = 6
+        config.attributedTitle = AttributedString(placeholder, attributes: AttributeContainer([.font: UIFont.systemFont(ofSize: 15)]))
+        config.background.cornerRadius = 10
+        config.cornerStyle = .fixed
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 34)
+        let button = UIButton(configuration: config)
+        button.contentHorizontalAlignment = .leading
+        button.accessibilityLabel = placeholder
+        return button
+    }
+
+    /// `fields`' indices matching `query`, best first: a prefix, then a word's start, then
+    /// anywhere, then its characters in order, each case- and diacritic-insensitive, a row by
+    /// its best field (then the earlier field). Ties, and every row for a blank query, keep
+    /// their order.
+    static func rank(_ query: String, _ fields: [[String]]) -> [Int] {
+        func fold(_ s: String) -> String { s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) }
+        let q = fold(query)
+        guard !q.trimmingCharacters(in: .whitespaces).isEmpty else { return Array(fields.indices) }
+        func tier(_ text: String) -> Int? {
+            let f = fold(text)
+            if f.hasPrefix(q) { return 0 }
+            var found = false, from = f.startIndex
+            while let r = f.range(of: q, range: from..<f.endIndex) {
+                let before = f[f.index(before: r.lowerBound)]
+                if !before.isLetter && !before.isNumber { return 1 }
+                found = true
+                from = f.index(after: r.lowerBound)
+            }
+            if found { return 2 }
+            var rest = Substring(q)
+            for c in f where c == rest.first {
+                rest.removeFirst()
+                if rest.isEmpty { return 3 }
+            }
+            return nil
+        }
+        return fields.enumerated()
+            .compactMap { i, texts in
+                texts.enumerated().compactMap { j, text in tier(text).map { ($0, j) } }.min { $0 < $1 }.map { ($0.0, $0.1, i) }
+            }
+            .sorted { $0 < $1 }
+            .map(\.2)
+    }
+
+    /// A key's text into the query: nil clears it, a backspace (U+0008) takes the last character.
+    func type(_ text: String?) {
+        UIDevice.current.playInputClick()
+        edit(text)
+    }
+
+    /// `type` without the click: the repeat clicks its own.
+    private func edit(_ text: String?) {
+        switch text {
+        case nil: query = ""
+        case "\u{8}": if !query.isEmpty { query.removeLast() }
+        case let text?: query += text
+        }
+        refilter(announce: true)
+    }
+
+    /// Return: the first result that takes a tap.
+    func pickFirst() {
+        guard let i = matches.first(where: pickable) else { return }
+        UIDevice.current.playInputClick()
+        pick(i)
+    }
+
+    /// What VoiceOver hears after each key.
+    var count: String {
+        switch matches.count {
+        case 0: return "No matches"
+        case 1: return "1 result"
+        case let n: return "\(n) results"
+        }
+    }
+
+    private func refilter(announce: Bool) {
+        matches = Self.rank(query, fields)
+        // The caret in the accent, after the query or before the placeholder.
+        let text = AttributedString(query.isEmpty ? placeholder : query,
+                                    attributes: AttributeContainer([.font: UIFont.systemFont(ofSize: 15),
+                                                                    .foregroundColor: query.isEmpty ? Style.hint : Style.label]))
+        let caret = AttributedString("|", attributes: AttributeContainer([.font: UIFont.systemFont(ofSize: 17, weight: .light),
+                                                                          .foregroundColor: Style.accent]))
+        field.configuration?.attributedTitle = query.isEmpty ? caret + text : text + caret
+        field.accessibilityValue = query
+        clear.isHidden = query.isEmpty
+        none.isHidden = !matches.isEmpty
+        results.reloadData()
+        results.contentOffset.y = -results.adjustedContentInset.top
+        if announce { UIAccessibility.post(notification: .announcement, argument: count) }
+    }
+
+    /// The letters of `layout`, or the 123 keys: the digit row, the numpad's symbols, a few more.
+    private func buildKeys() {
+        rows.joined().forEach { $0.removeFromSuperview() }
+        let symbols = String(TerminalKeyboard.numpadRows.joined().compactMap {
+            if case .char(let c) = $0, Int(c) == nil { return Character(c) } else { return nil }
+        })
+        let chars: [[Character]] = digits ? [Array("1234567890"), Array(symbols), Array("_#&+'?!")] : layout.letterRows
+        rows = chars.map { row in
+            row.map { c in
+                let key = Key(special: false)
+                key.configuration?.title = String(c)
+                key.accessibilityLabel = String(c)
+                key.addAction(UIAction { [weak self] _ in self?.type(String(c)) }, for: .touchUpInside)
+                key.addAction(UIAction { [weak self, weak key] _ in key.map { self?.showPreview($0) } },
+                              for: [.touchDown, .touchDragEnter])
+                key.addAction(UIAction { [weak self] _ in self?.preview.removeFromSuperview() },
+                              for: [.touchUpInside, .touchUpOutside, .touchDragExit, .touchCancel])
+                addSubview(key)
+                return key
+            }
+        }
+        toggle.configuration?.title = digits ? "ABC" : "123"
+        toggle.accessibilityLabel = digits ? "Letters" : "Numbers"
+        setNeedsLayout()
+    }
+
+    /// The bubble over `key`, inside this view, which reaches over the bar while filtering.
+    private func showPreview(_ key: UIButton) {
+        guard let text = key.configuration?.title else { return }
+        addSubview(preview)   // also brings it to the front
+        preview.show(text, over: key.frame, within: CGRect(origin: contentOffset, size: bounds.size),
+                     rise: TerminalKeyboard.KeyPreview.rise(compact: traitCollection.verticalSizeClass == .compact))
+    }
+
+    override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        if superview == nil { repeater.stop() }   // closed mid-hold
+    }
+
+    private func switchKeys() {
+        UIDevice.current.playInputClick()
+        digits.toggle()
+        buildKeys()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let x0 = safeAreaInsets.left + 8, width = bounds.width - x0 - safeAreaInsets.right - 8
+        let gap = Self.gap, top: CGFloat = 3, bottom: CGFloat = 4
+        let resultsTop = top + Self.fieldHeight + gap
+        func room(_ shown: CGFloat) -> CGFloat { (bounds.height - resultsTop - shown * Self.rowHeight - gap - bottom - 3 * gap) / 4 }
+        shown = room(2) < Self.keyRow.lowerBound ? 1 : 2
+        let keyRow = min(max(room(CGFloat(shown)), Self.keyRow.lowerBound), Self.keyRow.upperBound)
+        let keysHeight = 4 * keyRow + 3 * gap
+        let resultsHeight = max(CGFloat(shown) * Self.rowHeight, bounds.height - bottom - keysHeight - gap - resultsTop)
+        contentSize = CGSize(width: bounds.width, height: resultsTop + resultsHeight + gap + keysHeight + bottom)
+
+        done.sizeToFit()
+        done.frame = CGRect(x: x0 + width - done.bounds.width, y: top, width: done.bounds.width, height: Self.fieldHeight)
+        field.frame = CGRect(x: x0, y: top, width: done.frame.minX - 4 - x0, height: Self.fieldHeight)
+        clear.frame = CGRect(x: field.bounds.width - 34, y: 0, width: 34, height: Self.fieldHeight)
+        results.frame = CGRect(x: x0, y: resultsTop, width: width, height: resultsHeight)
+        none.frame = results.frame
+
+        // Keys a column wide, the longest row's (Bulgarian's 11) or 10; 123 and delete flank the
+        // third row as shift and delete do on the keys.
+        let columns = CGFloat(max(layout.columns, 10)), keyGap: CGFloat = 5
+        let unit = (width - (columns - 1) * keyGap) / columns
+        var y = results.frame.maxY + gap
+        for (r, row) in rows.enumerated() {
+            let span = CGFloat(row.count) * unit + CGFloat(row.count - 1) * keyGap
+            for (k, key) in row.enumerated() {
+                key.frame = CGRect(x: x0 + (width - span) / 2 + CGFloat(k) * (unit + keyGap), y: y, width: unit, height: keyRow)
+            }
+            if r == 2 {
+                toggle.frame = CGRect(x: x0, y: y, width: unit * 1.5, height: keyRow)
+                delete.frame = CGRect(x: x0 + width - unit * 1.5, y: y, width: unit * 1.5, height: keyRow)
+            }
+            y += keyRow + gap
+        }
+        let goWidth = unit * 2.5 + keyGap
+        space.frame = CGRect(x: x0, y: y, width: width - goWidth - keyGap, height: keyRow)
+        go.frame = CGRect(x: x0 + width - goWidth, y: y, width: goWidth, height: keyRow)
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { matches.count }
+
+    /// The list's own cell for the row, on one line and a smaller second line, without its
+    /// side buttons (the clipboard's pin and delete), to fit a short row.
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = cell(matches[indexPath.row])
+        cell.accessoryView = nil
+        cell.accessibilityCustomActions = nil
+        if var content = cell.contentConfiguration as? UIListContentConfiguration {
+            content.textProperties.numberOfLines = 1
+            content.secondaryTextProperties.font = .systemFont(ofSize: 12)
+            content.textToSecondaryTextVerticalPadding = 1
+            content.directionalLayoutMargins.top = 2
+            content.directionalLayoutMargins.bottom = 2
+            cell.contentConfiguration = content
+        }
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, willSelectRowAt indexPath: IndexPath) -> IndexPath? {
+        pickable(matches[indexPath.row]) ? indexPath : nil
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        pick(matches[indexPath.row])
+    }
+
+    /// A compact key in the keys' look: raised, hairline-bordered, lighter while pressed.
+    final class Key: UIButton {
+        private var fill: UIColor, pressed: UIColor
+
+        init(special: Bool) {
+            fill = special ? Style.special : Style.key
+            pressed = special ? Style.specialPressed : Style.keyPressed
+            super.init(frame: .zero)
+            var config = UIButton.Configuration.plain()
+            config.baseForegroundColor = Style.label
+            config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
+                var a = $0
+                a.font = .systemFont(ofSize: special ? 15 : 19)
+                return a
+            }
+            config.contentInsets = .zero
+            configuration = config
+            backgroundColor = fill
+            layer.cornerRadius = Style.radius - 2
+            layer.borderColor = Style.palette.border.cgColor
+            layer.borderWidth = Style.palette.neon == nil ? 0.5 : 1
+            ShortcutBar.shade(self, glow: Style.palette.glow)
+        }
+        required init?(coder: NSCoder) { fatalError("not used") }
+
+        /// Filled with the accent, the label on it: return's.
+        func wash() {
+            fill = Style.accent
+            pressed = Style.accent.withAlphaComponent(0.75)
+            backgroundColor = fill
+            configuration?.baseForegroundColor = Style.onAccent
+        }
+
+        override var isHighlighted: Bool { didSet { backgroundColor = isHighlighted ? pressed : fill } }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            ShortcutBar.trace(self)
+        }
+    }
+}

@@ -99,7 +99,7 @@ final class JumpIndexTests: XCTestCase {
     }
 
     func testNoIndexOnAListThatFits() {
-        let q = laidOut(QuicklinkPanel(store: quicklinks(["alpha", "bravo", "charlie"]), hasQuery: true)) as! QuicklinkPanel
+        let q = laidOut(QuicklinkPanel(store: quicklinks(["alpha", "bravo", "charlie"]), hasQuery: true), height: 340) as! QuicklinkPanel   // the search row's 40 pt (#665)
         XCTAssertFalse(q.table.scrolls)
         XCTAssertNil(q.sectionIndexTitles(for: q.table))
         let s = laidOut(SnippetPanel(store: snippets(["alpha", "bravo"]))) as! SnippetPanel

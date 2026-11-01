@@ -1241,10 +1241,19 @@ final class SuggestionBar: UIView {
         panel = nil
         guard let new, let keyboard, let host = keyboard.superview else { return }
         new.onClose = { [weak self] in self?.cover(nil) }
+        new.layout = keyboard.layout
         new.translatesAutoresizingMaskIntoConstraints = false
         host.addSubview(new)
+        // Filter mode (#665) covers the bar too, so its keys act on nothing mid-filter.
+        let keysTop = new.topAnchor.constraint(equalTo: keyboard.topAnchor)
+        let barTop = superview === host ? new.topAnchor.constraint(equalTo: topAnchor) : nil
+        new.overBar = { on in
+            NSLayoutConstraint.deactivate([on ? keysTop : barTop].compactMap { $0 })
+            NSLayoutConstraint.activate([on ? barTop ?? keysTop : keysTop])
+            host.layoutIfNeeded()
+        }
         NSLayoutConstraint.activate([
-            new.topAnchor.constraint(equalTo: keyboard.topAnchor),
+            keysTop,
             new.leadingAnchor.constraint(equalTo: keyboard.leadingAnchor),
             new.trailingAnchor.constraint(equalTo: keyboard.trailingAnchor),
             new.bottomAnchor.constraint(equalTo: keyboard.bottomAnchor),
