@@ -83,6 +83,7 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         results.separatorColor = Style.hairline
         results.layer.cornerRadius = 14
         results.rowHeight = Self.rowHeight
+        results.contentInsetAdjustmentBehavior = .never   // whole rows from the card's top (#674)
         results.tableFooterView = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 1))
         results.dataSource = self
         results.delegate = self
@@ -286,6 +287,9 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         results.frame = CGRect(x: x0, y: resultsTop, width: width, height: resultsHeight)
         none.frame = results.frame
         grid?.frame = results.frame
+        // The card shared out in whole rows, none under `rowHeight`: no partial row peeks at its
+        // foot, and a two-line row gets the slack (#674). The grid keeps its own.
+        results.rowHeight = resultsHeight / max(1, (resultsHeight / Self.rowHeight).rounded(.down))
 
         // Keys a column wide, the longest row's (Bulgarian's 11) or 10; 123 and delete flank the
         // third row as shift and delete do on the keys.
@@ -318,13 +322,21 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         cell.accessibilityCustomActions = nil
         if var content = cell.contentConfiguration as? UIListContentConfiguration {
             content.textProperties.numberOfLines = 1
-            content.secondaryTextProperties.font = .systemFont(ofSize: 12)
-            content.textToSecondaryTextVerticalPadding = 1
+            content.secondaryTextProperties.font = .systemFont(ofSize: 11)   // clear of the separator (#674)
+            content.textToSecondaryTextVerticalPadding = 0
             content.directionalLayoutMargins.top = 2
             content.directionalLayoutMargins.bottom = 2
             cell.contentConfiguration = content
         }
         return cell
+    }
+
+    /// A scroll comes to rest on a row's top, never mid-row (#674).
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
+                                   targetContentOffset target: UnsafeMutablePointer<CGPoint>) {
+        guard scrollView === results else { return }
+        let row = results.rowHeight, end = max(0, results.contentSize.height - results.bounds.height)
+        target.pointee.y = min((target.pointee.y / row).rounded() * row, end)
     }
 
     func tableView(_ tableView: UITableView, willSelectRowAt indexPath: IndexPath) -> IndexPath? {

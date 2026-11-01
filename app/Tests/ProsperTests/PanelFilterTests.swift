@@ -172,6 +172,75 @@ final class PanelFilterTests: XCTestCase {
         }
     }
 
+    /// The results card in whole rows (#674): one-line clips and two-line snippets and links
+    /// at 2 and 3+ matches, over the system keyboard and in a taller panel, no row cut at the
+    /// card's foot and a subtitle above its separator; the emoji grid keeps its two 38 pt rows.
+    func testResultsShowOnlyWholeRows() throws {
+        let snippets = SnippetStore(url: dir.appendingPathComponent("Snippets/snippets.json"))
+        let links = QuicklinkStore(url: dir.appendingPathComponent("Quicklinks/quicklinks.json"))
+        for count in [2, 4] {
+            let history = ClipboardHistory(dir: dir.appendingPathComponent("Clips\(count)"))
+            XCTAssertTrue(snippets.save(.init(snippets: (1...count).map { .init(name: "Snippet \($0)", text: "text \($0)") })))
+            XCTAssertTrue(links.save(.init(quicklinks: (1...count).map { .init(name: "Link \($0)", url: "https://example.com/\($0)") })))
+            for i in 1...count { pb.string = "clip \(i)"; history.record("clip \(i)", from: pb) }
+            for size in KeyboardSettings.KeySize.allCases {
+            let (kb, bar, view) = hostedRig(size: size, numbers: .key)
+            bar.snippets = snippets
+            bar.quicklinks = links
+            bar.history = history
+            for kind in ["snippets", "links", "clips"] {
+                switch kind {
+                case "snippets": bar.showSnippets(true)
+                case "links": bar.showQuicklinks(true)
+                default: bar.showClips(true)
+                }
+                view.layoutIfNeeded()
+                let panel = try XCTUnwrap(bar.snippetsPanel ?? bar.quicklinksPanel ?? bar.clipsPanel, kind)
+                let filter = try open(panel)
+                assertWholeRows(filter, "\(kind) \(count), \(size)", twoLine: kind != "clips")
+                filter.done.sendActions(for: .touchUpInside)
+                bar.showSnippets(false); bar.showQuicklinks(false); bar.showClips(false)
+            }
+            withExtendedLifetime(kb) {}
+            }
+
+            let tall = SnippetPanel(store: snippets)
+            tall.frame = CGRect(x: 0, y: 0, width: 390, height: 420)
+            tall.layoutIfNeeded()
+            assertWholeRows(try open(tall), "snippets \(count), tall", twoLine: true)
+        }
+
+        let grid = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewFlowLayout())
+        let emoji = PanelFilter(placeholder: "Search", layout: .english, fields: [["a"], ["b"], ["c"]], grid: grid)
+        emoji.frame = CGRect(x: 0, y: 0, width: 402, height: 300)
+        emoji.layoutIfNeeded()
+        XCTAssertEqual(grid.frame, CGRect(x: 8, y: 42, width: 386, height: 2 * PanelFilter.rowHeight), "the grid's two rows, as before")
+        XCTAssertEqual(grid.frame, emoji.results.frame)
+    }
+
+    /// A drag comes to rest on a row's top, the nearer one, never past the end (#674).
+    func testAScrollRestsOnARowsTop() throws {
+        let store = SnippetStore(url: dir.appendingPathComponent("Snippets/snippets.json"))
+        XCTAssertTrue(store.save(.init(snippets: (1...8).map { .init(name: "Snippet \($0)", text: "text \($0)") })))
+        let panel = SnippetPanel(store: store)
+        panel.frame = CGRect(x: 0, y: 0, width: 390, height: 308)
+        let filter = try open(panel)
+        filter.layoutIfNeeded()
+        let table = filter.results
+        table.layoutIfNeeded()
+        let row = table.rowHeight, end = table.contentSize.height - table.bounds.height
+        XCTAssertGreaterThan(end, 2 * row, "enough rows to scroll")
+        func rest(_ y: CGFloat, _ view: UIScrollView? = nil) -> CGFloat {
+            var p = CGPoint(x: 0, y: y)
+            filter.scrollViewWillEndDragging(view ?? table, withVelocity: .zero, targetContentOffset: &p)
+            return p.y
+        }
+        XCTAssertEqual(rest(1.4 * row), row, accuracy: 0.01)
+        XCTAssertEqual(rest(1.6 * row), 2 * row, accuracy: 0.01)
+        XCTAssertEqual(rest(end + 3 * row), end, accuracy: 0.01, "clamped to the end")
+        XCTAssertEqual(rest(1.4 * row, filter), 1.4 * row, accuracy: 0.01, "another scroll view's target is its own")
+    }
+
     /// The app's terminal: filter mode covers its shortcut bar too, so no bar key reaches the
     /// terminal mid-filter; Done gives the bar back.
     func testTheAppsFilterCoversItsShortcutBar() throws {
@@ -269,6 +338,36 @@ final class PanelFilterTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// Every row the card shows is whole, none under 38 pt, a subtitle inside its cell (#674).
+    private func assertWholeRows(_ filter: PanelFilter, _ label: String, twoLine: Bool,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        filter.layoutIfNeeded()
+        let table = filter.results
+        table.layoutIfNeeded()
+        XCTAssertGreaterThanOrEqual(table.rowHeight, PanelFilter.rowHeight, label, file: file, line: line)
+        let visible = table.indexPathsForVisibleRows ?? []
+        let fit = Int((table.bounds.height / PanelFilter.rowHeight).rounded(.down))
+        XCTAssertEqual(visible.count, min(filter.matches.count, fit), label, file: file, line: line)
+        for ip in visible {
+            let row = table.rectForRow(at: ip)
+            XCTAssertGreaterThanOrEqual(row.minY, table.bounds.minY - 0.5, "\(label) row \(ip.row)", file: file, line: line)
+            XCTAssertLessThanOrEqual(row.maxY, table.bounds.maxY + 0.5, "\(label) row \(ip.row) cut at the foot", file: file, line: line)
+            guard twoLine, let cell = table.cellForRow(at: ip),
+                  let sub = (cell.contentConfiguration as? UIListContentConfiguration)?.secondaryText else { continue }
+            cell.layoutIfNeeded()
+            let labels = sequence(first: [cell.contentView] as [UIView]) { level in
+                let next = level.flatMap(\.subviews)
+                return next.isEmpty ? nil : next
+            }.joined().compactMap { $0 as? UILabel }
+            guard let subtitle = labels.first(where: { $0.text == sub }) else {
+                XCTFail("\(label): no subtitle", file: file, line: line); continue
+            }
+            let frame = subtitle.convert(subtitle.bounds, to: cell)
+            XCTAssertLessThanOrEqual(frame.maxY, cell.bounds.height - 3, "\(label): the subtitle above the separator",
+                                     file: file, line: line)
+        }
+    }
 
     /// A keyboard on a fake field, the bar hosted in `view` so a panel can cover the keys, Full Access on.
     private func rig(_ text: String, layout: TerminalKeyboard.Layout = .english,
