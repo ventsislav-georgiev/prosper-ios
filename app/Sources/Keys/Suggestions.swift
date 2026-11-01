@@ -510,11 +510,12 @@ final class Suggestions {
     }
 }
 
-/// What the keyboard learns from its user, in the extension's own `UserDefaults` (no App
-/// Group: the app never reads it): words kept as typed, and how often one word followed
-/// another, for next-word predictions. Lowercase throughout; never written where the
-/// field turns autocorrect off (`Suggestions.autocorrects`), so not from password-like
-/// fields.
+/// What the keyboard learns from its user: words kept as typed, and how often one word
+/// followed another, for next-word predictions. Lowercase throughout; never written where
+/// the field turns autocorrect off (`Suggestions.autocorrects`), so not from password-like
+/// fields. In `store`: the extension's own `UserDefaults`, or with Full Access the App Group's
+/// (`reload(shared:)`), so both Prosper keyboards learn together and a clip one retired or
+/// auto-saved isn't offered or asked again by the other (#659). The app never reads it.
 ///
 /// ponytail: iOS's own language model isn't available to a custom keyboard, so the
 /// predictions come only from what the user typed with this keyboard: blank on day one,
@@ -527,8 +528,13 @@ final class TypingMemory {
     static let pairsKey = "suggestions.wordPairs"
     static let clipKey = "suggestions.retiredClip"
     static let savedClipKey = "suggestions.savedClip"
+    /// Set in `defaults` once its words and pairs went into the group (`reload(shared:)`, #659).
+    static let mergedKey = "suggestions.mergedToGroup"
 
+    /// The extension's own, always: the merge's flag and the toolbar pick's fallback (#648).
     let defaults: UserDefaults
+    /// Where the words, pairs and clips are read and written: `defaults`, or the group (#659).
+    private(set) var store: UserDefaults
     let wordCap: Int, pairCap: Int
     /// Learned words, oldest first, and the same as a set.
     private(set) var words: [String]
@@ -538,6 +544,7 @@ final class TypingMemory {
 
     init(defaults: UserDefaults = .standard, wordCap: Int = 2000, pairCap: Int = 5000) {
         self.defaults = defaults
+        store = defaults
         self.wordCap = wordCap
         self.pairCap = pairCap
         words = defaults.stringArray(forKey: Self.wordsKey) ?? []
@@ -545,41 +552,72 @@ final class TypingMemory {
         pairs = defaults.dictionary(forKey: Self.pairsKey) as? [String: Int] ?? [:]
     }
 
+    /// The keyboard shows (#659): the words and pairs read again from `shared` (the App Group's,
+    /// with Full Access) or else `defaults`. Each extension holds them in memory and rewrites the
+    /// whole key, so without this re-read the one that shows would drop what the other learned.
+    /// The first time with the group, this extension's own words go after the group's (the
+    /// oldest past `wordCap` going) and each pair takes the higher count, then `pairCap` as
+    /// `record`; its own copy stays where it was.
+    ///
+    /// ponytail: two keyboards learn in turn, never at once, so a re-read at appear suffices;
+    /// a write while the other shows (none today) would be lost at its next write.
+    func reload(shared: UserDefaults?) {
+        store = shared ?? defaults
+        words = store.stringArray(forKey: Self.wordsKey) ?? []
+        known = Set(words)
+        pairs = store.dictionary(forKey: Self.pairsKey) as? [String: Int] ?? [:]
+        guard shared != nil, !defaults.bool(forKey: Self.mergedKey) else { return }
+        for w in defaults.stringArray(forKey: Self.wordsKey) ?? [] where known.insert(w).inserted { words.append(w) }
+        capWords()
+        for (k, n) in defaults.dictionary(forKey: Self.pairsKey) as? [String: Int] ?? [:] { pairs[k] = max(pairs[k] ?? 0, n) }
+        capPairs(keeping: nil)
+        store.set(words, forKey: Self.wordsKey)
+        store.set(pairs, forKey: Self.pairsKey)
+        defaults.set(true, forKey: Self.mergedKey)
+    }
+
     /// The pasteboard `changeCount` last pasted or typed over: that clip isn't offered
     /// again, even after the extension relaunches. A reboot resets the count, so a clip
     /// copied then may stay hidden till the next copy: rare and harmless.
     var retiredClip: Int? {
-        get { defaults.object(forKey: Self.clipKey) as? Int }
-        set { defaults.set(newValue, forKey: Self.clipKey) }
+        get { store.object(forKey: Self.clipKey) as? Int }
+        set { store.set(newValue, forKey: Self.clipKey) }
     }
 
     /// The pasteboard `changeCount` auto-save last tried (`SuggestionBar.saveCopy`), kept or
     /// refused: never read again, so a Don't Allow isn't asked again. A reboot as above.
     var savedClip: Int? {
-        get { defaults.object(forKey: Self.savedClipKey) as? Int }
-        set { defaults.set(newValue, forKey: Self.savedClipKey) }
+        get { store.object(forKey: Self.savedClipKey) as? Int }
+        set { store.set(newValue, forKey: Self.savedClipKey) }
     }
 
     func learn(_ word: String) {
         let w = word.lowercased()
         guard known.insert(w).inserted else { return }
         words.append(w)
-        if words.count > wordCap {
-            known.subtract(words.prefix(words.count - wordCap))
-            words.removeFirst(words.count - wordCap)
-        }
-        defaults.set(words, forKey: Self.wordsKey)
+        capWords()
+        store.set(words, forKey: Self.wordsKey)
     }
 
     func record(_ previous: String, _ word: String) {
         let key = previous.lowercased() + " " + word.lowercased()
         pairs[key, default: 0] += 1
-        if pairs.count > pairCap {
-            let drop = pairs.count - pairCap * 9 / 10
-            let rarest = pairs.filter { $0.key != key }.sorted { ($0.value, $0.key) < ($1.value, $1.key) }
-            for (k, _) in rarest.prefix(drop) { pairs[k] = nil }
-        }
-        defaults.set(pairs, forKey: Self.pairsKey)
+        capPairs(keeping: key)
+        store.set(pairs, forKey: Self.pairsKey)
+    }
+
+    private func capWords() {
+        guard words.count > wordCap else { return }
+        known.subtract(words.prefix(words.count - wordCap))
+        words.removeFirst(words.count - wordCap)
+    }
+
+    /// Past `pairCap`, the rarest go down to 90%; never `key`, the pair just typed.
+    private func capPairs(keeping key: String?) {
+        guard pairs.count > pairCap else { return }
+        let drop = pairs.count - pairCap * 9 / 10
+        let rarest = pairs.filter { $0.key != key }.sorted { ($0.value, $0.key) < ($1.value, $1.key) }
+        for (k, _) in rarest.prefix(drop) { pairs[k] = nil }
     }
 
     /// The three words most often typed after `previous`, topped up with the most often
@@ -1082,9 +1120,36 @@ final class SuggestionBar: UIView {
         }
     }
 
-    /// The keyboard goes (#612): Rewrite's panel closes, its request with it.
+    /// The keyboard shows (#659): the memory re-read, the group's with Full Access
+    /// (`TypingMemory.reload`), and with Full Access the Paste offer's poll started.
+    func appear() {
+        suggestions.memory.reload(shared: shared())
+        poll?.invalidate()
+        poll = nil
+        guard let pb = suggestions.pasteboard() else { return }
+        seenClip = pb.changeCount
+        poll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkClip() }
+        }
+    }
+
+    /// The keyboard goes (#612): Rewrite's panel closes, its request with it; the poll stops (#659).
     func disappear() {
         if rewritePanel != nil { cover(nil) }
+        poll?.invalidate()
+        poll = nil
+    }
+
+    /// Each second while the keyboard shows with Full Access (`appear`, #659): a copy on the
+    /// Mac (Universal Clipboard) or anywhere else shows Paste now, not at the next key. Reverses
+    /// #601's no timer. Reads only `changeCount`: no Allow Paste, and an Int compare when
+    /// unchanged. The refresh skips auto-save, which reads the clip: that waits for the next key.
+    private(set) var poll: Timer?
+    private var seenClip: Int?
+    func checkClip() {
+        guard let n = suggestions.pasteboard()?.changeCount, n != seenClip else { return }
+        seenClip = n
+        refresh(saving: false)
     }
 
     /// The clipboard history's panel over the keys, read afresh, or the keys back (#597).
@@ -1905,10 +1970,10 @@ final class SuggestionBar: UIView {
     }
 
     /// Recompute from the text: after each key, and when the host changes the text or
-    /// the selection.
-    func refresh() {
+    /// the selection; `saving: false` from the clip poll (`checkClip`).
+    func refresh(saving: Bool = true) {
         assert(Thread.isMainThread, "the bar is main-only")   // debug only: an off-main caller trips in tests and QA
-        saveCopy()
+        if saving { saveCopy() }
         suggestions.pasteFits = traitCollection.verticalSizeClass != .compact
         suggestions.toolbarShown = toolbar != nil && showsToolbar
         guard let doc = keyboard?.target as? UITextDocumentProxy else { return show(state) }

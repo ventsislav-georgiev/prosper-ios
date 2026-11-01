@@ -1123,4 +1123,143 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(bar.state, .autofill)
         XCTAssertTrue(bar.pasteControl.isHidden)
     }
+
+    // MARK: Paste poll (#659)
+
+    /// Each second while shown with Full Access: a changed `changeCount` refreshes the bar, so a
+    /// Mac copy shows Paste before the next key; unchanged, nothing. Auto-save's read waits.
+    func testThePollRefreshesOnlyOnANewClipAndNeverReadsIt() throws {
+        let pb = try clipboard()
+        let (kb, bar, doc) = pasteRig(pb)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("SuggestionsTests-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let history = ClipboardHistory(dir: dir)
+        var reads = 0
+        history.read = { reads += 1; return ($0.string, nil) }
+        bar.history = history
+        bar.suggestions.settings.saveCopies = true
+        bar.appear()
+        defer { bar.disappear() }
+        XCTAssertNotEqual(bar.state, .paste, "nothing copied")
+        pb.string = "from the Mac"
+        XCTAssertNotEqual(bar.state, .paste, "not till the poll")
+        bar.checkClip()
+        XCTAssertEqual(bar.state, .paste, "the poll's refresh")
+        doc.text = "abc"   // a refresh now would leave Paste: mid-word
+        bar.checkClip()
+        XCTAssertEqual(bar.state, .paste, "unchanged: no refresh")
+        XCTAssertEqual(reads, 0, "the poll reads only changeCount")
+        pb.string = "again"
+        bar.checkClip()
+        XCTAssertNotEqual(bar.state, .paste, "a new clip refreshes again")
+        XCTAssertEqual(reads, 0)
+        withExtendedLifetime(kb) { bar.refresh() }
+        XCTAssertEqual(reads, 1, "auto-save at the next key's refresh, as before")
+    }
+
+    func testNoPollWithoutFullAccessAndItStopsOnDisappear() throws {
+        let pb = try clipboard()
+        var access = false
+        let (_, bar, _) = pasteRig(pb, fullAccess: { access })
+        bar.appear()
+        XCTAssertNil(bar.poll, "no Full Access: no timer")
+        access = true
+        bar.appear()
+        let poll = try XCTUnwrap(bar.poll)
+        XCTAssertEqual(poll.timeInterval, 1)
+        XCTAssertTrue(poll.isValid)
+        bar.appear()
+        XCTAssertFalse(poll.isValid, "one timer: a second appear replaces it")
+        let again = try XCTUnwrap(bar.poll)
+        bar.disappear()
+        XCTAssertNil(bar.poll)
+        XCTAssertFalse(again.isValid, "stopped on disappear")
+    }
+
+    // MARK: Shared memory (#659)
+
+    /// A throwaway suite, removed after the test.
+    private func store(_ name: String) throws -> UserDefaults {
+        let s = "\(suite).\(name)"
+        let d = try XCTUnwrap(UserDefaults(suiteName: s))
+        addTeardownBlock { d.removePersistentDomain(forName: s) }
+        return d
+    }
+
+    /// The first reload on the group: its own words after the group's, the oldest past the cap
+    /// going; each pair the higher count, then the pair cap; once only; its own data kept.
+    func testTheFirstGroupReloadMergesItsOwnOnce() throws {
+        let group = try store("group")
+        group.set(["x", "b", "y"], forKey: TypingMemory.wordsKey)
+        group.set(["a b": 1, "x y": 5, "e f": 1], forKey: TypingMemory.pairsKey)
+        defaults.set(["a", "b", "c"], forKey: TypingMemory.wordsKey)
+        defaults.set(["a b": 3, "c d": 1, "x y": 2], forKey: TypingMemory.pairsKey)
+        let m = TypingMemory(defaults: defaults, wordCap: 4, pairCap: 3)
+        m.reload(shared: group)
+        XCTAssertTrue(m.store === group)
+        XCTAssertEqual(m.words, ["b", "y", "a", "c"], "the group's order, its own appended, x the oldest gone")
+        XCTAssertEqual(m.known, ["b", "y", "a", "c"])
+        XCTAssertEqual(m.pairs, ["a b": 3, "x y": 5], "the max of each, then capped: the rarest go")
+        XCTAssertEqual(group.stringArray(forKey: TypingMemory.wordsKey), m.words, "written to the group")
+        XCTAssertEqual(group.dictionary(forKey: TypingMemory.pairsKey) as? [String: Int], m.pairs)
+        XCTAssertTrue(defaults.bool(forKey: TypingMemory.mergedKey))
+        XCTAssertEqual(defaults.stringArray(forKey: TypingMemory.wordsKey), ["a", "b", "c"], "its own kept")
+        XCTAssertEqual(defaults.dictionary(forKey: TypingMemory.pairsKey) as? [String: Int], ["a b": 3, "c d": 1, "x y": 2])
+
+        defaults.set(["a", "b", "c", "z"], forKey: TypingMemory.wordsKey)   // learned without Full Access since
+        m.reload(shared: group)
+        XCTAssertEqual(m.words, ["b", "y", "a", "c"], "merged once only")
+    }
+
+    /// Without Full Access: the extension's own, as before, and nothing merged.
+    func testNoGroupKeepsItsOwnStore() throws {
+        defaults.set(["mine"], forKey: TypingMemory.wordsKey)
+        let m = TypingMemory(defaults: defaults)
+        m.reload(shared: nil)
+        XCTAssertTrue(m.store === defaults)
+        XCTAssertEqual(m.words, ["mine"])
+        XCTAssertFalse(defaults.bool(forKey: TypingMemory.mergedKey))
+        m.learn("more")
+        XCTAssertEqual(defaults.stringArray(forKey: TypingMemory.wordsKey), ["mine", "more"])
+    }
+
+    /// The EN and BG keyboards on one group: the one that shows re-reads first, so it doesn't
+    /// rewrite the key without what the other learned; the clips retired or saved are one.
+    func testTwoKeyboardsOnTheGroupKeepEachOthersWords() throws {
+        let group = try store("group")
+        let en = TypingMemory(defaults: defaults), bg = TypingMemory(defaults: try store("bg"))
+        en.reload(shared: group)
+        bg.reload(shared: group)
+        en.learn("alpha")
+        en.record("alpha", "beta")
+        bg.reload(shared: group)   // its appear
+        bg.learn("gamma")
+        bg.record("alpha", "beta")
+        XCTAssertEqual(group.stringArray(forKey: TypingMemory.wordsKey), ["alpha", "gamma"])
+        XCTAssertEqual(group.dictionary(forKey: TypingMemory.pairsKey) as? [String: Int], ["alpha beta": 2])
+        en.reload(shared: group)
+        XCTAssertEqual(en.known, ["alpha", "gamma"])
+
+        en.retiredClip = 7
+        en.savedClip = 8
+        XCTAssertEqual(bg.retiredClip, 7, "retired on one, not offered by the other")
+        XCTAssertEqual(bg.savedClip, 8, "auto-save doesn't ask twice")
+        XCTAssertNil(defaults.object(forKey: TypingMemory.clipKey), "in the group, not its own")
+    }
+
+    /// The bar's appear reloads from `shared`: the group with Full Access, else its own.
+    func testAppearReloadsFromTheSharedStore() throws {
+        let group = try store("group")
+        group.set(["shared"], forKey: TypingMemory.wordsKey)
+        let (_, bar, _) = rig()
+        var access = true
+        bar.shared = { access ? group : nil }
+        bar.appear()
+        XCTAssertTrue(bar.suggestions.memory.store === group)
+        XCTAssertTrue(bar.suggestions.memory.known.contains("shared"))
+        access = false
+        bar.appear()
+        XCTAssertTrue(bar.suggestions.memory.store === defaults)
+        bar.disappear()
+    }
 }

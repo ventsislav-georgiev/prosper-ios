@@ -57,6 +57,8 @@ final class KeyboardViewController: UIInputViewController {
         bar.quicklinks = QuicklinkStore.shared()
         // The stored settings before attach's first refresh: Save Copies is on by default (#601).
         bar.suggestions.settings = KeyboardSettings.current(fullAccess: hasFullAccess)
+        // The memory's store before attach's first refresh too: the clips auto-save checks (#659).
+        bar.suggestions.memory.reload(shared: bar.shared())
         // iOS 26's speech engines only; the app has no fallback below it.
         if #available(iOS 26, *), let store = Dictation.Store.shared() {
             let dictation = DictationClient(store: store)
@@ -97,6 +99,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.showClips(false)   // the keys first, as Gboard: a panel reads afresh at its key
         bar.toolbarOverAutofill = false   // AutoFill first in a new field (#623)
         bar.dictation?.appear()
+        bar.appear()   // what the other Prosper keyboard learned, and the Paste poll (#659)
         sync()
     }
 
