@@ -24,6 +24,25 @@ struct EmojiRecents: Equatable {
     static func store(fullAccess: Bool) -> UserDefaults? { fullAccess ? KeyboardSettings.store() : .standard }
 }
 
+/// The skin tone last picked from the strip for each emoji taking one (#667), 1...5 light to
+/// dark, by the base (`EmojiPicker.toneable`'s values); the default isn't kept. In Recents'
+/// store, under its Full Access gating, so both keyboards share them as they do Recents.
+struct EmojiTones: Equatable {
+    static let key = "keyboard.emojiTones"
+    private(set) var tone: [String: Int]
+
+    init(_ tone: [String: Int] = [:]) { self.tone = tone.filter { (1...5).contains($0.value) } }
+
+    mutating func set(_ base: String, _ t: Int) { tone[base] = t == 0 ? nil : t }
+    /// `e` in its remembered tone, or itself.
+    func apply(_ e: String) -> String { tone[e].map { EmojiPicker.toned(e, $0) } ?? e }
+
+    static func load(fullAccess: Bool = true) -> EmojiTones {
+        EmojiTones(EmojiRecents.store(fullAccess: fullAccess)?.dictionary(forKey: key) as? [String: Int] ?? [:])
+    }
+    func save(fullAccess: Bool = true) { EmojiRecents.store(fullAccess: fullAccess)?.set(tone, forKey: Self.key) }
+}
+
 /// The emoji key's page (`TerminalKeyboard.Key.emoji`) in the app's keyboard, whose ASCII
 /// field leaves out iOS's own emoji, and the toggle menu's Emoji in the extension's, which
 /// can't switch to iOS's (#629). It takes the
@@ -36,8 +55,12 @@ struct EmojiRecents: Equatable {
 /// Over the grid, a search row: #665's filter mode, matching CLDR's words (`EmojiKeywords`,
 /// #666), its results two rows of cells drawn as the grid's.
 ///
+/// A hold on an emoji taking a skin tone shows a strip over it of the default and the five
+/// tones (#667): slide to one and lift, or lift on the emoji and tap one. The pick is typed
+/// and remembered (`EmojiTones`): the groups, Frequent and search show that tone after.
+///
 /// ponytail: delete doesn't repeat while held. Add it if the picker sees heavy use.
-final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDelegate {
+final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDelegate, UIGestureRecognizerDelegate {
     typealias Style = TerminalKeyboard.Style
     /// What a cell types, delete, and ABC: the keyboard's.
     var pick: (String) -> Void = { _ in }
@@ -65,6 +88,35 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     static let symbols = ["clock"] + native.map(\.symbol)
     /// The emoji newer than 14.0 (`EmojiData.newer`) this iOS's Apple Color Emoji lacks.
     static let undrawable = Set(EmojiData.newer.flatMap { words($0.emoji) }.filter { !draws($0) })
+    /// The emoji taking a skin tone (`EmojiData.toned`, #667), by `bare`: those whose toned
+    /// forms this iOS draws.
+    static let toneable: [String: String] = Dictionary(uniqueKeysWithValues: (words(EmojiData.toned)
+        + EmojiData.newerToned.flatMap { words($0.emoji) }.filter { draws(toned($0, 1)) }).map { (bare($0), $0) })
+    /// The strip's names, the default's and each tone's, as VoiceOver speaks them.
+    static let toneNames = ["default skin tone", "light skin tone", "medium-light skin tone", "medium skin tone",
+                            "medium-dark skin tone", "dark skin tone"]
+    /// `e` without U+FE0F and skin tones: 👍🏽 and 👍 alike.
+    static func bare(_ e: String) -> String {
+        String(String.UnicodeScalarView(e.unicodeScalars.filter { $0 != "\u{FE0F}" && !(0x1F3FB...0x1F3FF).contains($0.value) }))
+    }
+    /// The emoji `e` is, untoned, when it takes a tone; recents' toned ones too.
+    static func toneBase(_ e: String) -> String? { toneable[bare(e)] }
+    /// `base` in tone `t`, 1...5 light to dark, or itself for 0: the tone after the first
+    /// scalar, and after the last where that's a modifier base too, one tone for every
+    /// person (🧑🏽‍🤝‍🧑🏽); a U+FE0F after either dropped. As the generator derives, and checks against
+    /// emoji-test.txt. ponytail: mixed per-person tones (🧑🏻‍🤝‍🧑🏿) aren't offered.
+    nonisolated static func toned(_ base: String, _ t: Int) -> String {
+        guard t > 0 else { return base }
+        let tone = Unicode.Scalar(0x1F3FA + UInt32(t))!
+        let scalars = Array(base.unicodeScalars)
+        var out = String.UnicodeScalarView()
+        for (i, c) in scalars.enumerated() {
+            if c == "\u{FE0F}", let last = out.last, (0x1F3FB...0x1F3FF).contains(last.value) { continue }
+            out.append(c)
+            if i == 0 || (i == scalars.count - 1 && c.properties.isEmojiModifierBase) { out.append(tone) }
+        }
+        return String(out)
+    }
     private static func words(_ s: String) -> [String] { s.split(whereSeparator: \.isWhitespace).map(String.init) }
 
     /// Whether Apple Color Emoji itself draws `e` as one glyph: a codepoint it lacks shapes
@@ -79,6 +131,13 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         return glyph != 0 && CTFontCopyPostScriptName(used as! CTFont) as String == "AppleColorEmoji"
     }
     private(set) var recents = EmojiRecents()
+    /// The remembered skin tones (#667), read with recents.
+    private(set) var tones = EmojiTones()
+    /// The tone strip, over a shield that closes it on a touch elsewhere, while it shows (#667).
+    private(set) var toneStrip: UIView?
+    private var shield: UIControl?
+    /// The emoji the strip tones and its cell, in this view's coordinates.
+    private var held: (base: String, cell: CGRect)?
     /// Every group, or Recents and `frequent` only (#629): the system keyboards' when the
     /// picker can't have a font of its own (`makeFont`), as the shared one's glyphs outgrow
     /// an extension's memory. The app's keyboard has the memory.
@@ -149,6 +208,9 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         grid.register(Cell.self, forCellWithReuseIdentifier: "e")
         grid.dataSource = self
         grid.delegate = self
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(hold(_:)))
+        hold.delegate = self
+        grid.addGestureRecognizer(hold)
     }
 
     private func button(title: String? = nil, image: String? = nil, label: String, fill: UIColor? = nil,
@@ -172,7 +234,9 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
 
     /// Recents read again, from what this or another keyboard typed since.
     func reload() {
+        closeTones()
         recents = EmojiRecents.load(fullAccess: fullAccess)
+        tones = EmojiTones.load(fullAccess: fullAccess)
         sections = [recents.emoji] + (full ? Self.groups : [Self.frequent])
         grid.reloadData()
     }
@@ -191,6 +255,7 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     /// recents first, ranked by `keywords` in the keyboard's languages; a result types as a cell.
     func search(_ on: Bool) {
         guard on || filter != nil else { return }
+        closeTones()
         filter?.removeFromSuperview()
         filter = nil
         keywords = nil
@@ -204,7 +269,7 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
             setUp(results)
             let f = PanelFilter(placeholder: searchRow.accessibilityLabel ?? "", layout: layout, fields: all.map { [$0] },
                                 grid: results) { [weak self] in self?.keywords?.rank($0, all) ?? [] }
-            f.pick = { [weak self] in self?.choose(all[$0]) }
+            f.pick = { [weak self] i in self.map { $0.choose($0.tones.apply(all[i])) } }
             f.onDone = { [weak self] in self?.search(false) }
             f.frame = bounds
             f.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -241,6 +306,7 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         if flow.itemSize.height != side {
             flow.itemSize = CGSize(width: side, height: side)
             flow.invalidateLayout()
+            closeTones()
             renew(size: side * 0.7)
             grid.reloadData()
         }
@@ -251,22 +317,31 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     }
     func numberOfSections(in collectionView: UICollectionView) -> Int { collectionView === grid ? sections.count : 1 }
 
-    /// The grid's cell's emoji, or a search result's (#666).
-    private func emoji(_ collectionView: UICollectionView, _ indexPath: IndexPath) -> String {
-        guard collectionView !== grid, let filter else { return sections[indexPath.section][indexPath.item] }
-        return filter.fields[filter.matches[indexPath.item]][0]
+    /// The grid's cell's emoji, or a search result's (#666), as it shows: in its remembered
+    /// tone (#667), but in Recents as it was typed.
+    func emoji(_ collectionView: UICollectionView, _ indexPath: IndexPath) -> String {
+        guard collectionView !== grid, let filter else {
+            let e = sections[indexPath.section][indexPath.item]
+            return indexPath.section == 0 ? e : tones.apply(e)
+        }
+        return tones.apply(filter.fields[filter.matches[indexPath.item]][0])
     }
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "e", for: indexPath) as! Cell
         let e = emoji(collectionView, indexPath)
+        cell.emoji.image = draw(e)
+        cell.accessibilityLabel = e   // VoiceOver speaks its name
+        return cell
+    }
+
+    /// `e`'s image in `font`, a fresh one past `glyphCap` emoji.
+    private func draw(_ e: String) -> UIImage {
         if drawn.insert(e).inserted, drawn.count > Self.glyphCap {
             renew(size: font.pointSize)
             drawn = [e]
         }
-        cell.emoji.image = Self.image(e, font: font)
-        cell.accessibilityLabel = e   // VoiceOver speaks its name
-        return cell
+        return Self.image(e, font: font)
     }
 
     /// `e` drawn in `font`, sized to the union of its advance and its ink: some glyphs (🫡)
@@ -318,6 +393,118 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         recents.add(e)
         recents.save(fullAccess: fullAccess)
         pick(e)
+    }
+
+    // MARK: Skin tones (#667)
+
+    @objc private func hold(_ g: UILongPressGestureRecognizer) {
+        guard let cv = g.view as? UICollectionView else { return }
+        hold(g.state, at: g.location(in: self), in: cv)
+    }
+
+    /// A hold begins only on an emoji taking a tone, and never while the grid scrolls; on
+    /// any other the cell's tap stays as it was.
+    override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        guard g is UILongPressGestureRecognizer, let cv = g.view as? UICollectionView else {
+            return super.gestureRecognizerShouldBegin(g)
+        }
+        return holds(at: g.location(in: cv), in: cv)
+    }
+
+    func holds(at point: CGPoint, in cv: UICollectionView) -> Bool {
+        guard !cv.isDragging, !cv.isDecelerating, let ip = cv.indexPathForItem(at: point) else { return false }
+        return Self.toneBase(emoji(cv, ip)) != nil
+    }
+
+    /// The hold, `point` in this view's coordinates: it shows the strip, lights the tone under
+    /// the finger, and types it on the lift; a lift on the emoji keeps the strip for a tap,
+    /// anywhere else closes it.
+    func hold(_ state: UIGestureRecognizer.State, at point: CGPoint, in cv: UICollectionView) {
+        switch state {
+        case .began:
+            guard let ip = cv.indexPathForItem(at: convert(point, to: cv)), let base = Self.toneBase(emoji(cv, ip)),
+                  let cell = cv.layoutAttributesForItem(at: ip)?.frame else { return }
+            showTones(base, over: cv.convert(cell, to: self))
+        case .changed:
+            let i = toneItem(at: point)
+            for (j, b) in (toneStrip?.subviews ?? []).enumerated() { b.backgroundColor = j == i ? Style.special : nil }
+        case .ended:
+            if let i = toneItem(at: point) {
+                pickTone(i)
+            } else if held?.cell.contains(point) == true {
+                UIAccessibility.post(notification: .layoutChanged, argument: toneStrip?.subviews.first)
+            } else {
+                closeTones()
+            }
+        default:
+            closeTones()
+        }
+    }
+
+    /// Where the strip of `size` goes for the cell at `cell` (#667): centred over it, slid
+    /// sideways to stay inside `bounds` at either edge, and under the cell where there's no
+    /// room above, as an extension can't draw above its view: never over the cell, where a
+    /// lift without a slide would type the tone under the finger.
+    static func stripFrame(over cell: CGRect, size: CGSize, in bounds: CGRect) -> CGRect {
+        let above = cell.minY - size.height
+        return CGRect(x: min(max(cell.midX - size.width / 2, bounds.minX), bounds.maxX - size.width),
+                      y: above >= bounds.minY ? above : min(cell.maxY, bounds.maxY - size.height),
+                      width: size.width, height: size.height)
+    }
+
+    /// The strip over the cell at `cell`: the default and the five tones, a cell's size each,
+    /// drawn as the cells are, in the key preview's look (`TerminalKeyboard.KeyPreview`).
+    func showTones(_ base: String, over cell: CGRect) {
+        closeTones()
+        let shield = UIControl(frame: bounds)
+        shield.addAction(UIAction { [weak self] _ in self?.closeTones() }, for: .touchDown)
+        let side = cell.height
+        let strip = UIView(frame: Self.stripFrame(over: cell, size: CGSize(width: side * 6, height: side), in: bounds))
+        strip.backgroundColor = Style.key
+        strip.layer.cornerRadius = 10
+        strip.layer.shadowColor = UIColor.black.cgColor
+        strip.layer.shadowOpacity = 0.45
+        strip.layer.shadowRadius = 3
+        strip.layer.shadowOffset = CGSize(width: 0, height: 1)
+        for t in 0...5 {
+            let b = UIButton(type: .custom)
+            b.frame = CGRect(x: side * CGFloat(t), y: 0, width: side, height: side)
+            b.setImage(draw(Self.toned(base, t)), for: .normal)
+            b.layer.cornerRadius = 6
+            b.accessibilityLabel = Self.toneNames[t]
+            b.accessibilityTraits = .keyboardKey
+            b.addAction(UIAction { [weak self] _ in self?.pickTone(t) }, for: .touchUpInside)
+            strip.addSubview(b)
+        }
+        shield.addSubview(strip)
+        addSubview(shield)
+        self.shield = shield
+        toneStrip = strip
+        held = (base, cell)
+    }
+
+    func closeTones() {
+        shield?.removeFromSuperview()
+        shield = nil
+        toneStrip = nil
+        held = nil
+    }
+
+    /// The strip's item under `point`, in this view's coordinates.
+    private func toneItem(at point: CGPoint) -> Int? {
+        guard let strip = toneStrip, let shield, strip.frame.contains(convert(point, to: shield)) else { return nil }
+        return min(5, Int((convert(point, to: strip).x / strip.bounds.height).rounded(.down)))
+    }
+
+    /// Tone `t` of the held emoji typed and remembered: the grids show it from now.
+    private func pickTone(_ t: Int) {
+        guard let base = held?.base else { return }
+        closeTones()
+        tones.set(base, t)
+        tones.save(fullAccess: fullAccess)
+        grid.reloadData()
+        filter?.grid?.reloadData()
+        choose(Self.toned(base, t))
     }
 
     private final class Cell: UICollectionViewCell {

@@ -2,6 +2,7 @@ import XCTest
 import UIKit
 import CoreText
 import Accelerate
+import CryptoKit
 @testable import Prosper
 
 /// The emoji key and its picker (#515): the key among Keys Beside Space, the picker in
@@ -306,6 +307,7 @@ final class EmojiPickerTests: XCTestCase {
         }
         XCTAssertEqual(seen.subtracting(EmojiPicker.groups.joined()), [], "only emoji")
         XCTAssertEqual(Set(EmojiPicker.groups.joined()).subtracting(seen), [], "every group drawn")
+        print("#664 groups: peak \(peak) MB")
         XCTAssertLessThan(peak, 15)
     }
 
@@ -324,7 +326,7 @@ final class EmojiPickerTests: XCTestCase {
             return Int(sum)
         }
         var clipped: [String] = []
-        for group in EmojiPicker.groups {
+        for group in EmojiPicker.groups + [Self.tonedForms] {   // the strip's tones too (#667)
             let font = try XCTUnwrap(EmojiPicker.emojiFont(size: 30))
             for e in group {
                 let drawn = EmojiPicker.image(e, font: font)
@@ -373,7 +375,7 @@ final class EmojiPickerTests: XCTestCase {
             return !opaque.isEmpty && opaque.allSatisfy { i in (0..<3).allSatisfy { abs(Int(p[i + $0]) - want[$0]) <= 8 } }
         }
         var notColourEmoji: [String] = [], outlines: [String] = []
-        for group in EmojiPicker.groups {
+        for group in EmojiPicker.groups + [Self.tonedForms] {   // the strip's tones too (#667)
             let font = try XCTUnwrap(EmojiPicker.emojiFont(size: 30)) as CTFont
             for e in group {
                 let own = runs(e, font)
@@ -540,6 +542,216 @@ final class EmojiPickerTests: XCTestCase {
         }
         print("#666 results: \(seen.count) drawn, peak \(peak) MB")
         XCTAssertEqual(seen.count, filter.matches.count, "every result drawn")
+        XCTAssertLessThan(peak, 15)
+    }
+
+    // MARK: Skin tones (#667)
+
+    /// Each tone-taking emoji's five tones, light to dark.
+    static let tonedForms = EmojiPicker.toneable.values.sorted().flatMap { b in (1...5).map { EmojiPicker.toned(b, $0) } }
+
+    /// `e`'s cell in the groups (not Recents) scrolled into view, and its centre in the picker's coordinates.
+    private func centre(_ picker: EmojiPicker, _ e: String) throws -> (IndexPath, CGPoint) {
+        let s = try XCTUnwrap(picker.sections.indices.dropFirst().first { picker.sections[$0].contains(e) }, e)
+        let ip = IndexPath(item: try XCTUnwrap(picker.sections[s].firstIndex(of: e)), section: s)
+        picker.grid.layoutIfNeeded()
+        picker.grid.scrollToItem(at: ip, at: .centeredHorizontally, animated: false)
+        picker.grid.layoutIfNeeded()
+        let f = try XCTUnwrap(picker.grid.layoutAttributesForItem(at: ip)).frame
+        return (ip, picker.grid.convert(CGPoint(x: f.midX, y: f.midY), to: picker))
+    }
+
+    /// The centre of the strip's item `t` (0 the default), in the picker's coordinates.
+    private func item(_ picker: EmojiPicker, _ t: Int) throws -> CGPoint {
+        let b = try XCTUnwrap(picker.toneStrip?.subviews[t])
+        return b.convert(CGPoint(x: b.bounds.midX, y: b.bounds.midY), to: picker)
+    }
+
+    /// The generator marks the emoji taking a tone: 👍 and 🤝 do, 😀 doesn't, and the
+    /// multi-person ones take one tone for everyone. Each one's five, derived here, are the
+    /// uniform toned forms emoji-test.txt has fully-qualified (the generator hashed those),
+    /// and every one offered this iOS draws as one glyph.
+    func testToneData() {
+        let base = EmojiPicker.toneBase
+        XCTAssertEqual(base("👍"), "👍")
+        XCTAssertEqual(base("🤝"), "🤝")
+        XCTAssertNil(base("😀"))
+        XCTAssertNil(base("❤️"))
+        XCTAssertNil(base("👪"), "a family takes no tone")
+        for e in ["🧑‍🤝‍🧑", "👫", "💏", "👩‍❤️‍👨", "🧑‍⚕️", "⛹️‍♀️", "☝️"] { XCTAssertEqual(base(e), e) }
+        XCTAssertEqual(base("👍🏽"), "👍", "a toned recent's base")
+        XCTAssertEqual(base("\u{261D}\u{1F3FB}"), "☝️", "its U+FE0F back")
+        XCTAssertEqual(EmojiPicker.toned("👍", 0), "👍")
+        XCTAssertEqual(EmojiPicker.toned("👍", 3), "👍🏽")
+        XCTAssertEqual(EmojiPicker.toned("☝️", 1), "\u{261D}\u{1F3FB}", "U+FE0F dropped")
+        XCTAssertEqual(EmojiPicker.toned("⛹️‍♀️", 2), "\u{26F9}\u{1F3FC}\u{200D}\u{2640}\u{FE0F}")
+        XCTAssertEqual(EmojiPicker.toned("🧑‍🤝‍🧑", 5), "🧑🏿‍🤝‍🧑🏿", "every person")
+        XCTAssertEqual(EmojiPicker.toned("🤝", 4), "🤝🏾")
+
+        let all = (EmojiData.toned.split(whereSeparator: \.isWhitespace) + EmojiData.newerToned.flatMap { $0.emoji.split(separator: " ") }).map(String.init)
+        XCTAssertGreaterThan(all.count, 300)
+        let forms = all.flatMap { b in (1...5).map { EmojiPicker.toned(b, $0) } }
+        let hash = SHA256.hash(data: Data(forms.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(hash, EmojiData.tonedHash, "every base x tone is a fully-qualified emoji-test.txt sequence")
+        XCTAssertEqual(Set(forms).count, forms.count)
+        // Drawn as its base is, the tone in its glyphs, not a swatch beside them: as many glyphs
+        // (a couple's ZWJ forms are two halves, toned or not), none of them .notdef.
+        let font = CTFontCreateWithName("AppleColorEmoji" as CFString, 20, nil)
+        func glyphs(_ e: String) -> [CGGlyph] {
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: e, attributes: [.font: font]))
+            return (CTLineGetGlyphRuns(line) as? [CTRun] ?? []).flatMap { run in
+                var g = [CGGlyph](repeating: 0, count: CTRunGetGlyphCount(run))
+                CTRunGetGlyphs(run, CFRange(), &g)
+                return g
+            }
+        }
+        let undrawn = EmojiPicker.toneable.values.flatMap { b in (1...5).map { EmojiPicker.toned(b, $0) }.filter {
+            glyphs($0).count != glyphs(b).count || glyphs($0).contains(0)
+        } }
+        XCTAssertEqual(undrawn, [], "this iOS draws every tone it offers")
+        XCTAssertEqual(Set(EmojiPicker.toneable.values).subtracting(EmojiPicker.groups.joined()), [], "each in the grid")
+        XCTAssertGreaterThan(EmojiPicker.toneable.count, 300)
+    }
+
+    /// Held, 👍 shows the default and the five tones over its cell, named; a slide to medium
+    /// and the lift types 👍🏽 and remember it: the grid and search show it, a tap types it,
+    /// it reads back from the store, Recents keep what was typed. A lift on the cell keeps
+    /// the strip for a tap, and the default forgets the tone; a lift elsewhere closes it.
+    /// 😀 takes no hold.
+    func testAPickedToneIsTypedRememberedAndShown() throws {
+        let kb = TerminalKeyboard()
+        let spy = SpyInput()
+        kb.target = spy
+        _ = laidOut(kb)
+        kb.showEmoji(true)
+        kb.layoutIfNeeded()
+        let picker = try XCTUnwrap(kb.emojiPicker)
+        var (ip, p) = try centre(picker, "👍")
+        XCTAssertTrue(picker.holds(at: picker.convert(p, to: picker.grid), in: picker.grid))
+        picker.hold(.began, at: p, in: picker.grid)
+        let strip = try XCTUnwrap(picker.toneStrip)
+        XCTAssertEqual(strip.subviews.map(\.accessibilityLabel), EmojiPicker.toneNames)
+        XCTAssertEqual(strip.subviews[3].accessibilityLabel, "medium skin tone")
+        XCTAssertTrue(picker.bounds.contains(strip.convert(strip.bounds, to: picker)), "inside the picker")
+        let medium = try item(picker, 3)
+        picker.hold(.changed, at: medium, in: picker.grid)
+        XCTAssertEqual(strip.subviews[3].backgroundColor, TerminalKeyboard.Style.special, "lit under the finger")
+        picker.hold(.ended, at: medium, in: picker.grid)
+        XCTAssertEqual(spy.calls, ["👍🏽"])
+        XCTAssertNil(picker.toneStrip, "closed")
+        XCTAssertEqual(defaults.dictionary(forKey: EmojiTones.key) as? [String: Int], ["👍": 3])
+        XCTAssertEqual(defaults.stringArray(forKey: EmojiRecents.key), ["👍🏽"])
+        picker.grid.layoutIfNeeded()
+        XCTAssertEqual(picker.grid.cellForItem(at: ip)?.accessibilityLabel, "👍🏽", "the grid shows the tone")
+        picker.collectionView(picker.grid, didSelectItemAt: ip)
+        XCTAssertEqual(spy.calls.last, "👍🏽", "a tap types it")
+
+        picker.search(true)
+        let filter = try XCTUnwrap(picker.filter)
+        filter.type("+1")
+        filter.layoutIfNeeded()
+        let results = try XCTUnwrap(filter.grid)
+        results.layoutIfNeeded()
+        XCTAssertEqual(results.cellForItem(at: IndexPath(item: 0, section: 0))?.accessibilityLabel, "👍🏽", "search shows it")
+        picker.search(false)
+
+        XCTAssertEqual(EmojiTones.load().apply("👍"), "👍🏽", "read back")
+        kb.showEmoji(false)
+        kb.showEmoji(true)
+        XCTAssertEqual(picker.sections[0], ["👍🏽"], "Recents as typed")
+        XCTAssertEqual(picker.emoji(picker.grid, ip), "👍🏽", "remembered on the next open")
+
+        (ip, p) = try centre(picker, "👍")
+        picker.hold(.began, at: p, in: picker.grid)
+        picker.hold(.ended, at: p, in: picker.grid)
+        let kept = try XCTUnwrap(picker.toneStrip?.subviews[0] as? UIButton, "a lift on the cell keeps it")
+        kept.sendActions(for: .touchUpInside)
+        XCTAssertEqual(spy.calls.last, "👍", "the default, tapped")
+        XCTAssertEqual(defaults.dictionary(forKey: EmojiTones.key) as? [String: Int], [:], "forgotten")
+        XCTAssertEqual(picker.emoji(picker.grid, ip), "👍")
+
+        let typed = spy.calls
+        picker.hold(.began, at: p, in: picker.grid)
+        XCTAssertNotNil(picker.toneStrip)
+        picker.hold(.ended, at: CGPoint(x: p.x, y: picker.bounds.maxY - 1), in: picker.grid)
+        XCTAssertNil(picker.toneStrip, "a lift outside closes it")
+        XCTAssertEqual(spy.calls, typed, "typing nothing")
+
+        let (_, smile) = try centre(picker, "😀")
+        XCTAssertFalse(picker.holds(at: picker.convert(smile, to: picker.grid), in: picker.grid), "😀 takes no hold")
+    }
+
+    /// In the system keyboard's picker (its Frequent page, no font of its own) without Full
+    /// Access, tones are picked and remembered where Recents go then: the extension's own
+    /// defaults, not the App Group.
+    func testTonesWithoutFullAccessFollowRecents() throws {
+        let standard = UserDefaults.standard
+        let saved = [EmojiTones.key, EmojiRecents.key].map { ($0, standard.object(forKey: $0)) }
+        addTeardownBlock { for (k, v) in saved { standard.set(v, forKey: k) } }
+        let make = EmojiPicker.makeFont
+        EmojiPicker.makeFont = { _ in nil }
+        defer { EmojiPicker.makeFont = make }
+        let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight), inApp: false)
+        XCTAssertFalse(picker.full, "the system keyboard's page")
+        picker.fullAccess = false
+        picker.reload()
+        picker.layoutIfNeeded()
+        var typed: [String] = []
+        picker.pick = { typed.append($0) }
+        let (_, p) = try centre(picker, "🤝")
+        picker.hold(.began, at: p, in: picker.grid)
+        picker.hold(.ended, at: try item(picker, 5), in: picker.grid)
+        XCTAssertEqual(typed, ["🤝🏿"])
+        XCTAssertNil(defaults.object(forKey: EmojiTones.key), "not the App Group")
+        XCTAssertEqual(EmojiTones.load(fullAccess: false).apply("🤝"), "🤝🏿")
+        XCTAssertEqual(standard.stringArray(forKey: EmojiRecents.key)?.first, "🤝🏿", "as Recents")
+        picker.reload()
+        XCTAssertEqual(picker.emoji(picker.grid, try centre(picker, "🤝").0), "🤝🏿", "Frequent shows it")
+    }
+
+    /// The strip stays inside the picker: centred over a middle cell, slid in at either
+    /// edge, and under a cell with no room above it, never over the cell.
+    func testToneStripStaysInsideTheBounds() {
+        let bounds = CGRect(x: 0, y: 0, width: 402, height: 200), size = CGSize(width: 240, height: 40)
+        func strip(_ x: CGFloat, _ y: CGFloat) -> CGRect {
+            EmojiPicker.stripFrame(over: CGRect(x: x, y: y, width: 40, height: 40), size: size, in: bounds)
+        }
+        XCTAssertEqual(strip(181, 100), CGRect(x: 81, y: 60, width: 240, height: 40), "centred over")
+        XCTAssertEqual(strip(0, 10), CGRect(x: 0, y: 50, width: 240, height: 40), "top left, under")
+        XCTAssertEqual(strip(362, 10), CGRect(x: 162, y: 50, width: 240, height: 40), "top right, under")
+        XCTAssertEqual(strip(181, 40), CGRect(x: 81, y: 0, width: 240, height: 40), "just room above")
+        XCTAssertEqual(strip(0, 160), CGRect(x: 0, y: 120, width: 240, height: 40), "bottom left")
+        XCTAssertEqual(strip(362, 160), CGRect(x: 162, y: 120, width: 240, height: 40), "bottom right")
+    }
+
+    /// Every tone strip shown in turn, drawn at 3x, keeps the grid's budget (#664): drawn in
+    /// the cells' font, under the same cap.
+    func testEveryToneStripDrawsWithinTheMemoryBudget() throws {
+        let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight))
+        let window = UIWindow(frame: picker.frame)
+        window.addSubview(picker)
+        window.isHidden = false
+        addTeardownBlock { window.isHidden = true }
+        picker.layoutIfNeeded()
+        picker.grid.layoutIfNeeded()
+        let attributes = try XCTUnwrap(picker.grid.layoutAttributesForItem(at: IndexPath(item: 0, section: 1)))
+        let cell = picker.grid.convert(attributes.frame, to: picker)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 3
+        let before = Self.footprint()
+        var peak = 0.0
+        for base in EmojiPicker.toneable.values.sorted() {
+            autoreleasepool {
+                picker.showTones(base, over: cell)
+                if let strip = picker.toneStrip {
+                    _ = UIGraphicsImageRenderer(size: strip.bounds.size, format: format).image { strip.layer.render(in: $0.cgContext) }
+                }
+            }
+            RunLoop.main.run(until: Date())   // a hold apiece: the closed strip's layers go as the transaction commits
+            peak = max(peak, Self.footprint() - before)
+        }
+        picker.closeTones()
+        print("#667 tone strips: \(EmojiPicker.toneable.count), peak \(peak) MB")
         XCTAssertLessThan(peak, 15)
     }
 
