@@ -1619,10 +1619,14 @@ final class SuggestionBar: UIView {
             guard !past(now()) else { return go() }
             guard let kb = self?.keyboard else { return }
             var quiet = Quiet(seen.0 + "\u{0}" + seen.1, at: kb.ticks)
+            // The same text with the caret back of where the step began: a late answer to an
+            // earlier move, no step's (#675 QA: at 1.2 s a move, the step away's for a fresh
+            // context, read as a window's end, had the caret a Character back at the text's end).
+            let behind = { (n: (String, String)) in n.0.count < seen.0.count && n.0 + n.1 == seen.0 + seen.1 }
             kb.wait({ [weak kb] in
                 let n = now()
                 let ticks = kb?.ticks ?? .max
-                guard past(n) || quiet.over(n.0 + "\u{0}" + n.1, 15, at: ticks)
+                guard past(n) || quiet.over(n.0 + "\u{0}" + n.1, 15, at: ticks) && !behind(n)
                         && (n != seen || ticks - sent > max(Self.answerPolls, kb?.lateBy ?? 0))
                 else { return false }
                 go()
@@ -1998,7 +2002,11 @@ final class SuggestionBar: UIView {
                 if now != last { changed = kb.ticks; last = now }
                 let polls = kb.ticks - (ends ? sent : landed)
                 if gaps { return kb.ticks - changed >= Self.answerGap && now != was || polls > 3 * Self.answerPolls / 2 }
-                return now != was && now.1 == was.1 || polls > waits
+                // One showing its answer to the step away still owes the step back's: as long
+                // again as that took (#675: at 0.3 s a move the wait ran out between the two, and
+                // dd's walk to the line's end, read from the step away's, went over the break).
+                let owes = now.1 != was.1 && kb.ticks - changed <= changed - sent + Self.applyTicks
+                return now != was && now.1 == was.1 || polls > waits && !owes
             }
             if answered() { return then() }
             kb.wait { guard answered() else { return false }; then(); return true }

@@ -2336,22 +2336,23 @@ final class KeyboardToolbarTests: XCTestCase {
     }
 
     /// dd and cut line on QA's blocking host, and on one showing lines before the caret and none
-    /// after the line's end (a Safari textarea's), at 0.6, 0.9 and 1.2 s a move, pressed at a
-    /// line's start, middle and end, first and mid-text: the line and its break go, the caret
+    /// after the line's end (a Safari textarea's), at 0.2 to 1.2 s a move, pressed at a line's
+    /// start, middle and end, first, mid-text and last: the line and its break go, the caret
     /// on the next line's start and the clip the line, or nothing goes, the caret where the
     /// press found it and the clip kept; never other text (#663: at 0.9 s dd on "on|e" left
-    /// "o|two").
+    /// "o|two"; #675: at 0.3 s dd on "a|" left "a\n|two", at 1.2 s on "top\none|" "top\non|e").
     func testDdAndCutLineOnAHostSlowerThanTheirWaitsTakeTheLineOrNothing() throws {
         let cases: [(String, String, String)] = [
             ("", "one\ntwo", "|two"), ("on", "e\ntwo", "|two"), ("one", "\ntwo", "|two"),
             ("top\n", "abc\nend", "top\n|end"), ("top\na", "bc\nend", "top\n|end"), ("top\nabc", "\nend", "top\n|end"),
             ("", "a\ntwo", "|two"), ("a", "\ntwo", "|two"), ("top\n", "a\nend", "top\n|end"), ("top\na", "", "top|"),
+            ("top\none", "", "top|"),
         ]
         let hosts: [(String, (Proxy) -> Void)] = [
             Self.qaHosts()[1], ("lines before", { $0.stopsAtLineEnd = true; $0.answersLate = true }),
         ]
         for (name, host) in hosts {
-            for cost in [30, 45, 60] {   // 0.6, 0.9 and 1.2 s a move
+            for cost in [10, 15, 30, 45, 60] {   // 0.2, 0.3, 0.6, 0.9 and 1.2 s a move
                 for (text, after, goes) in cases {
                     for id in ["delLine", "cutLine"] {
                         let (kb, bar, doc) = rig(text, after: after, keys: Shortcuts.hostOnly)
