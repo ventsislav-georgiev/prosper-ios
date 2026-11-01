@@ -80,8 +80,9 @@ protocol SessionTransport: AnyObject {
     /// #590: the ended sessions dch recorded, newest first, at most 50.
     func history() async throws -> [DchHistoryRow]
     /// #590: bring a recorded session back (`nil` = every one dch can take). Returns the
-    /// names it runs under: a live name comes back as a free `<name>-N`.
-    func revive(name: String?) async throws -> [String]
+    /// names it runs under: a live name comes back as a free `<name>-N`. #668: `noMessage`
+    /// relaunches without typing the resume message (dch 1.27.0, `.reviveNoMessage`).
+    func revive(name: String?, noMessage: Bool) async throws -> [String]
     /// #590: restart live sessions' agents (`nil` = all). Every name must be live, or none runs.
     func restart(names: [String]?) async throws -> [String]
     /// #590: stop live sessions; dch records them, so `revive` can bring them back.
@@ -117,7 +118,7 @@ protocol SessionTransport: AnyObject {
 /// `ops`, so no control calls these.
 extension SessionTransport {
     func history() async throws -> [DchHistoryRow] { throw TransportError.server("Not supported here.") }
-    func revive(name: String?) async throws -> [String] { throw TransportError.server("Not supported here.") }
+    func revive(name: String?, noMessage: Bool) async throws -> [String] { throw TransportError.server("Not supported here.") }
     func restart(names: [String]?) async throws -> [String] { throw TransportError.server("Not supported here.") }
     func stop(names: [String]) async throws -> [String] { throw TransportError.server("Not supported here.") }
     func library(etag: String?) async throws -> LibraryReply { throw TransportError.server("Not supported here.") }
@@ -148,6 +149,7 @@ enum SessionVerb: String {
     case clipboard     // #621: clipboard history sync, 0x15/0x16/0x22/0x23; only while the Mac's toggle is on
     case chat          // #646: local-model chat, 0x1e/0x1f; only while the Mac's model is on disk
     case commands      // #615: palette commands, 0x28/0x29; only while the Mac's toggle is on
+    case reviveNoMessage = "revive_no_message"   // #668: revive's "no_message"; only while the Mac's dch is 1.27.0+
 
     /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
     static func offered(_ ops: Any?) -> Set<SessionVerb> {

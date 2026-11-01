@@ -104,8 +104,11 @@ final class ProsperTransport: SessionTransport {
         try Self.decodeHistory(try await verb(F.history, Data(), reply: F.historyResp))
     }
 
-    func revive(name: String?) async throws -> [String] {
-        try Self.decodeNames(try await verb(F.revive, json(name.map { ["name": $0] as [String: Any] } ?? ["all": true])))
+    /// #668: "no_message" goes only as true; without it the frame is the plain revive's.
+    func revive(name: String?, noMessage: Bool = false) async throws -> [String] {
+        var o: [String: Any] = name.map { ["name": $0] } ?? ["all": true]
+        if noMessage { o["no_message"] = true }
+        return try Self.decodeNames(try await verb(F.revive, json(o)))
     }
 
     func restart(names: [String]?) async throws -> [String] {

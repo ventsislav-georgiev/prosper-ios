@@ -892,6 +892,7 @@ extension SessionVerb {
         case .clipboard: "Clipboard sync"   // #621: never shown, a sync failure is only logged
         case .chat:    "Chat"   // #646: never shown, a chat's error stays inline in the chat
         case .commands: "Commands"   // #615: never shown, a command's error stays inline
+        case .reviveNoMessage: all ? "Resume interrupted (no message)" : "Resume (no message) failed"   // #668
         }
     }
 }
@@ -944,6 +945,12 @@ extension DchHistoryRow {
         let n = rows.filter(\.takes).count
         return n > 0 ? "Resume interrupted (\(n))" : nil
     }
+
+    /// #668: "No message" beside every Resume and Resume interrupted, only while the Mac's
+    /// dch takes --no-message (1.27.0, `.reviveNoMessage`).
+    static func noMessageShown(_ ops: Set<SessionVerb>) -> Bool {
+        ops.isSuperset(of: [.revive, .reviveNoMessage])
+    }
 }
 
 /// #589: the Mac's History tab (Agent Island): ended sessions, newest first, each with
@@ -982,8 +989,17 @@ struct HistorySheet: View {
                     if running.contains("") {
                         HStack(spacing: 10) { ProgressView(); Text("Resuming…").foregroundStyle(.secondary) }
                     } else if let label = DchHistoryRow.resumeAllLabel(rows) {
-                        Button(label) { resume(nil) }
+                        let all = Button(label) { resume(nil) }
                             .accessibilityHint("Brings back the sessions that ended abnormally in the last 3 days")
+                        if DchHistoryRow.noMessageShown(ops) {
+                            // #668: side by side while they fit, else stacked; neither truncates.
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 12) { all.buttonStyle(.borderless); Spacer(minLength: 0); noMessage(nil) }
+                                VStack(alignment: .leading, spacing: 8) { all.buttonStyle(.borderless); noMessage(nil) }
+                            }
+                        } else {
+                            all
+                        }
                     }
                 }
                 if let rows, DchHistoryRow.clearShown(rows, ops: ops) {
@@ -1049,26 +1065,38 @@ struct HistorySheet: View {
             if running.contains(r.name) {
                 HStack(spacing: 6) { ProgressView(); Text("Resuming…").font(.caption).foregroundStyle(.secondary) }
             } else if canRevive {
-                Button("Resume") { resume(r.name) }.buttonStyle(.borderless)
+                // #668: "No message" under Resume keeps the row's text as wide as before.
+                VStack(alignment: ax ? .leading : .trailing, spacing: 6) {
+                    Button("Resume") { resume(r.name) }.buttonStyle(.borderless)
+                    if DchHistoryRow.noMessageShown(ops) { noMessage(r.name) }
+                }
             }
         }
         return Group {
             if ax {
                 VStack(alignment: .leading, spacing: 8) { text; action }
             } else {
-                HStack(spacing: 12) { text; Spacer(minLength: 0); action }
+                HStack(spacing: 12) { text; Spacer(minLength: 0); action.layoutPriority(1) }
             }
         }
     }
 
+    /// #668: a record's (or Resume interrupted's, nil) Resume (no message).
+    private func noMessage(_ name: String?) -> some View {
+        Button("No message") { resume(name, noMessage: true) }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(name == nil ? "Resume interrupted (no message)" : "Resume (no message)")
+            .accessibilityHint("Relaunches without typing the resume message")
+    }
+
     /// A record's Resume, or Resume interrupted (nil). Minutes, at worst: the row shows
     /// "Resuming…" meanwhile and every other row stays free.
-    private func resume(_ name: String?) {
+    private func resume(_ name: String?, noMessage: Bool = false) {
         let key = name ?? ""
         running.insert(key)
         let t = transport
         Task {
-            if let f = await Self.resume(name, on: t) { failed = f }
+            if let f = await Self.resume(name, noMessage: noMessage, on: t) { failed = f }
             running.remove(key)
             await reload()
             await changed()
@@ -1077,8 +1105,10 @@ struct HistorySheet: View {
 
     /// One revive: a record's `{"name"}`, or `{"all":true}` for nil. nil when it went
     /// through, else its alert ("Resume failed" for a name, "Resume interrupted" for all).
-    static func resume(_ name: String?, on t: SessionTransport) async -> (title: String, message: String)? {
-        await SessionListView.attempt(SessionVerb.revive.failTitle(all: name == nil), on: t) { try await $0.revive(name: name) }
+    /// #668: `noMessage` adds `"no_message":true`; no deadline, the Mac waits up to 5 min.
+    static func resume(_ name: String?, noMessage: Bool = false, on t: SessionTransport) async -> (title: String, message: String)? {
+        let verb: SessionVerb = noMessage ? .reviveNoMessage : .revive
+        return await SessionListView.attempt(verb.failTitle(all: name == nil), on: t) { try await $0.revive(name: name, noMessage: noMessage) }
     }
 
     /// #634: one swipe; its error goes up through the alert, then the history reloads.

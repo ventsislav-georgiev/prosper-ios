@@ -274,6 +274,64 @@ final class SessionVerbTests: XCTestCase {
         XCTAssertEqual(named?.message, "docs: no history record of that name")
     }
 
+    // MARK: - #668: Resume (no message), dch 1.27.0
+
+    func testReviveNoMessageIsOffered() {
+        XCTAssertTrue(SessionVerb.offered(["history", "revive", "revive_no_message"]).contains(.reviveNoMessage))
+        XCTAssertFalse(SessionVerb.offered(["history", "revive"]).contains(.reviveNoMessage))
+        XCTAssertFalse(SessionVerb.menuShown([.reviveNoMessage, .revive]), "no ⋯ item of its own")
+    }
+
+    /// "no_message" goes only as true; without it the frame's bytes are the plain revive's.
+    func testReviveNoMessageFrames() async throws {
+        func bytes(_ got: Box<(UInt8, Data)?>) -> String? { got.v.map { String(decoding: $0.1, as: UTF8.self) } }
+        let (one, got1, l1) = try await fakeMac(0x14, #"{"names":["docs"]}"#)
+        defer { l1.cancel() }
+        let named = await HistorySheet.resume("docs", noMessage: true, on: one)
+        XCTAssertNil(named)
+        XCTAssertEqual(sent(got1).0, 0x0c)
+        XCTAssertEqual(sent(got1).1, ["name": "docs", "no_message": true])
+        XCTAssertTrue(bytes(got1)?.contains(#""no_message":true"#) == true, "a JSON bool, not 1")
+
+        let (all, got2, l2) = try await fakeMac(0x14, #"{"names":[]}"#)
+        defer { l2.cancel() }
+        let none = await HistorySheet.resume(nil, noMessage: true, on: all)
+        XCTAssertNil(none)
+        XCTAssertEqual(sent(got2).1, ["all": true, "no_message": true])
+        XCTAssertTrue(bytes(got2)?.contains(#""no_message":true"#) == true)
+
+        let (plain, got3, l3) = try await fakeMac(0x14, #"{"names":["docs"]}"#)
+        defer { l3.cancel() }
+        _ = await HistorySheet.resume("docs", on: plain)
+        XCTAssertEqual(bytes(got3), #"{"name":"docs"}"#, "no key at all without it")
+
+        let (plainAll, got4, l4) = try await fakeMac(0x14, #"{"names":[]}"#)
+        defer { l4.cancel() }
+        _ = try await plainAll.revive(name: nil, noMessage: false)
+        XCTAssertEqual(bytes(got4), #"{"all":true}"#)
+    }
+
+    func testNoMessageShownOnlyWithTheOp() {
+        XCTAssertFalse(DchHistoryRow.noMessageShown([]), "an older Mac")
+        XCTAssertFalse(DchHistoryRow.noMessageShown([.history, .revive, .pin, .forget]), "dch under 1.27.0")
+        XCTAssertFalse(DchHistoryRow.noMessageShown([.reviveNoMessage]), "never without Resume itself")
+        XCTAssertTrue(DchHistoryRow.noMessageShown(SessionVerb.offered(["history", "revive", "revive_no_message"])))
+    }
+
+    func testReviveNoMessageErrorKeepsTheMacsWords() async throws {
+        let (one, _, l1) = try await fakeMac(0x13, #"{"message":"Resume (no message) needs dch 1.27.0"}"#)
+        defer { l1.cancel() }
+        let named = await HistorySheet.resume("docs", noMessage: true, on: one)
+        XCTAssertEqual(named?.title, "Resume (no message) failed")
+        XCTAssertEqual(named?.message, "Resume (no message) needs dch 1.27.0")
+
+        let (all, _, l2) = try await fakeMac(0x13, #"{"message":"Resume (no message) needs dch 1.27.0"}"#)
+        defer { l2.cancel() }
+        let summary = await HistorySheet.resume(nil, noMessage: true, on: all)
+        XCTAssertEqual(summary?.title, "Resume interrupted (no message)")
+        XCTAssertEqual(summary?.message, "Resume (no message) needs dch 1.27.0")
+    }
+
     func testRestartAllErrorIsTitledRestartAll() async throws {
         let (mac, got, l) = try await fakeMac(0x13, #"{"message":"1 restarted, 1 failed"}"#)
         defer { l.cancel() }
