@@ -85,6 +85,12 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         results.rowHeight = Self.rowHeight
         results.contentInsetAdjustmentBehavior = .never   // whole rows from the card's top (#674)
         results.tableFooterView = UIView()   // no empty-row separators; zero height, so the end rests on a row top (#678)
+        // The card's foot clipped by 1 pt (#681): rows are whole and rest on a row top, so
+        // the bottom visible row's separator always falls there.
+        let clip = UIView()
+        clip.backgroundColor = .black
+        clip.layer.cornerRadius = results.layer.cornerRadius   // the card's corners whole, 1 pt shorter
+        results.mask = clip
         results.dataSource = self
         results.delegate = self
         none.text = "No matches"
@@ -290,6 +296,7 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         // The card shared out in whole rows, none under `rowHeight`: no partial row peeks at its
         // foot, and a two-line row gets the slack (#674). The grid keeps its own.
         results.rowHeight = resultsHeight / max(1, (resultsHeight / Self.rowHeight).rounded(.down))
+        clipFoot()
 
         // Keys a column wide, the longest row's (Bulgarian's 11) or 10; 123 and delete flank the
         // third row as shift and delete do on the keys.
@@ -320,8 +327,9 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         let cell = cell(matches[indexPath.row])
         cell.accessoryView = nil
         cell.accessibilityCustomActions = nil
-        // No hairline under the last row against the card's edge (#678).
-        cell.separatorInset.right = indexPath.row == matches.count - 1 ? tableView.bounds.width : tableView.separatorInset.right
+        // No hairline under the last row (#678); a zero-width one, as a right inset alone leaves
+        // a stub at the left edge (#681). The cells are fresh, never reused.
+        if indexPath.row == matches.count - 1 { cell.separatorInset = UIEdgeInsets(top: 0, left: tableView.bounds.width, bottom: 0, right: 0) }
         if var content = cell.contentConfiguration as? UIListContentConfiguration {
             content.textProperties.numberOfLines = 1
             content.secondaryTextProperties.font = .systemFont(ofSize: 11)   // clear of the separator (#674)
@@ -331,6 +339,17 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
             cell.contentConfiguration = content
         }
         return cell
+    }
+
+    /// The mask in the table's bounds, which move as it scrolls: all but the foot's 1 pt, a
+    /// separator's height at most, below any row's text (#681).
+    private func clipFoot() {
+        let b = results.bounds
+        results.mask?.frame = CGRect(x: b.minX, y: b.minY, width: b.width, height: b.height - 1)
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        if scrollView === results { clipFoot() }
     }
 
     /// A scroll comes to rest on a row's top, never mid-row (#674).

@@ -239,10 +239,54 @@ final class PanelFilterTests: XCTestCase {
         XCTAssertEqual(rest(1.6 * row), 2 * row, accuracy: 0.01)
         XCTAssertEqual(rest(end + 3 * row), end, accuracy: 0.01, "clamped to the end")
         let last = filter.tableView(table, cellForRowAt: IndexPath(row: 7, section: 0))
-        XCTAssertGreaterThanOrEqual(last.separatorInset.right, table.bounds.width, "no hairline under the last row")
+        XCTAssertGreaterThanOrEqual(last.separatorInset.left + last.separatorInset.right, table.bounds.width, "no hairline under the last row")
         XCTAssertLessThan(filter.tableView(table, cellForRowAt: IndexPath(row: 6, section: 0)).separatorInset.right,
                           table.bounds.width, "the other rows keep theirs")
         XCTAssertEqual(rest(1.4 * row, filter), 1.4 * row, accuracy: 0.01, "another scroll view's target is its own")
+    }
+
+    /// No hairline on the card's top or bottom edge (#681): none under a lone match, in the
+    /// Snippets and Quicklinks panels, and at every rest of six matches only the hairlines
+    /// between the visible rows.
+    func testNoHairlineOnTheCardsEdges() throws {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 800))
+        window.isHidden = false
+        addTeardownBlock { window.isHidden = true }
+        for count in [1, 6] {
+            let snippets = SnippetStore(url: dir.appendingPathComponent("Snippets\(count)/snippets.json"))
+            XCTAssertTrue(snippets.save(.init(snippets: (1...count).map { .init(name: "Snippet \($0)", text: "text \($0)") })))
+            let links = QuicklinkStore(url: dir.appendingPathComponent("Quicklinks\(count)/quicklinks.json"))
+            XCTAssertTrue(links.save(.init(quicklinks: (1...count).map { .init(name: "Link \($0)", url: "https://example.com/\($0)") })))
+            for panel in [SnippetPanel(store: snippets), QuicklinkPanel(store: links, hasQuery: false)] as [KeysPanel] {
+                panel.frame = CGRect(x: 0, y: 0, width: 390, height: 308)
+                window.addSubview(panel)
+                let filter = try open(panel)
+                filter.layoutIfNeeded()
+                let table = filter.results
+                table.layoutIfNeeded()
+                let label = "\(Swift.type(of: panel)) \(count)"
+                XCTAssertEqual(filter.matches.count, count, label)
+                let fit = Int((table.bounds.height / table.rowHeight).rounded())
+                XCTAssertGreaterThan(fit, 1, label)
+                XCTAssertEqual(table.mask?.layer.cornerRadius, table.layer.cornerRadius, "\(label): the clip keeps the card's corners")
+                var rests = [CGFloat(0)]
+                if count > fit { rests += (1...(count - fit)).map { CGFloat($0) * table.rowHeight } }
+                for y in rests {
+                    table.contentOffset.y = y
+                    table.layoutIfNeeded()
+                    let seen = hairlines(table)
+                    let edge: CGFloat = 0.5
+                    for h in seen {
+                        XCTAssertGreaterThan(h.minY, table.bounds.minY + edge, "\(label) at \(y): a hairline on the top edge")
+                        XCTAssertLessThan(h.maxY, table.bounds.maxY - edge, "\(label) at \(y): a hairline on the bottom edge")
+                    }
+                    let rows = min(count, fit)
+                    XCTAssertEqual(seen.count, rows - 1, "\(label) at \(y): a hairline between each two visible rows, no more")
+                }
+                filter.done.sendActions(for: .touchUpInside)
+                panel.removeFromSuperview()
+            }
+        }
     }
 
     /// The app's terminal: filter mode covers its shortcut bar too, so no bar key reaches the
@@ -370,6 +414,18 @@ final class PanelFilterTests: XCTestCase {
             let frame = subtitle.convert(subtitle.bounds, to: cell)
             XCTAssertLessThanOrEqual(frame.maxY, cell.bounds.height - 3, "\(label): the subtitle above the separator",
                                      file: file, line: line)
+        }
+    }
+
+    /// The table's separators as drawn, in its bounds: each with a width, cut to what the
+    /// table's mask lets through.
+    private func hairlines(_ table: UITableView) -> [CGRect] {
+        let shown = table.mask?.frame ?? table.bounds
+        return table.visibleCells.flatMap { cell -> [CGRect] in
+            cell.layoutIfNeeded()
+            return cell.subviews.filter { NSStringFromClass(Swift.type(of: $0)).contains("Separator") && !$0.isHidden && $0.alpha > 0 }
+                .map { $0.convert($0.bounds, to: table).intersection(shown).intersection(table.bounds) }
+                .filter { !$0.isNull && $0.width > 0.01 && $0.height > 0.01 }
         }
     }
 
