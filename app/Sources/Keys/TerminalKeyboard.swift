@@ -62,6 +62,7 @@ struct KeyboardSettings: Equatable {
         static let theme = "keyboard.theme"
         static let toolbarTheme = "keyboard.toolbarTheme"
         static let accent = "keyboard.accent"
+        static let cleansDictation = "keyboard.cleansDictation"
     }
 
     /// Shift on at a sentence start (`TerminalKeyboard.autoCapitalize`). Off by default.
@@ -103,6 +104,9 @@ struct KeyboardSettings: Equatable {
     enum Numbers: String, CaseIterable { case row, key }
     /// The numpad takes the bar's height too while it shows (#625): 123's, or the menu's (#650).
     var numpadHidesToolbar = false
+    /// Clean Up Dictation (#612): at Done, the on-device model tidies what was dictated
+    /// (`SuggestionBar.cleanUp`). Off by default; iOS 26, Full Access.
+    var cleansDictation = false
     /// Portrait rows' height and gap (`TerminalKeyboard.metrics`, #583); landscape keeps its own.
     var keySize = KeySize.normal
     enum KeySize: String, CaseIterable {
@@ -187,6 +191,7 @@ struct KeyboardSettings: Equatable {
         read(Key.characterPreview, &characterPreview)
         read(Key.saveCopies, &saveCopies)
         read(Key.numpadHidesToolbar, &numpadHidesToolbar)
+        read(Key.cleansDictation, &cleansDictation)
         numbers = defaults?.string(forKey: Key.numbers).flatMap(Numbers.init) ?? numbers
         bottomOrder = defaults?.string(forKey: Key.bottomOrder) ?? bottomOrder
         bottomHidden = defaults?.string(forKey: Key.bottomHidden) ?? bottomHidden

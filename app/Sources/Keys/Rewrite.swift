@@ -9,12 +9,17 @@ import UIKit
 enum Rewrite {
     enum Command: String, CaseIterable {
         case fix, rewrite, summarize
+        /// Clean Up Dictation's (`SuggestionBar.cleanUp`), at Done: never a panel row.
+        case dictation
+        /// The panel's rows.
+        static var allCases: [Command] { [.fix, .rewrite, .summarize] }
 
         var title: String {
             switch self {
             case .fix: return "Fix"
             case .rewrite: return "Rewrite"
             case .summarize: return "Summarize"
+            case .dictation: return "Clean Up Dictation"
             }
         }
 
@@ -23,6 +28,7 @@ enum Rewrite {
             case .fix: return "Spelling, grammar and punctuation"
             case .rewrite: return "Clearer and more natural"
             case .summarize: return "Short, the main points"
+            case .dictation: return "Punctuation, capitals, fillers"
             }
         }
 
@@ -31,6 +37,7 @@ enum Rewrite {
             case .fix: return "text.badge.checkmark"
             case .rewrite: return "wand.and.stars"
             case .summarize: return "text.alignleft"
+            case .dictation: return "mic"
             }
         }
 
@@ -44,6 +51,8 @@ enum Rewrite {
                 return "Rewrite the user's text so it reads clearer and more natural. Keep its meaning and tone." + only
             case .summarize:
                 return "Summarize the user's text in a few short sentences." + only
+            case .dictation:
+                return "The user's text was dictated. Fix its punctuation and capitalization, correct words that were clearly misheard, and remove filler words such as \"um\" and \"uh\". Keep every other word and the meaning: don't rephrase, add or drop anything else." + only
             }
         }
     }
@@ -121,18 +130,33 @@ enum Rewrite {
     /// one batch, as `Suggestions.revert`'s do, then the result. No caret moves.
     static func replace(_ s: Source, with result: String, in doc: UITextDocumentProxy) -> Bool {
         guard s.note == nil else { return false }
-        let before = doc.documentContextBeforeInput ?? "", after = doc.documentContextAfterInput ?? ""
         let out = fitted(result, to: s.text)
         if s.selected {
-            guard same(doc.selectedText ?? "", s.text), same(before, s.before), same(after, s.after) else { return false }
+            guard same(doc.selectedText ?? "", s.text), same(doc.documentContextBeforeInput ?? "", s.before),
+                  same(doc.documentContextAfterInput ?? "", s.after) else { return false }
             doc.insertText(out)
             return true
         }
-        guard (doc.selectedText ?? "").isEmpty, same(after, s.after), same(String(before.suffix(s.text.count)), s.text)
-        else { return false }
+        guard holds(s, in: doc) else { return false }
         for _ in 0..<s.text.count { doc.deleteBackward() }
         doc.insertText(out)
         return true
+    }
+
+    /// A paragraph's (and dictation's, #612) proof: nothing selected, the text after the caret as
+    /// it was, and the text before it still ending in `s.text`, Character for Character and
+    /// unit for unit.
+    static func holds(_ s: Source, in doc: UITextDocumentProxy) -> Bool {
+        (doc.selectedText ?? "").isEmpty && same(doc.documentContextAfterInput ?? "", s.after)
+            && same(String((doc.documentContextBeforeInput ?? "").suffix(s.text.count)), s.text)
+    }
+
+    /// Not proven, nor disproven (#612): the field as `holds` asks, but its before-context, a
+    /// host's window, shorter than `s.text` and its end. A dictation too long to check there.
+    static func cut(_ s: Source, in doc: UITextDocumentProxy) -> Bool {
+        let b = (doc.documentContextBeforeInput ?? "").utf16
+        return (doc.selectedText ?? "").isEmpty && same(doc.documentContextAfterInput ?? "", s.after)
+            && !b.isEmpty && b.count < s.text.utf16.count && s.text.utf16.reversed().starts(with: b.reversed())
     }
 
     /// Insert: the result at the caret, spaced as dictation's (`Dictation.spaced`); never a

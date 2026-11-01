@@ -135,14 +135,17 @@ final class DarwinPings {
 
 /// The keyboard's side of dictation (#598): the mic key, the listening strip, and each finished
 /// phrase typed once. The app's heartbeat says whether a start can go straight to it or has to
-/// hop. Done waits for the last phrase (`finishLimit`, then the tail as shown goes in); ✕ types
-/// the finished phrases and drops the tail. Leaving mid-dictation (another app, the keyboard
-/// down) is ✕, but not the hop to Prosper: back from it, the dictation goes on.
+/// hop. Done waits for the last phrase (`finishLimit`, then the tail as shown goes in), then
+/// the bar may clean up what was typed (`clean`, #612); ✕ types the finished phrases and drops
+/// the tail, or while cleaning keeps them as spoken. Leaving mid-dictation (another app, the
+/// keyboard down) is ✕, but not the hop to Prosper: back from it, the dictation goes on.
 final class DictationClient {
     enum Strip: Equatable {
         case idle, opening, starting
         case listening(String)
         case finishing(String)
+        /// Done's text with the model (#612): ✕ keeps it as spoken.
+        case cleaning
     }
 
     let store: Dictation.Store
@@ -153,6 +156,10 @@ final class DictationClient {
     var insert: (String) -> Void = { _ in }
     var onStrip: (Strip) -> Void = { _ in }
     var hint: (String) -> Void = { _ in }
+    /// At Done's end (#612): the bar's cleanup under way (`SuggestionBar.cleanUp`), nil with none.
+    var clean: () -> Task<Void, Never>? = { nil }
+    /// That cleanup, till it's back (`cleaned`), ✕ or the keyboard going cancels it.
+    private(set) var cleaning: Task<Void, Never>?
     /// Polls while a dictation runs (a lost ping, the timeouts); off in tests.
     var polls = true
 
@@ -174,7 +181,7 @@ final class DictationClient {
         switch strip {
         case .idle: start()
         case .starting, .listening: done()
-        case .opening, .finishing: break
+        case .opening, .finishing, .cleaning: break
         }
     }
 
@@ -209,7 +216,7 @@ final class DictationClient {
 
     func disappear() {
         pings = nil
-        if !hopping, request != nil { cancel() }
+        if !hopping, request != nil || cleaning != nil { cancel() }
         timer?.invalidate()
         timer = nil
     }
@@ -224,11 +231,13 @@ final class DictationClient {
             if s.phase != .ready {
                 if case .finishing(let shown) = strip, !shown.isEmpty { insert(shown) }   // Done's, never finalized
                 hint(s.note ?? "The mic stopped — tap it to start again")
+                return end()
             }
+            if case .finishing = strip { return end(cleaning: clean()) }   // Done's
             return end()
         }
         switch strip {
-        case .idle, .opening: break
+        case .idle, .opening, .cleaning: break
         case .starting:
             if let s { strip = s.phase == .preparing ? .starting : .listening(s.tail) }
             else if t.timeIntervalSince(since) > Dictation.ackLimit { hop() }
@@ -237,7 +246,7 @@ final class DictationClient {
         case .finishing(let shown):
             if t.timeIntervalSince(since) > Dictation.finishLimit {
                 if !shown.isEmpty { insert(shown) }
-                end()
+                end(cleaning: clean())
             } else if let s, !s.tail.isEmpty {
                 strip = .finishing(s.tail)
             }
@@ -284,10 +293,19 @@ final class DictationClient {
         store.request = r
     }
 
-    private func end() {
+    /// The cleanup's back (#612): the strip goes.
+    func cleaned() {
+        cleaning = nil
+        end()
+    }
+
+    /// Over, or on to Done's cleanup (`task`); a cleanup under way is dropped.
+    private func end(cleaning task: Task<Void, Never>? = nil) {
         if request != nil { store.request = nil }
         request = nil
-        strip = .idle
+        cleaning?.cancel()
+        cleaning = task
+        strip = task == nil ? .idle : .cleaning
     }
 
     private func poll() {
@@ -302,11 +320,12 @@ final class DictationClient {
 }
 
 /// The strip over the suggestion bar while dictating (#598): a red dot, the words not yet
-/// typed, Done and ✕.
+/// typed, Done and ✕; while cleaning up (#612) a spinner in the dot's place, ✕ to keep it as spoken.
 final class DictationStrip: UIView {
     let label = UILabel()
     let doneButton = UIButton(configuration: .plain())
     let cancelButton = UIButton(configuration: .plain())
+    let spinner = UIActivityIndicatorView(style: .medium)
     private let dot = UIView()
 
     init(done: @escaping () -> Void, cancel: @escaping () -> Void) {
@@ -324,7 +343,8 @@ final class DictationStrip: UIView {
         cancelButton.addAction(UIAction { _ in cancel() }, for: .touchUpInside)
         // ✕ and Done hug the edges; the dot and words sit centred between them, a long tail
         // filling the middle (#600).
-        let status = UIStackView(arrangedSubviews: [dot, label])
+        spinner.hidesWhenStopped = true
+        let status = UIStackView(arrangedSubviews: [dot, spinner, label])
         status.spacing = 8
         status.alignment = .center
         status.translatesAutoresizingMaskIntoConstraints = false
@@ -365,19 +385,23 @@ final class DictationStrip: UIView {
         label.textColor = TerminalKeyboard.Style.label
         doneButton.configuration?.baseForegroundColor = TerminalKeyboard.Style.accent
         cancelButton.configuration?.baseForegroundColor = TerminalKeyboard.Style.icon
+        spinner.color = TerminalKeyboard.Style.hint
     }
 
     func show(_ strip: DictationClient.Strip) {
         isHidden = strip == .idle
-        doneButton.isHidden = strip == .opening
+        doneButton.isHidden = strip == .opening || strip == .cleaning
+        cancelButton.accessibilityLabel = strip == .cleaning ? "Keep as spoken" : "Cancel dictation"
         switch strip {
         case .idle: label.text = nil
         case .opening: label.text = "Opening Prosper…"
         case .starting: label.text = "Starting the mic…"
         case .listening(let tail): label.text = tail.isEmpty ? "Listening…" : tail
         case .finishing(let tail): label.text = tail + "…"
+        case .cleaning: label.text = "Cleaning up…"
         }
-        dot.isHidden = strip == .idle || strip == .opening
+        dot.isHidden = strip == .idle || strip == .opening || strip == .cleaning
+        if strip == .cleaning { spinner.startAnimating() } else { spinner.stopAnimating() }
         if case .listening = strip {
             if dot.layer.animation(forKey: "pulse") == nil {
                 let pulse = CABasicAnimation(keyPath: "opacity")

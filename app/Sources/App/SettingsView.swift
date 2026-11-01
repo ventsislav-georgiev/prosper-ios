@@ -82,6 +82,8 @@ struct SettingsView: View {
     private var numpadHidesToolbar = KeyboardSettings().numpadHidesToolbar
     @AppStorage(KeyboardSettings.Key.saveCopies, store: KeyboardSettings.store())
     private var saveCopies = KeyboardSettings().saveCopies
+    @AppStorage(KeyboardSettings.Key.cleansDictation, store: KeyboardSettings.store())   // #612
+    private var cleansDictation = KeyboardSettings().cleansDictation
     @AppStorage(ClipboardSync.key, store: KeyboardSettings.store())   // #621
     private var syncClips = true
     @AppStorage(KeyboardSettings.Key.languages, store: KeyboardSettings.store())
@@ -336,10 +338,11 @@ struct SettingsView: View {
                 if dictation.warm {
                     Button("Stop the Mic", role: .destructive) { dictation.stop() }
                 }
+                if #available(iOS 26, *) { Toggle("Clean Up Dictation", isOn: $cleansDictation) }   // #612
             } header: {
                 Text("Dictation")
             } footer: {
-                Text("Add Dictate to the System Keyboard Toolbar, then tap it in any app to type what you say, in English. The first tap opens Prosper to turn the mic on; tap ◀ to go back and keep talking. Prosper keeps the mic ready in the background for this long after you last dictate, with the orange dot showing, so the next tap starts at once. Needs Full Access and iOS 26.")
+                Text("Add Dictate to the System Keyboard Toolbar, then tap it in any app to type what you say, in English. The first tap opens Prosper to turn the mic on; tap ◀ to go back and keep talking. Prosper keeps the mic ready in the background for this long after you last dictate, with the orange dot showing, so the next tap starts at once. Needs Full Access and iOS 26.\n\nClean Up Dictation: when you tap Done, Apple Intelligence on this iPhone fixes the punctuation, capitals and misheard words and drops fillers like “um”, keeping your words. If you edit the text before it finishes, your text stays as you said it. Needs Apple Intelligence.")
             }
             #endif
 

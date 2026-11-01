@@ -678,10 +678,19 @@ final class SuggestionBar: UIView {
     var dictation: DictationClient? {
         didSet {
             dictation?.insert = { [weak self] in self?.dictated($0) }
-            dictation?.onStrip = { [weak self] in self?.dictationStrip.show($0) }
+            dictation?.onStrip = { [weak self] in
+                self?.dictationStrip.show($0)
+                if $0 == .idle { self?.spoken = nil }   // over: the next dictation's own
+            }
             dictation?.hint = { [weak self] in self?.hint($0) }
+            dictation?.clean = { [weak self] in self?.cleanUp() }
         }
     }
+    /// What the dictation under way typed (#612), for Clean Up Dictation: its phrases as they
+    /// went in, contiguous at the caret, and the text after them (a `Rewrite.Source`), in
+    /// `field`. `kept` (as spoken) once a key, a caret move or another write came between or
+    /// after them. Nil before its first phrase and once it's over.
+    private(set) var spoken: (source: Rewrite.Source, field: UUID?, kept: Bool)?
     /// The on-device model (#612), the controller's on iOS 26 with Foundation Models; nil in the
     /// app and tests that don't set one. Its tile and key show only with it (`rewrites`).
     var rewrite: ((Rewrite.Command, String) async throws -> String)?
@@ -952,17 +961,91 @@ final class SuggestionBar: UIView {
         }
     }
 
-    /// Dictated phrases at the cursor, spaced from what's before (#598).
+    /// Dictated phrases at the cursor, spaced from what's before (#598), each added to `spoken`
+    /// as typed (#612): kept as spoken where the field no longer ends in the ones before it.
     private func dictated(_ text: String) {
         keyboard?.finish { [weak self] in
             guard let self, let keyboard = self.keyboard, let doc = keyboard.target as? UITextDocumentProxy,
                   keyboard.writable() else { return }
-            doc.insertText(Dictation.spaced(text, after: doc.documentContextBeforeInput ?? ""))
+            let typed = Dictation.spaced(text, after: doc.documentContextBeforeInput ?? "")
+            let field = TerminalKeyboard.field(doc)
+            if var s = self.spoken {
+                // A host's window too short to show it all isn't a change: the write proves it, or refuses.
+                s.kept = s.kept || s.field != field || !Rewrite.holds(s.source, in: doc) && !Rewrite.cut(s.source, in: doc)
+                s.source.text += typed
+                self.spoken = s
+            } else {
+                self.spoken = (Rewrite.Source(text: typed, selected: false, note: nil, before: doc.documentContextBeforeInput ?? "",
+                                              after: doc.documentContextAfterInput ?? ""), field, false)
+            }
+            doc.insertText(typed)
             self.suggestions.caretMoved()
             keyboard.resetWord()
             keyboard.autoCapitalize()
             self.refresh()
         }
+    }
+
+    /// Clean Up Dictation (#612), at Done's end (`DictationClient.clean`): what the dictation
+    /// typed (`spoken`) to the model under the strip's spinner, then the answer in its place
+    /// (`Rewrite.replace`), the field read again before the model and at the write. Kept as
+    /// spoken, nothing written, a hint, wherever that isn't proven: a key, a caret move or
+    /// another write since the first phrase, another field, a changed text. A model that fails
+    /// or answers nothing keeps it too. Nil, no model call, with the setting off, the model
+    /// out of reach (`rewrites`: Full Access, English), nothing typed, or over the cap. ✕ or
+    /// the keyboard going cancels the task: a late answer writes nothing.
+    func cleanUp() -> Task<Void, Never>? {
+        guard suggestions.settings.cleansDictation, rewrites, let rewrite,
+              let spoken, spoken.source.text.contains(where: { !$0.isWhitespace }), spoken.source.text.count <= Rewrite.cap
+        else { return nil }
+        if let reason = rewriteAvailability().reason { hint(reason); return nil }   // off, or still downloading
+        guard !spoken.kept else { hint(Self.keptAsSpoken); return nil }
+        let s = spoken.source, field = spoken.field
+        return Task { [weak self] in
+            // ponytail: Done's last phrase went in this turn, and a host shows an insert a turn
+            // or more later (`FakeProxy.lagsEdits`): up to 0.3 s for it, else kept as spoken.
+            for _ in 0..<10 where self?.proven(s) == false { try? await Task.sleep(nanoseconds: 30_000_000) }
+            guard !Task.isCancelled, let me = self else { return }
+            if !me.proven(s) {
+                let why = me.why(s)
+                me.dictation?.cleaned()
+                return me.hint(why)
+            }
+            let out = try? await rewrite(.dictation, s.text)
+            guard !Task.isCancelled, let self else { return }
+            let proven = self.proven(s), why = self.why(s)   // before the strip goes, and `spoken` with it
+            self.dictation?.cleaned()
+            guard let out, out.contains(where: { !$0.isWhitespace }) else { return self.hint("Kept as spoken") }
+            guard proven else { return self.hint(why) }
+            self.keyboard?.finish { [weak self] in
+                guard let self, let keyboard = self.keyboard, let doc = keyboard.target as? UITextDocumentProxy,
+                      keyboard.writable() else { return }
+                guard TerminalKeyboard.field(doc) == field, Rewrite.replace(s, with: out, in: doc) else {
+                    return self.hint(Self.keptAsSpoken)
+                }
+                self.suggestions.caretMoved()
+                keyboard.resetWord()
+                keyboard.autoCapitalize()
+                self.refresh()
+            }
+        }
+    }
+    static let keptAsSpoken = "Kept as spoken: the text changed"
+    static let tooLongToCheck = "Kept as spoken: too long to check here"
+
+    /// The hint for a cleanup refused: a host's window too short to show all of `s`, still
+    /// untouched as far as it shows (`Rewrite.cut`), else a change.
+    private func why(_ s: Rewrite.Source) -> String {
+        guard let spoken, !spoken.kept, spoken.source == s, let doc = keyboard?.target as? UITextDocumentProxy,
+              TerminalKeyboard.field(doc) == spoken.field, Rewrite.cut(s, in: doc) else { return Self.keptAsSpoken }
+        return Self.tooLongToCheck
+    }
+
+    /// `s` is still this dictation's, untouched: nothing came between or after its phrases, the
+    /// same field, and the field still ends in it (`Rewrite.holds`).
+    private func proven(_ s: Rewrite.Source) -> Bool {
+        guard let spoken, !spoken.kept, spoken.source == s, let doc = keyboard?.target as? UITextDocumentProxy else { return false }
+        return TerminalKeyboard.field(doc) == spoken.field && Rewrite.holds(s, in: doc)
     }
 
     /// Fix, Rewrite and Summarize's panel over the keys, or the keys back (#612): gated as its key
@@ -1724,8 +1807,12 @@ final class SuggestionBar: UIView {
             guard let self, let doc = keyboard?.target as? UITextDocumentProxy else { return false }
             return self.suggestions.willPress(key, in: doc, autoShift: keyboard?.shift.auto == true)
         }
-        keyboard.didPress = { [weak self] in self?.refresh() }
+        keyboard.didPress = { [weak self] in
+            self?.spoken?.kept = true   // between or after the dictated phrases (#612)
+            self?.refresh()
+        }
         keyboard.didMoveCaret = { [weak self] in
+            self?.spoken?.kept = true
             self?.suggestions.caretMoved()
             self?.refresh()
         }
