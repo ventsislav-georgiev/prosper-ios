@@ -72,3 +72,8 @@ secrets (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`, `APPLE_TEAM_ID`).
 ## License
 
 MIT — see [`LICENSE`](LICENSE). SwiftTerm is MIT-licensed.
+
+The emoji list and the emoji search's names and keywords are Unicode's
+(emoji-test.txt and [CLDR](https://github.com/unicode-org/cldr) annotations), © Unicode, Inc.,
+under the [Unicode License v3](https://www.unicode.org/license.txt), its notice in
+[`EmojiData.swift`](app/Sources/Keys/EmojiData.swift).

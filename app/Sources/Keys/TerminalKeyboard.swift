@@ -1287,6 +1287,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// Built the first time the emoji key or the menu's Emoji opens it; showing, it hides the caps.
     private(set) var emojiPicker: EmojiPicker?
     var showsEmoji: Bool { emojiPicker?.isHidden == false }
+    /// The picker's search shows (#666): the extension's bar hides and lends it its height (`SuggestionBar.fitRows`).
+    var searchesEmoji: Bool { showsEmoji && emojiPicker?.filter != nil }
     /// One generator, kept warm — same pattern as `ShortcutBar`.
     private let haptics = UIImpactFeedbackGenerator(style: .light)
     private let repeater = Repeat()
@@ -1342,6 +1344,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             guard layout != oldValue else { return }
             knownCache = [:]; completionsCache = nil
             build()
+            emojiPicker?.layout = layout   // its search's keys and words (#666)
             _ = Self.dictionaryKnows("te", language: layout.language)
             layoutChanged?(layout)
         }
@@ -1453,10 +1456,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             picker.pick = { [weak self] e in self?.typeEmoji(e) }
             picker.delete = { [weak self] in self?.feedback(); self?.press(.backspace) }
             picker.letters = { [weak self] in self?.feedback(); self?.showEmoji(false) }
+            picker.searched = { [weak self] in self?.rowsChanged?() }
+            picker.layout = layout
             addSubview(picker)
             emojiPicker = picker
         }
-        if on { emojiPicker?.fullAccess = fullAccess; emojiPicker?.reload() }
+        if on { emojiPicker?.fullAccess = fullAccess; emojiPicker?.reload() } else { emojiPicker?.search(false) }
         stopRepeat(); stopHold(); tracker.reset(); refreshPressed()
         if blanked { refreshLabels() }
         emojiPicker?.isHidden = !on

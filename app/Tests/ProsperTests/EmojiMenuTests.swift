@@ -162,7 +162,8 @@ final class EmojiMenuTests: XCTestCase {
         XCTAssertEqual(picker.sections.joined().count, unicode.count)
         func buttons(_ v: UIView) -> [UIButton] { ((v as? UIButton).map { [$0] } ?? []) + v.subviews.flatMap(buttons) }
         XCTAssertEqual(buttons(picker).map(\.accessibilityLabel),
-                       ["letters", "Recents"] + EmojiPicker.native.map(\.name) + ["delete"], "the bar")
+                       ["Describe an emoji", "letters", "Recents"] + EmojiPicker.native.map(\.name) + ["delete"],
+                       "the search row (#666), the bar")
 
         let app = TerminalKeyboard()
         app.showEmoji(true)
@@ -187,7 +188,8 @@ final class EmojiMenuTests: XCTestCase {
         XCTAssertEqual(Set(EmojiPicker.frequent).count, EmojiPicker.frequent.count, "each once")
         XCTAssertEqual(Set(EmojiPicker.frequent).subtracting(EmojiPicker.groups.joined()), [])
         func buttons(_ v: UIView) -> [UIButton] { ((v as? UIButton).map { [$0] } ?? []) + v.subviews.flatMap(buttons) }
-        XCTAssertEqual(buttons(picker).map(\.accessibilityLabel), ["letters", "Recents", "Frequent", "delete"], "the bar")
+        XCTAssertEqual(buttons(picker).map(\.accessibilityLabel), ["Describe an emoji", "letters", "Recents", "Frequent", "delete"],
+                       "the search row (#666), the bar")
 
         let app = TerminalKeyboard()
         app.showEmoji(true)
@@ -195,6 +197,56 @@ final class EmojiMenuTests: XCTestCase {
         XCTAssertTrue(all.full)
         XCTAssertEqual(Array(all.sections.dropFirst()), EmojiPicker.groups, "the app's keyboard: every group")
         withExtendedLifetime(view) {}
+    }
+
+    /// The system keyboards' search (#666), with the digit row or the 123 key: the bar hides
+    /// and lends the picker its height, so filter mode has the field, two rows and the keys
+    /// unscrolled, and no bar key acts mid-search. On the Bulgarian keys its keys and words are
+    /// Bulgarian's; a result types into the field and goes first in recents. Done gives the bar back.
+    func testTheExtensionsSearchTakesTheBarsRoom() throws {
+        for numbers in KeyboardSettings.Numbers.allCases {
+            let (kb, bar, doc, view) = rig()
+            kb.settings.numbers = numbers
+            kb.layout = .bulgarian
+            view.layoutIfNeeded()
+            let barHeight = bar.frame.height
+            try pickEmoji(bar)
+            let picker = try XCTUnwrap(kb.emojiPicker)
+            view.layoutIfNeeded()
+            let height = picker.frame.height
+            XCTAssertNil(picker.keywords, "\(numbers)")
+
+            picker.searchRow.sendActions(for: .touchUpInside)
+            view.layoutIfNeeded()
+            let filter = try XCTUnwrap(picker.filter)
+            filter.layoutIfNeeded()
+            XCTAssertTrue(kb.searchesEmoji)
+            XCTAssertTrue(bar.isHidden, "\(numbers)")
+            XCTAssertEqual(picker.frame.height, height + barHeight, accuracy: 0.5, "the bar's height lent, \(numbers)")
+            XCTAssertEqual(filter.frame, picker.bounds)
+            XCTAssertEqual(filter.shown, 2, "\(numbers)")
+            XCTAssertLessThanOrEqual(filter.contentSize.height, filter.bounds.height + 0.5, "no scroll, \(numbers)")
+            XCTAssertEqual(filter.rows.map { $0.compactMap { $0.configuration?.title }.joined() },
+                           ["явертъуиопю", "асдфгхйклшщ", "зьцжбнмч"])
+            for c in "ден" {
+                try XCTUnwrap(filter.rows.joined().first { $0.configuration?.title == String(c) }).sendActions(for: .touchUpInside)
+            }
+            XCTAssertEqual(doc.text, "", "the keys type into the query")
+            XCTAssertEqual(filter.matches.first.map { filter.fields[$0][0] }, "🌞", "Bulgarian's words")
+            filter.go.sendActions(for: .touchUpInside)
+            XCTAssertEqual(doc.text, "🌞")
+            XCTAssertEqual(EmojiRecents.load().emoji, ["🌞"])
+
+            filter.done.sendActions(for: .touchUpInside)
+            view.layoutIfNeeded()
+            XCTAssertNil(picker.filter)
+            XCTAssertFalse(kb.searchesEmoji)
+            XCTAssertFalse(bar.isHidden, "Done gives the bar back, \(numbers)")
+            XCTAssertEqual(picker.frame.height, height, accuracy: 0.5)
+            XCTAssertTrue(kb.showsEmoji)
+            defaults.removeObject(forKey: EmojiRecents.key)
+            withExtendedLifetime(view) {}
+        }
     }
 
     /// Without Full Access the group may not keep a write: recents go to the extension's own

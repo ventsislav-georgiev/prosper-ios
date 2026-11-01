@@ -5,7 +5,8 @@ import UIKit
 /// that type into the query, never into the host. Each key ranks the rows again (`rank`); a tap
 /// on a result is the list's own tap, return the first pickable result's. Done hands the list
 /// back as it was (`KeysPanel.filter`). Rows, picks and fields are the caller's, by index, so a
-/// panel of any kind can use it. Laid out by hand: the keys take what the field and two rows
+/// panel of any kind can use it; the emoji picker's (#666) ranks its own and shows a grid in
+/// the table's place (`grid`). Laid out by hand: the keys take what the field and two rows
 /// leave, between `keyRow`'s bounds, and a taller panel (the app's) gives the rest to the
 /// results.
 ///
@@ -39,6 +40,9 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
     let clear = UIButton(configuration: .plain())
     let done = UIButton(configuration: .plain())
     let results = UITableView(frame: .zero, style: .plain)
+    /// In the table's place, the caller's grid of `matches` (the emoji picker's, #666).
+    let grid: UICollectionView?
+    private let ranker: ((String) -> [Int])?
     let none = UILabel()
     private let repeater = TerminalKeyboard.Repeat()
     /// The keys' press bubble over a pressed letter or symbol.
@@ -47,10 +51,13 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
     private(set) var rows: [[UIButton]] = []
     let toggle = Key(special: true), delete = Key(special: true), space = Key(special: false), go = Key(special: false)
 
-    init(placeholder: String, layout: TerminalKeyboard.Layout, fields: [[String]]) {
+    init(placeholder: String, layout: TerminalKeyboard.Layout, fields: [[String]], grid: UICollectionView? = nil,
+         rank ranker: ((String) -> [Int])? = nil) {
         self.placeholder = placeholder
         self.layout = layout
         self.fields = fields
+        self.grid = grid
+        self.ranker = ranker
         matches = Array(fields.indices)
         field = Self.field(placeholder)
         super.init(frame: .zero)
@@ -102,7 +109,8 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         go.configuration?.image = UIImage(systemName: "return", withConfiguration: Style.symbol)
         go.accessibilityLabel = "Pick the first result"
         go.addAction(UIAction { [weak self] _ in self?.pickFirst() }, for: .touchUpInside)
-        for v in [field, done, results, none, toggle, delete, space, go] { addSubview(v) }
+        results.isHidden = grid != nil
+        for v in [field, done, results, none, toggle, delete, space, go] + (grid.map { [$0] } ?? []) { addSubview(v) }
         buildKeys()
         refilter(announce: false)
     }
@@ -132,7 +140,6 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
     /// its best field (then the earlier field). Ties, and every row for a blank query, keep
     /// their order.
     static func rank(_ query: String, _ fields: [[String]]) -> [Int] {
-        func fold(_ s: String) -> String { s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) }
         let q = fold(query)
         guard !q.trimmingCharacters(in: .whitespaces).isEmpty else { return Array(fields.indices) }
         func tier(_ text: String) -> Int? {
@@ -160,6 +167,9 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
             .sorted { $0 < $1 }
             .map(\.2)
     }
+
+    /// Case and diacritics folded away: the query's and what it matches (`EmojiKeywords` too, #666).
+    static func fold(_ s: String) -> String { s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) }
 
     /// A key's text into the query: nil clears it, a backspace (U+0008) takes the last character.
     func type(_ text: String?) {
@@ -194,7 +204,7 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
     }
 
     private func refilter(announce: Bool) {
-        matches = Self.rank(query, fields)
+        matches = ranker?(query) ?? Self.rank(query, fields)
         // The caret in the accent, after the query or before the placeholder.
         let text = AttributedString(query.isEmpty ? placeholder : query,
                                     attributes: AttributeContainer([.font: UIFont.systemFont(ofSize: 15),
@@ -207,6 +217,8 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         none.isHidden = !matches.isEmpty
         results.reloadData()
         results.contentOffset.y = -results.adjustedContentInset.top
+        grid?.reloadData()
+        grid?.contentOffset = .zero
         if announce { UIAccessibility.post(notification: .announcement, argument: count) }
     }
 
@@ -273,6 +285,7 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         clear.frame = CGRect(x: field.bounds.width - 34, y: 0, width: 34, height: Self.fieldHeight)
         results.frame = CGRect(x: x0, y: resultsTop, width: width, height: resultsHeight)
         none.frame = results.frame
+        grid?.frame = results.frame
 
         // Keys a column wide, the longest row's (Bulgarian's 11) or 10; 123 and delete flank the
         // third row as shift and delete do on the keys.

@@ -2099,11 +2099,12 @@ final class SuggestionBar: UIView {
 
     /// Numbers: Key (#625): the bar takes the digit row's height (`numberRowHeight`), the
     /// toolbar's second row; with Hide Toolbar on the Numpad the bar hides while the numpad
-    /// shows and lends the keys its height. The two always add up to the same.
+    /// shows and lends the keys its height, and so while the emoji search shows (#666), its
+    /// keys acting on nothing and the search room for two rows. The two always add up to the same.
     func fitRows() {
         guard let keyboard else { return }
         let full = Self.height(compact: traitCollection.verticalSizeClass == .compact) + keyboard.numberRowHeight
-        let hides = keyboard.showsNumpad && keyboard.settings.numpadHidesToolbar
+        let hides = keyboard.showsNumpad && keyboard.settings.numpadHidesToolbar || keyboard.searchesEmoji
         heightConstraint?.constant = hides ? 0 : full
         isHidden = hides
         keyboard.lentHeight = hides ? full : 0

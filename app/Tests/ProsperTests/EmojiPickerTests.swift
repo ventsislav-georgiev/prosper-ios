@@ -308,6 +308,157 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertLessThan(peak, 15)
     }
 
+    // MARK: Search (#666)
+
+    /// Each character's key in filter mode tapped.
+    private func type(_ text: String, _ filter: PanelFilter) throws {
+        for c in text {
+            let key = try XCTUnwrap(filter.rows.joined().first { $0.configuration?.title == String(c) }, "no \(c) key")
+            key.sendActions(for: .touchUpInside)
+        }
+    }
+
+    /// An exact keyword, then a keyword's prefix, then a name's word: "pie" is 🥧's keyword,
+    /// starts 🥟's "pierogi" and 🧩's "piece", and is a word of 🇵🇲's name only. Folded as the
+    /// query is; ties keep the order given (recents first). The Bulgarian keys match
+    /// Bulgarian's words and English's; the English keys English's only.
+    func testSearchRanksAnExactKeywordThenAPrefixThenANameWord() {
+        let all = Array(EmojiPicker.groups.joined())
+        let en = EmojiKeywords(.english), bg = EmojiKeywords(.bulgarian)
+        func ranked(_ q: String, _ words: EmojiKeywords) -> [String] { words.rank(q, all).map { all[$0] } }
+        XCTAssertEqual(ranked("pie", en), ["🥧", "🥟", "🧩", "🇵🇲"])
+        XCTAssertEqual(en.rank("pie", ["🧩", "🇵🇲", "🥟", "🥧"]), [3, 0, 2, 1], "ties keep the order given")
+        XCTAssertEqual(ranked("PIÉ", en), ranked("pie", en), "case- and diacritic-insensitive")
+        XCTAssertEqual(en.rank("", all), Array(all.indices), "a blank query keeps every emoji")
+        XCTAssertEqual(en.rank("  ", all), Array(all.indices))
+        XCTAssertEqual(ranked("qzx", en), [])
+        XCTAssertEqual(ranked("ден", en), [], "no Bulgarian on the English keys")
+
+        // "ден" (day) is 🌞's keyword, starts 🧖's "ден за спа", 🦃's "денят на благодарността",
+        // 🏪's "денонощен" and 🪥's "дентален", and is a word of 🎂's name only.
+        XCTAssertEqual(ranked("ден", bg), ["🌞", "🧖", "🦃", "🏪", "🪥", "🎂"])
+        XCTAssertEqual(ranked("ДЕН", bg), ranked("ден", bg))
+        XCTAssertEqual(ranked("пуйка", bg).first, "🦃", "й folded as CLDR's is")
+        XCTAssertEqual(ranked("pie", bg), ranked("pie", en), "English's too")
+        XCTAssertEqual(ranked("балон", bg).first, "🎈")
+        XCTAssertEqual(ranked("балон", bg).last, "🐡", "риба балон: a name's word only")
+    }
+
+    /// The app's keyboard: the search row over the grid opens filter mode over the picker,
+    /// its keys typing into the query, never into the terminal, two rows of results drawn as
+    /// cells. A result, tapped or by return, types as a cell does and goes first in recents;
+    /// Done gives the grid back and drops the words, parsed only while it searched.
+    func testTheAppsSearchTypesAPickAndAddsItToRecents() throws {
+        let kb = TerminalKeyboard()
+        let spy = SpyInput()
+        kb.target = spy
+        _ = laidOut(kb)
+        kb.showEmoji(true)
+        kb.layoutIfNeeded()
+        let picker = try XCTUnwrap(kb.emojiPicker)
+        XCTAssertNil(picker.keywords, "nothing parsed till a search opens")
+        XCTAssertGreaterThanOrEqual(picker.grid.frame.minY, picker.searchRow.frame.maxY, "the search row over the grid")
+        XCTAssertEqual(picker.searchRow.accessibilityLabel, "Describe an emoji")
+
+        picker.searchRow.sendActions(for: .touchUpInside)
+        let filter = try XCTUnwrap(picker.filter)
+        XCTAssertNotNil(picker.keywords)
+        XCTAssertTrue(kb.searchesEmoji)
+        XCTAssertTrue(filter.superview === picker)
+        XCTAssertEqual(filter.frame, picker.bounds)
+        filter.layoutIfNeeded()
+        let results = try XCTUnwrap(filter.grid)
+        XCTAssertTrue(filter.results.isHidden, "a grid in the table's place")
+        XCTAssertEqual(filter.shown, 2)
+        XCTAssertGreaterThanOrEqual(results.frame.height, 2 * PanelFilter.rowHeight)
+        XCTAssertLessThanOrEqual(filter.contentSize.height, filter.bounds.height + 0.5, "no scroll")
+        XCTAssertEqual(filter.matches.count, Set(picker.sections.joined()).count, "every emoji before a key")
+
+        try type("pie", filter)
+        XCTAssertEqual(spy.calls, [], "no key reaches the terminal")
+        XCTAssertEqual(filter.matches.map { filter.fields[$0][0] }, ["🥧", "🥟", "🧩", "🇵🇲"])
+        results.layoutIfNeeded()
+        let cell = try XCTUnwrap(results.cellForItem(at: IndexPath(item: 1, section: 0)))
+        XCTAssertEqual(cell.accessibilityLabel, "🥟")
+        XCTAssertGreaterThanOrEqual(cell.frame.maxY, PanelFilter.rowHeight * 2 - 0.5, "two rows")
+
+        picker.collectionView(results, didSelectItemAt: IndexPath(item: 1, section: 0))
+        XCTAssertEqual(spy.calls, ["🥟"])
+        XCTAssertEqual(defaults.stringArray(forKey: EmojiRecents.key), ["🥟"], "in recents")
+        filter.go.sendActions(for: .touchUpInside)
+        XCTAssertEqual(spy.calls, ["🥟", "🥧"], "return types the first")
+        XCTAssertEqual(defaults.stringArray(forKey: EmojiRecents.key), ["🥧", "🥟"])
+        XCTAssertTrue(picker.filter === filter, "a pick keeps the search")
+
+        filter.done.sendActions(for: .touchUpInside)
+        XCTAssertNil(picker.filter)
+        XCTAssertNil(filter.superview)
+        XCTAssertNil(picker.keywords, "dropped")
+        XCTAssertTrue(kb.showsEmoji, "the grid back")
+        kb.showEmoji(false)
+        kb.showEmoji(true)
+        XCTAssertEqual(picker.sections[0], ["🥧", "🥟"], "recents on the next open")
+
+        picker.search(true)
+        kb.showEmoji(false)
+        XCTAssertNil(picker.filter, "ABC's way out closes it too")
+    }
+
+    /// The search's words parse into slices of the literals as it opens (#666): English and
+    /// Bulgarian's under 1 MB of heap, the search with its keys under 3 MB of footprint. Then
+    /// every page of a query matching hundreds, drawn at 3x, keeps the grid's budget: the same
+    /// font under the same cap.
+    func testSearchStaysWithinTheMemoryBudget() throws {
+        _ = EmojiData.keywords   // the dictionary of two literals, not what this measures
+        let heap = mstats().bytes_used
+        let both = EmojiKeywords(.bulgarian)
+        let words = Double(mstats().bytes_used - heap) / 1_048_576
+        withExtendedLifetime(both) {}
+        XCTAssertLessThan(words, 1)
+
+        let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight))
+        picker.layout = .bulgarian
+        let window = UIWindow(frame: picker.frame)
+        window.addSubview(picker)
+        window.isHidden = false
+        addTeardownBlock { window.isHidden = true }
+        picker.layoutIfNeeded()
+        let before = Self.footprint()
+        let start = Date()
+        picker.search(true)
+        let parse = Date().timeIntervalSince(start)
+        let opened = Self.footprint() - before
+        print("#666 words: \(words) MB of heap; search open: \(opened) MB, \(Int(parse * 1000)) ms")
+        XCTAssertLessThan(opened, 3)
+
+        let filter = try XCTUnwrap(picker.filter)
+        filter.type("a")
+        XCTAssertGreaterThan(filter.matches.count, 300)
+        filter.layoutIfNeeded()
+        let results = try XCTUnwrap(filter.grid)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 3
+        var seen = Set<String>()
+        func drawPage() {
+            results.layoutIfNeeded()
+            for cell in results.visibleCells {
+                seen.insert(cell.accessibilityLabel ?? "")
+                _ = UIGraphicsImageRenderer(size: cell.bounds.size, format: format).image { cell.layer.render(in: $0.cgContext) }
+            }
+        }
+        drawPage()
+        let shown = Self.footprint()   // as the grid's budget: past the first page
+        var peak = 0.0
+        for x in stride(from: 0, to: results.contentSize.width, by: results.bounds.width / 2) {
+            results.contentOffset.x = x
+            autoreleasepool { drawPage() }
+            peak = max(peak, Self.footprint() - shown)
+        }
+        print("#666 results: \(seen.count) drawn, peak \(peak) MB")
+        XCTAssertEqual(seen.count, filter.matches.count, "every result drawn")
+        XCTAssertLessThan(peak, 15)
+    }
+
     // MARK: Recents and data
 
     func testRecentsNewestFirstOnceAndCapped() {

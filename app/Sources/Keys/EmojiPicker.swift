@@ -33,6 +33,8 @@ struct EmojiRecents: Equatable {
 /// every touch while it shows (`TerminalKeyboard.track`).
 ///
 /// The group in view is lit in the accent (#626), as the grid scrolls or a bar tap moves it.
+/// Over the grid, a search row: #665's filter mode, matching CLDR's words (`EmojiKeywords`,
+/// #666), its results two rows of cells drawn as the grid's.
 ///
 /// ponytail: delete doesn't repeat while held. Add it if the picker sees heavy use.
 final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDelegate {
@@ -98,22 +100,27 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     static let glyphCap = 150
     /// `emojiFont`, or nil where a test plays a read that failed.
     static var makeFont: (CGFloat) -> UIFont? = emojiFont(size:)
+    /// The search row (#666): a tap opens filter mode (`search`).
+    let searchRow = PanelFilter.field("Describe an emoji")
+    /// Filter mode over the picker, while searching (#666).
+    private(set) var filter: PanelFilter?
+    /// CLDR's words, parsed as a search opens, dropped as it closes (#666).
+    private(set) var keywords: EmojiKeywords?
+    /// The keyboard's: filter mode's keys, and Bulgarian's words besides English's (#666).
+    var layout = TerminalKeyboard.Layout.english
+    /// Filter mode opened or closed: the extension's bar lends it its height (`TerminalKeyboard.searchesEmoji`).
+    var searched: () -> Void = {}
 
     init(frame: CGRect = .zero, inApp: Bool = true) {
         let own = Self.makeFont(17)
         font = own ?? .systemFont(ofSize: 17)
         full = inApp || own != nil
         super.init(frame: frame)
-        let flow = grid.collectionViewLayout as! UICollectionViewFlowLayout
-        flow.scrollDirection = .horizontal
-        flow.minimumLineSpacing = 0
-        flow.minimumInteritemSpacing = 0
-        grid.backgroundColor = .clear
-        grid.showsHorizontalScrollIndicator = false
-        grid.register(Cell.self, forCellWithReuseIdentifier: "e")
-        grid.dataSource = self
-        grid.delegate = self
+        setUp(grid)
         addSubview(grid)
+        searchRow.accessibilityHint = "Filters with keys of its own"
+        searchRow.addAction(UIAction { [weak self] _ in self?.search(true) }, for: .touchUpInside)
+        addSubview(searchRow)
 
         bar.distribution = .fillEqually
         bar.spacing = 2
@@ -130,6 +137,19 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         reload()
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// A grid of cells scrolling sideways, this picker's: the groups', or a search's results.
+    private func setUp(_ grid: UICollectionView) {
+        let flow = grid.collectionViewLayout as! UICollectionViewFlowLayout
+        flow.scrollDirection = .horizontal
+        flow.minimumLineSpacing = 0
+        flow.minimumInteritemSpacing = 0
+        grid.backgroundColor = .clear
+        grid.showsHorizontalScrollIndicator = false
+        grid.register(Cell.self, forCellWithReuseIdentifier: "e")
+        grid.dataSource = self
+        grid.delegate = self
+    }
 
     private func button(title: String? = nil, image: String? = nil, label: String, fill: UIColor? = nil,
                         action: @escaping () -> Void) -> UIButton {
@@ -167,6 +187,34 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         light(section)   // the one tapped, though the end of the grid may show the one before
     }
 
+    /// Filter mode over the picker, or the grid back (#666): every emoji the picker has,
+    /// recents first, ranked by `keywords` in the keyboard's languages; a result types as a cell.
+    func search(_ on: Bool) {
+        guard on || filter != nil else { return }
+        filter?.removeFromSuperview()
+        filter = nil
+        keywords = nil
+        if on {
+            var seen = Set<String>()
+            let all = sections.joined().filter { seen.insert($0).inserted }
+            keywords = EmojiKeywords(layout)
+            let flow = UICollectionViewFlowLayout()
+            flow.itemSize = CGSize(width: PanelFilter.rowHeight, height: PanelFilter.rowHeight)
+            let results = UICollectionView(frame: .zero, collectionViewLayout: flow)
+            setUp(results)
+            let f = PanelFilter(placeholder: searchRow.accessibilityLabel ?? "", layout: layout, fields: all.map { [$0] },
+                                grid: results) { [weak self] in self?.keywords?.rank($0, all) ?? [] }
+            f.pick = { [weak self] in self?.choose(all[$0]) }
+            f.onDone = { [weak self] in self?.search(false) }
+            f.frame = bounds
+            f.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            addSubview(f)
+            filter = f
+        }
+        UIAccessibility.post(notification: .screenChanged, argument: filter?.field ?? searchRow)
+        searched()
+    }
+
     private func light(_ section: Int) {
         for (i, b) in groupButtons.enumerated() { b.tintColor = i == section ? Style.accent : Style.hint }
     }
@@ -183,7 +231,9 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         super.layoutSubviews()
         let m = TerminalKeyboard.metrics(compact: traitCollection.verticalSizeClass == .compact)
         bar.frame = CGRect(x: 0, y: bounds.maxY - m.row, width: bounds.width, height: m.row)
-        grid.frame = CGRect(x: 0, y: m.top, width: bounds.width, height: bar.frame.minY - m.top - m.top)
+        searchRow.frame = CGRect(x: 0, y: m.top, width: bounds.width, height: PanelFilter.fieldHeight)
+        grid.frame = CGRect(x: 0, y: searchRow.frame.maxY + m.top, width: bounds.width,
+                            height: bar.frame.minY - searchRow.frame.maxY - m.top - m.top)
         // Whole rows of square cells, about 40 pt: five in portrait, three in landscape.
         let rows = max(1, (grid.bounds.height / 38).rounded(.down))
         let side = (grid.bounds.height / rows).rounded(.down)
@@ -197,13 +247,19 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     }
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        sections[section].count
+        collectionView === grid ? sections[section].count : filter?.matches.count ?? 0
     }
-    func numberOfSections(in collectionView: UICollectionView) -> Int { sections.count }
+    func numberOfSections(in collectionView: UICollectionView) -> Int { collectionView === grid ? sections.count : 1 }
+
+    /// The grid's cell's emoji, or a search result's (#666).
+    private func emoji(_ collectionView: UICollectionView, _ indexPath: IndexPath) -> String {
+        guard collectionView !== grid, let filter else { return sections[indexPath.section][indexPath.item] }
+        return filter.fields[filter.matches[indexPath.item]][0]
+    }
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "e", for: indexPath) as! Cell
-        let e = sections[indexPath.section][indexPath.item]
+        let e = emoji(collectionView, indexPath)
         if drawn.insert(e).inserted, drawn.count > Self.glyphCap {
             renew(size: font.pointSize)
             drawn = [e]
@@ -236,11 +292,14 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         return CTFontCreateWithFontDescriptor(own, size, nil) as UIFont
     }
 
-    /// Typed, and first in recents from the next time the picker opens: the grid doesn't
-    /// reorder under the finger.
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: false)
-        let e = sections[indexPath.section][indexPath.item]
+        choose(emoji(collectionView, indexPath))
+    }
+
+    /// A cell's tap, the grid's or a search's (#666): typed, and first in recents from the
+    /// next time the picker opens: the grid doesn't reorder under the finger.
+    func choose(_ e: String) {
         recents.add(e)
         recents.save(fullAccess: fullAccess)
         pick(e)
@@ -262,5 +321,41 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
             emoji.frame = contentView.bounds
         }
         override var isHighlighted: Bool { didSet { contentView.backgroundColor = isHighlighted ? Style.special : nil } }
+    }
+}
+
+/// CLDR's names and keywords for the emoji search (#666), `EmojiData.keywords`: English's,
+/// and on the Bulgarian keys Bulgarian's too. Parsed as a search opens into slices of the
+/// literals, which stay in the binary's pages: nothing is copied but the emoji.
+struct EmojiKeywords {
+    private var words: [String: [(name: Substring, keywords: Substring)]] = [:]
+
+    init(_ layout: TerminalKeyboard.Layout) {
+        for language in layout == .bulgarian ? ["bg", "en"] : ["en"] {
+            for line in EmojiData.keywords[language, default: ""].split(separator: "\n") {
+                guard let space = line.firstIndex(of: " "), let bar = line.firstIndex(of: "|") else { continue }
+                words[String(line[..<space]), default: []].append((line[line.index(after: space)..<bar], line[bar...]))
+            }
+        }
+    }
+
+    /// `emoji`'s indices matching `query`, best first: an exact keyword, then a keyword's
+    /// prefix, then a name's word's, in any language; ties, and every emoji for a blank
+    /// query, keep `emoji`'s order. Bytes against bytes: both folded (`PanelFilter.fold`) and composed.
+    func rank(_ query: String, _ emoji: [String]) -> [Int] {
+        let q = Array(PanelFilter.fold(query).precomposedStringWithCanonicalMapping.utf8)
+        guard q.contains(where: { $0 != 32 }) else { return Array(emoji.indices) }
+        let bar: UInt8 = 124, space: UInt8 = 32
+        let exact = [bar] + q + [bar], prefix = [bar] + q, word = [space] + q
+        func tier(_ w: (name: Substring, keywords: Substring)) -> Int? {
+            if w.keywords.utf8.firstRange(of: exact) != nil { return 0 }
+            if w.keywords.utf8.firstRange(of: prefix) != nil { return 1 }
+            if w.name.utf8.starts(with: q) || w.name.utf8.firstRange(of: word) != nil { return 2 }
+            return nil
+        }
+        return emoji.enumerated()
+            .compactMap { i, e in words[e]?.compactMap(tier).min().map { ($0, i) } }
+            .sorted { $0 < $1 }
+            .map(\.1)
     }
 }
