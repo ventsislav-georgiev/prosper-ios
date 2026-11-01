@@ -441,6 +441,8 @@ final class EmojiPickerTests: XCTestCase {
         // 🐈 is "котка", 🐱 "муцуна на котка" with "котка" a keyword; ☀️ is "слънце", then
         // 🌞 "слънце с лице" before ⛅ "слънце зад облак", the shorter first.
         XCTAssertEqual(ranked("котка", bg).first, "🐈")
+        // #683: among the keyword ties, 🐱 says "котка" twice (the keyword and its name), the cat faces once.
+        XCTAssertEqual(Array(ranked("котка", bg).prefix(3)), ["🐈", "🐱", "😺"])
         XCTAssertEqual(Array(ranked("слънце", bg).prefix(3)), ["☀️", "🌞", "⛅"])
     }
 

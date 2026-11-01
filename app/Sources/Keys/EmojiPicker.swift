@@ -549,12 +549,15 @@ struct EmojiKeywords {
         let q = Array(PanelFilter.fold(query).precomposedStringWithCanonicalMapping.utf8)
         guard q.contains(where: { $0 != 32 }) else { return Array(emoji.indices) }
         let bar: UInt8 = 124, space: UInt8 = 32
-        let exact = [bar] + q + [bar], prefix = [bar] + q, word = [space] + q, lead = q + [space]
+        let exact = [bar] + q + [bar], prefix = [bar] + q, word = [space] + q, lead = q + [space], spaced = word + [space]
         let keyword = 1 << 16
         func tier(_ w: (name: Substring, keywords: Substring)) -> Int? {
             if w.name.utf8.elementsEqual(q) { return 0 }
             if w.name.utf8.starts(with: lead) { return w.name.utf8.count }   // the shorter the closer
-            if w.keywords.utf8.firstRange(of: exact) != nil { return keyword }
+            if w.keywords.utf8.firstRange(of: exact) != nil {   // the more keywords say it, the closer (#683):
+                // Bulgarian's 🐱 "муцуна на котка" keeps its name as a keyword, the cat faces only "котка"
+                return keyword - w.keywords.split(separator: "|").count { (" " + $0 + " ").utf8.firstRange(of: spaced) != nil }
+            }
             if w.keywords.utf8.firstRange(of: prefix) != nil { return keyword + 1 }
             if w.name.utf8.starts(with: q) || w.name.utf8.firstRange(of: word) != nil { return keyword + 2 }
             return nil
