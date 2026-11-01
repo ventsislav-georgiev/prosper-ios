@@ -23,6 +23,29 @@ Add a machine by its Tailscale name/IP, pick a running `dch` session, and the
 exact same terminal — scrollback and all — picks up on your phone. A built-in
 demo session lets you explore without a Mac.
 
+## Keyboards
+
+The terminal's own keyboard, and Prosper as a system keyboard in every app: a toolbar of
+edit keys, the clipboard history, snippets, quicklinks, dictation and on-device rewriting,
+in any of its themes.
+
+| Terminal (Neon) | Dark | Blossom |
+|-----------------|------|---------|
+| <img src="store/keyboard/keyboard-terminal-neon.png" width="260"> | <img src="store/keyboard/keyboard-theme-dark.png" width="260"> | <img src="store/keyboard/keyboard-theme-blossom.png" width="260"> |
+| **Amber Terminal** | **True Black keys, Rose toolbar** | **Bulgarian (Teal)** |
+| <img src="store/keyboard/keyboard-theme-amber.png" width="260"> | <img src="store/keyboard/keyboard-theme-mixed.png" width="260"> | <img src="store/keyboard/keyboard-bulgarian.png" width="260"> |
+| **Hold menu** | **Appearance** | **Numbers: 123 key** |
+| <img src="store/keyboard/keyboard-menu.png" width="260"> | <img src="store/keyboard/keyboard-appearance.png" width="260"> | <img src="store/keyboard/keyboard-numbers-key.png" width="260"> |
+| **Numpad** | **Clipboard history** | **Snippets, A–Z** |
+| <img src="store/keyboard/keyboard-numpad.png" width="260"> | <img src="store/keyboard/keyboard-clipboard.png" width="260"> | <img src="store/keyboard/keyboard-snippets.png" width="260"> |
+| **Quicklinks** | **Fix, Rewrite, Summarize** | **Dictation** |
+| <img src="store/keyboard/keyboard-quicklinks.png" width="260"> | <img src="store/keyboard/keyboard-ai.png" width="260"> | <img src="store/keyboard/keyboard-dictation.png" width="260"> |
+| **Key size: Normal** | **Medium** | **Large** |
+| <img src="store/keyboard/keyboard-size-normal.png" width="260"> | <img src="store/keyboard/keyboard-size-medium.png" width="260"> | <img src="store/keyboard/keyboard-size-large.png" width="260"> |
+
+`scripts/keyboard-shots.sh <sim-udid> <derived-data>` (an iPhone Pro Max simulator) draws these
+from the real keyboard views with made-up data, and the App Store's keyboard slides with them.
+
 ## Build & run locally
 
 The Xcode project is generated from `app/project.yml` by
