@@ -26,8 +26,8 @@ demo session lets you explore without a Mac.
 ## Keyboards
 
 The terminal's own keyboard, and Prosper as a system keyboard in every app: a toolbar of
-edit keys, the clipboard history, snippets, quicklinks, dictation and on-device rewriting,
-in any of its themes.
+edit keys, the clipboard history, snippets and quicklinks (each searchable), every emoji
+group, dictation and on-device rewriting, in any of its themes.
 
 | Terminal (Neon) | Dark | Blossom |
 |-----------------|------|---------|
@@ -40,6 +40,8 @@ in any of its themes.
 | <img src="store/keyboard/keyboard-numpad.png" width="260"> | <img src="store/keyboard/keyboard-clipboard.png" width="260"> | <img src="store/keyboard/keyboard-snippets.png" width="260"> |
 | **Quicklinks** | **Fix, Rewrite, Summarize** | **Dictation** |
 | <img src="store/keyboard/keyboard-quicklinks.png" width="260"> | <img src="store/keyboard/keyboard-ai.png" width="260"> | <img src="store/keyboard/keyboard-dictation.png" width="260"> |
+| **Emoji, every group** | **Search the clipboard** | **Search snippets** |
+| <img src="store/keyboard/keyboard-emoji.png" width="260"> | <img src="store/keyboard/keyboard-clipboard-search.png" width="260"> | <img src="store/keyboard/keyboard-snippets-search.png" width="260"> |
 | **Key size: Normal** | **Medium** | **Large** |
 | <img src="store/keyboard/keyboard-size-normal.png" width="260"> | <img src="store/keyboard/keyboard-size-medium.png" width="260"> | <img src="store/keyboard/keyboard-size-large.png" width="260"> |
 

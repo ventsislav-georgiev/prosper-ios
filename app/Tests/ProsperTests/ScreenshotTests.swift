@@ -25,6 +25,7 @@ final class ScreenshotTests: XCTestCase {
     private var suite = ""
     private var window: UIWindow!
     private var saved: (Style.Palette, Style.Palette)!
+    private var savedStore = KeyboardSettings.store
     /// Every rig's views, alive until the test ends: the keyboard holds its proxy and bar weakly.
     private var kept: [AnyObject] = []
 
@@ -38,6 +39,11 @@ final class ScreenshotTests: XCTestCase {
         dir = FileManager.default.temporaryDirectory.appendingPathComponent("ScreenshotTests-\(UUID())")
         suite = "ScreenshotTests.\(UUID().uuidString)"
         saved = (Style.palette, Style.bar)
+        // The emoji picker's recents (`EmojiRecents`) from a suite of the test's own, not the App Group.
+        let recents = UserDefaults(suiteName: suite)
+        recents?.set(Self.recents, forKey: EmojiRecents.key)
+        savedStore = KeyboardSettings.store
+        KeyboardSettings.store = { recents }
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
         window = UIWindow(windowScene: scene)
         if #available(iOS 17, *) { window.traitOverrides.verticalSizeClass = .regular }
@@ -49,6 +55,7 @@ final class ScreenshotTests: XCTestCase {
         window = nil
         kept = []
         if let saved { (Style.palette, Style.bar) = saved }
+        KeyboardSettings.store = savedStore
         if let dir { try? FileManager.default.removeItem(at: dir) }
         if !suite.isEmpty { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         super.tearDown()
@@ -77,7 +84,7 @@ final class ScreenshotTests: XCTestCase {
         ("Meeting link", "https://meet.example.com/team-sync"),
         ("On my way", "On my way, see you in 10 minutes."),
         ("Out of office", "I'm out of the office until Monday."),
-        ("Sign-off", "Kind regards, and thanks again!"),
+        ("Sign-off", "Kind regards, and talk soon!"),
         ("Thanks", "Thank you so much, really!"),
         ("Wi-Fi", "Network: Guest · Password: example-guest"),
     ]
@@ -92,6 +99,10 @@ final class ScreenshotTests: XCTestCase {
         ("Recipes", "https://recipes.example.com/?q={query}"),
         ("Help center", "https://help.example.com"),
     ]
+
+    /// The emoji picker's Recents, a colourful mix from every group, four columns of five.
+    private static let recents = ["😂", "❤️", "👍", "🎉", "🔥", "😍", "🙏", "✨", "☕️", "🍕",
+                                  "🥳", "🌸", "🐶", "🌈", "🚀", "🎂", "💯", "🍓", "⚽️", "🎶"]
 
     /// The system keyboard's toolbar: the panels' keys first, then the arrows; as many as fit unscrolled.
     private static let toolbar = ["clips", "snips", "qlinks", "mic", "rewrite", "left", "right", "up", "down"]
@@ -133,6 +144,19 @@ final class ScreenshotTests: XCTestCase {
         try shot("clipboard", system(indigo) { $0.bar.showClips(true) }.image)
         try shot("snippets", system(indigo) { $0.bar.showSnippets(true) }.image)
         try shot("quicklinks", system(indigo, text: "café") { $0.bar.showQuicklinks(true) }.image)
+        // Filter mode (#665): a query typed on its own keys, two rows of ranked results.
+        try shot("clipboard-search", system(indigo) { rig in
+            rig.bar.showClips(true)
+            try self.search(rig, "exam")
+        }.image)
+        try shot("snippets-search", system(indigo) { rig in
+            rig.bar.showSnippets(true)
+            try self.search(rig, "thanks")
+        }.image)
+
+        // The picker (#664) as the hold menu's Emoji opens it, in its slide's Neon: four columns of Recents, then
+        // Smileys & People. Not five-plus of Smileys: 🫡 (the 36th) is drawn clipped on its right.
+        try shot("emoji", system(look(.neon)) { $0.kb.showEmoji(true) }.image)
 
         var daylight = look(.daylight)
         daylight.numbers = .key
@@ -166,13 +190,13 @@ final class ScreenshotTests: XCTestCase {
                   colours: (0x0B1018, 0x1A1238, 0x8B7CFF), ink: .white,
                   [shots["theme-blossom"], shots["theme-amber"], shots["theme-mixed"], shots["theme-dark"]], overlap: 0.475)   // cut between the q and a rows
         try slide("iphone67_8-clipboard", "Saved, a tap away",
-                  "Clipboard history, snippets and quicklinks.",
+                  "Clipboard, snippets and quicklinks, with search.",
                   colours: (0x080813, 0x1E1E38, 0x7075FF), ink: .white,
-                  [shots["clipboard"], shots["snippets"], shots["quicklinks"]])
+                  [shots["clipboard"], shots["snippets-search"], shots["quicklinks"]])
         try slide("iphone67_9-menu", "Everything a hold away",
-                  "Panels, numbers and the look, from the keys.",
+                  "Panels, emoji and the look, from the keys.",
                   colours: (0x05080D, 0x0B1E2E, 0x21CCFF), ink: .white,
-                  [shots["menu"], shots["appearance"], shots["numpad"]])
+                  [shots["menu"], shots["emoji"], shots["appearance"]])
         try slide("iphone67_10-ai", "Write it better, or say it",
                   "On-device Fix, Rewrite, Summarize, dictation.",
                   colours: (0xF5F0FA, 0xE3D8F0, 0x8945E3), ink: UIColor(hex: 0x241434),
@@ -269,6 +293,16 @@ final class ScreenshotTests: XCTestCase {
         return try draw(view)
     }
 
+    /// The open panel's filter mode with `query` typed into it, key by key.
+    private func search(_ rig: Rig, _ query: String) throws {
+        let panel = try XCTUnwrap(rig.bar.panel)
+        panel.filter(true)
+        let filter = try XCTUnwrap(panel.filter)
+        for c in query { filter.type(String(c)) }
+        XCTAssertGreaterThanOrEqual(filter.matches.count, 2, query)
+        rig.view.layoutIfNeeded()
+    }
+
     private func clipHistory() -> ClipboardHistory {
         let history = ClipboardHistory(dir: dir.appendingPathComponent("Clips-\(UUID())"))
         let now = Date()
@@ -293,14 +327,18 @@ final class ScreenshotTests: XCTestCase {
 
     // MARK: - Drawing
 
-    /// `view` alone in the window, `height` tall, laid out.
+    /// `view` alone in the window, `height` tall, laid out. Mid-screen, clear of the Dynamic
+    /// Island's and the home indicator's safe area, as a keyboard's view has none: at the top,
+    /// filter mode's results (#665), which reach over the bar, took the island's inset.
     private func place(_ view: UIView, height: CGFloat) throws {
         XCTAssertGreaterThan(height, 100)
         window.subviews.forEach { $0.removeFromSuperview() }
-        window.frame = CGRect(x: 0, y: 0, width: Self.width, height: height)
+        let screen = try XCTUnwrap(window.windowScene).screen.bounds
+        window.frame = CGRect(x: 0, y: ((screen.height - height) / 2).rounded(), width: Self.width, height: height)
         view.frame = window.bounds
         window.addSubview(view)
         for _ in 0..<3 { window.layoutIfNeeded() }
+        XCTAssertEqual(view.safeAreaInsets, .zero, "a keyboard has no safe area")
     }
 
     /// The view as the screen shows it, at 3x and opaque: `drawHierarchy` keeps the caps' glow
