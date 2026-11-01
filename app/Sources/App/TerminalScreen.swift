@@ -291,6 +291,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         self.tv = tv
         tv.terminalDelegate = self
         tv.restyled = { [weak self] in self?.shortcutBar?.reload() }   // its caps and backdrop (#642)
+        tv.rowsChanged = { [weak self] in self?.fitBar() }   // Hide Toolbar on the Numpad (#692)
         tv.backgroundColor = .black
         tv.nativeBackgroundColor = .black
         tv.installColors(TerminalHostVC.ansiPalette)   // vibrant 16-color ANSI (matches macOS Terminal)
@@ -1172,10 +1173,23 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         animateKeyboard(n, offset: shown ? caretLiftOffset(overlap: overlap) : 0)
     }
 
-    /// How far a keyboard at `end` (screen coordinates) reaches above the safe bottom.
+    /// How far a keyboard at `end` (screen coordinates) reaches above the safe bottom, less
+    /// the hidden bar's height it was lent (`fitBar`): the bar's place, the terminal's bottom.
     private func keyboardOverlap(_ end: CGRect) -> CGFloat {
         let safeBottomY = view.bounds.maxY - view.safeAreaInsets.bottom
-        return max(0, safeBottomY - view.convert(end, from: nil).minY)
+        let lent = (keyboardInputView as? TerminalKeyboard)?.lentHeight ?? 0
+        return max(0, safeBottomY - view.convert(end, from: nil).minY - lent)
+    }
+
+    /// Hide Toolbar on the Numpad, as the extension's (`SuggestionBar.fitRows`, #692): the bar
+    /// hides while the numpad shows and lends the keys its height. The grid keeps its size: it
+    /// ends at the bar's height, not the bar.
+    func fitBar() {
+        guard let bar = shortcutBar else { return }
+        let kb = keyboardInputView as? TerminalKeyboard
+        let hides = kb?.showsNumpad == true && kb?.settings.numpadHidesToolbar == true
+        bar.isHidden = hides
+        kb?.lentHeight = hides ? bar.bounds.height : 0
     }
 
     /// In the app the host sits in SwiftUI, which gives this view its new frame and safe
@@ -1186,6 +1200,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         fitDictationStrip()
+        fitBar()   // the bar's height after a turn
         guard kbOverlap > 0, let f = kbFrame else { return }
         let overlap = keyboardOverlap(f)
         guard overlap > 0, overlap != kbOverlap else { return }
@@ -1195,6 +1210,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     }
 
     @objc private func kbHide(_ n: Notification) {
+        (keyboardInputView as? TerminalKeyboard)?.showNumpad(false, animated: false)   // the letters next time, the bar back (#692)
         kbConstraint.constant = 0
         handle.keyboardShown = false
         kbOverlap = 0
@@ -1776,6 +1792,8 @@ private final class DchTerminalView: TerminalView {
 
     /// The compact keyboard took another theme: the host's shortcut bar follows (#642).
     var restyled: (() -> Void)?
+    /// Its rows changed what the bar should take: the numpad, Key Size, the size class (#692).
+    var rowsChanged: (() -> Void)?
 
     /// Built on first need, and only on devices that use it.
     private lazy var compactKeyboard: TerminalKeyboard = {
@@ -1784,6 +1802,8 @@ private final class DchTerminalView: TerminalView {
         kb.inputHost = self   // its height then reaches the input host (`inputHost`)
         kb.sendBytes = { [weak self] in self?.send($0) }   // through the host's send, like any key
         kb.restyled = { [weak self] in self?.restyled?() }
+        kb.rowsChanged = { [weak self] in self?.rowsChanged?() }
+        kb.allowsNumbersKey = true   // Numbers: Key here too (#692): a row shorter, the bar as it is
         kb.screenWords = { [weak self] in self.map { TerminalKeyboard.screenWords(in: $0.getTerminal()) } ?? [] }
         kb.moveCaret = { [weak self] in   // the space-bar trackpad: arrow keys, like the bar's
             guard let self else { return }
@@ -1798,6 +1818,7 @@ private final class DchTerminalView: TerminalView {
     func refreshInputView() {
         let want: UIView? = TerminalKeyboard.appliesHere && !systemKeys ? compactKeyboard : nil
         guard inputView !== want else { return }
+        (inputView as? TerminalKeyboard)?.showNumpad(false, animated: false)   // the bar back (#692)
         inputView = want
         if isFirstResponder { reloadInputViews() }
     }
@@ -1813,7 +1834,12 @@ private final class DchTerminalView: TerminalView {
         guard !inputLocked else { return false }
         if !isFirstResponder { systemKeys = false }   // a tap while up keeps the system's (#691)
         refreshInputView()
-        (inputView as? TerminalKeyboard)?.settings = .current()   // the app's Keyboard settings
+        if let kb = inputView as? TerminalKeyboard {   // every Keyboard setting the extension's takes (#692)
+            let settings = KeyboardSettings.current()
+            kb.settings = settings
+            kb.languages = settings.languages   // English first while on, the language key to switch
+            if !settings.languages.contains(kb.layout) { kb.layout = settings.languages[0] }
+        }
         return super.becomeFirstResponder()
     }
 

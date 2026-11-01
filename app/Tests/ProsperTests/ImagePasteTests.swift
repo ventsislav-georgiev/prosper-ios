@@ -569,6 +569,136 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertNil(vc.snippetsPanel, "the key again: the terminal back")
     }
 
+    /// The terminal's keyboard takes every Keyboard setting the extension's does (#692), read as
+    /// it rises: the look, Caps Lock, Preview, Keys Beside Space, Key Size, Numbers: Key (a row
+    /// shorter) and the Languages, the language key typing Cyrillic into the pty. Never a globe,
+    /// and the bar keeps its rows whatever Toolbar Rows says. A throwaway App Group.
+    func testTheTerminalsKeyboardSharesTheKeyboardSettings() async throws {
+        let saved = (TerminalKeyboard.hardwareKeyboardConnected, KeyboardSettings.store)
+        TerminalKeyboard.hardwareKeyboardConnected = { false }
+        let suite = "ImagePasteTests.shared.\(UUID())", group = try XCTUnwrap(UserDefaults(suiteName: suite))
+        KeyboardSettings.store = { group }
+        defer {
+            (TerminalKeyboard.hardwareKeyboardConnected, KeyboardSettings.store) = saved
+            group.removePersistentDomain(forName: suite)
+        }
+        try XCTSkipUnless(TerminalKeyboard.appliesHere, "iPhone only")
+        let (vc, spy) = try await makeVC()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = vc
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let (bar, tv) = try barAndTerminal(vc)
+        let rows = bar.intrinsicContentSize.height
+        typealias K = KeyboardSettings.Key
+        for (key, value) in [(K.theme, "light"), (K.toolbarTheme, "neon"), (K.accent, "blue"), (K.keySize, "large"),
+                             (K.numbers, "key"), (K.toolbarRows, "one"), (K.bottomHidden, "/?"),
+                             (K.languages, "bulgarian,english")] { group.set(value, forKey: key) }
+        group.set(false, forKey: K.capsLock)
+        group.set(false, forKey: K.characterPreview)
+
+        XCTAssertTrue(tv.becomeFirstResponder())
+        let kb = try XCTUnwrap(vc.keyboardInputView as? TerminalKeyboard)
+        XCTAssertEqual(kb.settings, KeyboardSettings(group), "every setting, as the extension reads them")
+        XCTAssertEqual(kb.settings.keySize, .large)
+        XCTAssertEqual(TerminalKeyboard.Style.palette, TerminalKeyboard.Style.Palette(kb.settings))
+        XCTAssertEqual(kb.languages, [.english, .bulgarian])
+        XCTAssertEqual(kb.layout, .english, "English first while it's on")
+        XCTAssertTrue(kb.numbersKey)
+        XCTAssertEqual(kb.shownKeys.count, 4, "no digit row")
+        XCTAssertEqual(kb.shownKeys.last, [.numbers, .language, .char("."), .char(","), .space, .emoji, .ret],
+                       "123, the language key, Keys Beside Space; no globe")
+        XCTAssertFalse(kb.showsGlobe)
+        XCTAssertEqual(bar.intrinsicContentSize.height, rows, "the bar's rows, whatever Toolbar Rows says")
+
+        kb.press(.language)
+        XCTAssertEqual(kb.layout, .bulgarian)
+        let before = spy.sent.count
+        kb.press(.char("я"))
+        XCTAssertEqual(Array(spy.sent[before...]), [Array("я".utf8)], "typed, not pasted")
+        _ = tv.resignFirstResponder()
+        XCTAssertTrue(tv.becomeFirstResponder())
+        XCTAssertEqual(kb.layout, .bulgarian, "kept while it's on")
+        group.set("english", forKey: K.languages)
+        group.set("row", forKey: K.numbers)
+        _ = tv.resignFirstResponder()
+        XCTAssertTrue(tv.becomeFirstResponder())
+        XCTAssertEqual(kb.layout, .english, "back to one that's on")
+        XCTAssertNil(kb.nextLanguage)
+        XCTAssertEqual(kb.shownKeys.first, TerminalKeyboard.rows[0], "Row: the digits back")
+        XCTAssertFalse(kb.shownKeys.joined().contains(.language))
+    }
+
+    /// Hide Toolbar on the Numpad in the terminal (#692), as in the extension: the bar hides while
+    /// the numpad shows and lends the keys its height, then comes back with the letters, or as the
+    /// keyboard goes down. Off, the bar stays.
+    func testHideToolbarOnTheNumpadHidesTheTerminalsBar() async throws {
+        let saved = (TerminalKeyboard.hardwareKeyboardConnected, KeyboardSettings.store)
+        TerminalKeyboard.hardwareKeyboardConnected = { false }
+        let suite = "ImagePasteTests.numpad.\(UUID())", group = try XCTUnwrap(UserDefaults(suiteName: suite))
+        KeyboardSettings.store = { group }
+        defer {
+            (TerminalKeyboard.hardwareKeyboardConnected, KeyboardSettings.store) = saved
+            group.removePersistentDomain(forName: suite)
+        }
+        try XCTSkipUnless(TerminalKeyboard.appliesHere, "iPhone only")
+        let (vc, _) = try await makeVC()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = vc
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let (bar, tv) = try barAndTerminal(vc)
+        group.set(true, forKey: KeyboardSettings.Key.numpadHidesToolbar)
+        XCTAssertTrue(tv.becomeFirstResponder())
+        let kb = try XCTUnwrap(vc.keyboardInputView as? TerminalKeyboard)
+        vc.view.layoutIfNeeded()
+        XCTAssertGreaterThan(bar.bounds.height, 0)
+        // The keyboard's frame as iOS posts it, its height the keys' and what they were lent;
+        // where the bar's place starts (its top, hidden or not) and the terminal's size and lift.
+        let keys: CGFloat = 300
+        func frame(line: UInt = #line) -> (top: CGFloat, size: CGSize, lift: CGFloat) {
+            let h = keys + kb.lentHeight
+            kb.frame.size.height = h   // kbChange takes a keyboard in a window at its own height
+            NotificationCenter.default.post(name: UIResponder.keyboardWillChangeFrameNotification, object: nil, userInfo: [
+                UIResponder.keyboardFrameEndUserInfoKey: NSValue(cgRect: CGRect(x: 0, y: window.bounds.maxY - h, width: window.bounds.width, height: h))])
+            vc.view.layoutIfNeeded()
+            return (bar.frame.minY, tv.bounds.size, tv.transform.ty)
+        }
+        tv.feed(text: String(repeating: "$ ls\r\n", count: 60))   // content to the bottom: a full lift
+        let letters = frame()
+
+        kb.showNumpad(true, animated: false)   // the menu's Numbers, with Row
+        XCTAssertTrue(kb.showsNumpad)
+        XCTAssertTrue(bar.isHidden)
+        XCTAssertEqual(kb.lentHeight, bar.bounds.height)
+        let numpad = frame()
+        XCTAssertEqual(numpad.top, letters.top, accuracy: 0.5, "the hidden bar's place: the keyboard's top, as before")
+        XCTAssertEqual(numpad.size, letters.size, "the grid keeps its size")
+        XCTAssertEqual(numpad.lift, letters.lift, accuracy: 0.5, "the content doesn't jump")
+        kb.press(.numbers)   // ABC
+        XCTAssertFalse(bar.isHidden)
+        XCTAssertEqual(kb.lentHeight, 0)
+        let back = frame()
+        XCTAssertEqual(back.top, letters.top, accuracy: 0.5)
+        XCTAssertEqual(back.lift, letters.lift, accuracy: 0.5)
+
+        kb.showNumpad(true, animated: false)
+        XCTAssertTrue(bar.isHidden)
+        NotificationCenter.default.post(name: UIResponder.keyboardWillHideNotification, object: nil)
+        XCTAssertFalse(kb.showsNumpad, "the letters the next time up")
+        XCTAssertFalse(bar.isHidden, "the bar back at rest")
+        XCTAssertEqual(kb.lentHeight, 0)
+
+        group.set(false, forKey: KeyboardSettings.Key.numpadHidesToolbar)
+        _ = tv.resignFirstResponder()
+        XCTAssertTrue(tv.becomeFirstResponder())
+        kb.showNumpad(true, animated: false)
+        XCTAssertFalse(bar.isHidden, "off: the bar stays")
+        XCTAssertEqual(kb.lentHeight, 0)
+    }
+
     /// The menu key (#691), not in the defaults: the system keyboard toggle's menu over the
     /// terminal, the key again or a tap off closing it. The panels with the keyboard down; up,
     /// Prosper's Emoji, Numbers and Appearance too, Next Keyboard with two system keyboards, never

@@ -1117,8 +1117,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         "з": "_", "ь": "$", "ц": "\"", "ж": "'", "б": ":", "н": ";", "м": "/",
     ]
 
-    /// A keyboard's letters and their dictionary: English for the app's terminal, Bulgarian
-    /// for the Bulgarian extension (`init(extension:)`), and in the Prosper extension the
+    /// A keyboard's letters and their dictionary: Bulgarian for the Bulgarian extension
+    /// (`init(extension:)`), and in the Prosper extension and the app's terminal (#692) the
     /// one of its `languages` it switched to (#624).
     ///
     /// ponytail: two hand-written layouts. A third language means a table per layout
@@ -1213,8 +1213,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             if settings.numpadHidesToolbar != oldValue.numpadHidesToolbar || settings.toolbarRows != oldValue.toolbarRows { rowsChanged?() }
         }
     }
-    /// Numbers: Key may apply (#625): the extension's controller sets it. The app's keyboard
-    /// keeps the digit row whatever the setting says: it has no toolbar to take the row.
+    /// Numbers: Key may apply (#625): the extension's controller sets it, and the terminal's
+    /// since #692, whose bar stays as it is: a keyboard a row shorter, as Toolbar Rows: One.
     var allowsNumbersKey = false { didSet { if allowsNumbersKey != oldValue { numbersChanged() } } }
     /// No digit row, a 123 key instead (`build`).
     var numbersKey: Bool { allowsNumbersKey && settings.numbers == .key }
@@ -1367,7 +1367,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             layoutChanged?(layout)
         }
     }
-    /// What the Prosper extension switches between (#624): its Languages setting. Under two,
+    /// What the Prosper extension and the terminal switch between (#624, #692): the Languages setting. Under two,
     /// the toggle's menu has no language and the bottom row no language key (#638).
     var languages: [Layout] = [] { didSet { if languages != oldValue { build() } } }
     /// What the language key switches to: the one after `layout`, wrapping. Nil under two.

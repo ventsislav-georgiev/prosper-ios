@@ -245,7 +245,7 @@ struct SettingsView: View {
                 Picker("Key Size", selection: $keySize) {
                     ForEach(KeyboardSettings.KeySize.allCases, id: \.self) { Text($0.rawValue.capitalized) }
                 }
-                // #625: the system keyboard only; the terminal's keeps its digit row.
+                // #625; the terminal's too since #692, a row shorter.
                 Picker("Numbers", selection: $numbers) {
                     ForEach(KeyboardSettings.Numbers.allCases, id: \.self) { Text($0.rawValue.capitalized) }
                 }
@@ -258,10 +258,10 @@ struct SettingsView: View {
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows. Numbers: Key swaps the digit row in other apps for a 123 key that opens a numpad, and gives the toolbar a second row in its place, or with Toolbar Rows: One a keyboard a row shorter; with Row, hold the toolbar toggle and pick Numbers for the numpad. The themes and Accent apply to both keyboards: the Toolbar Theme to the toolbar's keys, the Keys Theme to the rest. The accent lights return, send and the toolbar's held keys in Dark, Light and True Black.")
+                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. The terminal's keyboard follows them too, from the next time it shows, but Auto-Capitalization, Auto-Correction and Predictive Text, which would change what you type into the shell. Key Size makes the rows taller in portrait. Numbers: Key swaps the digit row for a 123 key that opens a numpad; in other apps the toolbar gets a second row in its place, or with Toolbar Rows: One the keyboard is a row shorter, as it always is in the terminal, whose Shortcut Keys keep their own rows; with Row, hold the toolbar toggle and pick Numbers for the numpad. The themes and Accent apply to both keyboards: the Toolbar Theme to the toolbar's keys, the Keys Theme to the rest. The accent lights return, send and the toolbar's held keys in Dark, Light and True Black.")
             }
 
-            // The Prosper keyboard's languages (#624); the terminal's keyboard stays English.
+            // The Prosper keyboard's languages (#624), the terminal's too (#692).
             Section {
                 ForEach(TerminalKeyboard.Layout.allCases, id: \.self) { language in
                     let on = KeyboardSettings.languages(languages)
@@ -276,7 +276,7 @@ struct SettingsView: View {
             } header: {
                 Text("Keyboard Languages")
             } footer: {
-                Text("Two ways to type in both. One Prosper keyboard: turn both on here, then switch with its language key or the menu a hold on its toolbar toggle opens; needs Full Access. Or a keyboard per language: also add Prosper (Bulgarian) in Settings › General › Keyboard › Keyboards and switch with the globe; each opens in its own language. With Bulgarian off here, neither shows the language key.")
+                Text("Two ways to type in both. One Prosper keyboard: turn both on here, then switch with its language key or the menu a hold on its toolbar toggle opens; needs Full Access. Or a keyboard per language: also add Prosper (Bulgarian) in Settings › General › Keyboard › Keyboards and switch with the globe; each opens in its own language. With Bulgarian off here, neither shows the language key. The terminal's keyboard has the language key too, each session opening in English while it's on.")
             }
 
             Section {

@@ -111,7 +111,7 @@ final class NumbersKeyTests: XCTestCase {
 
     // MARK: Row and Key
 
-    func testRowKeepsTheDigitRowAndTheAppsKeyboardAlwaysDoes() {
+    func testRowKeepsTheDigitRowAndABareKeyboardAlwaysDoes() {
         let (kb, bar, _, _) = rig(numbers: .row)
         XCTAssertEqual(kb.shownKeys.map(chars), ["1234567890", "qwertyuiop", "asdfghjkl", "|zxcvbnm|", ".,/|?|"])
         XCTAssertFalse(kb.shownKeys.joined().contains(.numbers))
@@ -119,9 +119,9 @@ final class NumbersKeyTests: XCTestCase {
         bar.showsToolbar = true
         XCTAssertFalse(try XCTUnwrap(bar.toolbar).twoRows)
 
-        let app = TerminalKeyboard()   // the terminal's: no toolbar, `allowsNumbersKey` never set
+        let app = TerminalKeyboard()   // `allowsNumbersKey` never set; the terminal's sets it (#692)
         app.settings.numbers = .key
-        XCTAssertEqual(app.shownKeys.first.map(chars), "1234567890", "the app's keyboard keeps its digits")
+        XCTAssertEqual(app.shownKeys.first.map(chars), "1234567890", "a bare keyboard keeps its digits")
         XCTAssertFalse(app.shownKeys.joined().contains(.numbers))
     }
 
