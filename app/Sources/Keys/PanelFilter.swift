@@ -32,6 +32,9 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
     private(set) var matches: [Int]
     /// The 123 keys in the letters' place.
     private(set) var digits = false
+    /// The letters shown: `layout`'s, or English's after the language key (#680), so a
+    /// Bulgarian keyboard can type English words too. Fresh each time filter mode opens.
+    private(set) var letters: TerminalKeyboard.Layout
     /// Result rows the keys leave room for: one where two would take them under their
     /// minimum (a panel not stretched over the bar, `KeysPanel.overBar`).
     private(set) var shown = 2
@@ -50,11 +53,14 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
     /// The letter or symbol keys, by row; the specials stay.
     private(set) var rows: [[UIButton]] = []
     let toggle = Key(special: true), delete = Key(special: true), space = Key(special: false), go = Key(special: false)
+    /// Before space, the keys' language key (#638): only over a non-English layout.
+    let language = Key(special: true)
 
     init(placeholder: String, layout: TerminalKeyboard.Layout, fields: [[String]], grid: UICollectionView? = nil,
          rank ranker: ((String) -> [Int])? = nil) {
         self.placeholder = placeholder
         self.layout = layout
+        letters = layout
         self.fields = fields
         self.grid = grid
         self.ranker = ranker
@@ -109,6 +115,8 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         }, for: .touchDown)
         delete.addAction(UIAction { [weak self] _ in self?.repeater.stop() },
                          for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        language.isHidden = layout == .english
+        language.addAction(UIAction { [weak self] _ in self?.switchLanguage() }, for: .touchUpInside)
         space.configuration?.title = "space"
         space.accessibilityLabel = "Space"
         space.addAction(UIAction { [weak self] _ in self?.type(" ") }, for: .touchUpInside)
@@ -117,7 +125,7 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         go.accessibilityLabel = "Pick the first result"
         go.addAction(UIAction { [weak self] _ in self?.pickFirst() }, for: .touchUpInside)
         results.isHidden = grid != nil
-        for v in [field, done, results, none, toggle, delete, space, go] + (grid.map { [$0] } ?? []) { addSubview(v) }
+        for v in [field, done, results, none, toggle, delete, language, space, go] + (grid.map { [$0] } ?? []) { addSubview(v) }
         buildKeys()
         refilter(announce: false)
     }
@@ -229,13 +237,13 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         if announce { UIAccessibility.post(notification: .announcement, argument: count) }
     }
 
-    /// The letters of `layout`, or the 123 keys: the digit row, the numpad's symbols, a few more.
+    /// The letters of `letters`, or the 123 keys: the digit row, the numpad's symbols, a few more.
     private func buildKeys() {
         rows.joined().forEach { $0.removeFromSuperview() }
         let symbols = String(TerminalKeyboard.numpadRows.joined().compactMap {
             if case .char(let c) = $0, Int(c) == nil { return Character(c) } else { return nil }
         })
-        let chars: [[Character]] = digits ? [Array("1234567890"), Array(symbols), Array("_#&+'?!")] : layout.letterRows
+        let chars: [[Character]] = digits ? [Array("1234567890"), Array(symbols), Array("_#&+'?!")] : letters.letterRows
         rows = chars.map { row in
             row.map { c in
                 let key = Key(special: false)
@@ -252,6 +260,9 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         }
         toggle.configuration?.title = digits ? "ABC" : "123"
         toggle.accessibilityLabel = digits ? "Letters" : "Numbers"
+        let next: TerminalKeyboard.Layout = letters == layout ? .english : layout
+        language.configuration?.title = next.short
+        language.accessibilityLabel = "Switch to \(next.name)"
         setNeedsLayout()
     }
 
@@ -271,6 +282,14 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
     private func switchKeys() {
         UIDevice.current.playInputClick()
         digits.toggle()
+        buildKeys()
+    }
+
+    /// The other layout's letters, from the 123 keys too.
+    private func switchLanguage() {
+        UIDevice.current.playInputClick()
+        letters = letters == layout ? .english : layout
+        digits = false
         buildKeys()
     }
 
@@ -298,8 +317,8 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         results.rowHeight = resultsHeight / max(1, (resultsHeight / Self.rowHeight).rounded(.down))
         clipFoot()
 
-        // Keys a column wide, the longest row's (Bulgarian's 11) or 10; 123 and delete flank the
-        // third row as shift and delete do on the keys.
+        // Keys a column wide, the longest row's (Bulgarian's 11) or 10, English's too on
+        // Bulgarian; 123 and delete flank the third row as shift and delete do on the keys.
         let columns = CGFloat(max(layout.columns, 10)), keyGap: CGFloat = 5
         let unit = (width - (columns - 1) * keyGap) / columns
         var y = results.frame.maxY + gap
@@ -315,7 +334,9 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
             y += keyRow + gap
         }
         let goWidth = unit * 2.5 + keyGap
-        space.frame = CGRect(x: x0, y: y, width: width - goWidth - keyGap, height: keyRow)
+        let lead = language.isHidden ? 0 : unit * 1.5 + keyGap
+        language.frame = CGRect(x: x0, y: y, width: unit * 1.5, height: keyRow)
+        space.frame = CGRect(x: x0 + lead, y: y, width: width - goWidth - keyGap - lead, height: keyRow)
         go.frame = CGRect(x: x0 + width - goWidth, y: y, width: goWidth, height: keyRow)
     }
 

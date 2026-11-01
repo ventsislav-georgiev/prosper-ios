@@ -385,6 +385,50 @@ final class PanelFilterTests: XCTestCase {
         XCTAssertNil(AppearancePanel(settings: KeyboardSettings(), enabled: true).search, "a panel with no list has no search row")
     }
 
+    /// On Bulgarian the language key before space switches the letters to English's and back
+    /// (#680), from the 123 keys too; what it types filters. English has none.
+    func testBulgarianLanguageKeySwitchesToEnglishLettersAndBack() throws {
+        let store = SnippetStore(url: dir.appendingPathComponent("Snippets/snippets.json"))
+        XCTAssertTrue(store.save(.init(snippets: [.init(name: "Адрес", text: "ул. Шипка 1"), .init(name: "Deploy", text: "make ship")])))
+        let english = SnippetPanel(store: store)
+        english.frame = CGRect(x: 0, y: 0, width: 390, height: 264)
+        XCTAssertTrue(try open(english).language.isHidden, "none on English")
+
+        let panel = SnippetPanel(store: store)
+        panel.frame = english.frame
+        panel.layout = .bulgarian
+        let filter = try open(panel)
+        filter.layoutIfNeeded()
+        func letters() -> [String] { filter.rows.map { $0.compactMap { $0.configuration?.title }.joined() } }
+        let cyrillic = ["явертъуиопю", "асдфгхйклшщ", "зьцжбнмч"]
+        XCTAssertEqual(letters(), cyrillic)
+        XCTAssertFalse(filter.language.isHidden)
+        XCTAssertEqual(filter.language.configuration?.title, "EN")
+        XCTAssertEqual(filter.language.accessibilityLabel, "Switch to English")
+        XCTAssertLessThan(filter.language.frame.maxX, filter.space.frame.minX, "before space")
+        XCTAssertEqual(filter.language.frame.minY, filter.space.frame.minY)
+
+        filter.language.sendActions(for: .touchUpInside)
+        XCTAssertEqual(letters(), ["qwertyuiop", "asdfghjkl", "zxcvbnm"])
+        XCTAssertEqual(filter.language.configuration?.title, "БГ")
+        try type("ship", filter)
+        XCTAssertEqual(filter.query, "ship")
+        XCTAssertEqual(names(filter, panel), ["Deploy"], "English typed on Bulgarian filters")
+
+        filter.toggle.sendActions(for: .touchUpInside)
+        XCTAssertTrue(filter.digits)
+        filter.language.sendActions(for: .touchUpInside)
+        XCTAssertFalse(filter.digits, "from the 123 keys, the letters")
+        XCTAssertEqual(letters(), cyrillic, "and back")
+        XCTAssertEqual(filter.language.configuration?.title, "EN")
+        filter.clear.sendActions(for: .touchUpInside)
+        try type("шип", filter)
+        XCTAssertEqual(names(filter, panel), ["Адрес"])
+
+        filter.done.sendActions(for: .touchUpInside)
+        XCTAssertEqual(try open(panel).letters, .bulgarian, "fresh on the next open")
+    }
+
     // MARK: - Helpers
 
     /// Every row the card shows is whole, none under 38 pt, a subtitle inside its cell (#674).

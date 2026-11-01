@@ -504,6 +504,18 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertNil(picker.filter, "ABC's way out closes it too")
     }
 
+    /// On the Bulgarian keys the language key types English's words (#680): "pie" finds 🥧.
+    func testBulgarianSearchTypesEnglishAfterTheLanguageKey() throws {
+        let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight))
+        picker.layout = .bulgarian
+        picker.search(true)
+        let filter = try XCTUnwrap(picker.filter)
+        XCTAssertNil(filter.rows.joined().first { $0.configuration?.title == "p" }, "Cyrillic keys first")
+        filter.language.sendActions(for: .touchUpInside)
+        try type("pie", filter)
+        XCTAssertEqual(filter.matches.first.map { filter.fields[$0][0] }, "🥧")
+    }
+
     /// The search's words parse into slices of the literals as it opens (#666): English and
     /// Bulgarian's under 1 MB of heap, the search with its keys under 3 MB of footprint. Then
     /// every page of a query matching hundreds, drawn at 3x, keeps the grid's budget: the same
