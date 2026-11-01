@@ -264,13 +264,26 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
             renew(size: font.pointSize)
             drawn = [e]
         }
-        let attributes: [NSAttributedString.Key: Any] = [.font: font]
-        let format = UIGraphicsImageRendererFormat.preferred()
-        format.preferredRange = .standard
-        cell.emoji.image = UIGraphicsImageRenderer(size: (e as NSString).size(withAttributes: attributes), format: format)
-            .image { _ in (e as NSString).draw(at: .zero, withAttributes: attributes) }
+        cell.emoji.image = Self.image(e, font: font)
         cell.accessibilityLabel = e   // VoiceOver speaks its name
         return cell
+    }
+
+    /// `e` drawn in `font`, sized to the union of its advance and its ink: some glyphs (🫡)
+    /// ink past their advance, and an image the advance's size cut them off (#673).
+    static func image(_ e: String, font: UIFont) -> UIImage {
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: e, attributes: [.font: font]))
+        var ascent: CGFloat = 0, descent: CGFloat = 0
+        let width = CTLineGetTypographicBounds(line, &ascent, &descent, nil)
+        let box = CGRect(x: 0, y: -descent, width: width, height: ascent + descent)
+            .union(CTLineGetImageBounds(line, nil)).integral   // y up, from the baseline
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.preferredRange = .standard
+        return UIGraphicsImageRenderer(size: box.size, format: format).image { c in
+            c.cgContext.translateBy(x: -box.minX, y: box.maxY)
+            c.cgContext.scaleBy(x: 1, y: -1)
+            CTLineDraw(line, c.cgContext)
+        }
     }
 
     private func renew(size: CGFloat) {

@@ -1,6 +1,7 @@
 import XCTest
 import UIKit
 import CoreText
+import Accelerate
 @testable import Prosper
 
 /// The emoji key and its picker (#515): the key among Keys Beside Space, the picker in
@@ -306,6 +307,40 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertEqual(seen.subtracting(EmojiPicker.groups.joined()), [], "only emoji")
         XCTAssertEqual(Set(EmojiPicker.groups.joined()).subtracting(seen), [], "every group drawn")
         XCTAssertLessThan(peak, 15)
+    }
+
+    /// Every emoji's image holds all its ink, not only its advance's width: 🫡 inks past
+    /// its right side and was drawn cut off (#673). Its ink summed over the image's pixels
+    /// against the same line drawn in a roomy canvas. A fresh font per group, as the picker renews.
+    func testNoEmojiIsClipped() throws {
+        func ink(_ image: UIImage) -> Int {   // its pixels' alpha, summed, in 8-bit RGBA whatever it was drawn in
+            guard let cg = image.cgImage, let c = CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8, bytesPerRow: cg.width * 4,
+                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let bytes = c.data
+            else { XCTFail("no bitmap"); return 0 }
+            c.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+            var alpha = [Float](repeating: 0, count: cg.width * cg.height), sum: Float = 0
+            vDSP_vfltu8(bytes.assumingMemoryBound(to: UInt8.self) + 3, 4, &alpha, 1, vDSP_Length(alpha.count))
+            vDSP_sve(alpha, 1, &sum, vDSP_Length(alpha.count))
+            return Int(sum)
+        }
+        var clipped: [String] = []
+        for group in EmojiPicker.groups {
+            let font = try XCTUnwrap(EmojiPicker.emojiFont(size: 30))
+            for e in group {
+                let drawn = EmojiPicker.image(e, font: font)
+                let format = UIGraphicsImageRendererFormat()
+                format.scale = drawn.scale
+                let roomy = UIGraphicsImageRenderer(size: CGSize(width: 90, height: 90), format: format).image { c in
+                    c.cgContext.translateBy(x: 30, y: 60)
+                    c.cgContext.scaleBy(x: 1, y: -1)
+                    c.cgContext.textPosition = .zero
+                    CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: e, attributes: [.font: font])), c.cgContext)
+                }
+                let all = ink(roomy)
+                if all - ink(drawn) > all / 100 { clipped.append(e) }
+            }
+        }
+        XCTAssertEqual(clipped, [], "\(clipped.count) clipped")
     }
 
     // MARK: Search (#666)
