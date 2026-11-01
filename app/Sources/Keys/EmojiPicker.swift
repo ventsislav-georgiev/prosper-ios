@@ -1,4 +1,5 @@
 import UIKit
+import CoreText
 
 /// The emoji most recently typed from the picker: newest first, each once, at most
 /// `limit`. Kept in the App Group beside the Keyboard settings, so the app's keyboard and
@@ -26,15 +27,14 @@ struct EmojiRecents: Equatable {
 /// The emoji key's page (`TerminalKeyboard.Key.emoji`) in the app's keyboard, whose ASCII
 /// field leaves out iOS's own emoji, and the toggle menu's Emoji in the extension's, which
 /// can't switch to iOS's (#629). It takes the
-/// caps' place at their height: a grid scrolling sideways through Recents and the nine
-/// Unicode groups (`EmojiData`), over a bar of ABC (back to the letters), a button per
-/// group and delete. Its touches stay its own: the keyboard's tracker ignores every touch
-/// while it shows (`TerminalKeyboard.track`).
+/// caps' place at their height: a grid scrolling sideways through Recents and every group
+/// iOS's own emoji keyboard has (`groups`, #664), over a bar of ABC (back to the letters),
+/// a button per group and delete. Its touches stay its own: the keyboard's tracker ignores
+/// every touch while it shows (`TerminalKeyboard.track`).
 ///
-/// The group last picked in the bar is lit in the accent (#626).
+/// The group in view is lit in the accent (#626), as the grid scrolls or a bar tap moves it.
 ///
-/// ponytail: delete doesn't repeat while held, and the bar doesn't follow the scroll to
-/// light the group in view. Add both if the picker sees heavy use.
+/// ponytail: delete doesn't repeat while held. Add it if the picker sees heavy use.
 final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDelegate {
     typealias Style = TerminalKeyboard.Style
     /// What a cell types, delete, and ABC: the keyboard's.
@@ -42,15 +42,44 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     var delete: () -> Void = {}
     var letters: () -> Void = {}
 
-    static let groups = EmojiData.groups.map { $0.emoji.split(whereSeparator: \.isWhitespace).map(String.init) }
-    static let frequent = EmojiData.frequent.split(whereSeparator: \.isWhitespace).map(String.init)
-    /// Recents, then each of `EmojiData.groups`.
-    static let symbols = ["clock", "face.smiling", "hand.wave", "pawprint", "fork.knife", "car",
-                          "sportscourt", "lightbulb", "heart", "flag"]
+    /// iOS's emoji keyboard's groups, its names and order, each Unicode's (`EmojiData`)
+    /// under it, and the bar's symbol.
+    static let native: [(name: String, symbol: String, unicode: [String])] = [
+        ("Smileys & People", "face.smiling", ["Smileys & Emotion", "People & Body"]),
+        ("Animals & Nature", "pawprint", ["Animals & Nature"]),
+        ("Food & Drink", "fork.knife", ["Food & Drink"]),
+        ("Activity", "sportscourt", ["Activities"]),
+        ("Travel & Places", "car", ["Travel & Places"]),
+        ("Objects", "lightbulb", ["Objects"]),
+        ("Symbols", "heart", ["Symbols"]),
+        ("Flags", "flag", ["Flags"]),
+    ]
+    /// Each of `native`'s emoji, without the newer ones this iOS can't draw.
+    static let groups: [[String]] = native.map { g in
+        EmojiData.groups.filter { g.unicode.contains($0.name) }.flatMap { words($0.emoji) }.filter { !undrawable.contains($0) }
+    }
+    static let frequent = words(EmojiData.frequent)
+    /// Recents, then each of `native`.
+    static let symbols = ["clock"] + native.map(\.symbol)
+    /// The emoji newer than 14.0 (`EmojiData.newer`) this iOS's Apple Color Emoji lacks.
+    static let undrawable = Set(EmojiData.newer.flatMap { words($0.emoji) }.filter { !draws($0) })
+    private static func words(_ s: String) -> [String] { s.split(whereSeparator: \.isWhitespace).map(String.init) }
+
+    /// Whether Apple Color Emoji itself draws `e` as one glyph: a codepoint it lacks shapes
+    /// to .notdef or a fallback font's box, a sequence it lacks to several glyphs.
+    static func draws(_ e: String) -> Bool {
+        let font = CTFontCreateWithName("AppleColorEmoji" as CFString, 20, nil)
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: e, attributes: [.font: font]))
+        guard CTLineGetGlyphCount(line) == 1, let run = (CTLineGetGlyphRuns(line) as? [CTRun])?.first,
+              let used = (CTRunGetAttributes(run) as? [NSAttributedString.Key: Any])?[.font] else { return false }
+        var glyph = CGGlyph(0)
+        CTRunGetGlyphs(run, CFRange(location: 0, length: 1), &glyph)
+        return glyph != 0 && CTFontCopyPostScriptName(used as! CTFont) as String == "AppleColorEmoji"
+    }
     private(set) var recents = EmojiRecents()
-    /// Every group after Recents (the app's keyboard), or `frequent` only (the system
-    /// keyboards', #629): drawn glyphs stay decoded for the process's life, and the full
-    /// grid's outgrow an extension's memory (#515).
+    /// Every group, or Recents and `frequent` only (#629): the system keyboards' when the
+    /// picker can't have a font of its own (`makeFont`), as the shared one's glyphs outgrow
+    /// an extension's memory. The app's keyboard has the memory.
     let full: Bool
     /// Where recents are kept (`EmojiRecents.store`): the keyboard's, set before `reload`.
     var fullAccess = true
@@ -59,9 +88,21 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     let grid = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewFlowLayout())
     private let bar = UIStackView()
     private(set) var groupButtons: [UIButton] = []
+    /// What the cells are drawn in (`emojiFont`). A font keeps every glyph it drew decoded
+    /// while it lives, and every group's outgrow an extension's memory (#515: +96 MB at
+    /// the cells' size); so past `glyphCap` new emoji a fresh instance takes over, and the
+    /// old one's glyphs go once it draws: +9 MB for every group (#664). Drawn into images,
+    /// not by labels, whose text caches keep the fonts they drew with (+28 MB).
+    private var font: UIFont
+    private var drawn = Set<String>()
+    static let glyphCap = 150
+    /// `emojiFont`, or nil where a test plays a read that failed.
+    static var makeFont: (CGFloat) -> UIFont? = emojiFont(size:)
 
-    init(frame: CGRect = .zero, full: Bool = true) {
-        self.full = full
+    init(frame: CGRect = .zero, inApp: Bool = true) {
+        let own = Self.makeFont(17)
+        font = own ?? .systemFont(ofSize: 17)
+        full = inApp || own != nil
         super.init(frame: frame)
         let flow = grid.collectionViewLayout as! UICollectionViewFlowLayout
         flow.scrollDirection = .horizontal
@@ -77,7 +118,7 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         bar.distribution = .fillEqually
         bar.spacing = 2
         bar.addArrangedSubview(button(title: "ABC", label: "letters", fill: Style.surface) { [weak self] in self?.letters() })
-        let names = ["Recents"] + (full ? EmojiData.groups.map(\.name) : ["Frequent"])
+        let names = ["Recents"] + (full ? Self.native.map(\.name) : ["Frequent"])
         for (section, (symbol, name)) in zip(full ? Self.symbols : ["clock", "star"], names).enumerated() {
             let b = button(image: symbol, label: name) { [weak self] in self?.show(section) }
             groupButtons.append(b)
@@ -118,13 +159,24 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
 
     /// The bar's group button: the grid scrolls to its first emoji.
     func show(_ section: Int) {
-        light(section)
-        guard !sections[section].isEmpty else { return grid.setContentOffset(.zero, animated: false) }
-        grid.scrollToItem(at: IndexPath(item: 0, section: section), at: .left, animated: false)
+        if sections[section].isEmpty {
+            grid.setContentOffset(.zero, animated: false)
+        } else {
+            grid.scrollToItem(at: IndexPath(item: 0, section: section), at: .left, animated: false)
+        }
+        light(section)   // the one tapped, though the end of the grid may show the one before
     }
 
     private func light(_ section: Int) {
         for (i, b) in groupButtons.enumerated() { b.tintColor = i == section ? Style.accent : Style.hint }
+    }
+
+    /// The group at the grid's left edge, lit as the grid scrolls.
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        let x = grid.contentOffset.x + 1
+        light(sections.indices.last { s in
+            !sections[s].isEmpty && (grid.layoutAttributesForItem(at: IndexPath(item: 0, section: s))?.frame.minX ?? .infinity) <= x
+        } ?? 0)
     }
 
     override func layoutSubviews() {
@@ -139,6 +191,8 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         if flow.itemSize.height != side {
             flow.itemSize = CGSize(width: side, height: side)
             flow.invalidateLayout()
+            renew(size: side * 0.7)
+            grid.reloadData()
         }
     }
 
@@ -150,9 +204,36 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "e", for: indexPath) as! Cell
         let e = sections[indexPath.section][indexPath.item]
-        cell.label.text = e
+        if drawn.insert(e).inserted, drawn.count > Self.glyphCap {
+            renew(size: font.pointSize)
+            drawn = [e]
+        }
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.preferredRange = .standard
+        cell.emoji.image = UIGraphicsImageRenderer(size: (e as NSString).size(withAttributes: attributes), format: format)
+            .image { _ in (e as NSString).draw(at: .zero, withAttributes: attributes) }
         cell.accessibilityLabel = e   // VoiceOver speaks its name
         return cell
+    }
+
+    private func renew(size: CGFloat) {
+        font = Self.makeFont(size) ?? .systemFont(ofSize: size)
+        drawn = []
+    }
+
+    /// Apple Color Emoji at `size`, an instance of its own read from the font's file: the
+    /// system's shared one keeps every glyph it drew for the process's life. Nil if the
+    /// file can't be read.
+    static func emojiFont(size: CGFloat) -> UIFont? {
+        let shared = CTFontCreateWithName("AppleColorEmoji" as CFString, size, nil)
+        let name = CTFontCopyPostScriptName(shared)
+        guard let url = CTFontCopyAttribute(shared, kCTFontURLAttribute) as? URL,
+              let data = try? Data(contentsOf: url, options: .alwaysMapped),   // file-backed: not the footprint
+              let all = CTFontManagerCreateFontDescriptorsFromData(data as CFData) as? [CTFontDescriptor],
+              let own = all.first(where: { CTFontDescriptorCopyAttribute($0, kCTFontNameAttribute) as? String == name as String })
+        else { return nil }
+        return CTFontCreateWithFontDescriptor(own, size, nil) as UIFont
     }
 
     /// Typed, and first in recents from the next time the picker opens: the grid doesn't
@@ -166,11 +247,11 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     }
 
     private final class Cell: UICollectionViewCell {
-        let label = UILabel()
+        let emoji = UIImageView()
         override init(frame: CGRect) {
             super.init(frame: frame)
-            label.textAlignment = .center
-            contentView.addSubview(label)
+            emoji.contentMode = .center
+            contentView.addSubview(emoji)
             contentView.layer.cornerRadius = 6
             isAccessibilityElement = true
             accessibilityTraits = .keyboardKey
@@ -178,8 +259,7 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         required init?(coder: NSCoder) { fatalError("not used") }
         override func layoutSubviews() {
             super.layoutSubviews()
-            label.frame = contentView.bounds
-            label.font = .systemFont(ofSize: bounds.height * 0.7)
+            emoji.frame = contentView.bounds
         }
         override var isHighlighted: Bool { didSet { contentView.backgroundColor = isHighlighted ? Style.special : nil } }
     }

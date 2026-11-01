@@ -146,9 +146,37 @@ final class EmojiMenuTests: XCTestCase {
         XCTAssertEqual(view.subviews.filter { $0 is KeysPanel }.count, 0)
     }
 
-    /// The system keyboards' picker (#629): Recents and Frequent only, at most 150 emoji
-    /// beside Recents, each one the full grid has; the app's keyboard keeps every group.
-    func testTheExtensionsPickerIsRecentsAndFrequentOnly() throws {
+    /// The system keyboards' picker (#664): Recents and every group, as iOS's own emoji
+    /// keyboard names and orders them, with a bar button each; the app's keyboard the same.
+    func testTheExtensionsPickerHasEveryGroup() throws {
+        let (kb, bar, _, view) = rig()
+        try pickEmoji(bar)
+        let picker = try XCTUnwrap(kb.emojiPicker)
+        XCTAssertTrue(picker.full)
+        XCTAssertEqual(Array(picker.sections.dropFirst()), EmojiPicker.groups)
+        XCTAssertEqual(EmojiPicker.native.map(\.name), ["Smileys & People", "Animals & Nature", "Food & Drink", "Activity",
+                                                      "Travel & Places", "Objects", "Symbols", "Flags"])
+        let unicode = EmojiData.groups.flatMap { $0.emoji.split(whereSeparator: \.isWhitespace).map(String.init) }
+            .filter { !EmojiPicker.undrawable.contains($0) }
+        XCTAssertEqual(Set(picker.sections.joined()), Set(unicode), "every emoji this iOS draws")
+        XCTAssertEqual(picker.sections.joined().count, unicode.count)
+        func buttons(_ v: UIView) -> [UIButton] { ((v as? UIButton).map { [$0] } ?? []) + v.subviews.flatMap(buttons) }
+        XCTAssertEqual(buttons(picker).map(\.accessibilityLabel),
+                       ["letters", "Recents"] + EmojiPicker.native.map(\.name) + ["delete"], "the bar")
+
+        let app = TerminalKeyboard()
+        app.showEmoji(true)
+        XCTAssertEqual(try XCTUnwrap(app.emojiPicker).sections, picker.sections, "the app's keyboard: the same")
+        withExtendedLifetime(view) {}
+    }
+
+    /// Where the picker can't have a font of its own, every group's glyphs would outgrow the
+    /// extension: the system keyboards keep Recents and Frequent (#629), at most 150 emoji
+    /// beside Recents, each one the full grid has; the app's keyboard has every group.
+    func testOnTheSharedFontTheExtensionsPickerIsRecentsAndFrequentOnly() throws {
+        let make = EmojiPicker.makeFont
+        EmojiPicker.makeFont = { _ in nil }
+        defer { EmojiPicker.makeFont = make }
         let (kb, bar, _, view) = rig()
         try pickEmoji(bar)
         let picker = try XCTUnwrap(kb.emojiPicker)
@@ -156,7 +184,6 @@ final class EmojiMenuTests: XCTestCase {
         XCTAssertEqual(picker.sections.count, 2)
         XCTAssertEqual(picker.sections[1], EmojiPicker.frequent)
         XCTAssertLessThanOrEqual(EmojiPicker.frequent.count, 150)
-        XCTAssertLessThanOrEqual(picker.sections.joined().count, 150 + EmojiRecents.limit)
         XCTAssertEqual(Set(EmojiPicker.frequent).count, EmojiPicker.frequent.count, "each once")
         XCTAssertEqual(Set(EmojiPicker.frequent).subtracting(EmojiPicker.groups.joined()), [])
         func buttons(_ v: UIView) -> [UIButton] { ((v as? UIButton).map { [$0] } ?? []) + v.subviews.flatMap(buttons) }
@@ -181,7 +208,7 @@ final class EmojiMenuTests: XCTestCase {
         try pickEmoji(bar)
         let picker = try XCTUnwrap(kb.emojiPicker)
         picker.collectionView(picker.grid, didSelectItemAt: IndexPath(item: 0, section: 1))
-        let e = EmojiPicker.frequent[0]
+        let e = EmojiPicker.groups[0][0]
         XCTAssertEqual(doc.text, e)
         XCTAssertEqual(standard.stringArray(forKey: EmojiRecents.key), [e])
         XCTAssertNil(defaults.stringArray(forKey: EmojiRecents.key), "not the group")
@@ -193,7 +220,7 @@ final class EmojiMenuTests: XCTestCase {
         kb.showEmoji(true)
         XCTAssertEqual(picker.sections[0], [], "the group's own")
         picker.collectionView(picker.grid, didSelectItemAt: IndexPath(item: 1, section: 1))
-        XCTAssertEqual(defaults.stringArray(forKey: EmojiRecents.key), [EmojiPicker.frequent[1]])
+        XCTAssertEqual(defaults.stringArray(forKey: EmojiRecents.key), [EmojiPicker.groups[0][1]])
         withExtendedLifetime(view) {}
     }
 }

@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import CoreText
 @testable import Prosper
 
 /// The emoji key and its picker (#515): the key among Keys Beside Space, the picker in
@@ -228,6 +229,85 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(smallest.pointSize, 9, "legible")
     }
 
+    /// The group the bar lights.
+    private func lit(_ picker: EmojiPicker) throws -> String? {
+        let accent = TerminalKeyboard.Style.accent
+        return try (["Recents"] + EmojiPicker.native.map(\.name)).filter { try button(picker, $0).tintColor == accent }.first
+    }
+
+    /// The bar lights the group at the grid's left edge as it scrolls, both ways; a tap
+    /// scrolls to its group and lights it (#664).
+    func testTheBarFollowsTheScroll() throws {
+        defaults.set(["😀"], forKey: EmojiRecents.key)
+        let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight))
+        picker.layoutIfNeeded()
+        XCTAssertEqual(try lit(picker), "Recents")
+        try button(picker, "Food & Drink").sendActions(for: .touchUpInside)
+        let food = picker.grid.contentOffset.x
+        XCTAssertGreaterThan(food, 0)
+        XCTAssertEqual(try lit(picker), "Food & Drink")
+        picker.grid.contentOffset.x = food - 10
+        XCTAssertEqual(try lit(picker), "Animals & Nature", "scrolled back a column")
+        picker.grid.contentOffset.x = food + 10
+        XCTAssertEqual(try lit(picker), "Food & Drink")
+        picker.grid.contentOffset.x = picker.grid.contentSize.width - picker.grid.bounds.width
+        XCTAssertEqual(try lit(picker), "Flags", "the end")
+        picker.grid.contentOffset.x = 0
+        XCTAssertEqual(try lit(picker), "Recents", "back to the start")
+        defaults.removeObject(forKey: EmojiRecents.key)
+        picker.reload()
+        picker.grid.layoutIfNeeded()
+        picker.grid.contentOffset.x = 1
+        XCTAssertEqual(try lit(picker), "Smileys & People", "no recents: the first group")
+    }
+
+    // MARK: Memory
+
+    /// The process's footprint in MB, what jetsam measures against a keyboard's limit.
+    static func footprint() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        _ = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return Double(info.phys_footprint) / 1_048_576
+    }
+
+    /// Scrolled through every group, each page's cells shown at 3x, the picker grows the
+    /// footprint by under 15 MB (#664): its share of a system keyboard's limit, ~48 MB on
+    /// older iPhones, over the ~27 MB the letters take. One font for them all took 96.
+    func testEveryGroupDrawsWithinTheMemoryBudget() throws {
+        let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight))
+        let window = UIWindow(frame: picker.frame)
+        window.addSubview(picker)
+        window.isHidden = false
+        addTeardownBlock { window.isHidden = true }
+        picker.layoutIfNeeded()
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 3
+        var seen = Set<String>()
+        func drawPage() {
+            picker.grid.layoutIfNeeded()
+            for cell in picker.grid.visibleCells {
+                seen.insert(cell.accessibilityLabel ?? "")
+                _ = UIGraphicsImageRenderer(size: cell.bounds.size, format: format).image { cell.layer.render(in: $0.cgContext) }
+            }
+        }
+        drawPage()
+        let before = Self.footprint()
+        var peak = 0.0
+        for x in stride(from: 0, to: picker.grid.contentSize.width, by: picker.grid.bounds.width / 2) {
+            picker.grid.contentOffset.x = x
+            autoreleasepool { drawPage() }
+            peak = max(peak, Self.footprint() - before)
+        }
+        XCTAssertEqual(seen.subtracting(EmojiPicker.groups.joined()), [], "only emoji")
+        XCTAssertEqual(Set(EmojiPicker.groups.joined()).subtracting(seen), [], "every group drawn")
+        XCTAssertLessThan(peak, 15)
+    }
+
     // MARK: Recents and data
 
     func testRecentsNewestFirstOnceAndCapped() {
@@ -242,8 +322,8 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertEqual(EmojiRecents(many).emoji.count, 32, "a longer stored list is cut")
     }
 
-    /// Nine groups, none empty; every entry one Character, none twice, no skin tones; a
-    /// bar icon for Recents and each group.
+    /// Unicode's nine groups, none empty; every entry one Character, none twice, no skin
+    /// tones; a bar icon for Recents and each of the picker's groups.
     func testDataIsSane() {
         XCTAssertEqual(EmojiData.groups.map(\.name), ["Smileys & Emotion", "People & Body", "Animals & Nature",
                                                      "Food & Drink", "Travel & Places", "Activities", "Objects",
@@ -255,7 +335,23 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertEqual(Set(all).count, all.count, "no duplicates")
         XCTAssertEqual(all.filter { $0.unicodeScalars.contains { (0x1F3FB...0x1F3FF).contains($0.value) } }, [],
                        "no skin tones")
-        XCTAssertEqual(EmojiPicker.symbols.count, EmojiData.groups.count + 1)
+        XCTAssertEqual(EmojiPicker.symbols.count, EmojiPicker.native.count + 1)
         for s in EmojiPicker.symbols + ["face.smiling"] { XCTAssertNotNil(UIImage(systemName: s), s) }
+    }
+
+    /// Apple Color Emoji itself draws an emoji as one glyph; a private-use scalar, or a ZWJ
+    /// join of two emoji it has no glyph for, it doesn't. A newer emoji is in the groups
+    /// exactly when it draws (#664).
+    func testNewerEmojiOnlyWhereThisIOSDrawsThem() {
+        XCTAssertTrue(EmojiPicker.draws("🫠"), "14.0")
+        XCTAssertTrue(EmojiPicker.draws("🫨"), "15.0")
+        XCTAssertFalse(EmojiPicker.draws("\u{F0000}"), "private use")
+        XCTAssertFalse(EmojiPicker.draws("🍕\u{200D}🐶"), "not a sequence it has")
+        let all = Set(EmojiPicker.groups.joined())
+        for (version, emoji) in EmojiData.newer {
+            for e in emoji.split(separator: " ").map(String.init) {
+                XCTAssertEqual(all.contains(e), EmojiPicker.draws(e), "E\(version) \(e)")
+            }
+        }
     }
 }

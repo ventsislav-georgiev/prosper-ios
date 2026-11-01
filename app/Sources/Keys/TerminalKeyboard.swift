@@ -1175,8 +1175,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     var showsGlobe = false { didSet { if showsGlobe != oldValue { build() } } }
     /// The emoji key, where `settings.bottomRow` has it: the app's keyboard only. The
     /// extension clears it (#515) and reaches the picker through the toggle's hold menu
-    /// instead, with Recents and Frequent only (`EmojiPicker.full`, #629): every group's
-    /// glyphs outgrow an extension's memory. Set before the picker's first build.
+    /// instead (#629): every group, or Recents and Frequent only where the picker can't
+    /// have a font of its own (`EmojiPicker.full`). Set before the picker's first build.
     var offersEmoji = true { didSet { if offersEmoji != oldValue { build() } } }
     /// The extension's Full Access, its controller's on each appearance: where the picker's
     /// recents are kept (`EmojiRecents.store`, #629). The app's keyboard has the group.
@@ -1449,7 +1449,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     func showEmoji(_ on: Bool) {
         if on { showNumpad(false, animated: false) }
         if on, emojiPicker == nil {
-            let picker = EmojiPicker(full: offersEmoji)
+            let picker = EmojiPicker(inApp: offersEmoji)
             picker.pick = { [weak self] e in self?.typeEmoji(e) }
             picker.delete = { [weak self] in self?.feedback(); self?.press(.backspace) }
             picker.letters = { [weak self] in self?.feedback(); self?.showEmoji(false) }
