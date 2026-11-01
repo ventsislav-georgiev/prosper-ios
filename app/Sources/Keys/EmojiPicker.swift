@@ -270,9 +270,11 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     }
 
     /// `e` drawn in `font`, sized to the union of its advance and its ink: some glyphs (🫡)
-    /// ink past their advance, and an image the advance's size cut them off (#673).
+    /// ink past their advance, and an image the advance's size cut them off (#673). In the
+    /// label's colour: ♀️ ♂️ ⚕️ are the font's outlines, not bitmaps, filled in the text's,
+    /// black without one (#676).
     static func image(_ e: String, font: UIFont) -> UIImage {
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: e, attributes: [.font: font]))
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: e, attributes: [.font: font, .foregroundColor: Style.label]))
         var ascent: CGFloat = 0, descent: CGFloat = 0
         let width = CTLineGetTypographicBounds(line, &ascent, &descent, nil)
         let box = CGRect(x: 0, y: -descent, width: width, height: ascent + descent)

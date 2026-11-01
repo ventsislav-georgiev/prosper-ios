@@ -343,6 +343,55 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertEqual(clipped, [], "\(clipped.count) clipped")
     }
 
+    /// Every emoji's runs are Apple Color Emoji's, the private instance's glyphs the shared
+    /// one's; and a glyph that is an outline, not a bitmap (♀️ ♂️ ⚕️), is drawn in the label's
+    /// colour, as the system keyboard's, on dark keys and light: it was black on the dark (#676).
+    func testEveryEmojiDrawsInAppleColorEmojiAndOutlinesInTheLabelsColour() throws {
+        let palette = TerminalKeyboard.Style.palette
+        addTeardownBlock { TerminalKeyboard.Style.palette = palette }
+        let shared = CTFontCreateWithName("AppleColorEmoji" as CFString, 30, nil)
+        func runs(_ e: String, _ font: CTFont) -> [(font: String, glyphs: [CGGlyph])] {
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: e, attributes: [.font: font]))
+            return (CTLineGetGlyphRuns(line) as? [CTRun] ?? []).map { run in
+                let used = (CTRunGetAttributes(run) as? [NSAttributedString.Key: Any])?[.font] as! CTFont
+                var g = [CGGlyph](repeating: 0, count: CTRunGetGlyphCount(run))
+                CTRunGetGlyphs(run, CFRange(), &g)
+                return (CTFontCopyPostScriptName(used) as String, g)
+            }
+        }
+        /// Whether every opaque pixel is `colour`, within 8 a channel of 255, and there is one.
+        func inked(_ image: UIImage, in colour: UIColor) -> Bool {
+            guard let cg = image.cgImage, let c = CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8, bytesPerRow: cg.width * 4,
+                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let bytes = c.data
+            else { XCTFail("no bitmap"); return false }
+            c.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+            colour.getRed(&r, green: &g, blue: &b, alpha: nil)
+            let want = [r, g, b].map { Int(($0 * 255).rounded()) }
+            let p = bytes.assumingMemoryBound(to: UInt8.self)
+            let opaque = stride(from: 0, to: cg.width * cg.height * 4, by: 4).filter { p[$0 + 3] == 255 }
+            return !opaque.isEmpty && opaque.allSatisfy { i in (0..<3).allSatisfy { abs(Int(p[i + $0]) - want[$0]) <= 8 } }
+        }
+        var notColourEmoji: [String] = [], outlines: [String] = []
+        for group in EmojiPicker.groups {
+            let font = try XCTUnwrap(EmojiPicker.emojiFont(size: 30)) as CTFont
+            for e in group {
+                let own = runs(e, font)
+                if own.map(\.font) != own.map({ _ in "AppleColorEmoji" }) || own.map(\.glyphs) != runs(e, shared).map(\.glyphs) {
+                    notColourEmoji.append(e)
+                }
+                if own.flatMap(\.glyphs).contains(where: { CTFontCreatePathForGlyph(font, $0, nil) != nil }) { outlines.append(e) }
+            }
+        }
+        XCTAssertEqual(notColourEmoji, [], "\(notColourEmoji.count) not Apple Color Emoji's glyph")
+        let font = try XCTUnwrap(EmojiPicker.emojiFont(size: 30))
+        for (name, p) in [("dark", TerminalKeyboard.Style.Palette.dark), ("light", .light)] {
+            TerminalKeyboard.Style.palette = p
+            let wrong = outlines.filter { !inked(EmojiPicker.image($0, font: font), in: p.label) }
+            XCTAssertEqual(wrong, [], "\(wrong.count) outlines not in the \(name) label's colour")
+        }
+    }
+
     // MARK: Search (#666)
 
     /// Each character's key in filter mode tapped.
