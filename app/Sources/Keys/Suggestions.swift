@@ -2183,9 +2183,11 @@ final class SuggestionBar: UIView {
     /// checked as the keyboard appears and at each key, text or selection change while it
     /// shows (`refresh`): a copy in the host app while it shows is caught at the next of those,
     /// no timer. A `changeCount` unchanged since the last try costs no read and no disk.
-    /// Never without the setting, Full Access (`pasteboard`) or a store.
+    /// Never without the setting, Full Access (`pasteboard`) or a store, and never while a
+    /// toolbar edit or a caret walk is under way (`TerminalKeyboard.editing`): the read is
+    /// synchronous, so an Allow Paste prompt left up held dd's walk for minutes (#699 QA).
     private func saveCopy() {
-        guard suggestions.settings.saveCopies, let history, let pb = suggestions.pasteboard(),
+        guard suggestions.settings.saveCopies, keyboard?.editing != true, let history, let pb = suggestions.pasteboard(),
               pb.changeCount != suggestions.memory.savedClip else { return }
         suggestions.memory.savedClip = pb.changeCount
         history.save(pb)

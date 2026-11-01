@@ -35,6 +35,9 @@ final class ClipboardHistory {
         var clips: [Clip] = []
         /// The pasteboard `changeCount` last kept or written: that clip isn't offered again.
         var change: Int?
+        /// The `changeCount` whose unasked read came back empty, Allow Paste's Don't Allow
+        /// (`save`): never read unasked again, by either keyboard on any open (#699).
+        var refused: Int?
     }
 
     /// Types password managers and the like mark a clip with: never kept.
@@ -79,16 +82,19 @@ final class ClipboardHistory {
     }
 
     /// A clip copied elsewhere, read unasked (#601): its text, or else its image, kept as the
-    /// panel's Paste keeps them. Refused (Allow Paste's Don't Allow), the read finds nothing and
-    /// the clip stays `fresh`, for the panel's Paste.
+    /// panel's Paste keeps them. Refused (Allow Paste's Don't Allow), the read finds nothing
+    /// though `fresh` saw a text or image: that clip is `refused`, on disk, so no keyboard asks
+    /// again whatever its memory holds (#699), and it stays `fresh`, for the panel's Paste.
     func save(_ pb: UIPasteboard) {
-        guard fresh(pb) else { return }
         let change = pb.changeCount
+        guard fresh(pb), change != update().refused else { return }
         let clip = read(pb)
         if let text = clip.text {
             keep(text: text, change: change)
         } else if let name = clip.image.flatMap({ storeImage(Self.source($0 as CFData)) }) {
             keep(Clip(image: name, date: now()), change: change)
+        } else {
+            update { $0.refused = change }
         }
     }
 

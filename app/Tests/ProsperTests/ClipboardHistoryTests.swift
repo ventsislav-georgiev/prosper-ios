@@ -349,6 +349,54 @@ final class ClipboardHistoryTests: XCTestCase {
         withExtendedLifetime(kb) {}
     }
 
+    /// A clip refused (Don't Allow: nothing back while `hasStrings` holds) isn't asked again on
+    /// the next open, even where that keyboard's memory doesn't carry the try (#699 QA: Allow
+    /// Paste again on the next open); a new copy is asked once.
+    func testARefusedClipIsNotAskedAgainOnTheNextOpen() {
+        let h = ClipboardHistory(dir: dir)
+        let reads = counting(h) { _ in (nil, nil) }
+        pb.string = "elsewhere"
+        let (kb, _, _, _) = rig("", history: h)
+        XCTAssertEqual(reads(), 1, "asked at the open")
+        defaults.removeObject(forKey: TypingMemory.savedClipKey)   // a memory without the try
+        let (kb2, again, _, _) = rig("", history: h)
+        again.refresh()
+        XCTAssertEqual(reads(), 1, "refused: not asked again")
+        XCTAssertTrue(h.fresh(pb), "the panel's Paste still offers it")
+        pb.string = "next"
+        again.refresh()
+        XCTAssertEqual(reads(), 2, "a new copy is asked once")
+        withExtendedLifetime((kb, kb2)) {}
+    }
+
+    /// No clip is read while dd walks, though the host reports each step (#699 QA: Allow Paste
+    /// right after dd's first step held the walk for minutes); the next refresh after it keeps
+    /// the clip, once.
+    func testNoClipIsReadWhileDdWalks() throws {
+        let h = ClipboardHistory(dir: dir)
+        let reads = counting(h)
+        let (kb, bar, doc, _) = rig("one two\nthr", history: h)
+        doc.after = "ee four\nfive six"
+        doc.lags = true
+        pb.string = "elsewhere"
+        bar.press(try XCTUnwrap(Shortcuts.hostOnly.first { $0.id == "delLine" }))
+        var polls = 0
+        while kb.walkTimer != nil, polls < 3_000 {
+            doc.catchUp()
+            bar.refresh()   // the host's textDidChange or selectionDidChange
+            kb.pollCaret()
+            polls += 1
+        }
+        XCTAssertGreaterThan(polls, 1, "dd walked")
+        XCTAssertEqual(doc.text + (doc.after ?? ""), "one two\nfive six")
+        XCTAssertEqual(reads(), 0, "no read while dd walks")
+        bar.refresh()
+        bar.refresh()
+        XCTAssertEqual(reads(), 1)
+        XCTAssertEqual(h.clips.map(\.text), ["elsewhere"])
+        withExtendedLifetime(kb) {}
+    }
+
     /// An image clip goes in downsampled, as the panel's Paste keeps it.
     func testSaveCopiesKeepsAnImageDownsampled() throws {
         let h = ClipboardHistory(dir: dir)

@@ -1347,6 +1347,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     private var editField: UUID?
     /// A toolbar edit's code is running: a press's, a held one's, or what runs on a poll.
     private var acting = 0
+    /// A toolbar edit or a caret walk under way: its code running, or a poll waiting on the
+    /// host (`walkTimer`). Auto-save reads no clip till it ends (`SuggestionBar.saveCopy`, #699).
+    var editing: Bool { acting > 0 || walkTimer != nil }
     /// The context a poll last read, the tick it or the edit's own writes last showed a new
     /// one at, the tick a poll last read a new one at, the ticks a toolbar edit last wrote at
     /// and first wrote at since that read (`wrote`), and the tick a new one ended a silence at
