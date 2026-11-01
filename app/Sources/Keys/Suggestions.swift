@@ -1454,7 +1454,7 @@ final class SuggestionBar: UIView {
     /// it again, then over the break after it, blind where the after-context stops at the line's
     /// end (the host clamps at the text's end), and it and the break go in one batch of that
     /// many, the caret on the next line's start, as nvim's. The last line goes with the break
-    /// before it instead, the caret then on the line above's start (nvim's first non-blank).
+    /// before it instead, the caret then at the line above's end, where the deletes leave it.
     /// The line, without a break, goes to `copy` unless it's empty. A walk stopping short of
     /// either end (a run of one Character in a window reads the same after a leg) proves no
     /// line: nothing goes, the caret back where the press found it, the clip kept (#662: a
@@ -1570,11 +1570,14 @@ final class SuggestionBar: UIView {
                 self?.atStart(line, tail: tail, answered: $0, waits: waits, rewound: rewound, waited: true, into: copy, blind: blind)
             }
         }
-        // Back over it with a walk: a keyboard move that long stops at a busy host's window.
-        walk(1, { Self.toLineEnd($1) }) { [weak self] again in
+        // Back over it with a walk: a keyboard move that long stops at a busy host's window. No
+        // further than the line: a late answer showing it ahead again took a step past the text's
+        // end the host ignored, and the caret back that far one short (#663: "top\na|" at 1.2 s
+        // a move left "top\n|a").
+        walk(1, limit: line.count, { Self.toLineEnd($1) }) { [weak self] again in
             guard again == line else { return self?.caret(within: line.count - tail.count - again.count) ?? () }
             self?.settled(!line.isEmpty, walked: (1, again)) { _ in
-                self?.deleteLine(line, walked: tail.count, breaks: !b.isEmpty, into: copy, blind: blind)
+                self?.deleteLine(line, walked: tail.count, breaks: !b.isEmpty, into: copy)
             }
         }
     }
@@ -1588,14 +1591,14 @@ final class SuggestionBar: UIView {
 
     /// The deletes of a `line` measured whole, the caret `walked` on from the press, at its
     /// end; `breaks`: a break before it.
-    private func deleteLine(_ line: String, walked: Int, breaks: Bool, waits: Int = 3, into copy: UIPasteboard?, blind: Bool?) {
+    private func deleteLine(_ line: String, walked: Int, breaks: Bool, waits: Int = 3, into copy: UIPasteboard?) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         let seen = (Self.before(doc), doc.documentContextAfterInput ?? "")
         // The line before the caret, as far as the context shows: as at its start (`atStart`).
         let here = seen.0.hasSuffix(line) || line.hasSuffix(seen.0)
         if !here, waits > 0 {
             return settled(true) { [weak self] _ in
-                self?.deleteLine(line, walked: walked, breaks: breaks, waits: waits - 1, into: copy, blind: blind)
+                self?.deleteLine(line, walked: walked, breaks: breaks, waits: waits - 1, into: copy)
             }
         }
         guard here, seen.1.isEmpty || seen.1.first?.isNewline == true else {   // short of the line's end
@@ -1637,7 +1640,11 @@ final class SuggestionBar: UIView {
                 kb.caret(-walked - 1)
                 return self.edited()
             }
-            let n = line.count + (joins || breaks ? 1 : 0)
+            // A line with a Character before the caret takes one more: the break the step went
+            // over, or at the text's end the one before the line, or none at its start. Either
+            // way it reads the same where the host has yet to answer the step (#663: a host
+            // taking 0.9 s a move took "ne" and the break of "one" for the only line's).
+            let n = line.count + (joins || breaks || !line.isEmpty ? 1 : 0)
             guard n > 0 else { return self.edited() }
             guard kb.writable() else { return }   // another field since the press: nothing more
             for _ in 0..<n { doc.deleteBackward() }
@@ -1645,17 +1652,16 @@ final class SuggestionBar: UIView {
             if let copy, !line.isEmpty { self.keep(line, in: copy) }
             kb.resetWord()   // a key before the host answers corrects nothing that went
             self.suggestions.caretMoved()
-            // Done once the host shows the deletes, or none new for 0.3 s; the last line's caret
-            // then to the line above's start, from a fresh context where they left none.
+            // Done once the host shows the deletes, or none new for 0.3 s. The caret stays where
+            // they leave it, the last line's at the line above's end: a step the host left
+            // unanswered reads as the text's end where it went over the break, and a move up from
+            // there took the caret a line up from the next's start (#663: a host 0.9 s a move).
             var quiet = Quiet(b, at: kb.ticks)
             kb.wait { [weak self] in
                 guard let self, let kb = self.keyboard, let doc = kb.target as? UITextDocumentProxy else { return true }
                 let now = Self.before(doc)
                 guard now != b || quiet.over(now, 15, at: kb.ticks) else { return false }
                 self.edited()
-                guard !joins, breaks else { return true }
-                let up = { [weak self] in self?.walk(-1, { b, _ in Self.toLineStart(Self.unspaced(b)) }) { _ in } }
-                if now.isEmpty { self.rewindow(waits: Self.answerPolls, settles: true, blind: blind) { _ in up() } } else { up() }
                 return true
             }
         } }

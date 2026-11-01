@@ -954,7 +954,7 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(pb.string, "three")
         try edit("delLine", kb, bar, doc)
         XCTAssertEqual(pb.string, "three", "dd copies nothing")
-        XCTAssertEqual(Self.at(doc), "|one", "the last line's dd: the line above's start")
+        XCTAssertEqual(Self.at(doc), "one|", "the last line's dd: the line above's end")
         doc.text = "one\n"; doc.after = "\ntwo"
         try edit("copyLine", kb, bar, doc)
         XCTAssertEqual(pb.string, "three", "an empty line leaves the clip be")
@@ -1076,8 +1076,8 @@ final class KeyboardToolbarTests: XCTestCase {
     }
 
     /// dd takes the line and a break, as nvim's: the one after it, the caret then on the next
-    /// line's start, or on the last line the one before it, the caret on the line above's
-    /// start. Where the after-context stops at the line's end it steps over the break blind.
+    /// line's start, or on the last line the one before it, the caret at the line above's
+    /// end (#663). Where the after-context stops at the line's end it steps over the break blind.
     /// Empty lines go too, the first and the last (#553 QA).
     func testDeleteLineTakesTheLineAndABreak() throws {
         for (name, host) in [("text view", Self.textView), ("safari", Self.safari)] {
@@ -1086,7 +1086,7 @@ final class KeyboardToolbarTests: XCTestCase {
             try edit("delLine", kb, bar, doc)
             XCTAssertEqual(Self.at(doc), "one two\n|five six", name)
             try edit("delLine", kb, bar, doc)
-            XCTAssertEqual(Self.at(doc), "|one two", "the last line: \(name)")
+            XCTAssertEqual(Self.at(doc), "one two|", "the last line: \(name)")
             try edit("delLine", kb, bar, doc)
             XCTAssertEqual(Self.at(doc), "|", "the only line: \(name)")
             doc.text = "one\n"; doc.after = "\ntwo"
@@ -1117,17 +1117,17 @@ final class KeyboardToolbarTests: XCTestCase {
             }
             doc.text = "one\n"; doc.after = ""
             try edit("delLine", kb, bar, doc)
-            XCTAssertEqual(Self.at(doc), "|one", "an empty last line: \(name)")
+            XCTAssertEqual(Self.at(doc), "one|", "an empty last line: \(name)")
             doc.text = "one two\nthree four\nfi"; doc.after = "ve six"
             try edit("delLine", kb, bar, doc)
-            XCTAssertEqual(Self.at(doc), "one two\n|three four", "the last line, its window without the break: \(name)")
+            XCTAssertEqual(Self.at(doc), "one two\nthree four|", "the last line, its window without the break: \(name)")
             // The context an edit left, "" at its window's start, never moved since (#553 QA:
             // the line above went).
             doc.text = "one two\nthree four\nx"; doc.after = ""
             doc.deleteBackward(); doc.catchUp()
             XCTAssertEqual(doc.documentContextBeforeInput, name == "safari" ? "\n " : nil, name)
             try edit("delLine", kb, bar, doc)
-            XCTAssertEqual(Self.at(doc), "one two\n|three four", "a stale empty last line: \(name)")
+            XCTAssertEqual(Self.at(doc), "one two\nthree four|", "a stale empty last line: \(name)")
             doc.text = "first line, long enough to wrap around in the field: a b c d e f g h"; doc.after = "\nsecond"
             try edit("delLine", kb, bar, doc)
             XCTAssertEqual(Self.at(doc), "|second", "a long first line: \(name)")
@@ -1269,7 +1269,7 @@ final class KeyboardToolbarTests: XCTestCase {
         let twice: [(String, String, String, String)] = [
             ("delHome", "x\n" + String(repeating: "a", count: 40), " end\ny", "x\n| end\ny"),
             ("delLine", "one", " two\nthree four\nfive six", "|five six"),
-            ("delLine", "one two\nthr", "ee four\nfive six", "|one two"),
+            ("delLine", "one two\nthr", "ee four\nfive six", "one two|"),
         ]
         for (name, host) in Self.qaHosts() {
             for (id, text, after, want) in cases {
@@ -1742,7 +1742,7 @@ final class KeyboardToolbarTests: XCTestCase {
         for _ in 1...5 { doc.catchUp(); kb.pollCaret() }   // the host shows the key
         bar.press(try key(Shortcuts.hostOnly, "delLine"))
         for _ in 1...polls { doc.catchUp(); kb.pollCaret() }
-        XCTAssertEqual(Self.at(doc), "|keep these words", what)
+        XCTAssertEqual(Self.at(doc), "keep these words|", what)
     }
 
     /// A field the host serves no identifier for, mid-way through a focus change, takes a
@@ -2142,7 +2142,7 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(pb.string, "three four")
         XCTAssertEqual(bar.suggestions.memory.retiredClip, pb.changeCount, "yy's clip is its own")
         try edit("cutLine", kb, bar, doc)
-        XCTAssertEqual(Self.at(doc), "|one two")
+        XCTAssertEqual(Self.at(doc), "one two|")
         XCTAssertEqual(bar.suggestions.memory.retiredClip, pb.changeCount, "and cut line's")
         pb.string = "elsewhere"
         doc.text = "one two"; doc.after = ""
@@ -2335,6 +2335,49 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(Self.at(doc), "|two")
     }
 
+    /// dd and cut line on QA's blocking host, and on one showing lines before the caret and none
+    /// after the line's end (a Safari textarea's), at 0.6, 0.9 and 1.2 s a move, pressed at a
+    /// line's start, middle and end, first and mid-text: the line and its break go, the caret
+    /// on the next line's start and the clip the line, or nothing goes, the caret where the
+    /// press found it and the clip kept; never other text (#663: at 0.9 s dd on "on|e" left
+    /// "o|two").
+    func testDdAndCutLineOnAHostSlowerThanTheirWaitsTakeTheLineOrNothing() throws {
+        let cases: [(String, String, String)] = [
+            ("", "one\ntwo", "|two"), ("on", "e\ntwo", "|two"), ("one", "\ntwo", "|two"),
+            ("top\n", "abc\nend", "top\n|end"), ("top\na", "bc\nend", "top\n|end"), ("top\nabc", "\nend", "top\n|end"),
+            ("", "a\ntwo", "|two"), ("a", "\ntwo", "|two"), ("top\n", "a\nend", "top\n|end"), ("top\na", "", "top|"),
+        ]
+        let hosts: [(String, (Proxy) -> Void)] = [
+            Self.qaHosts()[1], ("lines before", { $0.stopsAtLineEnd = true; $0.answersLate = true }),
+        ]
+        for (name, host) in hosts {
+            for cost in [30, 45, 60] {   // 0.6, 0.9 and 1.2 s a move
+                for (text, after, goes) in cases {
+                    for id in ["delLine", "cutLine"] {
+                        let (kb, bar, doc) = rig(text, after: after, keys: Shortcuts.hostOnly)
+                        host(doc)
+                        doc.moveCost = cost
+                        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                        pb.string = "old"
+                        bar.suggestions.pasteboard = { pb }
+                        bar.toolbar?.reload()
+                        bar.press(try key(Shortcuts.hostOnly, id))
+                        for _ in 1...3_000 { doc.catchUp(); kb.pollCaret() }
+                        let what = "\(id) on \(name) \(text)|\(after), a move \(cost) polls: \(Self.at(doc))"
+                        let line = (text + after).components(separatedBy: "\n")[text.filter(\.isNewline).count]
+                        if Self.at(doc) == goes {
+                            XCTAssertEqual(pb.string, id == "cutLine" ? line : "old", what)
+                        } else {
+                            XCTAssertEqual(Self.at(doc), text + "|" + after, what)
+                            XCTAssertEqual(pb.string, "old", what)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// dd and cut line on a line of a long run of one Character: where the walk to its end
     /// stops short, a leg reading the same in the host's window (Safari's 6 units here; a
     /// blocking host's 300), nothing goes, the caret back where the press found it and the
@@ -2367,7 +2410,7 @@ final class KeyboardToolbarTests: XCTestCase {
     /// no empty line takes its place (QA's M1053).
     func testCutLineOnAnEmptyLineKeepsTheClip() throws {
         for (name, host) in [("text view", Self.textView), ("safari", Self.safari), Self.qaHosts()[0]] {
-            for (text, after, want) in [("one\n", "\ntwo", "one\n|two"), ("one\n", "", "|one")] {
+            for (text, after, want) in [("one\n", "\ntwo", "one\n|two"), ("one\n", "", "one|")] {
                 let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
                 addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
                 pb.string = "old"
