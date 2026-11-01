@@ -2559,6 +2559,38 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
+    /// dd and cut line on QA's STALL host whose moves also block: where it stalls between its
+    /// answers to two moves, the step away and back for a fresh window or the walk to the
+    /// line's end and the leg back, the earlier one's answer is no landing of the later one's.
+    /// The line goes and its break, the clip the line (#693: at 0.12 s a move "a|\ntwo" went
+    /// to "a|wo", the clip "a"; at 0.18 s to "a\n|two"; at 0.04 s "top\n|a\nend" to "top|\na").
+    /// Below the first line the step away's answer is cut at the line, "\n" before the caret,
+    /// not the "" a step back from "a" guesses: it still owes the step back.
+    func testDdAndCutLineOnAStallBetweenTwoAnswersTakeTheLine() throws {
+        let cases: [(host: Int, cost: Int, text: String, after: String, goes: String)] = [
+            (3, 6, "a", "\ntwo", "|two"), (2, 9, "a", "\ntwo", "|two"), (2, 9, "top\na", "\ntwo", "top\n|two"),
+            (4, 2, "top\n", "a\nend", "top\n|end"),
+        ]
+        for c in cases {
+            let (name, host) = Self.qaHosts()[c.host]
+            for id in ["delLine", "cutLine"] {
+                let (kb, bar, doc) = rig(c.text, after: c.after, keys: Shortcuts.hostOnly)
+                host(doc)
+                doc.moveCost = c.cost
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                pb.string = "old"
+                bar.suggestions.pasteboard = { pb }
+                bar.toolbar?.reload()
+                bar.press(try key(Shortcuts.hostOnly, id))
+                for _ in 1...3_000 { doc.catchUp(); kb.pollCaret() }
+                let what = "\(id) on \(name), \(c.cost) polls a move, from \((c.text + "|" + c.after).debugDescription)"
+                XCTAssertEqual(Self.at(doc), c.goes, what)
+                XCTAssertEqual(pb.string, id == "cutLine" ? "a" : "old", what)
+            }
+        }
+    }
+
     /// dd and cut line on a line of a long run of one Character: where the walk to its end
     /// stops short, a leg reading the same in the host's window (Safari's 6 units here; a
     /// blocking host's 300), nothing goes, the caret back where the press found it and the

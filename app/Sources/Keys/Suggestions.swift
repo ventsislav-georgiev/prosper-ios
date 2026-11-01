@@ -1705,11 +1705,14 @@ final class SuggestionBar: UIView {
             // A leg back landing on text after the caret that isn't the leg's is a late answer
             // to an earlier move, no leg's: its own is waited for, `answerPolls` at most (#682:
             // at 0.36 s a move, rewindow's step away answered after its wait, and dd's walk to
-            // the line's start read it and went on into the line above).
+            // the line's start read it and went on into the line above). So is one showing none
+            // after the caret where the leg began, the answer to the move before it (#693: STALL
+            // stalled after the walk to the end's answer, and dd's walk back went over the break).
             if dir < 0, let kb = self?.keyboard, let doc = kb.target as? UITextDocumentProxy {
                 let late = { () -> Bool in
-                    let a = doc.documentContextAfterInput ?? ""
-                    return !a.isEmpty && !a.hasPrefix(leg) && !leg.hasPrefix(a)
+                    let now = doc.documentContextAfterInput ?? ""
+                    return now.isEmpty ? TerminalKeyboard.agrees([doc.documentContextBeforeInput, now], [b, a])
+                                       : !now.hasPrefix(leg) && !leg.hasPrefix(now)
                 }
                 guard late() else { return on() }
                 let from = kb.ticks
@@ -2021,6 +2024,8 @@ final class SuggestionBar: UIView {
             // (#553 QA: BLOCK ctrl-u took the line above its line's start, its step away's
             // answer taken for its step back's).
             let gaps = settles && !on && was.0.isEmpty
+            // Where the step away left the caret, a Character from where it was.
+            let away = on ? (was.0 + was.1.prefix(1), String(was.1.dropFirst())) : guess
             let landed = kb.ticks - 1
             var changed = landed, last = was
             let answered = { [weak kb] () -> Bool in
@@ -2032,7 +2037,11 @@ final class SuggestionBar: UIView {
                 // One showing its answer to the step away still owes the step back's: as long
                 // again as that took (#675: at 0.3 s a move the wait ran out between the two, and
                 // dd's walk to the line's end, read from the step away's, went over the break).
-                let owes = now.1 != was.1 && kb.ticks - changed <= changed - sent + Self.applyTicks
+                // One still showing where the step away went owes it a stall more, as a busy
+                // host leaves between two answers (#693: STALL's at 0.12 s a move stalled after
+                // its step away's answer, and dd took "a|\ntwo" to "a|wo").
+                let still = away != was && TerminalKeyboard.agrees([now.0, now.1], [away.0, away.1])
+                let owes = now.1 != was.1 && kb.ticks - changed <= changed - sent + (still ? Self.answerGap : Self.applyTicks)
                 return now != was && now.1 == was.1 || polls > waits && !owes
             }
             if answered() { return then() }
