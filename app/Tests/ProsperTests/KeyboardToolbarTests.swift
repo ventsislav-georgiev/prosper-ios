@@ -2624,6 +2624,35 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
+    /// dd and cut line on an empty last line right after a backspace emptied it, on a host
+    /// answering moves late: the step away's answer, which UIKit's guess for the step back keeps
+    /// with nothing after the caret to step over, is no answer to the step back, and the break
+    /// before the line goes, the line above kept (#697: STALL at 0.4 s a move took "a\n|" to
+    /// "|", the clip "a").
+    func testDdAndCutLineOnAnEmptyLastLineRightAfterABackspaceKeepTheLineAbove() throws {
+        let cases: [(host: Int, cost: Int, gap: Int)] = [(2, 20, 1), (3, 20, 30), (6, 20, 5)]
+        for c in cases {
+            let (name, host) = Self.qaHosts()[c.host]
+            for id in ["delLine", "cutLine"] {
+                let (kb, bar, doc) = rig("a\nb", keys: Shortcuts.hostOnly)
+                host(doc)
+                doc.moveCost = c.cost
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                pb.string = "old"
+                bar.suggestions.pasteboard = { pb }
+                bar.toolbar?.reload()
+                kb.press(.backspace)
+                for _ in 0..<c.gap { doc.catchUp(); kb.pollCaret() }
+                bar.press(try key(Shortcuts.hostOnly, id))
+                for _ in 1...3_000 { doc.catchUp(); kb.pollCaret() }
+                let what = "\(id) on \(name), \(c.cost) polls a move, \(c.gap) polls after"
+                XCTAssertEqual(Self.at(doc), "a|", what)
+                XCTAssertEqual(pb.string, "old", what)
+            }
+        }
+    }
+
     /// dd and cut line on a line of a long run of one Character: where the walk to its end
     /// stops short, a leg reading the same in the host's window (Safari's 6 units here; a
     /// blocking host's 300), nothing goes, the caret back where the press found it and the

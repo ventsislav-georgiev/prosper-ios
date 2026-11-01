@@ -1949,6 +1949,10 @@ final class SuggestionBar: UIView {
         var back = true, forced = false, blind = blind
         // UIKit's guess for the step back, which shows no host's answer.
         let guess = (String(was.0.dropLast()), String(was.0.suffix(1)) + was.1)
+        // Where the step away left the caret, a Character from where it was.
+        let away = on ? (was.0 + was.1.prefix(1), String(was.1.dropFirst())) : guess
+        // The host's answer to the step away the step back went from, where it showed one.
+        var shown: (String, String)?
         let sent = keyboard.ticks
         stepBack = nil
         keyboard.caret(away: on ? 1 : -1, back: { [weak self, weak keyboard] in
@@ -1965,6 +1969,7 @@ final class SuggestionBar: UIView {
             // delete all read none 320 ms on and stopped).
             if !on && !ends && was.0.isEmpty && now == guess, keyboard.ticks - sent <= Self.answerPolls { return nil }
             blind = blind ?? !Self.shows(doc)
+            shown = now != away && now != was ? now : nil
             return back
         }) { [weak self] in
             let then = { [weak self] in
@@ -1987,8 +1992,6 @@ final class SuggestionBar: UIView {
             // (#553 QA: BLOCK ctrl-u took the line above its line's start, its step away's
             // answer taken for its step back's).
             let gaps = settles && !on && was.0.isEmpty
-            // Where the step away left the caret, a Character from where it was.
-            let away = on ? (was.0 + was.1.prefix(1), String(was.1.dropFirst())) : guess
             let landed = kb.ticks - 1
             var changed = landed, last = was
             let answered = { [weak kb] () -> Bool in
@@ -1996,7 +1999,12 @@ final class SuggestionBar: UIView {
                 let now = (doc.documentContextBeforeInput ?? "", doc.documentContextAfterInput ?? "")
                 if now != last { changed = kb.ticks; last = now }
                 let polls = kb.ticks - (ends ? sent : landed)
-                if gaps { return kb.ticks - changed >= Self.answerGap && now != was || polls > 3 * Self.answerPolls / 2 }
+                // One still showing the step away's answer, which UIKit's guess for the step back
+                // kept where it showed none after the caret to step over, is no answer to the
+                // step back (#697: STALL at 0.4 s a move took "a\n|"'s step away's "a" for it,
+                // and dd took the line above).
+                let held = shown.map { now == $0 } == true
+                if gaps { return kb.ticks - changed >= Self.answerGap && now != was && !held || polls > 3 * Self.answerPolls / 2 }
                 // One showing its answer to the step away still owes the step back's: as long
                 // again as that took (#675: at 0.3 s a move the wait ran out between the two, and
                 // dd's walk to the line's end, read from the step away's, went over the break).
@@ -2004,8 +2012,8 @@ final class SuggestionBar: UIView {
                 // host leaves between two answers (#693: STALL's at 0.12 s a move stalled after
                 // its step away's answer, and dd took "a|\ntwo" to "a|wo").
                 let still = away != was && TerminalKeyboard.agrees([now.0, now.1], [away.0, away.1])
-                let owes = now.1 != was.1 && kb.ticks - changed <= changed - sent + (still ? Self.answerGap : Self.applyTicks)
-                return now != was && now.1 == was.1 || polls > waits && !owes
+                let owes = (now.1 != was.1 || held) && kb.ticks - changed <= changed - sent + (still || held ? Self.answerGap : Self.applyTicks)
+                return now != was && now.1 == was.1 && !held || polls > waits && !owes
             }
             if answered() { return then() }
             kb.wait { guard answered() else { return false }; then(); return true }
