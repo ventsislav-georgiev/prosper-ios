@@ -77,6 +77,21 @@ enum Rewrite {
     struct Failure: Error, Equatable { var line: String }
     static let failed = "That didn't work. Try again, or with less text"
 
+    /// The model's assets missing, in a bridged error's chain (#660 QA u): the simulator throws
+    /// an NSError of GenerationError's domain, code -1, no Swift case, over a private framework's
+    /// "no assets" error. Matched by domain only (that framework isn't imported): any
+    /// UnifiedAssetFramework error, or ModelManagerError 1026, under `NSUnderlyingErrorKey` or
+    /// `NSMultipleUnderlyingErrorsKey`, `depth` levels down at most.
+    static func assetsMissing(_ error: Error, depth: Int = 4) -> Bool {
+        let e = error as NSError
+        if e.domain == "com.apple.UnifiedAssetFramework" || e.domain == "ModelManagerServices.ModelManagerError" && e.code == 1026 {
+            return true
+        }
+        guard depth > 0 else { return false }
+        let under = (e.userInfo[NSUnderlyingErrorKey] as? Error).map { [$0] } ?? []
+        return (under + (e.userInfo[NSMultipleUnderlyingErrorsKey] as? [Error] ?? [])).contains { assetsMissing($0, depth: depth - 1) }
+    }
+
     /// What a command works on, and the field as it read at the request, for the write's check.
     struct Source: Equatable {
         var text: String
@@ -384,7 +399,7 @@ final class AIPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
         content.imageProperties.tintColor = Style.accent
         content.text = command.title
         content.textProperties.font = .systemFont(ofSize: 15, weight: .medium)
-        content.secondaryText = command.detail
+        content.secondaryText = line == nil ? command.detail : nil   // the line's room (#660 QA u)
         content.secondaryTextProperties.numberOfLines = 1
         cell.contentConfiguration = content
         cell.accessibilityLabel = command.title

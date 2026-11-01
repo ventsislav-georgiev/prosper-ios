@@ -392,6 +392,29 @@ final class RewriteTests: XCTestCase {
         withExtendedLifetime(kb) {}
     }
 
+    /// The simulator's bridged error (#660 QA u): GenerationError's domain, code -1, over a
+    /// ModelManagerError 1026 in the multiple-underlying list; a UnifiedAssetFramework error
+    /// under `NSUnderlyingErrorKey`, deeper; neither, or deeper than the bound, is not missing assets.
+    func testAssetsMissingWalksTheUnderlyingChain() {
+        let top = "FoundationModels.LanguageModelSession.GenerationError"
+        func e(_ domain: String, _ code: Int = -1, under: Error? = nil, many: [Error]? = nil) -> NSError {
+            var info: [String: Any] = [:]
+            info[NSUnderlyingErrorKey] = under
+            info[NSMultipleUnderlyingErrorsKey] = many
+            return NSError(domain: domain, code: code, userInfo: info)
+        }
+        XCTAssertTrue(Rewrite.assetsMissing(e(top, many: [e("ModelManagerServices.ModelManagerError", 1026)])))
+        XCTAssertTrue(Rewrite.assetsMissing(e(top, under: e("x", under: e("com.apple.UnifiedAssetFramework", 5000)))))
+        XCTAssertTrue(Rewrite.assetsMissing(e("com.apple.UnifiedAssetFramework", 5000)))
+        XCTAssertFalse(Rewrite.assetsMissing(e(top, many: [e("ModelManagerServices.ModelManagerError", 1000)])), "another code")
+        XCTAssertFalse(Rewrite.assetsMissing(e(top, under: e(NSCocoaErrorDomain, 4))))
+        var deep = e("com.apple.UnifiedAssetFramework", 5000)
+        for _ in 0..<5 { deep = e("x", under: deep) }
+        XCTAssertFalse(Rewrite.assetsMissing(deep), "past the bound")
+        struct Plain: Error {}
+        XCTAssertFalse(Rewrite.assetsMissing(Plain()))
+    }
+
     /// QA H (#660): the line has its own room over the rows, at the top with Fix in view, at
     /// every Key Size and in landscape. A plain table's section footer floated over the last
     /// rows. No line, no header.
@@ -414,8 +437,20 @@ final class RewriteTests: XCTestCase {
                 for cell in table.visibleCells { XCTAssertFalse(header.frame.intersects(cell.frame), "\(note): \(cell.accessibilityLabel ?? "")") }
                 XCTAssertTrue(shown.intersects(table.rectForRow(at: IndexPath(row: 0, section: 0))), "\(note): Fix in view")
                 XCTAssertTrue(panel.lineLabel.frame.width > 200 && panel.lineLabel.frame.minX > 0, "\(note): the rows' insets")
+                let rows = (0..<3).map { IndexPath(row: $0, section: 0) }
+                func details() -> [String?] {
+                    rows.map { (panel.tableView(table, cellForRowAt: $0).contentConfiguration as? UIListContentConfiguration)?.secondaryText }
+                }
+                XCTAssertEqual(details().compactMap { $0 }, [], "\(note): no subtitles under a line")
+                if !compact {
+                    for row in rows {
+                        XCTAssertTrue(shown.insetBy(dx: 0, dy: -0.5).contains(table.rectForRow(at: row)), "\(note): row \(row.row) whole in view")
+                    }
+                }
                 panel.showList()
+                panel.layoutIfNeeded()
                 XCTAssertNil(table.tableHeaderView, "\(note): no line, no header")
+                XCTAssertEqual(details(), Rewrite.Command.allCases.map(\.detail), "\(note): the subtitles back")
             }
         }
     }

@@ -140,8 +140,9 @@ final class KeyboardViewController: UIInputViewController {
 
     /// A failed request's line (#660), nil for the generic one: the model's availability, read
     /// again after the error, first (the simulator reports `.available` with no assets), then
-    /// iOS 26.0's errors. Those are deprecated in the iOS 27 SDK and CI builds on 26's; 27's
-    /// new error types fall to the generic line.
+    /// iOS 26.0's errors, then a bridged chain with the assets missing (`Rewrite.assetsMissing`).
+    /// Those cases are deprecated in the iOS 27 SDK and CI builds on 26's; 27's new error types
+    /// fall to the generic line.
     @available(iOS 26, *)
     static func line(_ error: Error, _ availability: Rewrite.Availability) -> String? {
         if let reason = availability.reason { return reason }
@@ -150,7 +151,7 @@ final class KeyboardViewController: UIInputViewController {
         case .exceededContextWindowSize?: return "Too long for the model. Select less"
         case .guardrailViolation?, .refusal?: return "The model won't change this text"
         case .unsupportedLanguageOrLocale?: return "The model doesn't support this text's language"
-        default: return nil
+        default: return Rewrite.assetsMissing(error) ? Rewrite.Availability.modelNotReady.reason : nil
         }
     }
     #endif
