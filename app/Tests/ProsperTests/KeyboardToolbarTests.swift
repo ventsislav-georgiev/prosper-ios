@@ -2208,13 +2208,14 @@ final class KeyboardToolbarTests: XCTestCase {
 
     /// Home from a before-context opening on a break and a space, Safari's or the line's own (a
     /// whole text whose first line is empty): to the line's first non-blank either way, and a
-    /// second press stays, never inside the indent; with the line before in sight, to the
-    /// line's start (#547: "\n  indented" went to "\n | indented").
+    /// second press stays, never inside the indent; with the line before in sight, or a
+    /// UITextView's line alone, to the first non-blank as Safari's, then the line's start (#547:
+    /// "\n  indented" went to "\n | indented"; #662 QA: QAHost's went to col 0 at once).
     func testHomeNeverSplitsAnIndent() throws {
-        func home(_ text: String, _ after: String, _ host: (Proxy) -> Void = { _ in }) throws -> String {
+        func home(_ text: String, _ after: String, _ host: (Proxy) -> Void = { _ in }, presses: Int = 2) throws -> String {
             let (kb, bar, doc) = rig(text, after: after)
             host(doc)
-            for _ in 0..<2 {
+            for _ in 0..<presses {
                 bar.press(try key("home"))
                 for _ in 0..<60 { doc.catchUp(); kb.pollCaret() }
             }
@@ -2225,6 +2226,10 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(try home("\n  ind", "ented\nz", { $0.breakSpace = true }), "\n  |indented\nz", "Safari's")
         XCTAssertEqual(try home("top\n  ind", "ented", { $0.breakSpace = true }), "top\n  |indented", "Safari's")
         XCTAssertEqual(try home("top\n  ind", "ented"), "top\n|  indented", "the line above in sight")
+        XCTAssertEqual(try home("top\n  ind", "ented", { $0.breakSpace = true }, presses: 1), "top\n  |indented", "Safari's, once")
+        XCTAssertEqual(try home("top\n  ind", "ented\nz", Self.textView, presses: 1), "top\n  |indented\nz", "a line alone, once")
+        XCTAssertEqual(try home("top\n  ind", "ented\nz", Self.textView), "top\n|  indented\nz", "a line alone")
+        XCTAssertEqual(try home("top\n ", " indented", Self.textView, presses: 1), "top\n|  indented", "a line alone, in the indent")
     }
 
     /// ctrl-u and cut line on an indented line where the context opens on its break and
@@ -2294,20 +2299,27 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
-    /// dd on a host answering its moves on time deletes within 10 ticks (0.2 s) of the press:
-    /// no wait for answers it never owes (#662: 54 ticks, 1.08 s, every dd).
+    /// dd on a host answering its moves on time, or by the next poll, deletes within 10 ticks
+    /// (0.2 s) of the press: no wait for answers it never owes, nor 0.3 s quiet after one that
+    /// came (#662: 54 ticks, 1.08 s, every dd; #662 QA: QAHost's UITextView, UIKit's guess at
+    /// once and its line-only answer a poll on, 0.83 s).
     func testDdOnAHostAnsweringOnTimeDeletesWithinAFifthOfASecond() throws {
-        let (kb, bar, doc) = rig("top\nab", after: "c\nz")
-        Self.textView(doc)
-        bar.press(try XCTUnwrap(Shortcuts.hostOnly.first { $0.id == "delLine" }))
-        var first: Int?
-        for _ in 1...3_000 {
-            doc.catchUp()
-            kb.pollCaret()
-            if first == nil, doc.calls.contains("⌫") { first = kb.ticks }
+        let hosts: [(String, (Proxy) -> Void)] = [
+            ("text view", Self.textView), ("answering a poll on", { Self.textView($0); $0.answersLate = true; $0.moveCost = 1 }),
+        ]
+        for (name, host) in hosts {
+            let (kb, bar, doc) = rig("one\ntw", after: "o\nthree")
+            host(doc)
+            bar.press(try XCTUnwrap(Shortcuts.hostOnly.first { $0.id == "delLine" }))
+            var first: Int?
+            for _ in 1...3_000 {
+                doc.catchUp()
+                kb.pollCaret()
+                if first == nil, doc.calls.contains("⌫") { first = kb.ticks }
+            }
+            XCTAssertEqual(Self.at(doc), "one\n|three", name)
+            XCTAssertLessThanOrEqual(try XCTUnwrap(first, name), 10, name)
         }
-        XCTAssertEqual(Self.at(doc), "top\n|z")
-        XCTAssertLessThanOrEqual(try XCTUnwrap(first), 10)
     }
 
     /// dd before another line on a host answering 1 s a move, once it was seen answering that

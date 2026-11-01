@@ -1315,14 +1315,17 @@ final class SuggestionBar: UIView {
         before.reversed().prefix { !$0.isNewline }.count
     }
 
-    /// Home's, from the raw before-context: to the line's start, but from one opening on the
-    /// line's break and a space, Safari's or the line's own (a whole text whose first line is
-    /// empty), to the line's first non-blank, the same Character either way, never inside its
-    /// indent (#547). ponytail: from within the indent nothing; Safari's col 0 is out of reach there.
+    /// Home's, from the raw before-context, smart: from past the line's first non-blank to it,
+    /// from at or inside its indent to the line's start, so a UITextView's line-only context and
+    /// Safari's agree (#662 QA: QAHost's went to col 0). From one opening on the line's break and
+    /// a space, Safari's or the line's own (a whole text whose first line is empty), never inside
+    /// the indent (#547). ponytail: there from within the indent nothing; Safari's col 0 is out of
+    /// reach.
     static func toHome(_ before: String) -> Int {
-        let line = before.dropFirst()
-        guard before.hasPrefix("\n "), !line.contains(where: \.isNewline) else { return toLineStart(before) }
-        return line.drop(while: \.isWhitespace).count
+        let safari = before.hasPrefix("\n ") && !before.dropFirst().contains(where: \.isNewline)
+        let line = safari ? before.dropFirst() : before[(before.lastIndex(where: \.isNewline).map(before.index(after:)) ?? before.startIndex)...]
+        let text = line.drop(while: \.isWhitespace).count
+        return text > 0 || safari ? text : line.count
     }
 
     static func toLineEnd(_ after: String) -> Int { after.prefix { !$0.isNewline }.count }
@@ -1472,24 +1475,30 @@ final class SuggestionBar: UIView {
     /// before the caret, reads as dd's step over the line's end (#662: a blocking host's dd took
     /// a run's start for a line). A host never seen answering a move late (`lateBy`) has
     /// answered once a context reads as where a walk that crossed `walked` landed: at once (#662:
-    /// dd held 1 s before its deletes); one seen to waits as long as it took (#662: a host taking
-    /// 1 s a move answered the walk back after 0.3 s quiet).
+    /// dd held 1 s before its deletes); one seen answering within `wakeTicks` (a UITextView, its
+    /// answer to a move a poll late and other than UIKit's guess) once as many ticks passed
+    /// (#662 QA: QAHost's dd held 0.8 s); one slower waits as long as it took, quiet (#662: a
+    /// host taking 1 s a move answered the walk back after 0.3 s quiet).
     private func settled(_ moved: Bool, _ quietFor: Int = 15, walked: (dir: Int, crossed: String)? = nil,
                          _ go: @escaping (_ answered: Bool) -> Void) {
         guard moved, let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return go(false) }
-        if let (dir, c) = walked, keyboard.lateBy == 0 {
+        let landed = { () -> Bool in
+            guard let (dir, c) = walked else { return false }
             let b = Self.before(doc), a = doc.documentContextAfterInput ?? ""
-            let landed = dir > 0
+            return dir > 0
                 ? (b.hasSuffix(c) || !b.isEmpty && c.hasSuffix(b)) && (a.first?.isNewline ?? true)
                 : (a.hasPrefix(c) || !a.isEmpty && c.hasPrefix(a)) && (b.last?.isNewline ?? true)
-            if landed { return go(false) }
         }
+        let soon = keyboard.lateBy <= TerminalKeyboard.wakeTicks ? keyboard.lateBy : nil
+        if soon == 0, landed() { return go(false) }
         let read = { Self.before(doc) + "\u{0}" + (doc.documentContextAfterInput ?? "") }
-        let was = read()
+        let was = read(), start = keyboard.ticks
         var quiet = Quiet(was, at: keyboard.ticks)
         let quietFor = max(quietFor, keyboard.lateBy)
         keyboard.wait { [weak keyboard] in
-            guard quiet.over(read(), quietFor, at: keyboard?.ticks ?? .max) else { return false }
+            let ticks = keyboard?.ticks ?? .max
+            let over = quiet.over(read(), quietFor, at: ticks)
+            guard over || soon.map({ ticks - start >= $0 }) == true && landed() else { return false }
             go(read() != was)
             return true
         }
