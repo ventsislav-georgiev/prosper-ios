@@ -358,20 +358,65 @@ final class RewriteTests: XCTestCase {
         }
     }
 
-    /// A model error is the panel's one line, the rows under it again.
+    /// A model error is the panel's one line, the rows under it again (#612): the controller's
+    /// named line (`Rewrite.Failure`, #660), else the generic one, over the three rows. The rows
+    /// still run.
     func testAModelErrorIsOneLine() async throws {
         struct Failed: Error {}
-        let (kb, bar, doc, _) = rig("Dear Sam,\nteh report")
-        bar.rewrite = { _, _ in throw Failed() }
-        bar.showRewrite(true)
-        let panel = try XCTUnwrap(bar.rewritePanel)
-        panel.run(.fix)
-        await panel.task?.value
-        XCTAssertEqual(panel.line, "That didn't work. Try again, or with less text")
-        XCTAssertFalse(panel.table.isHidden, "the rows, to try again")
-        XCTAssertTrue(panel.empty.isHidden)
-        XCTAssertNil(panel.result)
+        let model = FakeModel()
+        let (kb, bar, doc, _) = rig("Dear Sam,\nteh report", model: model)
+        var thrown: Error?
+        bar.rewrite = { if let e = thrown { throw e }; return try await model.run($0, $1) }
+        for (error, line) in [(Rewrite.Failure(line: "Too long for the model. Select less") as Error, "Too long for the model. Select less"),
+                              (Failed(), Rewrite.failed)] {
+            bar.showRewrite(true)
+            let panel = try XCTUnwrap(bar.rewritePanel)
+            thrown = error
+            panel.run(.fix)
+            await panel.task?.value
+            XCTAssertEqual(panel.line, line)
+            XCTAssertFalse(panel.table.isHidden, "the rows, to try again")
+            XCTAssertTrue(panel.empty.isHidden)
+            XCTAssertNil(panel.result)
+            XCTAssertEqual(panel.table.numberOfRows(inSection: 0), 3, "the rows only")
+            XCTAssertTrue(panel.table.tableHeaderView?.subviews.contains(panel.lineLabel) == true)
+            XCTAssertEqual(panel.lineLabel.text, line)
+            thrown = nil
+            panel.tableView(panel.table, didSelectRowAt: IndexPath(row: 2, section: 0))
+            await panel.task?.value
+            XCTAssertEqual(panel.result?.text, "Fixed.", "a row still runs after the line")
+            XCTAssertEqual(model.calls.last?.0, .summarize)
+            bar.showRewrite(false)
+        }
         XCTAssertEqual(doc.calls, [])
         withExtendedLifetime(kb) {}
+    }
+
+    /// QA H (#660): the line has its own room over the rows, at the top with Fix in view, at
+    /// every Key Size and in landscape. A plain table's section footer floated over the last
+    /// rows. No line, no header.
+    func testTheLineNeverCoversTheRows() {
+        for compact in [false, true] {
+            for size in KeyboardSettings.KeySize.allCases {
+                let note = "\(compact ? "landscape" : "portrait") \(size)"
+                let panel = AIPanel(availability: .available) { _, _ in "" }
+                panel.frame = CGRect(x: 0, y: 0, width: compact ? 750 : 375,
+                                     height: TerminalKeyboard.keysHeight(compact: compact, size: size) + TerminalKeyboard.extensionBottomInset)
+                panel.layoutIfNeeded()
+                panel.showList(Rewrite.failed)
+                panel.layoutIfNeeded()
+                let table = panel.table
+                guard let header = table.tableHeaderView else { XCTFail("\(note): the line"); continue }
+                let shown = CGRect(origin: table.contentOffset, size: table.bounds.size)
+                XCTAssertGreaterThan(header.frame.height, 20, note)
+                XCTAssertTrue(shown.insetBy(dx: 0, dy: -0.5).contains(header.frame), "\(note): the line whole in view")
+                XCTAssertFalse(table.visibleCells.isEmpty, note)
+                for cell in table.visibleCells { XCTAssertFalse(header.frame.intersects(cell.frame), "\(note): \(cell.accessibilityLabel ?? "")") }
+                XCTAssertTrue(shown.intersects(table.rectForRow(at: IndexPath(row: 0, section: 0))), "\(note): Fix in view")
+                XCTAssertTrue(panel.lineLabel.frame.width > 200 && panel.lineLabel.frame.minX > 0, "\(note): the rows' insets")
+                panel.showList()
+                XCTAssertNil(table.tableHeaderView, "\(note): no line, no header")
+            }
+        }
     }
 }

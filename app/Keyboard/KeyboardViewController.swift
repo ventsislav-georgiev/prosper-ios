@@ -112,20 +112,45 @@ final class KeyboardViewController: UIInputViewController {
 
     #if canImport(FoundationModels)
     /// The bar's model (#612): a session a request, the command's instructions, the permissive
-    /// guardrails meant for transforming the user's own text. Any error is the panel's one line.
+    /// guardrails meant for transforming the user's own text. An error the panel can name is
+    /// thrown as its line (`Rewrite.Failure`, #660), any other as it came: the generic line.
     @available(iOS 26, *)
     private static func model(_ bar: SuggestionBar) {
         bar.rewrite = { command, text in
             let model = SystemLanguageModel(guardrails: .permissiveContentTransformations)
-            return try await LanguageModelSession(model: model, instructions: command.instructions).respond(to: text).content
-        }
-        bar.rewriteAvailability = {
-            switch SystemLanguageModel.default.availability {
-            case .available: return .available
-            case .unavailable(.deviceNotEligible): return .deviceNotEligible
-            case .unavailable(.appleIntelligenceNotEnabled): return .appleIntelligenceNotEnabled
-            case .unavailable: return .modelNotReady   // and any reason a later iOS adds
+            do {
+                return try await LanguageModelSession(model: model, instructions: command.instructions).respond(to: text).content
+            } catch {
+                guard let line = line(error, availability()) else { throw error }
+                throw Rewrite.Failure(line: line)
             }
+        }
+        bar.rewriteAvailability = availability
+    }
+
+    @available(iOS 26, *)
+    private static func availability() -> Rewrite.Availability {
+        switch SystemLanguageModel.default.availability {
+        case .available: return .available
+        case .unavailable(.deviceNotEligible): return .deviceNotEligible
+        case .unavailable(.appleIntelligenceNotEnabled): return .appleIntelligenceNotEnabled
+        case .unavailable: return .modelNotReady   // and any reason a later iOS adds
+        }
+    }
+
+    /// A failed request's line (#660), nil for the generic one: the model's availability, read
+    /// again after the error, first (the simulator reports `.available` with no assets), then
+    /// iOS 26.0's errors. Those are deprecated in the iOS 27 SDK and CI builds on 26's; 27's
+    /// new error types fall to the generic line.
+    @available(iOS 26, *)
+    static func line(_ error: Error, _ availability: Rewrite.Availability) -> String? {
+        if let reason = availability.reason { return reason }
+        switch error as? LanguageModelSession.GenerationError {
+        case .assetsUnavailable?: return Rewrite.Availability.modelNotReady.reason
+        case .exceededContextWindowSize?: return "Too long for the model. Select less"
+        case .guardrailViolation?, .refusal?: return "The model won't change this text"
+        case .unsupportedLanguageOrLocale?: return "The model doesn't support this text's language"
+        default: return nil
         }
     }
     #endif

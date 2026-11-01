@@ -72,6 +72,11 @@ enum Rewrite {
         }
     }
 
+    /// A failed request the controller could name (#660): its line in the panel. Anything else
+    /// thrown shows `failed`. Nothing here sees the model's own errors.
+    struct Failure: Error, Equatable { var line: String }
+    static let failed = "That didn't work. Try again, or with less text"
+
     /// What a command works on, and the field as it read at the request, for the write's check.
     struct Source: Equatable {
         var text: String
@@ -204,8 +209,11 @@ final class AIPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
     let insertButton = UIButton(configuration: .plain())
     let listButton = UIButton(configuration: .plain())
     let resultView: UIStackView
-    /// Under the rows: why the last tap gave no result.
+    /// Over the rows: why the last tap gave no result.
     private(set) var line: String?
+    /// `line`'s, the table's header while there is one (`showList`).
+    let lineLabel = UILabel()
+    private let lineView = UIView()
 
     init(availability: Rewrite.Availability, rewrite: @escaping (Rewrite.Command, String) async throws -> String) {
         self.availability = availability
@@ -218,8 +226,6 @@ final class AIPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
         super.init(title: "Rewrite", empty: availability.reason ?? "", trailing: [cancelButton])
         table.dataSource = self
         table.delegate = self
-        table.sectionFooterHeight = UITableView.automaticDimension
-        table.estimatedSectionFooterHeight = 32
         cancelButton.configuration?.image = UIImage(systemName: "xmark")
         cancelButton.configuration?.baseForegroundColor = Style.icon
         cancelButton.accessibilityLabel = "Cancel"
@@ -231,6 +237,19 @@ final class AIPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
         preview.font = .systemFont(ofSize: 15)
         preview.layer.cornerRadius = 14
         preview.textContainerInset = UIEdgeInsets(top: 10, left: 8, bottom: 10, right: 8)
+        lineLabel.font = .systemFont(ofSize: 13)
+        lineLabel.textColor = Style.hint
+        lineLabel.numberOfLines = 0
+        lineLabel.translatesAutoresizingMaskIntoConstraints = false
+        lineView.addSubview(lineLabel)
+        lineView.preservesSuperviewLayoutMargins = true   // the rows' insets
+        lineView.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: 0, bottom: 4, trailing: 0)
+        NSLayoutConstraint.activate([
+            lineLabel.topAnchor.constraint(equalTo: lineView.layoutMarginsGuide.topAnchor),
+            lineLabel.bottomAnchor.constraint(equalTo: lineView.layoutMarginsGuide.bottomAnchor),
+            lineLabel.leadingAnchor.constraint(equalTo: lineView.layoutMarginsGuide.leadingAnchor),
+            lineLabel.trailingAnchor.constraint(equalTo: lineView.layoutMarginsGuide.trailingAnchor),
+        ])
         note.font = .systemFont(ofSize: 13)
         note.textColor = Style.hint
         note.numberOfLines = 2
@@ -260,13 +279,22 @@ final class AIPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
     }
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// The rows, `line` under them, or the reason the model can't run in their place.
+    /// The rows, `line` over them, or the reason the model can't run in their place. The line
+    /// is the table's header (#660), scrolled to the top with Fix under it: it scrolls with the
+    /// rows, where a plain table's section footer floated, pinned to the card's bottom over
+    /// them whenever they and it outgrew the card (QA H).
     func showList(_ line: String? = nil) {
         result = nil
         self.line = line
         empty.isHidden = availability.reason == nil
         table.isHidden = availability.reason != nil
+        lineLabel.text = line
+        table.tableHeaderView = line == nil ? nil : lineView
         table.reloadData()
+        setNeedsLayout()
+        layoutIfNeeded()
+        table.contentOffset = CGPoint(x: 0, y: -table.adjustedContentInset.top)
+        if let line, !table.isHidden { UIAccessibility.post(notification: .announcement, argument: line) }
         cancelButton.isHidden = true
         spinner.stopAnimating()
         resultView.isHidden = true
@@ -282,12 +310,15 @@ final class AIPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
         spinner.startAnimating()
         let rewrite = self.rewrite
         task = Task { [weak self] in
-            let out = try? await rewrite(command, source.text)
+            let out: String
+            do { out = try await rewrite(command, source.text) } catch {
+                guard !Task.isCancelled, let self else { return }
+                self.task = nil
+                return self.showList((error as? Rewrite.Failure)?.line ?? Rewrite.failed)
+            }
             guard !Task.isCancelled, let self else { return }
             self.task = nil
-            guard let out, out.contains(where: { !$0.isWhitespace }) else {
-                return self.showList("That didn't work. Try again, or with less text")
-            }
+            guard out.contains(where: { !$0.isWhitespace }) else { return self.showList(Rewrite.failed) }
             self.show(out, for: source)
         }
     }
@@ -323,6 +354,19 @@ final class AIPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
         onWrite?(result.source, result.text, replace)
     }
 
+    /// The line's header fitted to the table's width, as it changes: a table header is sized by
+    /// its frame alone, and set again for the table to take a new height.
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard table.tableHeaderView === lineView else { return }
+        let fit = lineView.systemLayoutSizeFitting(CGSize(width: table.bounds.width, height: 0),
+                                                   withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+        let size = CGSize(width: table.bounds.width, height: ceil(fit.height))
+        guard lineView.frame.size != size else { return }
+        lineView.frame.size = size
+        table.tableHeaderView = lineView
+    }
+
     /// Off the keyboard (closed, or the keyboard went): the request goes with it.
     override func didMoveToSuperview() {
         super.didMoveToSuperview()
@@ -332,10 +376,10 @@ final class AIPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { Rewrite.Command.allCases.count }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let command = Rewrite.Command.allCases[indexPath.row]
         let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
         var content = cell.defaultContentConfiguration()
         Self.card(cell, &content)
+        let command = Rewrite.Command.allCases[indexPath.row]
         content.image = UIImage(systemName: command.symbol)
         content.imageProperties.tintColor = Style.accent
         content.text = command.title
@@ -347,16 +391,6 @@ final class AIPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
         cell.accessibilityHint = command.detail
         cell.accessibilityTraits.insert(.button)
         return cell
-    }
-
-    func tableView(_ tableView: UITableView, viewForFooterInSection section: Int) -> UIView? {
-        guard let line else { return nil }
-        let footer = UITableViewHeaderFooterView()
-        var content = UIListContentConfiguration.plainFooter()
-        content.text = line
-        content.textProperties.color = Style.hint
-        footer.contentConfiguration = content
-        return footer
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
