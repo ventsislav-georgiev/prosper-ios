@@ -695,6 +695,7 @@ final class KeyboardThemeTests: XCTestCase {
         XCTAssertEqual(panel.numbers.map(\.accessibilityLabel), ["Row", "Key"])
         XCTAssertEqual(panel.numpad.map(\.accessibilityLabel), ["Off", "On"])
         XCTAssertEqual(selected(panel.sizes) + selected(panel.numbers) + selected(panel.numpad), ["Normal", "Row", "Off"])
+        XCTAssertTrue(panel.toolbarRows.isEmpty, "Toolbar Rows with Key only (#694)")
         XCTAssertGreaterThan(panel.sizes[0].convert(panel.sizes[0].bounds, to: panel).minY,
                              panel.toolbar[0].convert(panel.toolbar[0].bounds, to: panel).maxY, "under the theme rows")
         XCTAssertEqual(panel.bottomInset, TerminalKeyboard.extensionBottomInset)
@@ -721,6 +722,17 @@ final class KeyboardThemeTests: XCTestCase {
         panel = try XCTUnwrap(bar.appearancePanel)
         XCTAssertEqual(selected(panel.numbers), ["Key"])
         XCTAssertEqual(panel.frame, kb.frame)
+        XCTAssertEqual(panel.toolbarRows.map(\.accessibilityLabel), ["One", "Two"])
+        XCTAssertEqual(selected(panel.toolbarRows), ["Two"])
+
+        try tap(panel.toolbarRows, "One")   // #694
+        fit()
+        XCTAssertEqual(defaults.string(forKey: KeyboardSettings.Key.toolbarRows), "one")
+        XCTAssertEqual(KeyboardSettings.current().toolbarRows, .one, "the app's Settings follow")
+        XCTAssertEqual(bar.frame.height, barHeight, accuracy: 0.5, "one row, the digit row's height gone")
+        panel = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(selected(panel.toolbarRows), ["One"])
+        XCTAssertEqual(panel.frame, kb.frame)
 
         try tap(panel.numpad, "On")
         fit()
@@ -728,7 +740,7 @@ final class KeyboardThemeTests: XCTestCase {
         XCTAssertTrue(kb.settings.numpadHidesToolbar)
         panel = try XCTUnwrap(bar.appearancePanel)
         XCTAssertEqual(selected(panel.numpad), ["On"])
-        XCTAssertEqual(Set(defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("keyboard.") }), Set(keyed), "nothing else")
+        XCTAssertEqual(Set(defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix("keyboard.") }), Set(keyed + [KeyboardSettings.Key.toolbarRows]), "nothing else")
 
         // Scrolled to its end, the last row clears the keys' pad.
         let scroll = try XCTUnwrap(panel.subviews.first { $0 is UIScrollView && !($0 is UITableView) } as? UIScrollView)

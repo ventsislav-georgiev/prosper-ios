@@ -219,14 +219,15 @@ final class PanelFilterTests: XCTestCase {
     }
 
     /// The emoji search's grid in whole rows, columns no wider than 38 pt (#686), at each Key Size, on
-    /// English and Bulgarian, under either toolbar, in portrait and landscape: no band between rows (38 pt cells in
+    /// English and Bulgarian, under either toolbar (one row too, #694), in portrait and landscape: no band between rows (38 pt cells in
     /// 108 pt spread two over three's room), the last inside, a smaller cell's glyph inside it.
     func testEmojiResultsFillTheGridInWholeRows() throws {
         for size in KeyboardSettings.KeySize.allCases {
-            for (layout, numbers) in [(TerminalKeyboard.Layout.english, KeyboardSettings.Numbers.key), (.bulgarian, .row), (.english, .row)] {
+            for (layout, numbers, rows) in [(TerminalKeyboard.Layout.english, KeyboardSettings.Numbers.key, KeyboardSettings.ToolbarRows.two),
+                                            (.english, .key, .one), (.bulgarian, .row, .two), (.english, .row, .two)] {
                 for landscape in [false, true] {
-                    let label = "\(size) \(layout) \(numbers) \(landscape ? "landscape" : "portrait")"
-                    let (kb, _, view) = hostedRig(size: size, numbers: numbers, layout: layout, landscape: landscape)
+                    let label = "\(size) \(layout) \(numbers) \(rows) \(landscape ? "landscape" : "portrait")"
+                    let (kb, _, view) = hostedRig(size: size, numbers: numbers, rows: rows, layout: layout, landscape: landscape)
                     kb.showEmoji(true)
                     let picker = try XCTUnwrap(kb.emojiPicker, label)
                     picker.search(true)
@@ -537,7 +538,7 @@ final class PanelFilterTests: XCTestCase {
 
     /// The extension's keyboard and bar in a window at `size` and `numbers`, the view at the
     /// height they add up to, as NumbersKeyTests' rig.
-    private func hostedRig(size: KeyboardSettings.KeySize, numbers: KeyboardSettings.Numbers,
+    private func hostedRig(size: KeyboardSettings.KeySize, numbers: KeyboardSettings.Numbers, rows: KeyboardSettings.ToolbarRows = .two,
                            layout: TerminalKeyboard.Layout = .english, landscape: Bool = false)
         -> (TerminalKeyboard, SuggestionBar, UIView) {
         let width: CGFloat = landscape ? 874 : 402
@@ -552,6 +553,7 @@ final class PanelFilterTests: XCTestCase {
         kb.allowsNumbersKey = true
         kb.settings.keySize = size
         kb.settings.numbers = numbers
+        kb.settings.toolbarRows = rows
         bar.showsToolbar = true
         view.frame.size.height = view.systemLayoutSizeFitting(CGSize(width: width, height: 0), withHorizontalFittingPriority: .required,
                                                               verticalFittingPriority: .fittingSizeLevel).height

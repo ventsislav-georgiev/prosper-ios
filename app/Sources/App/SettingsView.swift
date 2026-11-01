@@ -78,6 +78,8 @@ struct SettingsView: View {
     private var keySize = KeyboardSettings().keySize
     @AppStorage(KeyboardSettings.Key.numbers, store: KeyboardSettings.store())
     private var numbers = KeyboardSettings().numbers
+    @AppStorage(KeyboardSettings.Key.toolbarRows, store: KeyboardSettings.store())   // #694
+    private var toolbarRows = KeyboardSettings().toolbarRows
     @AppStorage(KeyboardSettings.Key.numpadHidesToolbar, store: KeyboardSettings.store())
     private var numpadHidesToolbar = KeyboardSettings().numpadHidesToolbar
     @AppStorage(KeyboardSettings.Key.saveCopies, store: KeyboardSettings.store())
@@ -247,11 +249,16 @@ struct SettingsView: View {
                 Picker("Numbers", selection: $numbers) {
                     ForEach(KeyboardSettings.Numbers.allCases, id: \.self) { Text($0.rawValue.capitalized) }
                 }
+                if numbers == .key {   // #694
+                    Picker("Toolbar Rows", selection: $toolbarRows) {
+                        ForEach(KeyboardSettings.ToolbarRows.allCases, id: \.self) { Text($0.rawValue.capitalized) }
+                    }
+                }
                 Toggle("Hide Toolbar on the Numpad", isOn: $numpadHidesToolbar)   // Row too, by the hold menu's Numbers (#652)
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows. Numbers: Key swaps the digit row in other apps for a 123 key that opens a numpad, and gives the toolbar a second row in its place; with Row, hold the toolbar toggle and pick Numbers for the numpad. The themes and Accent apply to both keyboards: the Toolbar Theme to the toolbar's keys, the Keys Theme to the rest. The accent lights return, send and the toolbar's held keys in Dark, Light and True Black.")
+                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. In the terminal, Enable Caps Lock, Character Preview, Keys Beside Space and Key Size apply. Key Size makes the rows taller in portrait, from the next time the keyboard shows. Numbers: Key swaps the digit row in other apps for a 123 key that opens a numpad, and gives the toolbar a second row in its place, or with Toolbar Rows: One a keyboard a row shorter; with Row, hold the toolbar toggle and pick Numbers for the numpad. The themes and Accent apply to both keyboards: the Toolbar Theme to the toolbar's keys, the Keys Theme to the rest. The accent lights return, send and the toolbar's held keys in Dark, Light and True Black.")
             }
 
             // The Prosper keyboard's languages (#624); the terminal's keyboard stays English.

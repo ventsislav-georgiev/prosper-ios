@@ -4,8 +4,8 @@ import UIKit
 /// (`SuggestionBar.showAppearance`). A Keys row of every theme, a Toolbar row of Match Keys and
 /// every theme, and the accent while the keys or the toolbar are Dark, Light or True Black (a Mac
 /// theme lights in its own colour, #642; either, #655): each a strip that scrolls sideways, the current swatch ringed in
-/// the accent and in view. Under them a Layout group (#650): Key Size, Numbers and Numpad Hides
-/// Toolbar, in text chips. A tap hands the settings with it to `onPick`; the bar applies and
+/// the accent and in view. Under them a Layout group (#650): Key Size, Numbers, Toolbar Rows
+/// with Numbers: Key (#694) and Numpad Hides Toolbar, in text chips. A tap hands the settings with it to `onPick`; the bar applies and
 /// stores them and draws this panel again. Without Full Access the rows are off, under a
 /// note: the keyboard can't reach the app's settings then.
 final class AppearancePanel: KeysPanel {
@@ -16,6 +16,8 @@ final class AppearancePanel: KeysPanel {
     private(set) var keys: [UIButton] = [], toolbar: [UIButton] = [], accents: [UIButton] = []
     /// The Layout group's chips (#650): Key Size, Numbers, Numpad Hides Toolbar.
     private(set) var sizes: [UIButton] = [], numbers: [UIButton] = [], numpad: [UIButton] = []
+    /// Toolbar Rows, with Numbers: Key only (#694).
+    private(set) var toolbarRows: [UIButton] = []
     let note = UILabel()
     /// The panel's own scroll and the rows', by caption.
     ///
@@ -49,6 +51,11 @@ final class AppearancePanel: KeysPanel {
         numbers = KeyboardSettings.Numbers.allCases.map { n in
             swatch(n.rawValue.capitalized, nil, on: n == settings.numbers) { $0.numbers = n }
         }
+        if settings.numbers == .key {
+            toolbarRows = KeyboardSettings.ToolbarRows.allCases.map { n in
+                swatch(n.rawValue.capitalized, nil, on: n == settings.toolbarRows) { $0.toolbarRows = n }
+            }
+        }
         numpad = [false, true].map { on in
             swatch(on ? "On" : "Off", nil, on: on == settings.numpadHidesToolbar) { $0.numpadHidesToolbar = on }
         }
@@ -67,7 +74,7 @@ final class AppearancePanel: KeysPanel {
         group.directionalLayoutMargins = .init(top: 6, leading: 12, bottom: 0, trailing: 12)
         var rows: [UIView] = [note]
         for (caption, row) in [("Keys", keys), ("Toolbar", toolbar), ("Accent", accents), ("Key Size", sizes),
-                               ("Numbers", numbers), ("Numpad Hides Toolbar", numpad)] where !row.isEmpty {
+                               ("Numbers", numbers), ("Toolbar Rows", toolbarRows), ("Numpad Hides Toolbar", numpad)] where !row.isEmpty {
             if caption == "Key Size" { rows.append(group) }
             for b in row {
                 b.isEnabled = enabled

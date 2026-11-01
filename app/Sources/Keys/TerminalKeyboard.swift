@@ -59,6 +59,7 @@ struct KeyboardSettings: Equatable {
         static let languages = "keyboard.languages"
         static let numbers = "keyboard.numbers"
         static let numpadHidesToolbar = "keyboard.numpadHidesToolbar"
+        static let toolbarRows = "keyboard.toolbarRows"
         static let theme = "keyboard.theme"
         static let toolbarTheme = "keyboard.toolbarTheme"
         static let accent = "keyboard.accent"
@@ -102,6 +103,10 @@ struct KeyboardSettings: Equatable {
     /// row's height going to the toolbar's second row. Same keyboard height either way.
     var numbers = Numbers.row
     enum Numbers: String, CaseIterable { case row, key }
+    /// With Numbers: Key, the toolbar's rows (#694): Two takes the digit row's height, One
+    /// leaves it out, a keyboard one row shorter (`TerminalKeyboard.numberRowHeight`).
+    var toolbarRows = ToolbarRows.two
+    enum ToolbarRows: String, CaseIterable { case one, two }
     /// The numpad takes the bar's height too while it shows (#625): 123's, or the menu's (#650).
     var numpadHidesToolbar = false
     /// Clean Up Dictation (#612): at Done, the on-device model tidies what was dictated
@@ -193,6 +198,7 @@ struct KeyboardSettings: Equatable {
         read(Key.numpadHidesToolbar, &numpadHidesToolbar)
         read(Key.cleansDictation, &cleansDictation)
         numbers = defaults?.string(forKey: Key.numbers).flatMap(Numbers.init) ?? numbers
+        toolbarRows = defaults?.string(forKey: Key.toolbarRows).flatMap(ToolbarRows.init) ?? toolbarRows
         bottomOrder = defaults?.string(forKey: Key.bottomOrder) ?? bottomOrder
         bottomHidden = defaults?.string(forKey: Key.bottomHidden) ?? bottomHidden
         keySize = defaults?.string(forKey: Key.keySize).flatMap(KeySize.init) ?? keySize
@@ -271,6 +277,7 @@ struct KeyboardSettings: Equatable {
         if accent != old.accent { store.set(accent.rawValue, forKey: Key.accent) }
         if keySize != old.keySize { store.set(keySize.rawValue, forKey: Key.keySize) }
         if numbers != old.numbers { store.set(numbers.rawValue, forKey: Key.numbers) }
+        if toolbarRows != old.toolbarRows { store.set(toolbarRows.rawValue, forKey: Key.toolbarRows) }
         if numpadHidesToolbar != old.numpadHidesToolbar { store.set(numpadHidesToolbar, forKey: Key.numpadHidesToolbar) }
     }
 
@@ -1203,7 +1210,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             if settings.numbers != oldValue.numbers { return numbersChanged() }
             if settings.bottomRow != oldValue.bottomRow { build() }
             if settings.keySize != oldValue.keySize { fitHeight(); setNeedsLayout(); rowsChanged?() }
-            if settings.numpadHidesToolbar != oldValue.numpadHidesToolbar { rowsChanged?() }
+            if settings.numpadHidesToolbar != oldValue.numpadHidesToolbar || settings.toolbarRows != oldValue.toolbarRows { rowsChanged?() }
         }
     }
     /// Numbers: Key may apply (#625): the extension's controller sets it. The app's keyboard
@@ -1214,9 +1221,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// The numpad shows in the keys' place (`showNumpad`).
     private(set) var showsNumpad = false
     /// What the digit row's row and gap leave for the bar with `numbersKey` (`SuggestionBar.fitRows`),
-    /// so the keyboard's total height is the same either way; 0 with the row.
+    /// so the keyboard's total height is the same either way; 0 with the row, or with Toolbar Rows: One (#694).
     var numberRowHeight: CGFloat {
-        guard numbersKey else { return 0 }
+        guard numbersKey, settings.toolbarRows == .two else { return 0 }
         let m = Self.metrics(compact: compact, size: settings.keySize)
         return m.row + m.gap
     }

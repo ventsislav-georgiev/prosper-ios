@@ -93,14 +93,19 @@ final class NumbersKeyTests: XCTestCase {
         let fresh = KeyboardSettings()
         XCTAssertEqual(fresh.numbers, .row, "nobody's keys change unasked")
         XCTAssertFalse(fresh.numpadHidesToolbar)
+        XCTAssertEqual(fresh.toolbarRows, .two, "#694: today's two rows")
         XCTAssertEqual(KeyboardSettings(defaults).numbers, .row, "unset is Row")
         defaults.set("key", forKey: KeyboardSettings.Key.numbers)
         defaults.set(true, forKey: KeyboardSettings.Key.numpadHidesToolbar)
+        defaults.set("one", forKey: KeyboardSettings.Key.toolbarRows)
         let set = KeyboardSettings(defaults)
         XCTAssertEqual(set.numbers, .key)
         XCTAssertTrue(set.numpadHidesToolbar)
+        XCTAssertEqual(set.toolbarRows, .one)
         defaults.set("pad", forKey: KeyboardSettings.Key.numbers)
+        defaults.set("three", forKey: KeyboardSettings.Key.toolbarRows)
         XCTAssertEqual(KeyboardSettings(defaults).numbers, .row, "an unknown value is Row")
+        XCTAssertEqual(KeyboardSettings(defaults).toolbarRows, .two, "an unknown value is Two")
         XCTAssertEqual(KeyboardSettings.current(fullAccess: false).numbers, .row, "no Full Access: defaults")
     }
 
@@ -156,6 +161,54 @@ final class NumbersKeyTests: XCTestCase {
                                     "the slots under the toolbar's row")
         XCTAssertEqual(ShortcutBar.balancedSplit([40, 40, 40, 40, 100], spacing: 6), 3, "the longer row is shortest")
         XCTAssertEqual(ShortcutBar.balancedSplit([50, 50], spacing: 6), 1)
+    }
+
+    /// Toolbar Rows (#694), live, at every Key Size and in landscape: Two gives the bar the digit
+    /// row's height, the keyboard Row's height; One gives it nothing, the keyboard that row shorter.
+    func testToolbarRowsOneMakesTheKeyboardARowShorterAndTwoKeepsItsHeight() throws {
+        for compact in [false, true] {
+            for size in KeyboardSettings.KeySize.allCases {
+                let label = "\(size) \(compact ? "landscape" : "portrait")"
+                let (kb, bar, _, view) = rig(width: compact ? 874 : 402, compact: compact)
+                kb.settings.keySize = size
+                let m = TerminalKeyboard.metrics(compact: compact, size: size)
+                let one = SuggestionBar.height(compact: compact) + TerminalKeyboard.keysHeight(compact: compact, size: size, rows: 4)
+                    + TerminalKeyboard.extensionBottomInset
+                XCTAssertEqual(fit(view), one + m.row + m.gap, accuracy: 1, "\(label): Two, Row's height")
+                kb.settings.toolbarRows = .one
+                XCTAssertEqual(fit(view), one, accuracy: 1, "\(label): One, a row shorter")
+                XCTAssertEqual(bar.frame.height, SuggestionBar.height(compact: compact), accuracy: 0.5, "\(label): one row's bar")
+                kb.settings.toolbarRows = .two
+                XCTAssertEqual(fit(view), one + m.row + m.gap, accuracy: 1, "\(label): Two again")
+            }
+        }
+    }
+
+    /// At One (#694) the bar is Row's: no toolbar band over the slots, the toolbar in one row,
+    /// the numpad lent that one row's height, the keyboard's height kept.
+    func testOneRowsBarIsRowsAndTheNumpadIsLentIt() throws {
+        let (kb, bar, _, view) = rig()
+        kb.settings.toolbarRows = .one
+        let total = fit(view), barHeight = bar.frame.height, keys = kb.frame.height
+        let toolbar = try XCTUnwrap(bar.toolbar)
+        XCTAssertTrue(toolbar.isHidden, "no band over the slots")
+        XCTAssertFalse(bar.slotButtons[0].isHidden)
+        XCTAssertEqual(bar.slotButtons[0].frame.minY, 4, accuracy: 0.5, "the slots at the bar's top")
+        bar.showsToolbar = true
+        fit(view)
+        XCTAssertFalse(toolbar.twoRows)
+        XCTAssertEqual(try toolbarRows(bar), 1, "the toolbar in one row")
+        XCTAssertEqual(toolbar.frame.height, barHeight)
+        bar.showsToolbar = false
+
+        kb.settings.numpadHidesToolbar = true
+        kb.press(.numbers)
+        XCTAssertEqual(fit(view), total, accuracy: 1, "the same keyboard height")
+        XCTAssertTrue(bar.isHidden)
+        XCTAssertEqual(kb.frame.height, keys + barHeight, accuracy: 0.5, "the numpad has the one row's height")
+        kb.press(.numbers)
+        XCTAssertEqual(fit(view), total, accuracy: 1)
+        XCTAssertEqual(bar.frame.height, barHeight, accuracy: 0.5)
     }
 
     /// Each of the two rows spans the bar at every width, as the one row a portrait phone squeezes
