@@ -1680,13 +1680,17 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if Self.field(doc) != walkField {
             walkField = Self.field(doc)
             walk = CaretWalk()
+            lateBy = 0; moveShows = nil; movedAt = nil
         }
         walk.wrap = wrapGuess
         let units = walk.step(steps, lines: lines, before: doc.documentContextBeforeInput ?? "",
                               after: doc.documentContextAfterInput ?? "", settled: walkPolls >= 3)
         if units != 0 {
             doc.adjustTextPosition(byCharacterOffset: units)
+            let owed = movedAt
             wrote()
+            moveShows = [doc.documentContextBeforeInput, doc.documentContextAfterInput]
+            movedAt = owed ?? ticks
             pair?.units += units
             walkPolls = 0
             if lineAsked { lineAsked = false; caretMoved() }
@@ -1730,7 +1734,16 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// A toolbar edit wrote to the host just now: an answer `stallTicks` past the first write
     /// it owes ends a stall, unless it comes within `wakeTicks` of the last (`pollCaret`).
-    func wrote() { wroteAt = ticks; owedAt = owedAt ?? ticks }
+    func wrote() { wroteAt = ticks; owedAt = owedAt ?? ticks; moveShows = nil; movedAt = nil }
+
+    /// The most ticks the field took to answer a move of a toolbar edit's on a later poll,
+    /// with another context than the one the move showed at once (UIKit's guess), counted
+    /// from the first move since the host last showed a new context, 60 at most; 0 till it
+    /// did: a busy host, whose answers the edit's walks wait for that long
+    /// (`SuggestionBar.settled`). Kept till the field changes. `moveShows`: the context the
+    /// last move showed at once.
+    private(set) var lateBy = 0
+    private var moveShows: [String?]?, movedAt: Int?
 
     /// The poll timer's tick; tests call it in place of waiting.
     ///
@@ -1753,7 +1766,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         ticks += n
         let doc = target as? UITextDocumentProxy
         let shows = { [doc?.documentContextBeforeInput, doc?.documentContextAfterInput] }
+        if let m = moveShows, shows() != m, landed != nil || pair != nil, doc.map(Self.field) == walkField {
+            lateBy = min(max(lateBy, ticks - (movedAt ?? ticks)), 60)
+            moveShows = shows()
+        }
         if shows() != hostShows {
+            movedAt = nil
             // A stall's end: the first new context after `stallTicks` of none, the edit's own
             // writes' counted, or after the edit's first write since the last went unanswered
             // `stallTicks`, its last `wakeTicks` or more before (#575 QA r2: ctrl-u's step pair,

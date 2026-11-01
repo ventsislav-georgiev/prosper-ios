@@ -1971,11 +1971,11 @@ final class KeyboardToolbarTests: XCTestCase {
         let (kb, bar, doc) = rig("one\ntw", after: "o\nthree")
         Self.qaHosts()[1].1(doc)   // BLOCK
         bar.press(try key(Shortcuts.hostOnly, "delLine"))
-        for _ in 1...3_000 where doc.moves.count < 2 {
+        for _ in 1...3_000 where doc.moves.count < 4 {
             doc.catchUp()
             kb.pollCaret()
         }
-        XCTAssertEqual(doc.moves, [1, 1], "the walk to the line's end, and dd's step over the break")
+        XCTAssertEqual(doc.moves, [1, -3, 3, 1], "the walk to the line's end, back to its start and on, and dd's step over the break")
         XCTAssertEqual(doc.calls, [], "waiting for the step's answer")
         bar.press(try key("left"))
         for _ in 1...3_000 {
@@ -2243,11 +2243,84 @@ final class KeyboardToolbarTests: XCTestCase {
             try edit("cutLine", kb, bar, doc)
             XCTAssertEqual(Self.at(doc), "top\n|z", "cut line: \(name)")
             XCTAssertEqual(pb.string, "  abc", "cut line's clip: \(name)")
-            guard name != "text view" else { continue }   // its caret ends on the empty line above: a gap of its own
             doc.text = "\n  abc"; doc.after = "\nz"; doc.catchUp()
             try edit("delHome", kb, bar, doc)
             XCTAssertEqual(Self.at(doc), "\n|\nz", "ctrl-u, the first line empty: \(name)")
         }
+    }
+
+    /// Copy line on an indented line where the context opens on its break and Safari's space:
+    /// the clip is the line with its whole indent, and the caret ends where it was (#662: the
+    /// walk to the line's start, counting the space as the line's, went past the break).
+    func testCopyLineTakesAnIndentWhole() throws {
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+        let hosts: [(String, (Proxy) -> Void)] = [("safari", Self.safari), ("safari, no window", { $0.breakSpace = true })]
+        for (name, host) in hosts {
+            pb.string = "old"
+            let (kb, bar, doc) = rig("top\n  ab", after: "c\nz")
+            host(doc)
+            bar.suggestions.pasteboard = { pb }
+            try edit("copyLine", kb, bar, doc)
+            XCTAssertEqual(pb.string, "  abc", name)
+            XCTAssertEqual(Self.at(doc), "top\n  ab|c\nz", "the caret where it was: \(name)")
+        }
+    }
+
+    /// dd and cut line where the line's text changes once the walks measured it, before the
+    /// deletes (the host's own edit, or a context one answer behind): the context the deletes
+    /// would go from doesn't end in the line, so nothing goes, the caret back where the press
+    /// found it and the clip kept (#662).
+    func testDdAndCutLineDeleteNothingWhereTheLineChangedAfterTheWalks() throws {
+        let hosts: [(String, (Proxy) -> Void)] = [("plain", { _ in }), ("text view", Self.textView)]
+        for (name, host) in hosts {
+            for id in ["delLine", "cutLine"] {
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                pb.string = "old"
+                let (kb, bar, doc) = rig("top\nab", after: "c\nz")
+                host(doc)
+                bar.suggestions.pasteboard = { pb }
+                bar.press(try XCTUnwrap(Shortcuts.hostOnly.first { $0.id == id }))
+                for _ in 1...3_000 {
+                    // To the end, back to the start, over it again: then it changes.
+                    if doc.moves.count == 3, doc.text == "top\nabc" { doc.text = "top\nxyc" }
+                    doc.catchUp()
+                    kb.pollCaret()
+                }
+                XCTAssertEqual(Self.at(doc), "top\nxy|c\nz", "\(id): \(name)")
+                XCTAssertEqual(pb.string, "old", "\(id)'s clip: \(name)")
+            }
+        }
+    }
+
+    /// dd on a host answering its moves on time deletes within 10 ticks (0.2 s) of the press:
+    /// no wait for answers it never owes (#662: 54 ticks, 1.08 s, every dd).
+    func testDdOnAHostAnsweringOnTimeDeletesWithinAFifthOfASecond() throws {
+        let (kb, bar, doc) = rig("top\nab", after: "c\nz")
+        Self.textView(doc)
+        bar.press(try XCTUnwrap(Shortcuts.hostOnly.first { $0.id == "delLine" }))
+        var first: Int?
+        for _ in 1...3_000 {
+            doc.catchUp()
+            kb.pollCaret()
+            if first == nil, doc.calls.contains("⌫") { first = kb.ticks }
+        }
+        XCTAssertEqual(Self.at(doc), "top\n|z")
+        XCTAssertLessThanOrEqual(try XCTUnwrap(first), 10)
+    }
+
+    /// dd before another line on a host answering 1 s a move, once it was seen answering that
+    /// late, waits as long for the step over the break: the line and the break go, not the
+    /// break and the line's end (#662: the step's answer, past 0.8 s, read as the text's end).
+    func testDdOnAHostSeenAnsweringLateWaitsAsLongForItsStep() throws {
+        let (kb, bar, doc) = rig("one", after: "\ntwo", keys: Shortcuts.hostOnly)
+        Self.qaHosts()[1].1(doc)
+        doc.moveCost = 50
+        bar.toolbar?.reload()
+        bar.press(try key(Shortcuts.hostOnly, "delLine"))
+        for _ in 1...3_000 { doc.catchUp(); kb.pollCaret() }
+        XCTAssertEqual(Self.at(doc), "|two")
     }
 
     /// dd and cut line on a line of a long run of one Character: where the walk to its end
@@ -2261,7 +2334,7 @@ final class KeyboardToolbarTests: XCTestCase {
             ("Safari", false, Self.safari), ("BLOCK, 300", false, { Self.qaHosts()[1].1($0); $0.window = 300 }),
             ("Safari, 300", true, { Self.safari($0); $0.window = 300 }),
             ("kit, 300", true, { Self.qaHosts()[0].1($0); $0.window = 300 }),
-            ("text view, 300", true, { Self.textView($0); $0.window = 300 }),
+            ("text view, 300", true, { Self.textView($0); $0.window = 300 }), ("plain, 300", true, { $0.window = 300 }),
         ]
         for (name, goes, host) in hosts {
             for id in ["delLine", "cutLine"] {

@@ -247,9 +247,10 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertEqual(h.clips.map(\.text), ["pasted", "first line"])
         withExtendedLifetime(kb) {}
     }
-    /// A cut line in batches (a UITextView's line window) is one row, the whole line; rows
-    /// from before stay as they were, one equal to a batch's text too, and a pin on the line
-    /// moves up with it (#597 QA: "gamma line x" and "amma line x" both kept).
+    /// A cut line past the context's window (a UITextView's line window) is one row, the whole
+    /// line, from one write once it's measured (#662); rows from before stay as they were, one
+    /// equal to part of it too, and a pin on the line moves up with it (#597 QA: "gamma line x"
+    /// and "amma line x" both kept).
     func testCutLineInBatchesKeepsOneRow() throws {
         let h = ClipboardHistory(dir: dir)
         for s in ["older", "a line x", "gamma line x"] { paste(s, into: h) }
@@ -261,7 +262,7 @@ final class ClipboardHistoryTests: XCTestCase {
         for _ in 1...3_000 { doc.catchUp(); kb.pollCaret() }
         XCTAssertEqual(doc.text + (doc.after ?? ""), "alpha one beta two")
         XCTAssertEqual(pb.string, "gamma line x")
-        XCTAssertGreaterThan(pb.changeCount - before, 1, "in batches")
+        XCTAssertEqual(pb.changeCount - before, 1, "one write")
         XCTAssertEqual(h.clips.map(\.text), ["gamma line x", "a line x", "older"])
         XCTAssertEqual(h.clips.map(\.pinned), [true, false, false])
         withExtendedLifetime(kb) {}
