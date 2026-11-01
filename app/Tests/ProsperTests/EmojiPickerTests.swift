@@ -804,6 +804,25 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertLessThan(peak, 15)
     }
 
+    /// A held cell's tones draw at its glyph's size (#687): the grid's 56 pt landscape cells,
+    /// a search's 38 pt and 38x47 ones, whichever size the shared font was renewed to last.
+    func testTonesDrawAtTheHeldCellsSize() throws {
+        let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight))
+        let window = UIWindow(frame: picker.frame)
+        window.addSubview(picker)
+        window.isHidden = false
+        addTeardownBlock { window.isHidden = true }
+        picker.layoutIfNeeded()
+        picker.grid.layoutIfNeeded()
+        for size in [CGSize(width: 56, height: 56), CGSize(width: 38, height: 38), CGSize(width: 38, height: 47), CGSize(width: 56, height: 56)] {
+            picker.showTones("👍", over: CGRect(origin: CGPoint(x: 100, y: 100), size: size))
+            let tone = try XCTUnwrap((picker.toneStrip?.subviews.first as? UIButton)?.image(for: .normal))
+            let font = try XCTUnwrap(EmojiPicker.emojiFont(size: min(size.width, size.height) * 0.7))
+            XCTAssertEqual(tone.size.width, EmojiPicker.image("👍", font: font).size.width, accuracy: 0.5, "\(size)")
+        }
+        picker.closeTones()
+    }
+
     // MARK: Recents and data
 
     func testRecentsNewestFirstOnceAndCapped() {

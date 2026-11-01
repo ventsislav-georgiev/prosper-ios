@@ -252,9 +252,9 @@ final class PanelFilterTests: XCTestCase {
                     XCTAssertGreaterThanOrEqual(columns, Int(grid.bounds.width / PanelFilter.rowHeight), "\(label): no fewer columns than 38 pt ones")
                     for cell in column {
                         XCTAssertEqual(cell.frame.width, min(cell.frame.height, PanelFilter.rowHeight), accuracy: 0.01, "\(label): no wider than 38")
-                        // A cell under 38 pt still holds its glyph's advance (the image's height is the line's).
+                        // Every cell holds its glyph's advance, landscape's 38 pt too (#687; the image's height is the line's).
                         let glyph = try XCTUnwrap((cell.contentView.subviews.first as? UIImageView)?.image?.size, label)
-                        if cell.frame.width < PanelFilter.rowHeight { XCTAssertLessThanOrEqual(glyph.width, cell.frame.width, "\(label): the glyph inside") }
+                        XCTAssertLessThanOrEqual(glyph.width, cell.frame.width, "\(label): the glyph inside")
                     }
                     withExtendedLifetime(kb) {}
                 }

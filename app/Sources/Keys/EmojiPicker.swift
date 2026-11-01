@@ -330,13 +330,17 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "e", for: indexPath) as! Cell
         let e = emoji(collectionView, indexPath)
-        cell.emoji.image = draw(e)
+        // At the cell's own size (#687): a search's 38 pt results took the grid's 56 pt font in landscape.
+        let item = (collectionView.collectionViewLayout as! UICollectionViewFlowLayout).itemSize
+        cell.emoji.image = draw(e, size: min(item.width, item.height) * 0.7)
         cell.accessibilityLabel = e   // VoiceOver speaks its name
         return cell
     }
 
-    /// `e`'s image in `font`, a fresh one past `glyphCap` emoji.
-    private func draw(_ e: String) -> UIImage {
+    /// `e`'s image in `font`, a fresh one past `glyphCap` emoji or at another `size` (#687:
+    /// the grid's or a search's, one font at a time: a second would keep its own glyphs).
+    private func draw(_ e: String, size: CGFloat? = nil) -> UIImage {
+        if let size, size != font.pointSize { renew(size: size) }
         if drawn.insert(e).inserted, drawn.count > Self.glyphCap {
             renew(size: font.pointSize)
             drawn = [e]
@@ -469,7 +473,7 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         for t in 0...5 {
             let b = UIButton(type: .custom)
             b.frame = CGRect(x: side * CGFloat(t), y: 0, width: side, height: side)
-            b.setImage(draw(Self.toned(base, t)), for: .normal)
+            b.setImage(draw(Self.toned(base, t), size: min(cell.width, cell.height) * 0.7), for: .normal)   // as the held cell's (#687)
             b.layer.cornerRadius = 6
             b.accessibilityLabel = Self.toneNames[t]
             b.accessibilityTraits = .keyboardKey
