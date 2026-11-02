@@ -8,15 +8,17 @@ import os
 /// either pasteboard. The app syncs, the extensions only fill the store: on coming to the
 /// front, when a session connects, and after the app's own copy, while the Mac lists
 /// "clipboard" (its "Sync clipboard history with iPhone", off by default) and "Sync with Mac"
-/// here is on. ponytail: no background sync and no timer until a reason appears.
+/// here is on. A sync the app is switched away from gets iOS's ~30 s to go on (#705).
+/// ponytail: no background sync and no timer until a reason appears.
 ///
 /// Only what the store keeps moves: text up to `ClipboardHistory.textLimit`, images (pulled
 /// whole, sha256 checked, downsampled as the store does). Not the Mac's files, nor longer text.
-/// Mac to phone pages back from the last sync's newest row (`since`), at most a store's `cap`;
-/// the clips land as the Mac's, deduped by content, and never go back. Phone to Mac: every clip
-/// this phone kept not sent yet, text in batches, each image on its own connection. Concealed
-/// and transient clips never reach the store, so never the Mac. A failure is only logged; the
-/// next trigger tries again.
+/// Phone to Mac first, being small: every clip this phone kept not sent yet, text in batches,
+/// each image on its own connection. Then Mac to phone, paging back from the last sync's newest
+/// row (`since`), at most a store's `cap`; the clips land as the Mac's one by one, deduped by
+/// content, and never go back. A cut run keeps what landed and resumes past it; `since` moves only
+/// when a run gets to the end. Concealed and transient clips never reach the store, so never the
+/// Mac. A failure is only logged; the next trigger tries again.
 @MainActor
 enum ClipboardSync {
     /// "Sync with Mac", in the App Group. On by default: the Mac's own toggle is the opt-in.
@@ -37,6 +39,8 @@ enum ClipboardSync {
     struct State: Codable, Equatable {
         var since: String?
         var sent: [UUID] = []
+        /// The rows past `since` a cut run already took or skipped, so the next skips them.
+        var pulled: [String] = []
     }
 
     private static let log = Logger(subsystem: "eu.illegible.prosper", category: "clipboard")
@@ -49,6 +53,12 @@ enum ClipboardSync {
     private static var again = false
     /// The store synced. Settable for tests.
     static var history: () -> ClipboardHistory? = { ClipboardHistory.shared() }
+    /// iOS's grace for a sync the app is switched away from. Settable for tests.
+    static var beginBackground: (@escaping () -> Void) -> UIBackgroundTaskIdentifier = {
+        UIApplication.shared.beginBackgroundTask(withName: "clipboard sync", expirationHandler: $0)
+    }
+    static var endBackground: (UIBackgroundTaskIdentifier) -> Void = { UIApplication.shared.endBackgroundTask($0) }
+    private static var background = UIBackgroundTaskIdentifier.invalid
 
     /// The handshake's ops: the Mac to sync with, or none; then a sync.
     static func offer(_ ops: Set<SessionVerb>, over t: SessionTransport, machine: String) {
@@ -67,6 +77,7 @@ enum ClipboardSync {
         guard mac != nil, on() else { return }
         guard !running else { again = true; return }
         running = true
+        background = beginBackground { MainActor.assumeIsolated { endBackgroundTask() } }
         Task {
             repeat {
                 again = false
@@ -76,7 +87,15 @@ enum ClipboardSync {
                 }
             } while again
             running = false
+            endBackgroundTask()
         }
+    }
+
+    /// Once per begin: the run's end or iOS's expiry, whichever comes first.
+    private static func endBackgroundTask() {
+        guard background != .invalid else { return }
+        endBackground(background)
+        background = .invalid
     }
 
     // MARK: The sync
@@ -88,29 +107,7 @@ enum ClipboardSync {
         var state = defaults?.data(forKey: key).flatMap { try? JSONDecoder().decode(State.self, from: $0) } ?? State()
         func save() { defaults?.set(try? JSONEncoder().encode(state), forKey: key) }
 
-        // Mac to phone: newest first until [] or a store's worth.
-        var rows: [ClipboardRow] = []
-        var wanted = 0
-        while wanted < history.cap, rows.count < rowsMax {
-            let got = try await t.clipboardList(limit: page, before: rows.last?.id, since: state.since)
-            if got.isEmpty { break }
-            rows += got
-            wanted += got.filter { $0.source != "iPhone" && ($0.kind == "text" || $0.kind == "image") }.count
-        }
-        var pulled: [ClipboardHistory.Clip] = []
-        do {
-            for row in rows where row.source != "iPhone" {
-                if let clip = try await pull(row, over: t, into: history) { pulled.append(clip) }
-            }
-        } catch {
-            history.merge(pulled)   // what came still lands; the watermark stays for the rest
-            throw error
-        }
-        history.merge(pulled)
-        if let newest = rows.first?.date { state.since = newest }
-        save()
-
-        // Phone to Mac: what this phone kept, not sent yet.
+        // Phone to Mac first: what this phone kept, not sent yet.
         let clips = history.clips
         state.sent = state.sent.filter(Set(clips.map(\.id)).contains)
         let mine = clips.filter { $0.source == nil && !state.sent.contains($0.id) }
@@ -129,6 +126,26 @@ enum ClipboardSync {
                 log.error("clipboard upload: \(m, privacy: .public)")   // again on the next trigger
             }
         }
+
+        // Mac to phone: newest first until [] or a store's worth. Each clip lands as it comes and
+        // its row is remembered, so a cut run keeps them and the next one goes on from there.
+        var rows: [ClipboardRow] = []
+        var wanted = 0
+        while wanted < history.cap, rows.count < rowsMax {
+            let got = try await t.clipboardList(limit: page, before: rows.last?.id, since: state.since)
+            if got.isEmpty { break }
+            rows += got
+            wanted += got.filter { $0.source != "iPhone" && ($0.kind == "text" || $0.kind == "image") }.count
+        }
+        for row in rows where row.source != "iPhone" && !state.pulled.contains(row.id) {
+            if let clip = try await pull(row, over: t, into: history) { history.merge([clip]) }
+            state.pulled.append(row.id)
+            save()
+        }
+        // The end: the newest row is the next `since`, so every row under it is done.
+        if let newest = rows.first?.date { state.since = newest }
+        state.pulled = []
+        save()
     }
 
     /// Taken, or skipped for good: a known id or the same content (duplicate), too old, not
@@ -145,6 +162,7 @@ enum ClipboardSync {
         let date = ClipboardRow.date(row.date) ?? Date()
         func item(max: Int) async throws -> Data? {
             do {
+                // The only pull: a smaller image (the Mac's `max_side`, once it lists that op) goes here.
                 let (sha, data) = try await t.clipboardItem(id: row.id, max: max)
                 let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
                 guard hash == sha.lowercased() else { log.error("clipboard pull: hash mismatch"); return nil }
@@ -174,5 +192,15 @@ enum ClipboardSync {
         default:
             return nil   // ponytail: the Mac's files aren't synced this round
         }
+    }
+}
+
+extension ClipboardSync.State {
+    /// A state saved before a field was added reads, keeping what it had.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        since = try c.decodeIfPresent(String.self, forKey: .since)
+        sent = try c.decodeIfPresent([UUID].self, forKey: .sent) ?? []
+        pulled = try c.decodeIfPresent([String].self, forKey: .pulled) ?? []
     }
 }

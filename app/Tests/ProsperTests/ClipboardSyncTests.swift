@@ -254,6 +254,79 @@ final class ClipboardSyncTests: XCTestCase {
 
     /// A loopback Mac: `answer` sees each connection's frames as they arrive, with that
     /// connection's raw send.
+    private func state() throws -> ClipboardSync.State {
+        try JSONDecoder().decode(ClipboardSync.State.self, from: try XCTUnwrap(defaults.data(forKey: "clipboard.sync." + machine)))
+    }
+
+    /// #705: switching away cut every run mid-pull, so nothing landed, nothing went up and each
+    /// run started over. The phone's go first, each pull lands as it comes, and the next run
+    /// goes on past them; `since` moves only at the end.
+    func testACutRunKeepsItsPullsHasSentThePhonesAndTheNextGoesOn() async throws {
+        let h = ClipboardHistory(dir: dir)
+        h.merge([ClipboardHistory.Clip(text: "phone 0", date: base - 7200), ClipboardHistory.Clip(text: "phone 1", date: base - 7260)])
+        let fake = ClipFake()
+        let texts = (0..<4).map { String(repeating: "mac \($0) ", count: 400) }   // over the list's 2000: each one pulled
+        fake.items = texts.enumerated().map { macText($1, ago: Double($0) * 60) }
+        let ids = fake.items.map(\.row.id)
+        fake.onPull = { if $0 == 3 { throw TransportError.hostUnreachable("mac") } }
+        do { try await sync(fake, h); XCTFail("the third pull's error ends the run") } catch {}
+        XCTAssertEqual(fake.batches.map { $0.map(\.text) }, [["phone 0", "phone 1"]], "the phone's went up before any pull")
+        XCTAssertEqual(fake.pulls, Array(ids.prefix(3)))
+        XCTAssertEqual(h.clips.compactMap(\.text), [texts[0], texts[1], "phone 0", "phone 1"], "the first two pulls stay")
+        XCTAssertNil(try state().since, "a cut run doesn't move the watermark")
+        XCTAssertEqual(try state().pulled, Array(ids.prefix(2)))
+
+        fake.onPull = nil
+        defaults = UserDefaults(suiteName: suite)   // a fresh read: only what was saved goes on
+        try await sync(fake, h)
+        XCTAssertEqual(fake.pulls, Array(ids.prefix(3)) + Array(ids.suffix(2)), "the two that landed aren't pulled again")
+        XCTAssertEqual(h.clips.compactMap(\.text), texts + ["phone 0", "phone 1"])
+        XCTAssertEqual(fake.batches.count, 1, "nor are the phone's sent again")
+        XCTAssertEqual(try state(), ClipboardSync.State(since: fake.items[0].row.date, sent: h.clips.suffix(2).map(\.id)), "at the end: `since`, no pulled")
+
+        try await sync(fake, h)
+        XCTAssertEqual(fake.lists.last?.since, fake.items[0].row.date)
+        XCTAssertEqual(fake.pulls.count, 5)
+    }
+
+    func testTheStateRoundTripsAndOneSavedBeforePulledStillReads() throws {
+        let state = ClipboardSync.State(since: "2026-11-02T10:00:00.000Z", sent: [UUID()], pulled: ["A", "B"])
+        XCTAssertEqual(try JSONDecoder().decode(ClipboardSync.State.self, from: JSONEncoder().encode(state)), state)
+        let id = UUID()
+        let old = Data(#"{"since":"2026-11-02T10:00:00.000Z","sent":["\#(id.uuidString)"]}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(ClipboardSync.State.self, from: old),
+                       ClipboardSync.State(since: "2026-11-02T10:00:00.000Z", sent: [id]), "keeps its watermark and sent")
+    }
+
+    /// #705: a run asks iOS for its grace and gives it back once: at its end, or when it expires.
+    func testASyncHoldsABackgroundTaskEndedOnce() async throws {
+        let saved = (KeyboardSettings.store, ClipboardSync.beginBackground, ClipboardSync.endBackground)
+        KeyboardSettings.store = { self.defaults }
+        let h = ClipboardHistory(dir: dir)
+        ClipboardSync.history = { h }
+        var expire: (() -> Void)?
+        var begun = 0, ended: [Int] = []
+        ClipboardSync.beginBackground = { expire = $0; begun += 1; return UIBackgroundTaskIdentifier(rawValue: begun) }
+        ClipboardSync.endBackground = { ended.append($0.rawValue) }
+        defer {
+            ClipboardSync.offer([], over: ClipFake(), machine: machine)
+            ClipboardSync.history = { ClipboardHistory.shared() }
+            (KeyboardSettings.store, ClipboardSync.beginBackground, ClipboardSync.endBackground) = saved
+        }
+        let fake = ClipFake()
+        fake.items = [macText(String(repeating: "cut ", count: 600), ago: 0)]
+        ClipboardSync.offer([.clipboard], over: fake, machine: machine)
+        try await waitUntil("synced") { !ClipboardSync.running }
+        XCTAssertEqual([begun] + ended, [1, 1], "ended at the run's end")
+
+        fake.items = [macText(String(repeating: "expires ", count: 300), ago: -30)]
+        ClipboardSync.kick()
+        expire?()   // iOS's time runs out before the run gets to its end
+        try await waitUntil("synced") { !ClipboardSync.running }
+        XCTAssertEqual([begun] + ended, [2, 1, 2], "ended by the expiry, not again at the end")
+        XCTAssertEqual(h.clips.count, 2, "the run itself goes on")
+    }
+
     private func loopMac(_ answer: @escaping ((UInt8, Data), @escaping (Data) -> Void) -> Void) async throws
         -> (ProsperTransport, Box<[[(UInt8, Data)]]>, NWListener) {
         let got = Box<[[(UInt8, Data)]]>([])
@@ -391,6 +464,8 @@ final class ClipFake: SessionTransport {
     var reasons: [String: String] = [:]
     /// nil: added.
     var uploadReply: ClipboardSent?
+    /// Before each pull, with the pulls so far counting this one: throw to cut the run there.
+    var onPull: ((Int) throws -> Void)?
     var calls: Int { lists.count + pulls.count + batches.count + uploads.count }
 
     func clipboardList(limit: Int, before: String?, since: String?) async throws -> [ClipboardRow] {
@@ -408,6 +483,7 @@ final class ClipFake: SessionTransport {
 
     func clipboardItem(id: String, max: Int) async throws -> (sha256: String, data: Data) {
         pulls.append(id)
+        try onPull?(pulls.count)
         guard let it = items.first(where: { $0.row.id == id }) else { throw TransportError.server("gone") }
         guard it.data.count <= max else { throw TransportError.protocolError("clipboard item too large") }
         let sha = badSha.contains(id) ? String(repeating: "0", count: 64) : SHA256.hash(data: it.data).map { String(format: "%02x", $0) }.joined()

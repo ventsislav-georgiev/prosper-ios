@@ -365,7 +365,7 @@ struct SessionListView: View {
     // #590: the Mac's verbs, from the handshake; empty (an older Mac, the demo) hides
     // Restart, the new Stop and the ⋯ menu.
     @State private var ops: Set<SessionVerb> = []
-    // #590: name → "Restarting…"/"Stopping…" while its verb runs; "" is Restart all's line.
+    // #590: name → "Restarting…"/"Stopping…" while its verb runs; "" is Restart stale agents' line.
     @State private var running: [String: String] = [:]
     @State private var confirmingRestartAll = false
     @State private var stoppingAll: [String]?      // Stop all's confirm: the tab's names, counted when asked
@@ -579,7 +579,8 @@ struct SessionListView: View {
         }
     }
 
-    /// #590: the Mac's ⋯ (Agent Island): Restart all agents and Stop all in <tab>…, each on its op.
+    /// #590: the Mac's ⋯ (Agent Island): Restart stale agents (#706: stale only, as the Mac's;
+    /// no force here) and Stop all in <tab>…, each on its op.
     /// #589: and History, on any of the Mac's verbs. #646: and Chat, on `.chat`. #615: and
     /// Commands, on `.commands`.
     @ViewBuilder private var controlsMenu: some View {
@@ -597,7 +598,7 @@ struct SessionListView: View {
                     Button { showingCommands = true } label: { Label("Commands", systemImage: "command") }
                 }
                 if items.contains(.restart) {
-                    Button("Restart all agents") { confirmingRestartAll = true }
+                    Button("Restart stale agents") { confirmingRestartAll = true }
                         .disabled(sessions.isEmpty || running[""] != nil)
                 }
                 if items.contains(.stop) {
@@ -879,12 +880,12 @@ extension SessionVerb {
 
     /// #589: an error alert's title. A named row's verb is "Resume failed", "Restart failed",
     /// "Stop failed"; an all-run's is the action itself, as the island labels it ("Resume
-    /// interrupted", "Restart all"), over the Mac's summary ("2 resumed, 1 failed").
+    /// interrupted", "Restart stale agents"), over the Mac's summary ("2 resumed, 1 failed").
     func failTitle(all: Bool) -> String {
         switch self {
         case .history: "History"
         case .revive:  all ? "Resume interrupted" : "Resume failed"
-        case .restart: all ? "Restart all" : "Restart failed"
+        case .restart: all ? "Restart stale agents" : "Restart failed"
         case .stop:    all ? "Stop all" : "Stop failed"
         case .library: "Sync from Mac"
         case .pin:     "Pin failed"

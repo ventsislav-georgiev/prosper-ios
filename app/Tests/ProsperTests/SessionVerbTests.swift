@@ -332,11 +332,11 @@ final class SessionVerbTests: XCTestCase {
         XCTAssertEqual(summary?.message, "Resume (no message) needs dch 1.27.0")
     }
 
-    func testRestartAllErrorIsTitledRestartAll() async throws {
+    func testRestartAllErrorIsTitledRestartStaleAgents() async throws {
         let (mac, got, l) = try await fakeMac(0x13, #"{"message":"1 restarted, 1 failed"}"#)
         defer { l.cancel() }
         let f = await SessionListView.attempt(SessionVerb.restart.failTitle(all: true), on: mac) { try await $0.restart(names: nil) }
-        XCTAssertEqual(f?.title, "Restart all")
+        XCTAssertEqual(f?.title, "Restart stale agents")
         XCTAssertEqual(f?.message, "1 restarted, 1 failed")
         XCTAssertEqual(sent(got).1, ["all": true])
         XCTAssertEqual(SessionVerb.restart.failTitle(all: false), "Restart failed")
