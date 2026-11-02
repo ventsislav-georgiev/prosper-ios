@@ -904,9 +904,11 @@ final class SuggestionBar: UIView {
     }
 
     /// The toggle's tap: the menu closes if open; in AutoFill the toolbar over it or AutoFill
-    /// back, the pick untouched (#623); else the toolbar or the suggestions.
+    /// back, the pick untouched (#623); with Predictive Text off the menu, as a hold (#717);
+    /// else the toolbar or the suggestions.
     private func toggleTapped() {
         if menuPanel != nil { return showMenu(false) }
+        if state != .autofill, !suggestions.settings.predictiveText { return showMenu(true) }
         guard state == .autofill else { return showsToolbar.toggle() }
         toolbarOverAutofill.toggle()
         show(state)
@@ -2246,8 +2248,12 @@ final class SuggestionBar: UIView {
         let single = new == .autofill || new == .paste   // one full-width button
         // The toolbar shows over the paste offer (it has its own Paste), over AutoFill only at
         // the toggle's tap there (#599, #623); the toggle stays beside both (#622, #623).
+        // With Predictive Text off there are no suggestions to switch to: the toolbar in their
+        // place whatever the pick, which is kept for when it's back on (#717).
         if new != .autofill { toolbarOverAutofill = false }
-        let tools = toolbar != nil && (new == .autofill ? toolbarOverAutofill : showsToolbar)
+        let pick = new == .autofill ? toolbarOverAutofill
+            : showsToolbar || new != .paste && !suggestions.settings.predictiveText
+        let tools = toolbar != nil && pick
         autofillButton.isHidden = new != .autofill || tools
         pasteControl.isHidden = new != .paste || tools
         // Numbers: Key (#625): the toolbar in two rows, or one over the slots, never none.
@@ -2257,8 +2263,10 @@ final class SuggestionBar: UIView {
         toolbar?.twoRows = tools && (keyboard?.numberRowHeight ?? 0) > 0
         if let toggle {
             let back = new == .autofill ? (image: "key.fill", label: "Show AutoFill") : (image: "ellipsis.bubble", label: "Show suggestions")
-            toggle.configuration?.image = UIImage(systemName: tools ? back.image : "command")
-            toggle.accessibilityLabel = tools ? back.label : "Show toolbar"
+            // No suggestions with Predictive Text off: the toggle opens the menu (#717).
+            let more = new != .autofill && !suggestions.settings.predictiveText
+            toggle.configuration?.image = UIImage(systemName: tools && !more ? back.image : "command")
+            toggle.accessibilityLabel = more ? "More" : tools ? back.label : "Show toolbar"
             setNeedsLayout()
         }
         for (b, slot) in zip(slotButtons, slots) {

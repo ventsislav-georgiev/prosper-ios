@@ -360,6 +360,61 @@ final class KeyboardToolbarTests: XCTestCase {
         withExtendedLifetime((kb, view)) {}
     }
 
+    /// #717: Predictive Text off, no suggestions to switch to: the toolbar whatever the pick, never
+    /// the blank slots or 💬; a tap opens the menu as the hold, another closes it, the pick kept.
+    /// On again: today's toggle and the pick back.
+    func testPredictiveTextOffKeepsTheToolbarAndTheTapOpensTheMenu() throws {
+        let (kb, bar, _, view, _) = try hostedRig()
+        let toolbar = try XCTUnwrap(bar.toolbar), toggle = try XCTUnwrap(bar.toggle)
+        func image() -> Data? { toggle.configuration?.image?.pngData() }
+        let bubble = UIImage(systemName: "ellipsis.bubble")?.pngData()
+        for pick in [false, true] {
+            bar.showsToolbar = pick
+            bar.suggestions.settings.predictiveText = false
+            bar.refresh()
+            XCTAssertFalse(toolbar.isHidden, "pick \(pick): the toolbar")
+            XCTAssertTrue(bar.slotButtons.allSatisfy(\.isHidden), "no blank slots")
+            XCTAssertNotEqual(image(), bubble)
+            XCTAssertEqual(toggle.accessibilityLabel, "More")
+            toggle.sendActions(for: .touchUpInside)
+            XCTAssertNotNil(bar.menuPanel, "a tap opens the menu")
+            toggle.sendActions(for: .touchUpInside)
+            XCTAssertNil(bar.menuPanel, "another closes it")
+            XCTAssertFalse(toolbar.isHidden)
+            XCTAssertEqual(bar.showsToolbar, pick, "the pick untouched")
+
+            bar.suggestions.settings.predictiveText = true
+            bar.refresh()
+            XCTAssertEqual(toolbar.isHidden, !pick, "on again: the pick")
+            XCTAssertEqual(toggle.accessibilityLabel, pick ? "Show suggestions" : "Show toolbar")
+            XCTAssertEqual(image() == bubble, pick)
+            toggle.sendActions(for: .touchUpInside)
+            XCTAssertNil(bar.menuPanel, "a tap switches again")
+            XCTAssertEqual(bar.showsToolbar, !pick)
+        }
+        withExtendedLifetime((kb, view)) {}
+    }
+
+    /// #717: Predictive Text off leaves AutoFill as it was (#623): its toggle swaps the toolbar
+    /// over it and back, and the menu stays the hold's.
+    func testPredictiveTextOffLeavesAutoFillsToggle() throws {
+        let (kb, bar, doc, view, _) = try hostedRig()
+        let toolbar = try XCTUnwrap(bar.toolbar), toggle = try XCTUnwrap(bar.toggle)
+        bar.suggestions.settings.predictiveText = false
+        doc.textContentType = .username
+        bar.refresh()
+        XCTAssertEqual(bar.state, .autofill)
+        XCTAssertTrue(toolbar.isHidden)
+        XCTAssertFalse(bar.autofillButton.isHidden)
+        toggle.sendActions(for: .touchUpInside)
+        XCTAssertNil(bar.menuPanel)
+        XCTAssertFalse(toolbar.isHidden, "the toolbar over AutoFill")
+        XCTAssertEqual(toggle.accessibilityLabel, "Show AutoFill")
+        toggle.sendActions(for: .touchUpInside)
+        XCTAssertTrue(toolbar.isHidden, "AutoFill back")
+        withExtendedLifetime((kb, view)) {}
+    }
+
     /// From a stale AutoFill bar there's a way to the toolbar (#599 QA): the toggle beside the
     /// AutoFill button, a tap shows the toolbar over it and a second tap AutoFill again; a
     /// refresh keeps what the tap chose, and AutoFill never shows the toolbar by itself, even
