@@ -205,12 +205,15 @@ struct ClipboardText: Equatable {
     var text: String
 }
 
-/// #621: a phone image for clipboardUpload 0x23, history only.
+/// #621: a phone image for clipboardUpload 0x23, history only. #718: or the newest clip, text or
+/// image, `live`: the Mac also puts it on its pasteboard.
 struct ClipboardUpload: Equatable {
     var id: UUID
     var date: Date
     var data: Data
     var mime: String?
+    var kind = "image"
+    var live = false
 }
 
 /// #621: ok's `{added, skipped}`: the ids the Mac took, and the rest by id with its reason.

@@ -286,12 +286,13 @@ final class ProsperTransport: SessionTransport {
         return try Self.decodeSent(try Self.expect(try await reply.value, F.ok))
     }
 
-    /// Kind image, history only (no `live`).
+    /// History only unless `live` (#718), a JSON bool as the Mac checks it.
     static func uploadHeader(_ item: ClipboardUpload) -> [String: Any] {
-        var o: [String: Any] = ["id": item.id.uuidString, "date": ClipboardRow.wire(item.date), "kind": "image",
+        var o: [String: Any] = ["id": item.id.uuidString, "date": ClipboardRow.wire(item.date), "kind": item.kind,
                                 "source": "iPhone", "size": item.data.count,
                                 "sha256": SHA256.hash(data: item.data).map { String(format: "%02x", $0) }.joined()]
         if let mime = item.mime { o["mime"] = mime }
+        if item.live { o["live"] = true }
         return o
     }
 

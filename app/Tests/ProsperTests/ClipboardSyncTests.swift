@@ -34,8 +34,8 @@ final class ClipboardSyncTests: XCTestCase {
         super.tearDown()
     }
 
-    private func sync(_ fake: ClipFake, _ h: ClipboardHistory) async throws {
-        try await ClipboardSync.sync(over: fake, machine: machine, history: h, defaults: defaults)
+    private func sync(_ fake: ClipFake, _ h: ClipboardHistory, now: Date = Date()) async throws {
+        try await ClipboardSync.sync(over: fake, machine: machine, history: h, defaults: defaults, now: now)
     }
 
     /// A Mac text row `ago` seconds before `base`, its list text cut at 2000 as the Mac's.
@@ -242,6 +242,97 @@ final class ClipboardSyncTests: XCTestCase {
         XCTAssertEqual(fake.batches, [])
     }
 
+    // MARK: Live (#718)
+
+    func testTheNewestTextGoesLiveAfterTheBatchAndOnlyOnce() async throws {
+        let h = ClipboardHistory(dir: dir)
+        h.merge([ClipboardHistory.Clip(text: "older", date: base - 120), ClipboardHistory.Clip(text: "newest", date: base - 60)])
+        let fake = ClipFake()
+        try await sync(fake, h, now: base)
+        XCTAssertEqual(fake.batches.map { $0.map(\.text) }, [["older"]], "the live one is not in the batch")
+        let id = try XCTUnwrap(h.clips.first { $0.text == "newest" }).id
+        XCTAssertEqual(fake.uploads, [ClipboardUpload(id: id, date: base - 60, data: Data("newest".utf8), kind: "text", live: true)])
+        try await sync(fake, h, now: base)
+        XCTAssertEqual(fake.uploads.count, 1, "sent is never sent again")
+        XCTAssertEqual(fake.batches.count, 1)
+    }
+
+    func testTheNewestImageGoesLive() async throws {
+        let h = ClipboardHistory(dir: dir)
+        let name = try XCTUnwrap(h.storeImage(data: png(300, 200)))
+        h.merge([ClipboardHistory.Clip(text: "text", date: base - 300), ClipboardHistory.Clip(image: name, date: base - 30)])
+        let fake = ClipFake()
+        try await sync(fake, h, now: base)
+        XCTAssertEqual(fake.batches.map { $0.map(\.text) }, [["text"]])
+        let id = try XCTUnwrap(h.clips.first { $0.image == name }).id
+        XCTAssertEqual(fake.uploads, [ClipboardUpload(id: id, date: base - 30, data: try Data(contentsOf: h.url(name)),
+                                                      mime: "image/jpeg", live: true)])
+    }
+
+    func testAClipOlderThanTenMinutesIsNotLive() async throws {
+        let h = ClipboardHistory(dir: dir)
+        let name = try XCTUnwrap(h.storeImage(data: png(300, 200)))
+        h.merge([ClipboardHistory.Clip(text: "text", date: base - 700), ClipboardHistory.Clip(image: name, date: base - 601)])
+        let fake = ClipFake()
+        try await sync(fake, h, now: base)
+        XCTAssertEqual(fake.batches.map { $0.map(\.text) }, [["text"]])
+        XCTAssertEqual(fake.uploads.map(\.live), [false], "history only")
+    }
+
+    func testOnlyOneLivePerSync() async throws {
+        let h = ClipboardHistory(dir: dir)
+        let a = try XCTUnwrap(h.storeImage(data: png(300, 200))), b = try XCTUnwrap(h.storeImage(data: png(200, 300)))
+        h.merge([ClipboardHistory.Clip(image: a, date: base - 50), ClipboardHistory.Clip(image: b, date: base - 40),
+                 ClipboardHistory.Clip(text: "one", date: base - 30), ClipboardHistory.Clip(text: "two", date: base - 20)])
+        let fake = ClipFake()
+        try await sync(fake, h, now: base)
+        XCTAssertEqual(fake.batches.map { $0.map(\.text) }, [["one"]])
+        XCTAssertEqual(fake.uploads.map(\.live), [false, false, true], "the newest last, the only live one")
+        XCTAssertEqual(fake.uploads.last?.data, Data("two".utf8))
+    }
+
+    func testAnAlreadySentClipIsNeverLive() async throws {
+        let h = ClipboardHistory(dir: dir)
+        h.merge([ClipboardHistory.Clip(text: "kept", date: base - 60)])
+        let fake = ClipFake()
+        try await sync(fake, h, now: base + 3600)   // too old then: into the batch
+        try await sync(fake, h, now: base)
+        XCTAssertEqual(fake.batches.map { $0.map(\.text) }, [["kept"]])
+        XCTAssertEqual(fake.uploads, [])
+    }
+
+    func testARefusedOrFailedLiveGoesAgainAndTheSyncGoesOn() async throws {
+        let h = ClipboardHistory(dir: dir)
+        h.merge([ClipboardHistory.Clip(text: "live", date: base - 60)])
+        let fake = ClipFake()
+        fake.uploadError = TransportError.notConnected
+        try await sync(fake, h, now: base)
+        XCTAssertEqual(fake.lists.count, 1, "a failed live upload never stops the sync")
+        fake.uploadError = nil
+        fake.uploadReply = ClipboardSent(skipped: [h.clips[0].id.uuidString: "no_space"])
+        try await sync(fake, h, now: base)
+        fake.uploadReply = nil
+        try await sync(fake, h, now: base)
+        try await sync(fake, h, now: base)
+        XCTAssertEqual(fake.uploads.map(\.live), [true, true, true], "failed, refused, then taken once")
+        XCTAssertEqual(fake.batches, [])
+    }
+
+    /// The Mac takes `live` only as a JSON bool; text goes as its UTF-8 bytes.
+    func testTheLiveHeaderIsAJSONBoolAndTextIsKindText() throws {
+        let data = Data("héllo".utf8)
+        let item = ClipboardUpload(id: UUID(), date: base, data: data, kind: "text", live: true)
+        let json = try JSONSerialization.data(withJSONObject: ProsperTransport.uploadHeader(item))
+        XCTAssertTrue(String(decoding: json, as: UTF8.self).contains("\"live\":true"))
+        let o = try XCTUnwrap(try JSONSerialization.jsonObject(with: json) as? [String: Any])
+        let live = try XCTUnwrap(o["live"] as? NSNumber)
+        XCTAssertEqual(CFGetTypeID(live), CFBooleanGetTypeID(), "a bool, not 1")
+        XCTAssertEqual(o["kind"] as? String, "text")
+        XCTAssertEqual(o["size"] as? Int, 6)
+        XCTAssertEqual(o["sha256"] as? String, SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+        XCTAssertNil(o["mime"])
+    }
+
     func testConcealedClipsNeverReachTheMac() async throws {
         let h = ClipboardHistory(dir: dir)
         pb.setItems([[UTType.utf8PlainText.identifier: "s3cret", "org.nspasteboard.ConcealedType": Data()]])
@@ -296,7 +387,8 @@ final class ClipboardSyncTests: XCTestCase {
         defaults.set(true, forKey: ClipboardSync.key)
         ClipboardSync.kick()
         try await waitUntil("synced") { !ClipboardSync.running && fake.calls > 0 }
-        XCTAssertEqual(fake.batches.map { $0.map(\.text) }, [["alpha"]])
+        XCTAssertEqual(fake.uploads.map(\.data), [Data("alpha".utf8)], "just copied: live (#718)")
+        XCTAssertEqual(fake.uploads.map(\.live), [true])
     }
 
     /// #712: max_side 1024 on each pull only while the Mac lists clipboard_max_side, and that
@@ -546,6 +638,8 @@ final class ClipFake: SessionTransport {
     var reasons: [String: String] = [:]
     /// nil: added.
     var uploadReply: ClipboardSent?
+    /// Thrown by each upload, after it is counted.
+    var uploadError: Error?
     /// Before each pull, with the pulls so far counting this one: throw to cut the run there.
     var onPull: ((Int) throws -> Void)?
     var calls: Int { lists.count + pulls.count + batches.count + uploads.count }
@@ -584,6 +678,7 @@ final class ClipFake: SessionTransport {
 
     func clipboardUpload(_ item: ClipboardUpload) async throws -> ClipboardSent {
         uploads.append(item)
+        if let uploadError { throw uploadError }
         return uploadReply ?? ClipboardSent(added: [item.id.uuidString])
     }
 

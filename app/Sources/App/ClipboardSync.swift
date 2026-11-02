@@ -104,32 +104,50 @@ enum ClipboardSync {
 
     // MARK: The sync
 
+    /// #718: a clip copied this recently goes up live; older (a first sync, a backlog) never
+    /// takes the Mac's pasteboard.
+    static let liveAge: TimeInterval = 600
+
     static func sync(over t: SessionTransport, machine: String, history: ClipboardHistory, maxSide: Int? = nil,
-                     defaults: UserDefaults? = KeyboardSettings.store()) async throws {
+                     defaults: UserDefaults? = KeyboardSettings.store(), now: Date = Date()) async throws {
         guard on(defaults) else { return }
         let key = "clipboard.sync." + machine
         var state = defaults?.data(forKey: key).flatMap { try? JSONDecoder().decode(State.self, from: $0) } ?? State()
         func save() { defaults?.set(try? JSONEncoder().encode(state), forKey: key) }
+        func upload(_ clip: ClipboardHistory.Clip, live: Bool) async throws {
+            let item: ClipboardUpload
+            if let text = clip.text {
+                item = ClipboardUpload(id: clip.id, date: clip.date, data: Data(text.utf8), kind: "text", live: live)
+            } else if let name = clip.image, let data = try? Data(contentsOf: history.url(name)) {
+                let mime = UTType(filenameExtension: (name as NSString).pathExtension)?.preferredMIMEType
+                item = ClipboardUpload(id: clip.id, date: clip.date, data: data, mime: mime, live: live)
+            } else { return }
+            do {
+                state.sent += done(try await t.clipboardUpload(item))
+                save()
+            } catch TransportError.server(let m) where m == off {
+                throw TransportError.server(m)
+            } catch TransportError.server(let m) {
+                log.error("clipboard upload: \(m, privacy: .public)")   // again on the next trigger
+            } catch let e where live {
+                log.error("clipboard live: \(e.localizedDescription, privacy: .public)")   // again; the sync goes on
+            }
+        }
 
-        // Phone to Mac first: what this phone kept, not sent yet.
+        // Phone to Mac first: what this phone kept, not sent yet. The newest, if fresh, goes last
+        // and live (#718), so nothing after it takes the Mac's pasteboard back.
         let clips = history.clips
         state.sent = state.sent.filter(Set(clips.map(\.id)).contains)
-        let mine = clips.filter { $0.source == nil && !state.sent.contains($0.id) }
+        var mine = clips.filter { $0.source == nil && !state.sent.contains($0.id) }
+        let live = mine.max { $0.date < $1.date }.flatMap { now.timeIntervalSince($0.date) <= liveAge ? $0 : nil }
+        mine.removeAll { $0.id == live?.id }
         let texts = mine.compactMap { c in c.text.map { ClipboardText(id: c.id, date: c.date, text: $0) } }
         for start in stride(from: 0, to: texts.count, by: page) {
             state.sent += done(try await t.addClipboardHistory(Array(texts[start..<min(start + page, texts.count)])))
             save()
         }
-        for clip in mine {
-            guard let name = clip.image, let data = try? Data(contentsOf: history.url(name)) else { continue }
-            let mime = UTType(filenameExtension: (name as NSString).pathExtension)?.preferredMIMEType
-            do {
-                state.sent += done(try await t.clipboardUpload(ClipboardUpload(id: clip.id, date: clip.date, data: data, mime: mime)))
-                save()
-            } catch TransportError.server(let m) where m != off {
-                log.error("clipboard upload: \(m, privacy: .public)")   // again on the next trigger
-            }
-        }
+        for clip in mine where clip.image != nil { try await upload(clip, live: false) }
+        if let live { try await upload(live, live: true) }
 
         // Mac to phone: newest first until [] or a store's worth. Each clip lands as it comes and
         // its row is remembered, so a cut run keeps them and the next one goes on from there.
