@@ -64,7 +64,7 @@ final class DictationCleanupTests: XCTestCase {
         bar.suggestions.settings.cleansDictation = cleans
         let pb = self.pb
         if fullAccess { bar.suggestions.pasteboard = { pb } }
-        let view = UIView(frame: CGRect(x: 0, y: 0, width: 390, height: 300))
+        let view = Host(frame: CGRect(x: 0, y: 0, width: 390, height: 300))
         bar.attach(kb)
         bar.host(kb, in: view)
         kept += [kb, doc, view]
@@ -96,8 +96,18 @@ final class DictationCleanupTests: XCTestCase {
     }
 
     /// The hints shown over the keys (`SuggestionBar.hint`): a plain bubble holding a label.
+    /// Each as it goes up (`Host`), so a run stalled past its fade still reads it (#711).
     private static func hints(_ v: UIView) -> [String] {
-        v.subviews.filter { type(of: $0) == UIView.self }.compactMap { ($0.subviews.first as? UILabel)?.text }
+        (v as? Host)?.shown ?? []
+    }
+
+    /// The rig's view: keeps each hint put over the keys, which fades off it after 1.5 s.
+    private final class Host: UIView {
+        var shown: [String] = []
+        override func didAddSubview(_ v: UIView) {
+            super.didAddSubview(v)
+            if type(of: v) == UIView.self, let text = (v.subviews.first as? UILabel)?.text { shown.append(text) }
+        }
     }
 
     // MARK: - (a) The replace
