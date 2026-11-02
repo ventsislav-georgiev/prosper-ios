@@ -282,6 +282,13 @@ final class SessionVerbTests: XCTestCase {
         XCTAssertFalse(SessionVerb.menuShown([.reviveNoMessage, .revive]), "no ⋯ item of its own")
     }
 
+    /// #712: clipboard_max_side counts only together with clipboard.
+    func testClipboardMaxSideOnlyWithClipboard() {
+        XCTAssertEqual(SessionVerb.offered(["clipboard", "clipboard_max_side"]), [.clipboard, .clipboardMaxSide])
+        XCTAssertEqual(SessionVerb.offered(["history", "clipboard_max_side"]), [.history], "never without clipboard")
+        XCTAssertFalse(SessionVerb.menuShown([.clipboardMaxSide, .clipboard]), "no ⋯ item of its own")
+    }
+
     /// "no_message" goes only as true; without it the frame's bytes are the plain revive's.
     func testReviveNoMessageFrames() async throws {
         func bytes(_ got: Box<(UInt8, Data)?>) -> String? { got.v.map { String(decoding: $0.1, as: UTF8.self) } }

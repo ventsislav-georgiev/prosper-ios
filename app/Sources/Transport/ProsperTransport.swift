@@ -205,17 +205,18 @@ final class ProsperTransport: SessionTransport {
 
     /// The 0x1a header, then 0x10 frames to its `size`, then ok. Over `max` is refused before
     /// any byte is held. ponytail: no `offset` resume; a dropped pull starts over next sync.
-    func clipboardItem(id: String, max: Int) async throws -> (sha256: String, data: Data) {
+    func clipboardItem(id: String, max: Int, maxSide: Int?) async throws -> (sha256: String, data: Data) {
         let conn = try await connect()
         defer { conn.cancel() }
-        conn.send(content: FrameCodec.encode(F.clipboardItem, json(["id": id])), completion: .contentProcessed { _ in })
+        conn.send(content: FrameCodec.encode(F.clipboardItem, Self.clipboardItemRequest(id: id, maxSide: maxSide)),
+                  completion: .contentProcessed { _ in })
         var buf = Data()
         let header = try Self.expect(try await FrameCodec.read(from: conn, &buf), F.clipboardItemResp)
         guard let o = (try? JSONSerialization.jsonObject(with: header)) as? [String: Any],
               let size = o["size"] as? Int, let sha = o["sha256"] as? String else {
             throw TransportError.protocolError("unreadable clipboard item")
         }
-        guard (0...max).contains(size) else { throw TransportError.protocolError("clipboard item too large") }
+        guard (0...max).contains(size) else { throw TransportError.protocolError(Self.itemTooLarge) }
         var data = Data(capacity: size)
         while true {
             let frame = try await FrameCodec.read(from: conn, &buf)
@@ -228,6 +229,16 @@ final class ProsperTransport: SessionTransport {
             guard data.count == size else { throw TransportError.protocolError("clipboard item short") }
             return (sha, data)
         }
+    }
+
+    /// #712: a header over `max`, refused before any byte is held; the sync skips that row.
+    static let itemTooLarge = "clipboard item too large"
+
+    /// #712: `{"id"}`, with `"max_side"` only when given; without it the bytes are #621's.
+    static func clipboardItemRequest(id: String, maxSide: Int?) -> Data {
+        var o: [String: Any] = ["id": id]
+        if let maxSide { o["max_side"] = maxSide }
+        return (try? JSONSerialization.data(withJSONObject: o)) ?? Data()
     }
 
     func addClipboardHistory(_ items: [ClipboardText]) async throws -> ClipboardSent {

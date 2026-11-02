@@ -12,7 +12,8 @@ import os
 /// ponytail: no background sync and no timer until a reason appears.
 ///
 /// Only what the store keeps moves: text up to `ClipboardHistory.textLimit`, images (pulled
-/// whole, sha256 checked, downsampled as the store does). Not the Mac's files, nor longer text.
+/// whole, or at most `sideMax` on the long side once the Mac lists "clipboard_max_side" (#712),
+/// sha256 checked, downsampled as the store does). Not the Mac's files, nor longer text.
 /// Phone to Mac first, being small: every clip this phone kept not sent yet, text in batches,
 /// each image on its own connection. Then Mac to phone, paging back from the last sync's newest
 /// row (`since`), at most a store's `cap`; the clips land as the Mac's one by one, deduped by
@@ -25,6 +26,8 @@ enum ClipboardSync {
     static let key = "clipboard.syncWithMac"
     /// ponytail: an image row over this isn't pulled; the store keeps it at 1024 px anyway.
     static let imageMax = 16 << 20
+    /// #712: the long side asked of the Mac, the store's own bound.
+    static let sideMax = Int(ClipboardHistory.imageSide)
     /// The Mac's most rows per list and items per addClipboardHistory.
     static let page = 100
     /// ponytail: the most rows read in one sync; past it, older rows than these wait for none.
@@ -48,7 +51,8 @@ enum ClipboardSync {
     // MARK: Triggers
 
     /// The Mac to sync with: the session list's last handshake, while it listed "clipboard".
-    private(set) static var mac: (transport: SessionTransport, machine: String)?
+    /// `maxSide`: `sideMax` while it listed "clipboard_max_side" too (#712), else nil.
+    private(set) static var mac: (transport: SessionTransport, machine: String, maxSide: Int?)?
     private(set) static var running = false
     private static var again = false
     /// The store synced. Settable for tests.
@@ -62,7 +66,7 @@ enum ClipboardSync {
 
     /// The handshake's ops: the Mac to sync with, or none; then a sync.
     static func offer(_ ops: Set<SessionVerb>, over t: SessionTransport, machine: String) {
-        mac = ops.contains(.clipboard) ? (t, machine) : nil
+        mac = ops.contains(.clipboard) ? (t, machine, ops.contains(.clipboardMaxSide) ? sideMax : nil) : nil
         _ = foreground
         kick()
     }
@@ -82,7 +86,7 @@ enum ClipboardSync {
             repeat {
                 again = false
                 guard let mac, on(), let history = history() else { break }
-                do { try await sync(over: mac.transport, machine: mac.machine, history: history) } catch {
+                do { try await sync(over: mac.transport, machine: mac.machine, history: history, maxSide: mac.maxSide) } catch {
                     log.error("clipboard sync: \(error.localizedDescription, privacy: .public)")
                 }
             } while again
@@ -100,7 +104,7 @@ enum ClipboardSync {
 
     // MARK: The sync
 
-    static func sync(over t: SessionTransport, machine: String, history: ClipboardHistory,
+    static func sync(over t: SessionTransport, machine: String, history: ClipboardHistory, maxSide: Int? = nil,
                      defaults: UserDefaults? = KeyboardSettings.store()) async throws {
         guard on(defaults) else { return }
         let key = "clipboard.sync." + machine
@@ -138,7 +142,7 @@ enum ClipboardSync {
             wanted += got.filter { $0.source != "iPhone" && ($0.kind == "text" || $0.kind == "image") }.count
         }
         for row in rows where row.source != "iPhone" && !state.pulled.contains(row.id) {
-            if let clip = try await pull(row, over: t, into: history) { history.merge([clip]) }
+            if let clip = try await pull(row, over: t, maxSide: maxSide, into: history) { history.merge([clip]) }
             state.pulled.append(row.id)
             save()
         }
@@ -156,18 +160,23 @@ enum ClipboardSync {
 
     /// `row` as a clip the store keeps, nil to skip it: text whole (pulled when the list cut it),
     /// an image pulled and downsampled; not a file. A refused pull skips the row, unless sync
-    /// went off on the Mac: that throws, so its rows come next time.
-    private static func pull(_ row: ClipboardRow, over t: SessionTransport,
+    /// went off on the Mac: that throws, so its rows come next time. #712: with `maxSide` an
+    /// image is pulled whatever its size, the Mac sending it smaller; a reply over `max` (one
+    /// it couldn't re-encode) is a skip too, never a throw that stops every later sync there.
+    private static func pull(_ row: ClipboardRow, over t: SessionTransport, maxSide: Int?,
                              into history: ClipboardHistory) async throws -> ClipboardHistory.Clip? {
         let date = ClipboardRow.date(row.date) ?? Date()
         func item(max: Int) async throws -> Data? {
             do {
-                // The only pull: a smaller image (the Mac's `max_side`, once it lists that op) goes here.
-                let (sha, data) = try await t.clipboardItem(id: row.id, max: max)
+                // The only pull: the Mac sends text and files whole whatever `maxSide` says.
+                let (sha, data) = try await t.clipboardItem(id: row.id, max: max, maxSide: maxSide)
                 let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
                 guard hash == sha.lowercased() else { log.error("clipboard pull: hash mismatch"); return nil }
                 return data
             } catch TransportError.server(let m) where m != off {
+                log.error("clipboard pull: \(m, privacy: .public)")
+                return nil
+            } catch TransportError.protocolError(let m) where m == ProsperTransport.itemTooLarge {
                 log.error("clipboard pull: \(m, privacy: .public)")
                 return nil
             }
@@ -186,7 +195,7 @@ enum ClipboardSync {
             return ClipboardHistory.Clip(text: text, date: date, source: ClipboardHistory.mac)
         case "image":
             // ponytail: decoded on the main actor; a big image hitches for a moment. Off it if that shows.
-            guard row.size > 0, row.size <= imageMax, let data = try await item(max: imageMax),
+            guard row.size > 0, maxSide != nil || row.size <= imageMax, let data = try await item(max: imageMax),
                   let name = history.storeImage(data: data) else { return nil }
             return ClipboardHistory.Clip(image: name, date: date, source: ClipboardHistory.mac)
         default:

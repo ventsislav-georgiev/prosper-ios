@@ -894,6 +894,7 @@ extension SessionVerb {
         case .chat:    "Chat"   // #646: never shown, a chat's error stays inline in the chat
         case .commands: "Commands"   // #615: never shown, a command's error stays inline
         case .reviveNoMessage: all ? "Resume interrupted (no message)" : "Resume (no message) failed"   // #668
+        case .clipboardMaxSide: "Clipboard sync"   // #712: never shown, as clipboard's
         }
     }
 }

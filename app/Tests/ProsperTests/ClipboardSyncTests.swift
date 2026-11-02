@@ -142,6 +142,55 @@ final class ClipboardSyncTests: XCTestCase {
         XCTAssertEqual(files, [clip.image!, "index.json"].sorted(), "no stray file")
     }
 
+    /// About 900 KB of noise as a PNG: a downsampled reply, still a real image.
+    private func noisePNG(_ side: Int = 560) -> Data {
+        var bytes = (0..<side * side * 4).map { _ in UInt8.random(in: 0...255) }
+        let ctx = CGContext(data: &bytes, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        return UIImage(cgImage: ctx.makeImage()!).pngData()!
+    }
+
+    /// #712: a 35 MB original over `imageMax` is pulled once the Mac sends it smaller; without
+    /// max_side it is skipped unpulled, as before.
+    func testAnImageOverImageMaxIsPulledOnlyWithMaxSide() async throws {
+        let reply = noisePNG()
+        XCTAssertTrue((500_000...ClipboardSync.imageMax).contains(reply.count), "\(reply.count)")
+        func run(_ maxSide: Int?) async throws -> (ClipFake, ClipboardHistory) {
+            let h = ClipboardHistory(dir: dir.appendingPathComponent("\(maxSide ?? 0)"))
+            let fake = ClipFake()
+            fake.items = [ClipFake.Item(row: ClipboardRow(id: UUID().uuidString, date: ClipboardRow.wire(base), kind: "image",
+                                                          size: 35 << 20), data: reply)]
+            try await ClipboardSync.sync(over: fake, machine: "m\(maxSide ?? 0)", history: h, maxSide: maxSide, defaults: defaults)
+            return (fake, h)
+        }
+        let (with, h1) = try await run(ClipboardSync.sideMax)
+        XCTAssertEqual(with.maxSides, [1024])
+        XCTAssertEqual(h1.clips.count, 1, "the smaller reply lands")
+        XCTAssertEqual(h1.clips.first?.source, ClipboardHistory.mac)
+        let (without, h2) = try await run(nil)
+        XCTAssertEqual(without.pulls, [], "an older Mac: over imageMax, never pulled")
+        XCTAssertEqual(h2.clips.count, 0)
+    }
+
+    /// #712: an original the Mac couldn't re-encode comes back whole; a header over `imageMax`
+    /// skips that row only: the rest are pulled, the sync ends and `since` moves.
+    func testAReplyOverImageMaxIsASkipNotAStop() async throws {
+        let h = ClipboardHistory(dir: dir)
+        let fake = ClipFake()
+        let gif = Data(count: ClipboardSync.imageMax + 1)
+        fake.items = [ClipFake.Item(row: ClipboardRow(id: UUID().uuidString, date: ClipboardRow.wire(base), kind: "image",
+                                                      size: gif.count), data: gif),
+                      ClipFake.Item(row: ClipboardRow(id: UUID().uuidString, date: ClipboardRow.wire(base - 10), kind: "image",
+                                                      size: 1 << 20), data: png(2000, 1000))]
+        try await ClipboardSync.sync(over: fake, machine: machine, history: h, maxSide: ClipboardSync.sideMax, defaults: defaults)
+        XCTAssertEqual(fake.pulls, fake.items.map(\.row.id), "the later row still pulled")
+        XCTAssertEqual(h.clips.count, 1, "only the one that fit")
+        XCTAssertEqual(try state().since, fake.items[0].row.date, "the sync got to the end")
+        XCTAssertEqual(try state().pulled, [])
+        try await ClipboardSync.sync(over: fake, machine: machine, history: h, maxSide: ClipboardSync.sideMax, defaults: defaults)
+        XCTAssertEqual(fake.pulls.count, 2, "not pulled again")
+    }
+
     func testSameContentIsOneRowTakingTheNewerDate() async throws {
         let h = ClipboardHistory(dir: dir)
         h.now = { self.base - 600 }
@@ -248,6 +297,35 @@ final class ClipboardSyncTests: XCTestCase {
         ClipboardSync.kick()
         try await waitUntil("synced") { !ClipboardSync.running && fake.calls > 0 }
         XCTAssertEqual(fake.batches.map { $0.map(\.text) }, [["alpha"]])
+    }
+
+    /// #712: max_side 1024 on each pull only while the Mac lists clipboard_max_side, and that
+    /// only with clipboard; an older Mac's pull is as before.
+    func testMaxSideOnlyWhenTheMacListsItWithClipboard() async throws {
+        let saved = KeyboardSettings.store
+        KeyboardSettings.store = { self.defaults }
+        let h = ClipboardHistory(dir: dir)
+        ClipboardSync.history = { h }
+        defer {
+            ClipboardSync.offer([], over: ClipFake(), machine: machine)
+            ClipboardSync.history = { ClipboardHistory.shared() }
+            KeyboardSettings.store = saved
+        }
+        func pulled(_ ops: [String], _ m: String) async throws -> [Int?] {
+            let fake = ClipFake()
+            let data = png(2000, 1000)
+            fake.items = [ClipFake.Item(row: ClipboardRow(id: UUID().uuidString, date: ClipboardRow.wire(base), kind: "image",
+                                                          size: data.count), data: data)]
+            ClipboardSync.offer(SessionVerb.offered(ops), over: fake, machine: m)
+            try await waitUntil("synced \(ops)") { !ClipboardSync.running && !fake.pulls.isEmpty }
+            return fake.maxSides
+        }
+        let old = try await pulled(["clipboard"], "older")
+        XCTAssertEqual(old, [nil], "an older Mac: no max_side")
+        let new = try await pulled(["clipboard", "clipboard_max_side"], "newer")
+        XCTAssertEqual(new, [1024], "the store's long side")
+        ClipboardSync.offer(SessionVerb.offered(["clipboard_max_side"]), over: ClipFake(), machine: machine)
+        XCTAssertNil(ClipboardSync.mac, "clipboard_max_side alone syncs nothing")
     }
 
     // MARK: The wire
@@ -386,13 +464,15 @@ final class ClipboardSyncTests: XCTestCase {
         XCTAssertEqual(obj(got.v[0][0].1), ["limit": 100, "before": "Z", "since": "2026-10-31T08:00:00.000Z"])
         XCTAssertEqual(ClipboardRow.date("2026-10-31T09:00:00Z"), ClipboardRow.date("2026-10-31T09:00:00.000Z"), "with or without ms")
 
-        let (sha, data) = try await mac.clipboardItem(id: "B", max: ClipboardSync.imageMax)
+        let (sha, data) = try await mac.clipboardItem(id: "B", max: ClipboardSync.imageMax, maxSide: nil)
         XCTAssertEqual(sha, hex(blob))
         XCTAssertEqual(data, blob)
-        XCTAssertEqual(obj(got.v[1][0].1), ["id": "B"])
-        do { _ = try await mac.clipboardItem(id: "B", max: 1000); XCTFail("over max") } catch {}
-        do { _ = try await mac.clipboardItem(id: "C", max: 1000); XCTFail("short") } catch {}
-        do { _ = try await mac.clipboardItem(id: "D", max: 1000); XCTFail("refused") } catch {
+        XCTAssertEqual(got.v[1][0].1, json(["id": "B"]), "#712: without max_side, #621's bytes")
+        _ = try await mac.clipboardItem(id: "B", max: ClipboardSync.imageMax, maxSide: 1024)
+        XCTAssertEqual(obj(got.v[2][0].1), ["id": "B", "max_side": 1024], "#712: an integer, the long side")
+        do { _ = try await mac.clipboardItem(id: "B", max: 1000, maxSide: nil); XCTFail("over max") } catch {}
+        do { _ = try await mac.clipboardItem(id: "C", max: 1000, maxSide: nil); XCTFail("short") } catch {}
+        do { _ = try await mac.clipboardItem(id: "D", max: 1000, maxSide: nil); XCTFail("refused") } catch {
             XCTAssertEqual((error as? TransportError)?.errorDescription, "gone", "the Mac's error as written")
         }
     }
@@ -457,6 +537,8 @@ final class ClipFake: SessionTransport {
     var pageMax = 100
     var lists: [(before: String?, since: String?)] = []
     var pulls: [String] = []
+    /// Each pull's `maxSide`, as `pulls`.
+    var maxSides: [Int?] = []
     var badSha: Set<String> = []
     var batches: [[ClipboardText]] = []
     var uploads: [ClipboardUpload] = []
@@ -481,11 +563,12 @@ final class ClipFake: SessionTransport {
         return Array(rows.prefix(min(limit, pageMax)))
     }
 
-    func clipboardItem(id: String, max: Int) async throws -> (sha256: String, data: Data) {
+    func clipboardItem(id: String, max: Int, maxSide: Int?) async throws -> (sha256: String, data: Data) {
         pulls.append(id)
+        maxSides.append(maxSide)
         try onPull?(pulls.count)
         guard let it = items.first(where: { $0.row.id == id }) else { throw TransportError.server("gone") }
-        guard it.data.count <= max else { throw TransportError.protocolError("clipboard item too large") }
+        guard it.data.count <= max else { throw TransportError.protocolError(ProsperTransport.itemTooLarge) }
         let sha = badSha.contains(id) ? String(repeating: "0", count: 64) : SHA256.hash(data: it.data).map { String(format: "%02x", $0) }.joined()
         return (sha, it.data)
     }

@@ -98,7 +98,8 @@ protocol SessionTransport: AnyObject {
     /// #621: the Mac's clipboard history, newest first, paged on with `before`; only [] is the end.
     func clipboardList(limit: Int, before: String?, since: String?) async throws -> [ClipboardRow]
     /// #621: one item's bytes, refused past `max`, and the sha256 the Mac gave for them.
-    func clipboardItem(id: String, max: Int) async throws -> (sha256: String, data: Data)
+    /// #712: `maxSide`, an image's long side at most that, once the Mac lists clipboard_max_side.
+    func clipboardItem(id: String, max: Int, maxSide: Int?) async throws -> (sha256: String, data: Data)
     /// #621: phone text into the Mac's clipboard history, never its pasteboard.
     func addClipboardHistory(_ items: [ClipboardText]) async throws -> ClipboardSent
     /// #621: one phone image into the Mac's clipboard history, on a connection of its own.
@@ -128,7 +129,7 @@ extension SessionTransport {
     func clipboardList(limit: Int, before: String?, since: String?) async throws -> [ClipboardRow] {
         throw TransportError.server("Not supported here.")
     }
-    func clipboardItem(id: String, max: Int) async throws -> (sha256: String, data: Data) {
+    func clipboardItem(id: String, max: Int, maxSide: Int?) async throws -> (sha256: String, data: Data) {
         throw TransportError.server("Not supported here.")
     }
     func addClipboardHistory(_ items: [ClipboardText]) async throws -> ClipboardSent { throw TransportError.server("Not supported here.") }
@@ -150,10 +151,14 @@ enum SessionVerb: String {
     case chat          // #646: local-model chat, 0x1e/0x1f; only while the Mac's model is on disk
     case commands      // #615: palette commands, 0x28/0x29; only while the Mac's toggle is on
     case reviveNoMessage = "revive_no_message"   // #668: revive's "no_message"; only while the Mac's dch is 1.27.0+
+    case clipboardMaxSide = "clipboard_max_side"   // #712: clipboardItem's "max_side"; only together with clipboard
 
     /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
+    /// clipboard_max_side without clipboard is none either.
     static func offered(_ ops: Any?) -> Set<SessionVerb> {
-        Set((ops as? [String] ?? []).compactMap(SessionVerb.init(rawValue:)))
+        var verbs = Set((ops as? [String] ?? []).compactMap(SessionVerb.init(rawValue:)))
+        if !verbs.contains(.clipboard) { verbs.remove(.clipboardMaxSide) }
+        return verbs
     }
 }
 
