@@ -15,7 +15,10 @@ final class CommandsSession: ObservableObject {
     /// The Mac's cap on an argument, in UTF-8 bytes ("argument too long" past it).
     static let limit = 1024
     /// These act on the Mac at once and the Mac never asks, so the phone does.
-    static let confirmed: Set<String> = ["toggles.lock", "toggles.displayoff", "openlid.toggle"]
+    /// Extension commands ("<extensionID>/<commandID>") always ask too (#727).
+    static let confirmed: Set<String> = ["toggles.lock", "toggles.displayoff", "openlid.toggle",
+                                         "fans.auto", "fans.manual"]
+    static func asks(_ id: String) -> Bool { confirmed.contains(id) || id.contains("/") }
 
     @Published private(set) var commands: [MacCommand]?   // nil until the first list lands
     @Published private(set) var listError: String?
@@ -55,7 +58,7 @@ final class CommandsSession: ObservableObject {
         guard running == nil else { return false }
         let argument = c.argument == nil ? nil : argument(c)
         if c.argument != nil, argument == nil || tooLong(c) { return false }
-        if Self.confirmed.contains(c.id), !confirmed { confirming = c; return false }
+        if Self.asks(c.id), !confirmed { confirming = c; return false }
         confirming = nil
         running = c.id
         outcome = nil

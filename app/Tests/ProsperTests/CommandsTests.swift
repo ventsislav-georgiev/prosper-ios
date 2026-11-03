@@ -248,6 +248,10 @@ final class CommandsTests: XCTestCase {
             XCTAssertEqual(s.confirming, c, "\(id) asks")
             s.confirming = nil   // Cancel
         }
+        for id in ["fans.auto", "fans.manual", "com.example.ext/run"] {
+            XCTAssertTrue(CommandsSession.asks(id), id)
+        }
+        XCTAssertFalse(CommandsSession.asks("calc.eval"))
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertEqual(mac.runs.count, 0, "nothing reached the Mac unconfirmed")
 
