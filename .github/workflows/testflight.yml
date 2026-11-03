@@ -9,7 +9,7 @@ name: TestFlight
 #   ASC_KEY_ID        App Store Connect API key ID
 #   ASC_ISSUER_ID     App Store Connect API issuer ID
 #   ASC_KEY_P8        contents of the AuthKey_XXXX.p8 file (paste as-is)
-#   APPLE_TEAM_ID     Apple Developer team ID (e.g. V5XV3994L8)
+#   APPLE_TEAM_ID     Apple Developer team ID (10 characters, e.g. ABCDE12345)
 #
 # The app record (bundle id eu.illegible.prosperios) must already exist in
 # App Store Connect. The API key needs the "App Manager" role.
