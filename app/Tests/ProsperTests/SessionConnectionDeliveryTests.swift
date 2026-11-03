@@ -1075,6 +1075,30 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         conn.close()
     }
 
+    /// Both demo scripts fit the narrowest phone (44 columns): no line wraps mid-word in
+    /// the in-app demo or on the App Store slide.
+    func testDemoScriptsFitANarrowPhone() async throws {
+        for (name, end) in [("demo", "live commands."), ("claude", "Done in")] {
+            let stream = try await DemoTransport().attach(name: name, cols: 44, rows: 40)
+            let reader = Task { @MainActor in
+                var out = ""
+                for await chunk in stream.output {
+                    out += String(decoding: chunk, as: UTF8.self)
+                    if out.contains(end) { return out }
+                }
+                return out
+            }
+            let watchdog = Task { try await Task.sleep(nanoseconds: 15_000_000_000); stream.close() }
+            let out = await reader.value
+            watchdog.cancel(); stream.close()
+            XCTAssertTrue(out.contains(end), "\(name): the script never finished")
+            let plain = out.replacingOccurrences(of: "\u{1b}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
+            for line in plain.components(separatedBy: "\r\n") {
+                XCTAssertLessThanOrEqual(line.count, 44, "\(name): \(line)")
+            }
+        }
+    }
+
     /// The real stream: once the server hangs up, input is refused (so the caller keeps
     /// it) instead of vanishing into a cancelled NWConnection.
     func testProsperStreamRefusesInputOnceTheLinkIsGone() async throws {

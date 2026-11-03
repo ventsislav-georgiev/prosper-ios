@@ -13,7 +13,7 @@ cd "$(dirname "$0")/app"
 DERIVED="$PWD/.build-xcode"
 SCHEME=Prosper
 PROJ=Prosper.xcodeproj
-TEAM="${DEVELOPMENT_TEAM:-V5XV3994L8}"
+TEAM="${DEVELOPMENT_TEAM:-}"   # your Apple team ID, for `device` only
 
 echo "==> xcodegen"
 # ponytail: OMC hooks drop .omc/ state dirs inside Sources/; xcodegen bundles them
@@ -48,6 +48,7 @@ case "$MODE" in
     DEVID=$(xcrun devicectl list devices 2>/dev/null | grep -w connected \
       | grep -oE '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}' | head -1)
     [ -n "$DEVID" ] || { echo "no connected device" >&2; exit 1; }
+    [ -n "$TEAM" ] || { echo "set DEVELOPMENT_TEAM to your Apple team ID to sign for a device" >&2; exit 1; }
     echo "==> build + sign (iOS device $DEVID, team $TEAM)"
     xcodebuild -project "$PROJ" -scheme "$SCHEME" \
       -destination "platform=iOS,id=$DEVID" -derivedDataPath "$DERIVED" \

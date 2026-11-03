@@ -1,1 +1,1 @@
-Attach your Mac's terminal sessions from your phone over Tailscale — the exact same session, output and all. No passwords, survives drops, picks up where you left off.
+Your Mac's terminal sessions on your phone, live. Plus the Prosper keyboard for every app: clipboard synced with your Mac, snippets, on-device dictation and rewriting.

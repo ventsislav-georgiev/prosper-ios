@@ -1,16 +1,9 @@
-What's new:
-• Copy mode: drag over the terminal to select text natively, then edit what goes to the clipboard.
-• Insert: compose text on your phone and send it to the session in one go.
-• New session can start an agent session directly; set its command in Settings.
-• New compact terminal keyboard on iPhone, with key previews and common symbols one tap away.
-• Holding space in the Prosper keyboard now moves the caret up and down between lines too, not just sideways.
-• Rearrange or hide the keys beside space in Settings, in the Prosper keyboard and the terminal keyboard alike; space widens to fill.
-• Choose what a double space types in Settings: a period, an exclamation mark, a question mark, or nothing; the terminal keyboard does it too.
-• Shortcut bar is always visible, in two aligned rows, with a new default set of keys.
-• The session list can show how many helper tasks are running.
-• The session list shows each session's open pull requests and task progress; press and hold a session's pull request line to open one.
-• Session rows follow the Mac's Agent Island layout; choose which details they show in Settings.
-• The session bell is replaced by live status: a Lock Screen and Dynamic Island card while agents work on your Mac, and a notification only when a session needs you, even with Prosper closed. Sign in on the Mac and the phone, then turn it on.
-• Typing is more reliable on weak connections: keystrokes are queued and delivered after a drop.
-• Smoother terminal scrolling.
-• A drag along the right edge of the terminal scrolls even while the scroll wheel is hidden.
+What's new in 1.0:
+• The Prosper keyboard, in every app: a toolbar of edit keys in one or two rows, themes and accents, three key sizes, a numbers row or a numpad, English and Bulgarian, and every emoji with search. Add it in Settings › General › Keyboard › Keyboards.
+• Clipboard history with search, synced both ways with your Mac; your newest phone copy is ready for ⌘V on the Mac.
+• Snippets and quicklinks, your own and your Mac's.
+• Dictation and Fix, Rewrite and Summarize, on device (iOS 26).
+• Live status and alerts: a Lock Screen and Dynamic Island card while agents work on your Mac, and a notification when a session needs you. Optional; sign in, then Turn On.
+• Sessions show their agents, pull requests and tasks; restart or stop agents, resume ended sessions from History, chat with your Mac's local model and run its commands.
+• Terminal: a new compact keyboard and shortcut bar, tap-to-open links, double-tap word selection, and Share from any app to a session.
+• Shortcuts, Control Center controls and a Sessions widget.

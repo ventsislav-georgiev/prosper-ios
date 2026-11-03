@@ -14,7 +14,14 @@ final class DemoTransport: SessionTransport {
             done: 22, total: 26, inProgress: 2, queued: 2,
             open: [12, 15, 18, 21].map { (n: Int) in      // no URL: the sample repo doesn't exist
                 SessionMeta.PR(url: nil, repo: "example/app", num: n, title: "Sample change #\(n)")
-            }, merged: 4))]
+            }, merged: 4)),
+         // More made-up rows so the list reads like a working day: one waiting, one busy, one done.
+         DchSession(name: "api", alias: "api refactor", state: "blocked", agents: 1, meta: SessionMeta(
+            done: 3, total: 7, inProgress: 1, queued: 3,
+            open: [SessionMeta.PR(url: nil, repo: "example/api", num: 31, title: "Sample refactor")])),
+         DchSession(name: "web", alias: "web build", state: "working"),
+         DchSession(name: "docs", alias: "docs site", state: "done", meta: SessionMeta(
+            done: 5, total: 5, merged: 2))]
     }
     func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream {
         DemoStream(kind: name == "claude" ? .claude : .shell)
@@ -66,7 +73,7 @@ final class DemoStream: TerminalStream {
         emit("\r\n")
     }
 
-    // MARK: - Claude Code look-alike
+    // MARK: - A sample agent session
 
     /// Stream `s` word-by-word for a live, "thinking" feel.
     private func streamWords(_ s: String, _ msPerWord: UInt64 = 22) async {
@@ -83,77 +90,65 @@ final class DemoStream: TerminalStream {
         emit("\(dim) \(String(n).leftPad(3)) \(reset)  \(text)\r\n")
     }
     private func narrator(_ s: String) async {
-        emit("\(dim)\u{2234} ")            // ∴
+        emit(dim)
         await streamWords("\(s)\(reset)", 20)
         emit("\r\n\r\n")
     }
     private func bullet(_ s: String) async {
-        emit("\(white)\u{25cf}\(reset) ")  // ●
+        emit("\(white)\u{2022}\(reset) ")  // •
         await streamWords(s, 18)
         emit("\r\n")
     }
-    private func toolOut(_ s: String) { emit("\(dim)  \u{2514}\(reset)  \(s)\r\n") }  // └
+    private func toolOut(_ s: String) { emit("\(dim)  \u{21b3}\(reset) \(s)\r\n") }  // ↳
 
     private func playClaude() async {
         emit("\u{1b}[2J\u{1b}[H")
         await pause(300)
-        diffAdd(13, "was armed, so the paired phone never showed the wake-ready badge and couldn't actually wake")
-        diffAdd(14, "the Mac. The toggle read your sign-in from a background task that could come back empty even")
-        diffAdd(15, "while the app showed you signed in; it now reads it on the main thread and reuses that")
-        diffAdd(16, "session when publishing state to the server, so a single toggle both arms the daemon and")
-        diffAdd(17, "advertises the cadence the phone displays.")
-        diffAdd(18, "- Adds temporary diagnostic logging around the wake toggle (visible in Console) to confirm the")
-        diffAdd(19, "fix on real hardware; it will be removed once verified.")
-        diffAdd(20, "")
-        diffCtx(21, "## v2.115.0-beta.3")
-        diffCtx(22, "")
-        diffCtx(23, "### Appearance")
+        // Every line fits 44 columns, the narrowest phone the demo runs on.
+        diffCtx(11, "## Unreleased")
+        diffCtx(12, "")
+        diffAdd(13, "- Wake toggle reads sign-in on the")
+        diffAdd(14, "  main thread, so the phone shows")
+        diffAdd(15, "  the wake-ready badge again.")
+        diffCtx(16, "")
+        diffCtx(17, "## 2.4.0")
         emit("\r\n")
         await pause(500)
-        await narrator("Now I'm committing and pushing these changes, then releasing them since the build already passed.")
-        await bullet("Build already green (exit 0). Commit + push + cut beta.")
+        await narrator("Build is green. Committing and pushing.")
+        await bullet("git commit -m \"fix(wake): …\"")
+        toolOut("\(blue)72064e5\(reset) fix(wake): read sign-in on main")
         emit("\r\n")
-        await bullet("\(white)Bash\(reset)(git add CHANGELOG.swift && git commit -m \"fix(remote-wake)…\")")
-        toolOut("\(blue)72064e5\(reset) fix(remote-wake): load sign-in on main thread")
-        emit("\r\n")
-        await bullet("\(white)Bash\(reset)(git push origin main)")
-        toolOut("To github.com:ventsislav-georgiev/prosper.git")
+        await bullet("git push origin main")
+        toolOut("To github.com:example/app.git")
         toolOut("   2484a36..72064e5  main \u{2192} main")
         emit("\r\n")
-        await bullet("\(white)Bash\(reset)(scripts/release.sh beta)")
-        toolOut("Releasing v2.115.0-beta.4 (from v2.114.3)")
-        toolOut(" * [new tag]   v2.115.0-beta.4 \u{2192} v2.115.0-beta.4")
+        await bullet("scripts/release.sh beta")
+        toolOut("Releasing v2.4.1-beta.1")
+        toolOut(" * [new tag]  v2.4.1-beta.1")
         emit("\r\n")
         await pause(300)
-        await narrator("The tag's been pushed and CI will handle the build, signing, and notarization now.")
-        await bullet("Shipped. \(white)v2.115.0-beta.4\(reset) tagged + pushed; release.yml building/signing/notarizing now.")
-        emit("\r\n\(dim)\u{2731} Cooked for 3m 32s\(reset)\r\n")                          // ✱
-        emit("\(dim)            Image in clipboard \u{00b7} ctrl+v to paste\(reset)\r\n\r\n")
-        await pause(300)
-        // Claude Code bottom chrome (input box + status line) — frozen frame.
-        let orange = "\u{1b}[38;2;255;170;60m"
-        emit("\(blue)\u{203a}\(reset) \(dim)Watch the release build\(reset)\r\n\r\n")
-        emit("\(white)[OMC#4.15.0L]\(dim) | Model: \(cyan)Opus 4.8\(reset)\r\n")
-        emit("\(dim)5h:\(green)7%\(dim)(4h44m) wk:\(green)36%\(dim)(4d22h) sn:\(green)0%\(dim)(4d22h)\(reset)\r\n")
-        emit("\(dim)session:\(orange)4481m\(dim) | ctx:\(green)6%\(dim) | \u{1f527}153\(reset)\r\n")
-        emit("\(orange)\u{25b6}\u{25b6} auto mode on\(dim) (shift+tab to cycle) \u{00b7} \u{2190} for \u{2026}\(reset)\r\n")
+        await narrator("Tag pushed; CI builds and signs it.")
+        await bullet("Shipped \(white)v2.4.1-beta.1\(reset).")
+        emit("\r\n\(dim)Done in 3m 32s\(reset)\r\n\r\n")
+        prompt()
     }
 
     private func play() async {
-        emit("\u{1b}[2J\u{1b}[H")  // clear + home
-        emit("\(cyan)  Prosper · Remote Terminal\(reset) \(dim)— demo session\(reset)\r\n")
-        emit("\(dim)  Your Mac's dch sessions, attached over Tailscale. No passwords.\(reset)\r\n\r\n")
+        emit("\u{1b}[2J\u{1b}[H")  // clear + home. Every line fits 44 columns, the narrowest phone.
+        emit("\(cyan)  Prosper \u{00b7} Remote Terminal\(reset)\(dim) demo\(reset)\r\n")
+        emit("\(dim)  Your Mac's sessions, over Tailscale.\(reset)\r\n")
+        emit("\(dim)  No passwords.\(reset)\r\n\r\n")
         await pause(450)
         await typeLine("ls ~/projects")
-        emit("bookplay   notes.md   prosper   scripts   \(blue)dchterm\(reset)\r\n")
+        emit("app   docs   notes.md   scripts   \(blue)site\(reset)\r\n")
         await pause(350)
         await typeLine("uname -msr")
         emit("Darwin 25.5.0 arm64\r\n")
         await pause(300)
-        await typeLine("echo \"runs the same session as your desktop\"")
-        emit("runs the same session as your desktop\r\n")
+        await typeLine("echo \"your Mac, anywhere\"")
+        emit("your Mac, anywhere\r\n")
         await pause(250)
-        emit("\r\n\(dim)  Try typing below — connect a real machine to run live commands.\(reset)\r\n\r\n")
+        emit("\r\n\(dim)  Try typing below. Connect a real Mac\r\n  to run live commands.\(reset)\r\n\r\n")
         prompt()
     }
 
@@ -172,7 +167,7 @@ final class DemoStream: TerminalStream {
                     .trimmingCharacters(in: .whitespaces)
                 line.removeAll()
                 if !s.isEmpty {
-                    emit("\(dim)demo:\(reset) ‘\(s)’ — connect a real machine to run this.\r\n")
+                    emit("\(dim)demo:\(reset) ‘\(s)’ needs a real Mac.\r\n")
                 }
                 prompt()
             case 0x7f, 0x08:                       // backspace

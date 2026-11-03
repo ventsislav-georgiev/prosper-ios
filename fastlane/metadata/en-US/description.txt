@@ -1,23 +1,45 @@
-Prosper Remote puts your Mac's terminal in your pocket.
+Prosper Remote puts your Mac's terminal in your pocket, and a better keyboard in every app.
 
 It attaches to terminal sessions running on your Mac and streams them to your iPhone or iPad — the very same session, with full scrollback and live output. Start something on your desk, walk away, and pick it up on your phone exactly where you left it.
 
 WHY IT'S DIFFERENT
 • Same session, not a new one. Sessions live on your Mac (a dtach-style server), so reconnecting restores the live screen — no lost output, no restarts.
-• Built for flaky mobile networks. Lose signal in an elevator or on the subway and Prosper silently reconnects and repaints right where you were.
+• Built for flaky mobile networks. Lose signal in an elevator or on the subway and Prosper silently reconnects and repaints right where you were. Keystrokes typed during a drop are queued and delivered.
 • No passwords to manage. Your phone and Mac talk over your private Tailscale network; the Mac only accepts devices already on your tailnet.
-• Fast, lightweight, native. A real terminal renderer with true color, proper reflow, and a tuned on-screen key bar — Esc, Tab, Ctrl, arrows, Home/End, Ctrl-C, Ctrl-D and more, styled to stay out of your way.
+• Fast, lightweight, native. A real terminal renderer with true color and proper reflow, a compact terminal keyboard, and a two-row shortcut bar — Esc, Tab, sticky Ctrl, arrows, word jumps, Home/End, Page Up/Down and send — that you can rearrange.
 
 BUILT FOR REAL WORK
-• Manage multiple sessions per machine — create, rename, attach, stop.
-• Switch between machines you've connected to before.
-• Keyboard-aware layout keeps your prompt and its footer visible as output streams in.
+• Manage multiple sessions per machine — create, rename, attach, stop, or start an agent session in one tap.
+• Each session row shows its agents, pull requests and tasks; restart or stop agents from the phone.
+• History: resume sessions that ended, pin the ones you keep.
+• Chat with your Mac's local model, and run your Mac's Prosper commands, from the session list.
+• Copy mode, tap-to-open links, double-tap to select a word, and Insert to compose text before sending it.
+• Share text, links and images from any app straight to a session's prompt.
+• Shortcuts, Control Center controls and a Sessions widget.
+
+THE PROSPER KEYBOARD, IN EVERY APP
+Add it in Settings › General › Keyboard › Keyboards.
+• A toolbar of edit keys above the letters — word and line jumps, delete to line start or end, delete line, cut line, Paste — in one or two rows, and yours to arrange.
+• Clipboard history with search, kept by the keyboard and synced both ways with your Mac's. Your newest phone copy is ready for ⌘V on the Mac.
+• Snippets and quicklinks, with search: your own, plus your Mac's with Sync from Mac.
+• Dictation, on device, in English (iOS 26).
+• Fix, Rewrite and Summarize with Apple Intelligence, on device (iOS 26, on supported devices).
+• Every emoji group, with search and skin tones.
+• Themes, separate toolbar themes and accents; Normal, Medium or Large keys; a numbers row or a 123 key with a numpad.
+• English and Bulgarian: switch with one language key, or add a keyboard per language for the globe.
+• The terminal's keyboard shares the same look and settings.
+
+LIVE STATUS AND ALERTS (OPTIONAL)
+Sign in on your Mac and your phone, then turn on Live status: a Lock Screen and Dynamic Island card while agents work on your Mac, and a notification only when a session needs you — even with Prosper closed. Only session names and states are sent, never terminal content.
+
+REMOTE WAKE (OPTIONAL)
+Signed in, wake your sleeping Mac from your phone when it can't be reached.
 
 GET STARTED
 1. Install Prosper on your Mac and enable Remote Terminal.
 2. Install Tailscale on your Mac and this device, signed into the same account.
 3. Enter your Mac's Tailscale name and connect.
 
-No machine yet? Tap "Try the demo" to explore a sample session with zero setup.
+No machine yet? Tap "Try the demo" to explore a sample session with zero setup. The Prosper keyboard works without a Mac too.
 
 Prosper is free.

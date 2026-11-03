@@ -1,6 +1,7 @@
 import XCTest
 import UIKit
 import ImageIO
+import SwiftUI
 @testable import Prosper
 
 /// The README's keyboard gallery and the App Store's keyboard slides (#670), drawn from the
@@ -8,6 +9,9 @@ import ImageIO
 /// the terminal rig them (`SuggestionBar.host`, `KeyboardToolbarTests.hostedRig`), put in a
 /// window and drawn with `drawHierarchy` at 3x, 440 pt wide (an iPhone Pro Max), so 1320 px.
 /// Then four 1320x2868 store slides from those crops, opaque: App Store Connect refuses alpha.
+///
+/// The app's own slides 1-3 (`testAppShots`) are the app's screens the same way, full screen, on the
+/// offline demo (`DemoTransport`) and a made-up Mac: no real machine, session or account.
 ///
 /// Off unless PROSPER_SHOTS names an output folder (`TEST_RUNNER_PROSPER_SHOTS`); run it with
 /// scripts/keyboard-shots.sh, which copies the PNGs to store/keyboard and fastlane.
@@ -104,11 +108,6 @@ final class ScreenshotTests: XCTestCase {
     private static let recents = ["😂", "❤️", "👍", "🎉", "🔥", "😍", "🙏", "✨", "☕️", "🍕",
                                   "🥳", "🌸", "🐶", "🌈", "🚀", "🎂", "💯", "🍓", "⚽️", "🎶"]
 
-    /// The system keyboard's toolbar: the panels' keys first, then the arrows; as many as fit unscrolled.
-    private static let toolbar = ["clips", "snips", "qlinks", "mic", "rewrite", "left", "right", "up", "down"]
-    /// The terminal's bar, two rows as on a phone.
-    private static let terminal = ["clips", "pasteImg", "up", "down", "tab", "wordBack", "wordNext", "insert",
-                                   "esc", "ctrl", "left", "right", "pgup", "pgdn", "snips", "enter"]
 
     private static let draft = "hey can u send me the notes from todays meeting, i want to look at them before tmrw. "
         + "also whats the deadline for the budget draft, i think we said friday but not sure. "
@@ -185,22 +184,50 @@ final class ScreenshotTests: XCTestCase {
             rig.bar.dictationStrip.isHidden = false
         }.image)
 
-        try slide("iphone67_7-themes", "Make it yours",
+        try slide("iphone67_4-themes", "Make it yours",
                   "\(Theme.allCases.count) themes, toolbar themes and accents.",
                   colours: (0x0B1018, 0x1A1238, 0x8B7CFF), ink: .white,
                   [shots["theme-blossom"], shots["theme-amber"], shots["theme-mixed"], shots["theme-dark"]], overlap: 0.475)   // cut between the q and a rows
-        try slide("iphone67_8-clipboard", "Saved, a tap away",
+        try slide("iphone67_5-clipboard", "Saved, a tap away",
                   "Clipboard, snippets and quicklinks, with search.",
                   colours: (0x080813, 0x1E1E38, 0x7075FF), ink: .white,
                   [shots["clipboard"], shots["snippets-search"], shots["quicklinks"]])
-        try slide("iphone67_9-menu", "Everything a hold away",
+        try slide("iphone67_6-menu", "Everything a hold away",
                   "Panels, emoji and the look, from the keys.",
                   colours: (0x05080D, 0x0B1E2E, 0x21CCFF), ink: .white,
                   [shots["menu"], shots["emoji"], shots["appearance"]])
-        try slide("iphone67_10-ai", "Write it better, or say it",
+        try slide("iphone67_7-ai", "Write it better, or say it",
                   "On-device Fix, Rewrite, Summarize, dictation.",
                   colours: (0xF5F0FA, 0xE3D8F0, 0x8945E3), ink: UIColor(hex: 0x241434),
                   [shots["ai"], shots["ai-result"], shots["dictation"]])
+    }
+
+    /// The app's slides: the demo's session list and terminal, and the Machines screen with a
+    /// made-up Mac, each drawn full screen in dark mode as a phone shows it.
+    func testAppShots() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let store = MachineStore(defaults: defaults)
+        store.machines = [Machine(name: "Studio Mac", addresses: ["studio-mac.example.ts.net"])]
+        let account = AccountStore()
+        try XCTSkipIf(account.isSignedIn, "signed in on this simulator: the home card would show")
+
+        let terminal = try screen(NavigationStack {
+            TerminalScreen(transport: DemoTransport(), session: DchSession(name: "demo", alias: "Demo session"))
+        }, settle: 4)   // the demo's script typed out. Keyboard down: drawHierarchy draws its window blank.
+        let sessions = try screen(NavigationStack {
+            SessionListView(transport: DemoTransport(), title: demoTitle, machine: nil, store: store, account: account)
+        }, settle: 2)
+        let machines = try screen(NavigationStack { ConnectScreen(store: store) { _ in } }, settle: 1)
+
+        try slide("iphone67_1-terminal", "Your Mac's terminal, anywhere",
+                  "The same session, scrollback and all.",
+                  colours: (0x05080D, 0x0B1E2E, 0x21CCFF), ink: .white, [terminal])
+        try slide("iphone67_2-sessions", "Every session at a glance",
+                  "Agents, pull requests and tasks, live.",
+                  colours: (0x080813, 0x1E1E38, 0x7075FF), ink: .white, [sessions])
+        try slide("iphone67_3-machines", "No passwords",
+                  "Your Mac over your own Tailscale network.",
+                  colours: (0x0B1018, 0x1A1238, 0x8B7CFF), ink: .white, [machines])
     }
 
     // MARK: - Rigs
@@ -252,10 +279,8 @@ final class ScreenshotTests: XCTestCase {
         bar.dictation = dictation
         bar.rewrite = { _, _ in Self.rewritten }
         bar.attach(kb)
-        // Rewrite shows on the English layout only (`SuggestionBar.rewrites`: the model has no
-        // Bulgarian); tab takes its place so the row still fills.
-        let ids = layout == .english ? Self.toolbar : Self.toolbar.map { $0 == "rewrite" ? "tab" : $0 }
-        let keys = ids.compactMap { id in Shortcuts.Bar.toolbar.catalog.first { $0.id == id } }
+        // The toolbar a new install shows (#690), as the store shows the app out of the box.
+        let keys = Shortcuts.Bar.toolbar.defaults
         bar.addToolbar { keys }
         if layout != .english { kb.languages = [.english, layout] }
         kb.settings = settings
@@ -271,13 +296,13 @@ final class ScreenshotTests: XCTestCase {
         return rig
     }
 
-    /// The terminal's keyboard as `TerminalHostVC` has it: its two-row shortcut bar resting on
+    /// The terminal's keyboard as `TerminalHostVC` has it: its default two-row shortcut bar resting on
     /// the keys, which keep the digit row, the emoji key and the home indicator's pad.
     private func terminalKeyboard(_ settings: KeyboardSettings) throws -> UIImage {
         (Style.palette, Style.bar) = (Style.Palette(settings), Style.Palette.bar(settings))
         let kb = TerminalKeyboard()
         kb.settings = settings
-        let keys = Self.terminal.compactMap { id in Shortcuts.Bar.terminal.catalog.first { $0.id == id } }
+        let keys = Shortcuts.defaults   // the bar a new install shows (#690)
         let bar = ShortcutBar(keys: { keys })
         bar.frame = CGRect(x: 0, y: 0, width: Self.width, height: 86)
         for _ in 0..<2 { bar.layoutIfNeeded() }
@@ -358,6 +383,22 @@ final class ScreenshotTests: XCTestCase {
         }
         XCTAssertTrue(ok, "drawHierarchy drew nothing")
         return image
+    }
+
+    /// `view` as the app's whole screen, dark, `settle` seconds after it appears, 1320 px wide at
+    /// 3x. No status bar, which isn't the app's to draw.
+    private func screen<V: View>(_ view: V, settle: TimeInterval) throws -> UIImage {
+        let scene = try XCTUnwrap(window.windowScene)
+        XCTAssertEqual(scene.screen.bounds.width, Self.width, "an iPhone Pro Max simulator")
+        window.subviews.forEach { $0.removeFromSuperview() }
+        window.frame = scene.screen.bounds
+        window.overrideUserInterfaceStyle = .dark
+        let host = UIHostingController(rootView: view.preferredColorScheme(.dark))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        kept.append(host)
+        RunLoop.main.run(until: Date().addingTimeInterval(settle))
+        return try draw(window)
     }
 
     private func until(_ done: () -> Bool) throws {

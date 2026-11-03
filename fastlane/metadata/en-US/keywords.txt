@@ -1,1 +1,1 @@
-terminal,ssh,tmux,dtach,tailscale,remote,console,shell,mac,dev,devops,session,reconnect,cli
+keyboard,clipboard,snippets,dictation,ssh,tmux,shell,mac,cli,emoji,devops,session,tailscale,agent
