@@ -7,11 +7,15 @@ import SwiftUI
 /// The README's keyboard gallery and the App Store's keyboard slides (#670), drawn from the
 /// production views with made-up data: each scene is rigged as the extension's controller and
 /// the terminal rig them (`SuggestionBar.host`, `KeyboardToolbarTests.hostedRig`), put in a
-/// window and drawn with `drawHierarchy` at 3x, 440 pt wide (an iPhone Pro Max), so 1320 px.
-/// Then four 1320x2868 store slides from those crops, opaque: App Store Connect refuses alpha.
+/// window and drawn with `drawHierarchy` at the target's width and scale (an iPhone Pro Max: 440 pt
+/// at 3x, so 1320 px). Then four store slides from those crops, opaque: App Store Connect refuses alpha.
 ///
 /// The app's own slides 1-3 (`testAppShots`) are the app's screens the same way, full screen, on the
 /// offline demo (`DemoTransport`) and a made-up Mac: no real machine, session or account.
+///
+/// One run per simulator (`Target.here`): an iPhone Pro Max draws the iphone67 slides and the README's
+/// keyboard crops; an iPad Pro 13" draws the ipad13 slides and the iPhone Duo's (no simulator of its
+/// own) in a window of the Duo's inner display, 669x951 pt, at 3x.
 ///
 /// Off unless PROSPER_SHOTS names an output folder (`TEST_RUNNER_PROSPER_SHOTS`); run it with
 /// scripts/keyboard-shots.sh, which copies the PNGs to store/keyboard and fastlane.
@@ -21,8 +25,33 @@ final class ScreenshotTests: XCTestCase {
     typealias Theme = KeyboardSettings.Theme
     typealias Style = TerminalKeyboard.Style
 
-    static let width: CGFloat = 440
-    static let store = CGSize(width: 1320, height: 2868)
+    /// A store device class: its screen in points, its scale, the slides' file prefix. The slides
+    /// are the screen in pixels; App Store Connect takes the device class from that size.
+    struct Target {
+        let name: String
+        let points: CGSize
+        let scale: CGFloat
+        /// Drawn in a window of `points` on a bigger screen, with an iPhone's portrait size classes.
+        var hosted = false
+        var store: CGSize { CGSize(width: points.width * scale, height: points.height * scale) }
+
+        static let iphone67 = Target(name: "iphone67", points: CGSize(width: 440, height: 956), scale: 3)
+        static let ipad13 = Target(name: "ipad13", points: CGSize(width: 1032, height: 1376), scale: 2)
+        /// The unfolded inner display: 2007x2853, deliver's APP_IPHONE_DUO.
+        static let iphoneduo = Target(name: "iphoneduo", points: CGSize(width: 669, height: 951), scale: 3, hosted: true)
+
+        /// This simulator's targets, by its screen's width: the iPhone Pro Max's, or the iPad's and the Duo's.
+        static func here(_ screen: CGSize) throws -> [Target] {
+            switch screen.width {
+            case iphone67.points.width: return [.iphone67]
+            case ipad13.points.width: return [.ipad13, .iphoneduo]
+            default: throw XCTSkip("Marketing shots: an iPhone Pro Max or an iPad Pro 13\" simulator, not \(screen)")
+            }
+        }
+    }
+
+    /// What's being drawn: every rig, screen and slide is at its width and scale.
+    private var target = Target.iphone67
 
     private var out: URL!
     private var dir: URL!
@@ -121,10 +150,15 @@ final class ScreenshotTests: XCTestCase {
     // MARK: - The shots
 
     func testKeyboardShots() throws {
+        try forEachTarget(keyboardShots)
+    }
+
+    private func keyboardShots() throws {
         var shots: [String: UIImage] = [:]
         func shot(_ name: String, _ image: UIImage) throws {
             shots[name] = image
-            try write(image, "keyboard-\(name).png", size: nil)
+            // The README's gallery is the phone's; the other targets' crops go only into their slides.
+            if target.name == Target.iphone67.name { try write(image, "keyboard-\(name).png", size: nil) }
         }
 
         try shot("terminal-neon", terminalKeyboard(look(.neon)))
@@ -184,19 +218,19 @@ final class ScreenshotTests: XCTestCase {
             rig.bar.dictationStrip.isHidden = false
         }.image)
 
-        try slide("iphone67_4-themes", "Make it yours",
+        try slide("\(target.name)_4-themes", "Make it yours",
                   "\(Theme.allCases.count) themes, toolbar themes and accents.",
                   colours: (0x0B1018, 0x1A1238, 0x8B7CFF), ink: .white,
                   [shots["theme-blossom"], shots["theme-amber"], shots["theme-mixed"], shots["theme-dark"]], overlap: 0.475)   // cut between the q and a rows
-        try slide("iphone67_5-clipboard", "Saved, a tap away",
+        try slide("\(target.name)_5-clipboard", "Saved, a tap away",
                   "Clipboard, snippets and quicklinks, with search.",
                   colours: (0x080813, 0x1E1E38, 0x7075FF), ink: .white,
                   [shots["clipboard"], shots["snippets-search"], shots["quicklinks"]])
-        try slide("iphone67_6-menu", "Everything a hold away",
+        try slide("\(target.name)_6-menu", "Everything a hold away",
                   "Panels, emoji and the look, from the keys.",
                   colours: (0x05080D, 0x0B1E2E, 0x21CCFF), ink: .white,
                   [shots["menu"], shots["emoji"], shots["appearance"]])
-        try slide("iphone67_7-ai", "Write it better, or say it",
+        try slide("\(target.name)_7-ai", "Write it better, or say it",
                   "On-device Fix, Rewrite, Summarize, dictation.",
                   colours: (0xF5F0FA, 0xE3D8F0, 0x8945E3), ink: UIColor(hex: 0x241434),
                   [shots["ai"], shots["ai-result"], shots["dictation"]])
@@ -205,6 +239,10 @@ final class ScreenshotTests: XCTestCase {
     /// The app's slides: the demo's session list and terminal, and the Machines screen with a
     /// made-up Mac, each drawn full screen in dark mode as a phone shows it.
     func testAppShots() throws {
+        try forEachTarget(appShots)
+    }
+
+    private func appShots() throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let store = MachineStore(defaults: defaults)
         store.machines = [Machine(name: "Studio Mac", addresses: ["studio-mac.example.ts.net"])]
@@ -219,15 +257,29 @@ final class ScreenshotTests: XCTestCase {
         }, settle: 2)
         let machines = try screen(NavigationStack { ConnectScreen(store: store) { _ in } }, settle: 1)
 
-        try slide("iphone67_1-terminal", "Your Mac's terminal, anywhere",
+        try slide("\(target.name)_1-terminal", "Your Mac's terminal, anywhere",
                   "The same session, scrollback and all.",
                   colours: (0x05080D, 0x0B1E2E, 0x21CCFF), ink: .white, [terminal])
-        try slide("iphone67_2-sessions", "Every session at a glance",
+        try slide("\(target.name)_2-sessions", "Every session at a glance",
                   "Agents, pull requests and tasks, live.",
                   colours: (0x080813, 0x1E1E38, 0x7075FF), ink: .white, [sessions])
-        try slide("iphone67_3-machines", "No passwords",
+        try slide("\(target.name)_3-machines", "No passwords",
                   "Your Mac over your own Tailscale network.",
                   colours: (0x0B1018, 0x1A1238, 0x8B7CFF), ink: .white, [machines])
+    }
+
+    /// `body` once per target of this simulator, the window's size classes as that device's.
+    private func forEachTarget(_ body: () throws -> Void) throws {
+        let scene = try XCTUnwrap(window.windowScene)
+        for t in try Target.here(scene.screen.bounds.size) {
+            target = t
+            // A phone in portrait is compact wide; the iPad's own window keeps the scene's regular.
+            if #available(iOS 17, *) {
+                if t.hosted { window.traitOverrides.horizontalSizeClass = .compact }
+                else { window.traitOverrides.remove(UITraitHorizontalSizeClass.self) }
+            }
+            try body()
+        }
     }
 
     // MARK: - Rigs
@@ -285,7 +337,7 @@ final class ScreenshotTests: XCTestCase {
         if layout != .english { kb.languages = [.english, layout] }
         kb.settings = settings
         bar.showsToolbar = true
-        let view = UIView(frame: CGRect(x: 0, y: 0, width: Self.width, height: 400))
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: target.points.width, height: 400))
         bar.host(kb, in: view)
         var rig = Rig(kb: kb, bar: bar, doc: doc, view: view)
         kept += [kb, bar, doc, view, dictation]
@@ -304,13 +356,13 @@ final class ScreenshotTests: XCTestCase {
         kb.settings = settings
         let keys = Shortcuts.defaults   // the bar a new install shows (#690)
         let bar = ShortcutBar(keys: { keys })
-        bar.frame = CGRect(x: 0, y: 0, width: Self.width, height: 86)
+        bar.frame = CGRect(x: 0, y: 0, width: target.points.width, height: 86)
         for _ in 0..<2 { bar.layoutIfNeeded() }
         let barHeight = bar.intrinsicContentSize.height
         let view = UIView()
         view.backgroundColor = Style.backdrop
-        bar.frame = CGRect(x: 0, y: 0, width: Self.width, height: barHeight)
-        kb.frame = CGRect(x: 0, y: barHeight, width: Self.width, height: TerminalKeyboard.height)
+        bar.frame = CGRect(x: 0, y: 0, width: target.points.width, height: barHeight)
+        kb.frame = CGRect(x: 0, y: barHeight, width: target.points.width, height: TerminalKeyboard.height)
         view.addSubview(kb)
         view.addSubview(bar)
         kept += [kb, bar, view]
@@ -359,14 +411,14 @@ final class ScreenshotTests: XCTestCase {
         XCTAssertGreaterThan(height, 100)
         window.subviews.forEach { $0.removeFromSuperview() }
         let screen = try XCTUnwrap(window.windowScene).screen.bounds
-        window.frame = CGRect(x: 0, y: ((screen.height - height) / 2).rounded(), width: Self.width, height: height)
+        window.frame = CGRect(x: 0, y: ((screen.height - height) / 2).rounded(), width: target.points.width, height: height)
         view.frame = window.bounds
         window.addSubview(view)
         for _ in 0..<3 { window.layoutIfNeeded() }
         XCTAssertEqual(view.safeAreaInsets, .zero, "a keyboard has no safe area")
     }
 
-    /// The view as the screen shows it, at 3x and opaque: `drawHierarchy` keeps the caps' glow
+    /// The view as the screen shows it, at the target's scale and opaque: `drawHierarchy` keeps the caps' glow
     /// and the panels' table, which `layer.render` drops. Animations (the mic's pulse) removed first.
     private func draw(_ view: UIView) throws -> UIImage {
         for _ in 0..<3 { view.layoutIfNeeded() }
@@ -375,7 +427,7 @@ final class ScreenshotTests: XCTestCase {
         func still(_ layer: CALayer) { layer.removeAllAnimations(); layer.sublayers?.forEach(still) }
         still(view.layer)
         let format = UIGraphicsImageRendererFormat()
-        format.scale = 3
+        format.scale = target.scale
         format.opaque = true
         var ok = false
         let image = UIGraphicsImageRenderer(bounds: view.bounds, format: format).image { _ in
@@ -385,15 +437,24 @@ final class ScreenshotTests: XCTestCase {
         return image
     }
 
-    /// `view` as the app's whole screen, dark, `settle` seconds after it appears, 1320 px wide at
-    /// 3x. No status bar, which isn't the app's to draw.
+    /// `view` as the app's whole screen, dark, `settle` seconds after it appears, at the target's
+    /// size and scale. No status bar, which isn't the app's to draw. A hosted target's screen is a
+    /// window of its size at the screen's top left, under the status bar as a phone's is, with the
+    /// iPad's home indicator inset (20 pt) added at its foot.
     private func screen<V: View>(_ view: V, settle: TimeInterval) throws -> UIImage {
         let scene = try XCTUnwrap(window.windowScene)
-        XCTAssertEqual(scene.screen.bounds.width, Self.width, "an iPhone Pro Max simulator")
+        if target.hosted {
+            XCTAssertTrue(target.points.width <= scene.screen.bounds.width
+                          && target.points.height <= scene.screen.bounds.height, "\(target.name) fits the screen")
+        } else {
+            XCTAssertEqual(scene.screen.bounds.size, target.points, "a \(target.name) simulator")
+        }
         window.subviews.forEach { $0.removeFromSuperview() }
-        window.frame = scene.screen.bounds
+        window.frame = CGRect(origin: .zero, size: target.points)
         window.overrideUserInterfaceStyle = .dark
         let host = UIHostingController(rootView: view.preferredColorScheme(.dark))
+        // Clear of the screen's bottom edge, a hosted window has no home indicator's inset: a phone's has one.
+        if target.hosted { host.additionalSafeAreaInsets.bottom = 20 }
         window.rootViewController = host
         window.makeKeyAndVisible()
         kept.append(host)
@@ -409,12 +470,14 @@ final class ScreenshotTests: XCTestCase {
 
     /// A store slide: the headline and its line over a gradient with a glow in the accent, then
     /// the crops as rounded cards, stacked to fit, or each but the last showing only its top
-    /// `overlap` share, a deck whose front card is whole.
+    /// `overlap` share, a deck whose front card is whole. Laid out for the iPhone's 1320 px and
+    /// scaled with the canvas's width, so every target's slide reads as the iPhone's does.
     private func slide(_ name: String, _ headline: String, _ line: String, colours: (UInt32, UInt32, UInt32),
                        ink: UIColor, _ crops: [UIImage?], overlap: CGFloat? = nil) throws {
         let cards = crops.compactMap { $0 }
         XCTAssertEqual(cards.count, crops.count, name)
-        let size = Self.store
+        let size = target.store
+        let k = size.width / 1320
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true
@@ -427,7 +490,7 @@ final class ScreenshotTests: XCTestCase {
             let halo = CGGradient(colorsSpace: space, colors: [glow.withAlphaComponent(0.38).cgColor,
                                                                glow.withAlphaComponent(0).cgColor] as CFArray, locations: [0, 1])!
             let centre = CGPoint(x: size.width / 2, y: size.height * 0.62)
-            cg.drawRadialGradient(halo, startCenter: centre, startRadius: 0, endCenter: centre, endRadius: 1250, options: [])
+            cg.drawRadialGradient(halo, startCenter: centre, startRadius: 0, endCenter: centre, endRadius: 1250 * k, options: [])
 
             let centred = NSMutableParagraphStyle()
             centred.alignment = .center
@@ -436,21 +499,21 @@ final class ScreenshotTests: XCTestCase {
                 return base.fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: size) } ?? base
             }
             let title = NSAttributedString(string: headline, attributes: [
-                .font: rounded(104, .heavy), .foregroundColor: ink, .paragraphStyle: centred, .kern: -1])
+                .font: rounded(104 * k, .heavy), .foregroundColor: ink, .paragraphStyle: centred, .kern: -k])
             let sub = NSAttributedString(string: line, attributes: [
-                .font: rounded(50, .medium), .foregroundColor: ink.withAlphaComponent(0.72), .paragraphStyle: centred])
-            let textWidth: CGFloat = 1160
-            var y: CGFloat = 200
-            for (text, gap) in [(title, CGFloat(28)), (sub, CGFloat(0))] {
-                let r = text.boundingRect(with: CGSize(width: textWidth, height: 600),
+                .font: rounded(50 * k, .medium), .foregroundColor: ink.withAlphaComponent(0.72), .paragraphStyle: centred])
+            let textWidth = 1160 * k
+            var y = 200 * k
+            for (text, gap) in [(title, 28 * k), (sub, 0)] {
+                let r = text.boundingRect(with: CGSize(width: textWidth, height: 600 * k),
                                           options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
                 text.draw(with: CGRect(x: (size.width - textWidth) / 2, y: y, width: textWidth, height: ceil(r.height)),
                           options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
                 y += ceil(r.height) + gap
             }
 
-            let area = CGRect(x: 72, y: y + 110, width: size.width - 144, height: size.height - y - 110 - 96)
-            let gap: CGFloat = 44
+            let area = CGRect(x: 72 * k, y: y + 110 * k, width: size.width - 144 * k, height: size.height - y - (110 + 96) * k)
+            let gap = 44 * k
             let heights = cards.map { $0.size.height / $0.size.width }   // per unit of width
             let width: CGFloat
             if let overlap {
@@ -464,9 +527,9 @@ final class ScreenshotTests: XCTestCase {
             var cy = area.minY + (area.height - used) / 2
             for (card, h) in zip(cards, heights) {
                 let rect = CGRect(x: (size.width - width) / 2, y: cy, width: width, height: h * width)
-                let path = UIBezierPath(roundedRect: rect, cornerRadius: 48)
+                let path = UIBezierPath(roundedRect: rect, cornerRadius: 48 * k)
                 cg.saveGState()
-                cg.setShadow(offset: CGSize(width: 0, height: 24), blur: 60, color: UIColor.black.withAlphaComponent(0.45).cgColor)
+                cg.setShadow(offset: CGSize(width: 0, height: 24 * k), blur: 60 * k, color: UIColor.black.withAlphaComponent(0.45).cgColor)
                 UIColor.black.setFill()
                 path.fill()
                 cg.restoreGState()
@@ -475,7 +538,7 @@ final class ScreenshotTests: XCTestCase {
                 card.draw(in: rect)
                 cg.restoreGState()
                 UIColor(white: 1, alpha: 0.1).setStroke()
-                path.lineWidth = 2
+                path.lineWidth = 2 * k
                 path.stroke()
                 cy += h * width * (overlap ?? 1) + (overlap == nil ? gap : 0)
             }
@@ -483,14 +546,14 @@ final class ScreenshotTests: XCTestCase {
         try write(image, "\(name).png", size: size)
     }
 
-    /// The PNG, checked as App Store Connect checks it: `size` in pixels (any height, 1320 wide,
-    /// without one) and no alpha channel (IMAGE_ALPHA_NOT_ALLOWED).
+    /// The PNG, checked as App Store Connect checks it: `size` in pixels (any height, the target's
+    /// width, without one) and no alpha channel (IMAGE_ALPHA_NOT_ALLOWED).
     private func write(_ image: UIImage, _ file: String, size: CGSize?) throws {
         let data = try XCTUnwrap(image.pngData(), file)
         let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil), file)
         let props = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any], file)
         let cg = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil), file)
-        XCTAssertEqual(cg.width, Int(size?.width ?? 1320), file)
+        XCTAssertEqual(cg.width, Int(size?.width ?? target.store.width), file)
         if let size { XCTAssertEqual(cg.height, Int(size.height), file) }
         XCTAssertNotEqual(props[kCGImagePropertyHasAlpha] as? Bool, true, "\(file): alpha")
         XCTAssertTrue([.none, .noneSkipFirst, .noneSkipLast].contains(cg.alphaInfo), "\(file): \(cg.alphaInfo.rawValue)")
