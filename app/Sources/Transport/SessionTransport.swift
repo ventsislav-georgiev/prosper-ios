@@ -113,6 +113,8 @@ protocol SessionTransport: AnyObject {
     func commands() async throws -> [MacCommand]
     /// #615: one command run on the Mac, `argument` for one that takes text.
     func runCommand(id: String, argument: String?) async throws -> CommandResult
+    /// #730: the phone's own snippets, replacing the Mac's copy of them; the Mac echoes the hash.
+    func putPhoneSnippets(_ body: Data) async throws -> (count: Int, hash: String)
 }
 
 /// #590: the demo and the test stubs have no dch behind them. Their machine lists no
@@ -140,6 +142,7 @@ extension SessionTransport {
     }
     func commands() async throws -> [MacCommand] { throw TransportError.server("Not supported here.") }
     func runCommand(id: String, argument: String?) async throws -> CommandResult { throw TransportError.server("Not supported here.") }
+    func putPhoneSnippets(_ body: Data) async throws -> (count: Int, hash: String) { throw TransportError.server("Not supported here.") }
 }
 
 /// #590: a verb the Mac's server answers beyond the base frames. machineInfo lists them in
@@ -152,6 +155,7 @@ enum SessionVerb: String {
     case commands      // #615: palette commands, 0x28/0x29; only while the Mac's toggle is on
     case reviveNoMessage = "revive_no_message"   // #668: revive's "no_message"; only while the Mac's dch is 1.27.0+
     case clipboardMaxSide = "clipboard_max_side"   // #712: clipboardItem's "max_side"; only together with clipboard
+    case snippetsPut = "snippets_put"   // #730: putPhoneSnippets 0x2c, the phone's own snippets to the Mac
 
     /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
     /// clipboard_max_side without clipboard is none either.

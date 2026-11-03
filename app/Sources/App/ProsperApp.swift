@@ -822,6 +822,7 @@ struct SessionListView: View {
         #if !targetEnvironment(macCatalyst)
         if info.ops.contains(.library), let mm = liveMachine { Task { try? await MacLibrary.sync(mm, over: t) } }
         ClipboardSync.offer(info.ops, over: t, machine: m.id.uuidString)   // #621: and a sync, if it lists clipboard
+        SnippetPush.offer(info.ops, over: t, machine: m.id.uuidString)   // #730: the phone's snippets, if it lists snippets_put
         #endif
         if let session = account.session, let wakeId = info.wakeId {
             let meta = await WakeClient(session: session).meta(wakeId: wakeId)
@@ -895,6 +896,7 @@ extension SessionVerb {
         case .commands: "Commands"   // #615: never shown, a command's error stays inline
         case .reviveNoMessage: all ? "Resume interrupted (no message)" : "Resume (no message) failed"   // #668
         case .clipboardMaxSide: "Clipboard sync"   // #712: never shown, as clipboard's
+        case .snippetsPut: "Snippet sync"   // #730: never shown, a push failure is only logged
         }
     }
 }

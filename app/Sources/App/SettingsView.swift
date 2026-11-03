@@ -322,6 +322,7 @@ struct SettingsView: View {
                 Section {
                     Toggle("Sync from Mac", isOn: Binding(get: { syncFromMac }, set: { on in
                         MacLibrary.setSync(on)
+                        SnippetPush.setSync(on)   // #730
                         syncFromMac = on
                         if !on { library = nil }
                     }))
@@ -523,6 +524,7 @@ struct SnippetList: View {
                     .onDelete { rows in
                         rows.forEach { store.delete(group.snippets[$0].name) }
                         doc = store.load()
+                        SnippetPush.kick()   // #730
                     }
                 } header: {
                     if !group.title.isEmpty { Text(group.title) }
@@ -613,7 +615,7 @@ struct SnippetForm: View {
                     e.keyword = keyword
                     e.collection = collection
                     e.text = text
-                    if store.put(e, replacing: original?.name) { dismiss() }
+                    if store.put(e, replacing: original?.name) { SnippetPush.kick(); dismiss() }   // #730
                 }
                 .disabled(trimmed.isEmpty || text.isEmpty || taken)
             }

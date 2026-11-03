@@ -34,6 +34,7 @@ final class ProsperTransport: SessionTransport {
         static let modelsResp: UInt8 = 0x27
         // #615: the Mac's palette commands.
         static let commands: UInt8 = 0x28, runCommand: UInt8 = 0x29, commandsResp: UInt8 = 0x2a, commandResult: UInt8 = 0x2b
+        static let putPhoneSnippets: UInt8 = 0x2c   // #730: the phone's own snippets to the Mac
         // #621: clipboard history sync.
         static let clipboardList: UInt8 = 0x15, clipboardItem: UInt8 = 0x16
         static let addClipboardHistory: UInt8 = 0x22, clipboardUpload: UInt8 = 0x23
@@ -391,6 +392,19 @@ final class ProsperTransport: SessionTransport {
         guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
               let text = o["text"] as? String else { throw TransportError.protocolError("unreadable result") }
         return CommandResult(text: text, detail: o["detail"] as? String)
+    }
+
+    // MARK: - Phone snippets (#730)
+
+    /// `body` as `SnippetPush.request` built it; ok's `{count, hash}`.
+    func putPhoneSnippets(_ body: Data) async throws -> (count: Int, hash: String) {
+        try Self.decodePut(try await verb(F.putPhoneSnippets, body))
+    }
+
+    static func decodePut(_ payload: Data) throws -> (count: Int, hash: String) {
+        guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              let count = o["count"] as? Int, let hash = o["hash"] as? String else { throw TransportError.protocolError("unreadable reply") }
+        return (count, hash)
     }
 
     static func decodeNames(_ payload: Data) throws -> [String] {
