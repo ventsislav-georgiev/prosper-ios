@@ -169,7 +169,7 @@ final class ScreenshotTests: XCTestCase {
         try shot("theme-mixed", system(look(.black, toolbar: .rose, accent: .pink)).image)
         try shot("bulgarian", system(look(.teal), layout: .bulgarian).image)
 
-        let menu = try system(look(.neon)) { $0.bar.showMenu(true) }
+        let menu = try system(look(.neon)) { $0.bar.hideKeyboard = {}; $0.bar.showMenu(true) }   // Hide Keyboard as the extension's (#734)
         try shot("menu", menu.image)
         try shot("appearance", system(look(.neon)) { $0.bar.showAppearance(true) }.image)
 

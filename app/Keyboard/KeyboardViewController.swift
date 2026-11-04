@@ -46,6 +46,7 @@ final class KeyboardViewController: UIInputViewController {
         keyboard.allowsNumbersKey = true   // Numbers: Key (#625); the app's keyboard keeps its row
         bar.inputModeList = { [weak self] in self?.handleInputModeList(from: $0, with: $1) }
         bar.nextKeyboard = { [weak self] in self?.advanceToNextInputMode() }   // the toggle's menu (#623)
+        bar.hideKeyboard = { [weak self] in self?.dismissKeyboard() }   // the menu's caption row (#734)
         bar.languageChanged = { [weak self] layout in
             self?.primaryLanguage = layout.primaryLanguage   // the host's dictation and spell check
             if self?.onScreen == true, self?.hasFullAccess == true { KeyboardSettings.activeLanguage = layout }

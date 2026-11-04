@@ -705,6 +705,8 @@ final class SuggestionBar: UIView {
     var appearancePanel: AppearancePanel? { panel as? AppearancePanel }
     /// The controller's `advanceToNextInputMode`: the menu's Next Keyboard, the EN <-> BG hop (#623).
     var nextKeyboard: (() -> Void)?
+    /// The controller's `dismissKeyboard`: the menu's Hide Keyboard (#734).
+    var hideKeyboard: (() -> Void)?
     /// The keyboard switched language from the menu (#624): the controller
     /// tells the host (`primaryLanguage`) and keeps it for the next launch.
     var languageChanged: ((TerminalKeyboard.Layout) -> Void)?
@@ -922,7 +924,8 @@ final class SuggestionBar: UIView {
 
     /// The toggle's hold menu over the keys, or the keys back (#623).
     func showMenu(_ on: Bool) {
-        let menu = on ? ToggleMenu(items: menuItems) : nil
+        let menu = on ? ToggleMenu(items: menuItems, hideKeyboard: hideKeyboard.map { hide in
+            { [weak self] in self?.showMenu(false); hide() } }) : nil   // the keys back when it rises (#734)
         cover(menu)
     }
 
@@ -2309,10 +2312,11 @@ final class SuggestionBar: UIView {
 }
 
 /// The toolbar toggle's hold menu in the keys' place (#623): a panel (`SuggestionBar.cover`)
-/// of rounded icon tiles, three a row, a tile a pick, under a small caption (#626); more a row
-/// and smaller where three a row won't fit the keys' height (`layoutSubviews`, #641). Drawn in
-/// the keyboard's own view, not a UIMenu, which an extension clips. A tap off the tiles or the
-/// toggle closes it.
+/// of rounded icon tiles, four a row (#734), a tile a pick, under a small caption (#626); more a
+/// row and smaller where four a row won't fit the keys' height (`layoutSubviews`, #641). Hide
+/// Keyboard at the caption row's end where given (#734), never a tile, so it never moves. Drawn
+/// in the keyboard's own view, not a UIMenu, which an extension clips. A tap off the tiles or
+/// the toggle closes it.
 final class ToggleMenu: KeysPanel {
     struct Item {
         let title: String
@@ -2323,11 +2327,13 @@ final class ToggleMenu: KeysPanel {
     private(set) var tiles: [UIButton] = []
     /// The tiles' smaller look, under `tall`, and their titles' size (`layoutSubviews`).
     private var small = false
-    private(set) var titleSize: CGFloat = 15
+    private(set) var titleSize: CGFloat = 13
     /// The titles a line a word (`layoutSubviews`, #612).
     private(set) var wraps = false
+    /// Hide Keyboard, at the caption row's trailing end (#734); nil without a `hideKeyboard`.
+    private(set) var hideButton: UIButton?
 
-    init(items: [Item]) {
+    init(items: [Item], hideKeyboard: (() -> Void)? = nil) {
         self.items = items
         super.init(title: "Switch to", empty: "")
         table.isHidden = true
@@ -2340,8 +2346,22 @@ final class ToggleMenu: KeysPanel {
             header.isLayoutMarginsRelativeArrangement = true
             header.directionalLayoutMargins = .init(top: 0, leading: 4, bottom: 0, trailing: 0)
         }
-        tiles = items.map { Self.tile($0, small: false, size: 15) }
+        tiles = items.map { Self.tile($0, small: false, size: 13) }
         tiles.forEach(addSubview)
+        if let hideKeyboard {
+            var cfg = UIButton.Configuration.plain()
+            cfg.image = UIImage(systemName: "keyboard.chevron.compact.down",
+                                withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .medium))
+            cfg.baseForegroundColor = Style.icon
+            let b = UIButton(configuration: cfg)
+            b.accessibilityLabel = "Hide Keyboard"
+            b.addAction(UIAction { _ in
+                UIDevice.current.playInputClick()
+                hideKeyboard()
+            }, for: .touchUpInside)
+            addSubview(b)
+            hideButton = b
+        }
         // A button's own tap wins over its superview's recognizer, so only taps off the tiles close.
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tappedOff)))
         for (tile, item) in zip(tiles, items) {
@@ -2389,27 +2409,36 @@ final class ToggleMenu: KeysPanel {
     }
 
     /// A tile's height at most, and the least that takes its badge over its title.
-    static let (tileHeight, tall): (CGFloat, CGFloat) = (72, 64)
+    /// A tile's height at most (#734: 72 before), the least that takes its badge over its title,
+    /// and over a title in two lines (`wraps`).
+    static let (tileHeight, tall, wrapped): (CGFloat, CGFloat, CGFloat) = (56, 50, 68)
 
-    /// Three a row up to 72 pt tall, under the caption, 8 pt apart and in (#641). Where those rows
-    /// won't fit the keys (landscape, Numbers: Key, a short Key Size with seven tiles or more),
+    /// Four a row up to 56 pt tall (#734), under the caption, 8 pt apart and in (#641). Where those
+    /// rows won't fit the keys (landscape, Numbers: Key, a short Key Size with nine tiles or more),
     /// as many rows as fit at 44 pt and more a row, the tiles' badge and title smaller under `tall`.
     /// Every title as small as the widest needs to fit its tile whole (#649): landscape's one row.
-    /// Where that's under 10 pt in a full-height tile, each title a line a word instead (#612:
-    /// Rewrite's tile, nine in landscape's one row with Numbers: Key, "Next Keyboard" at 8.5 pt).
+    /// Where that's under 10 pt and a row has room for `wrapped`, each title a line a word in a
+    /// tile that tall instead (#612: nine in landscape's one row with Numbers: Key). Hide
+    /// Keyboard (#734) 44 pt square at the caption row's end, centred on it (the header's 2 + 20).
     override func layoutSubviews() {
         super.layoutSubviews()
-        let area = bounds.inset(by: safeAreaInsets).inset(by: UIEdgeInsets(top: 46, left: 8, bottom: 8, right: 8))
+        let edge = bounds.inset(by: safeAreaInsets)
+        hideButton?.frame = CGRect(x: edge.maxX - 4 - 44, y: 0, width: 44, height: 44)
+        let area = edge.inset(by: UIEdgeInsets(top: 46, left: 8, bottom: 8, right: 8))
         guard !tiles.isEmpty, area.width > 0, area.height > 0 else { return }
         let fit = max(1, Int((area.height + 8) / (44 + 8)))
-        let columns = max(3, (tiles.count + fit - 1) / fit)
+        let columns = max(4, (tiles.count + fit - 1) / fit)
         let gap: CGFloat = columns < 10 ? 8 : 6   // ten in landscape's one row keep 10 pt titles (#691)
         let rows = (tiles.count + columns - 1) / columns
-        let h = min(Self.tileHeight, (area.height - CGFloat(rows - 1) * gap) / CGFloat(rows))
+        let room = (area.height - CGFloat(rows - 1) * gap) / CGFloat(rows)
+        var h = min(Self.tileHeight, room)
         let w = (area.width - CGFloat(columns - 1) * gap) / CGFloat(columns)
-        var size = Self.titleSize(items.map(\.title), small: h < Self.tall, room: w - 8)   // the tile's insets
-        let wrap = size < 10 && h >= Self.tileHeight
-        if wrap { size = Self.titleSize(items.flatMap { $0.title.split(separator: " ").map(String.init) }, small: false, room: w - 8) }
+        var size = Self.titleSize(items.map(\.title), small: h < Self.tall, room: w - 4)   // the tile's insets
+        let wrap = size < 10 && room >= Self.wrapped
+        if wrap {
+            size = Self.titleSize(items.flatMap { $0.title.split(separator: " ").map(String.init) }, small: false, room: w - 4)
+            h = Self.wrapped
+        }
         if (h < Self.tall) != small || size != titleSize || wrap != wraps {
             (small, titleSize, wraps) = (h < Self.tall, size, wrap)
             for (tile, item) in zip(tiles, items) {
@@ -2422,9 +2451,9 @@ final class ToggleMenu: KeysPanel {
         }
     }
 
-    /// 15 pt, 13 `small`, less by half points till the widest of `titles` fits `room` (#649).
+    /// 13 pt, 12 `small` (#734), less by half points till the widest of `titles` fits `room` (#649).
     static func titleSize(_ titles: [String], small: Bool, room: CGFloat) -> CGFloat {
-        var size: CGFloat = small ? 13 : 15
+        var size: CGFloat = small ? 12 : 13
         func widest() -> CGFloat {
             let font = UIFont.systemFont(ofSize: size, weight: .medium)
             return titles.map { ceil(($0 as NSString).size(withAttributes: [.font: font]).width) }.max() ?? 0
@@ -2433,14 +2462,14 @@ final class ToggleMenu: KeysPanel {
         return size
     }
 
-    /// `symbol` in the accent, centred on a rounded square of it at 16%: 34 pt, 24 small.
+    /// `symbol` in the accent, centred on a rounded square of it at 16%: 26 pt, 20 small (#734).
     private static func badge(_ symbol: String, small: Bool) -> UIImage? {
-        let glyph = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: small ? 13 : 17, weight: .semibold))?
+        let glyph = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: small ? 11 : 14, weight: .semibold))?
             .withTintColor(Style.accent, renderingMode: .alwaysOriginal)
-        let side: CGFloat = small ? 24 : 34
+        let side: CGFloat = small ? 20 : 26
         return UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { _ in
             Style.accent.withAlphaComponent(0.16).setFill()
-            UIBezierPath(roundedRect: CGRect(x: 0, y: 0, width: side, height: side), cornerRadius: small ? 7 : 10).fill()
+            UIBezierPath(roundedRect: CGRect(x: 0, y: 0, width: side, height: side), cornerRadius: small ? 6 : 8).fill()
             if let glyph {
                 glyph.draw(at: CGPoint(x: (side - glyph.size.width) / 2, y: (side - glyph.size.height) / 2))
             }
@@ -2454,8 +2483,8 @@ final class ToggleMenu: KeysPanel {
         var cfg = UIButton.Configuration.plain()
         cfg.image = badge(item.symbol, small: small)
         cfg.imagePlacement = .top
-        cfg.imagePadding = small ? 2 : 4
-        cfg.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4)   // "Next Keyboard" at 15 pt
+        cfg.imagePadding = small ? 2 : 3
+        cfg.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 2, bottom: 2, trailing: 2)   // four a row's titles (#734)
         cfg.title = wraps ? item.title.replacingOccurrences(of: " ", with: "\n") : item.title
         cfg.titleLineBreakMode = .byTruncatingTail
         cfg.titleAlignment = .center
@@ -2465,7 +2494,7 @@ final class ToggleMenu: KeysPanel {
             a.foregroundColor = Style.label.withAlphaComponent(0.9)
             return a
         }
-        cfg.background.cornerRadius = 14
+        cfg.background.cornerRadius = 12
         cfg.background.strokeColor = Style.hairline
         cfg.background.strokeWidth = 1
         let b = UIButton(configuration: cfg)

@@ -340,6 +340,17 @@ final class KeyboardToolbarTests: XCTestCase {
         try pick("Next Keyboard")
         XCTAssertEqual(advanced, 1)
         XCTAssertNil(bar.panel)
+        // Hide Keyboard (#734): the controller's dismissKeyboard, the keys back for next time.
+        bar.showMenu(true)
+        XCTAssertNil(bar.menuPanel?.hideButton, "none without a dismiss")
+        var hidden = 0
+        bar.hideKeyboard = { hidden += 1 }
+        bar.showMenu(true)
+        let hide = try XCTUnwrap(bar.menuPanel?.hideButton)
+        XCTAssertEqual(hide.accessibilityLabel, "Hide Keyboard")
+        hide.sendActions(for: .touchUpInside)
+        XCTAssertEqual(hidden, 1)
+        XCTAssertNil(bar.panel, "the keys back")
         withExtendedLifetime((kb, view)) {}
     }
 

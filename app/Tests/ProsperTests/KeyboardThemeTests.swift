@@ -800,21 +800,21 @@ final class KeyboardThemeTests: XCTestCase {
         withExtendedLifetime((doc, view)) {}
     }
 
-    /// The menu's seven to ten tiles (Rewrite's the tenth, #612) fit the keys at every Key Size,
-    /// Numbers: Key too, on a 375 and a 402 pt portrait and a 750 pt landscape (its safe area off
-    /// an 874 pt screen): inside the
-    /// panel under its caption, none overlapping, each as tall as its content and as wide as
-    /// its title, landscape's one row with Numbers: Key too (#649). Numbers is a tile with a 123
-    /// key too (#691), so ten fit four rows' keys. Six in portrait keep #626's three a row at 72 pt.
-    func testTheMenuFitsSevenToTenTilesInPortraitAndLandscape() {
-        let all = ["Clipboard", "Snippets", "Quicklinks", "Dictate", "Rewrite", "Emoji", "Numbers", "Български", "Appearance",
-                   "Next Keyboard"]
-        for count in [7, 8, 9, 10] {
-            for (compact, width) in [(false, 375), (false, 402), (true, 750)] as [(Bool, CGFloat)] {
+    /// The menu's six to twelve tiles (Rewrite's the tenth, #612; two more languages, #734) fit the
+    /// keys at every Key Size, Numbers: Key too, on a 375, 402 and 440 pt portrait and a 750 pt
+    /// landscape (its safe area off an 874 pt screen): inside the panel under its caption, none
+    /// overlapping, each as tall as its content and as wide as its title, landscape's one row with
+    /// Numbers: Key too (#649). Portrait four a row (#734), its titles 12 to 13 pt but where
+    /// "Next Keyboard" needs less in a 375 pt row; never under 10 up to ten tiles. Hide Keyboard clear of them all.
+    func testTheMenuFitsSixToTwelveTilesInPortraitAndLandscape() {
+        let all = ["Clipboard", "Snippets", "Quicklinks", "Dictate", "Rewrite", "Emoji", "Numbers", "Български", "Français",
+                   "Deutsch", "Appearance", "Next Keyboard"]
+        for count in 6...12 {
+            for (compact, width) in [(false, 375), (false, 402), (false, 440), (true, 750)] as [(Bool, CGFloat)] {
                 for size in KeyboardSettings.KeySize.allCases {
                     for rows in [5, 4] {
                         let note = "\(count) tiles, \(compact ? "landscape" : "portrait") \(width) \(size) \(rows) rows"
-                        let menu = ToggleMenu(items: all.suffix(count).map { .init(title: $0, symbol: "paintpalette") {} })
+                        let menu = ToggleMenu(items: all.suffix(count).map { .init(title: $0, symbol: "paintpalette") {} }) {}
                         menu.frame = CGRect(x: 0, y: 0, width: width,
                                             height: TerminalKeyboard.keysHeight(compact: compact, size: size, rows: rows)
                                                 + TerminalKeyboard.extensionBottomInset)
@@ -827,21 +827,33 @@ final class KeyboardThemeTests: XCTestCase {
                             XCTAssertLessThanOrEqual(fits.height, frame.height + 0.5, "\(note): \(tile.accessibilityLabel!)")
                             XCTAssertLessThanOrEqual(fits.width, frame.width + 0.5, "\(note): \(tile.accessibilityLabel!) whole")
                         }
-                        // #691: Numbers beside a 123 key reaches ten tiles over four rows. Portrait's
-                        // four a row can't take "Next Keyboard" at 13 pt (92 pt in a 76 pt tile), nor
-                        // wrap it in a 48 pt tile, so only the floor holds there.
-                        let ten = count == 10 && rows == 4
-                        XCTAssertGreaterThanOrEqual(menu.titleSize, 10, "\(note): still legible")
-                        if !compact, !ten { XCTAssertTrue([13, 15].contains(menu.titleSize), "\(note): portrait's sizes as they were") }
+                        // Eleven or more in landscape's one short row (Numbers: Key) go under 10 pt; ten is
+                        // the most the keyboard offers today (#691).
+                        if count <= 10 || !compact { XCTAssertGreaterThanOrEqual(menu.titleSize, 10, "\(note): still legible") }
+                        if !compact {
+                            XCTAssertGreaterThanOrEqual(frames.filter { $0.minY == frames[0].minY }.count, 4, "\(note): four a row")
+                            if width > 375 { XCTAssertGreaterThanOrEqual(menu.titleSize, 12, "\(note): 12 to 13 pt") }
+                        }
                         for (i, a) in frames.enumerated() { for b in frames[(i + 1)...] { XCTAssertFalse(a.intersects(b), note) } }
+                        let hide = menu.hideButton!.frame
+                        XCTAssertTrue(menu.bounds.contains(hide), note)
+                        XCTAssertGreaterThanOrEqual(min(hide.width, hide.height), 44, "\(note): a 44 pt target")
+                        XCTAssertFalse(frames.contains { $0.intersects(hide) }, "\(note): off the tiles")
+                        XCTAssertFalse(menu.title.convert(menu.title.bounds, to: menu).intersects(hide), "\(note): off the caption")
+                        XCTAssertEqual(hide.midY, menu.title.convert(menu.title.bounds, to: menu).midY, accuracy: 1, "\(note): on the caption's line")
                     }
                 }
             }
         }
-        let six = ToggleMenu(items: all.prefix(6).map { .init(title: $0, symbol: "globe") {} })
-        six.frame = CGRect(x: 0, y: 0, width: 375, height: TerminalKeyboard.keysHeight(compact: false) + TerminalKeyboard.extensionBottomInset)
-        six.layoutIfNeeded()
-        XCTAssertEqual(six.tiles.map(\.frame.height), Array(repeating: 72, count: 6))
-        XCTAssertEqual(Set(six.tiles.map(\.frame.minY)).count, 2, "three a row")
+        let twelve = ToggleMenu(items: all.map { .init(title: $0, symbol: "globe") {} })
+        twelve.frame = CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight(compact: false) + TerminalKeyboard.extensionBottomInset)
+        twelve.layoutIfNeeded()
+        XCTAssertEqual(Set(twelve.tiles.map(\.frame.minY)).count, 3, "twelve in three rows of four at the normal size")
+        XCTAssertGreaterThanOrEqual(twelve.titleSize, 12, "\"Next Keyboard\" at 12 pt in a 402 pt row")
+        let eight = ToggleMenu(items: all.prefix(8).map { .init(title: $0, symbol: "globe") {} })
+        eight.frame = twelve.frame
+        eight.layoutIfNeeded()
+        XCTAssertEqual(eight.tiles.map(\.frame.height), Array(repeating: 56, count: 8), "two rows at 56 pt")
+        XCTAssertNil(eight.hideButton, "no Hide Keyboard without one to call")
     }
 }
