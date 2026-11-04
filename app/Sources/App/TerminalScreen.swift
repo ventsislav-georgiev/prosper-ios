@@ -663,7 +663,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             quicklinks: quicklinks.map { _ in { [weak self] in self?.showQuicklinks(true) } },
             dictate: dictation.map { _ in { [weak self] in self?.dictate() } },
             appearance: kb.map { _ in { [weak self] in self?.showAppearance(true) } },
-            nextKeyboard: next ? { [weak self] in self?.tv.systemKeys = !system; self?.tv.refreshInputView() } : nil)) : nil)
+            nextKeyboard: next ? { [weak self] in self?.tv.systemKeys = !system; self?.tv.refreshInputView() } : nil),
+            // Hide Keyboard with it up (#734): the terminal back, then down as `toggleKeyboard`'s.
+            hideKeyboard: tv.isFirstResponder ? { [weak self] in self?.cover(nil); _ = self?.tv.resignFirstResponder() } : nil) : nil)
     }
 
     /// The menu's Appearance over the terminal (#691), as the keyboard's (`SuggestionBar.showAppearance`):

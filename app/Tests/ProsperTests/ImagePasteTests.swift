@@ -746,6 +746,7 @@ final class ImagePasteTests: XCTestCase {
         bar.onKey?(key)
         XCTAssertTrue(vc.menuPanel?.superview === vc.view, "over the terminal")
         XCTAssertEqual(try titles(), ["Clipboard", "Snippets", "Quicklinks"], "the keyboard down")
+        XCTAssertNil(vc.menuPanel?.hideButton, "no Hide Keyboard with it down (#734)")
         bar.onKey?(key)
         XCTAssertNil(vc.menuPanel, "the key again: the terminal back")
 
@@ -797,6 +798,10 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertTrue(tv.resignFirstResponder())
         XCTAssertTrue(tv.becomeFirstResponder())
         XCTAssertTrue(vc.keyboardInputView === kb, "Prosper's again the next time up")
+        bar.onKey?(key)
+        try XCTUnwrap(vc.menuPanel?.hideButton, "Hide Keyboard with it up (#734)").sendActions(for: .touchUpInside)
+        XCTAssertNil(vc.menuPanel, "the terminal back")
+        XCTAssertFalse(tv.isFirstResponder, "the keyboard down")
     }
 
     /// The mic key (#604): cold, the service starts in place (no hop, no sheet) and the strip
