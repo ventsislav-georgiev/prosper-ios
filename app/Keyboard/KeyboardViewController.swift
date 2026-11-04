@@ -11,12 +11,14 @@ import FoundationModels
 /// keyboard has them, which a custom keyboard doesn't get (Sources/Keys/Suggestions.swift),
 /// or at its toggle the toolbar, keys from the app's own list for it (`addToolbar`).
 ///
-/// Launched by the system under a tight memory cap: two views, no network, the pasteboard
-/// only with Full Access (the bar's and the toolbar's Paste), nothing held beyond the
-/// keyboard, the shared spell checker and what it learned. The clipboard history (#597)
-/// lives on disk in the App Group, shared by both extensions (`ClipboardHistory`). Dictation
-/// (#598) hops to Prosper for the mic, then talks to it there (`DictationClient`). Fix, Rewrite
-/// and Summarize (#612) run Apple's on-device model, out of process: weak-linked, iOS 26 only.
+/// Launched by the system under a tight memory cap: two views, the network only for a Mac
+/// command run from the menu with Full Access (#735: `CommandPanel`, the list and run verbs
+/// alone, no polling), the pasteboard only with Full Access (the bar's and the toolbar's
+/// Paste), nothing held beyond the keyboard, the shared spell checker and what it learned.
+/// The clipboard history (#597) lives on disk in the App Group, shared by both extensions
+/// (`ClipboardHistory`). Dictation (#598) hops to Prosper for the mic, then talks to it there
+/// (`DictationClient`). Fix, Rewrite and Summarize (#612) run Apple's on-device model, out of
+/// process: weak-linked, iOS 26 only.
 ///
 /// Two extensions run this controller, Prosper and Prosper (Bulgarian), each its Info.plist's
 /// `PrimaryLanguage`, so the system globe can switch language (#640). Prosper always has the
@@ -56,6 +58,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.history = ClipboardHistory.shared()
         bar.snippets = SnippetStore.shared()
         bar.quicklinks = QuicklinkStore.shared()
+        bar.commandStore = CommandStore.shared()   // #735
         // The stored settings before attach's first refresh: Save Copies is on by default (#601).
         bar.suggestions.settings = KeyboardSettings.current(fullAccess: hasFullAccess)
         // The memory's store before attach's first refresh too: the clips auto-save checks (#659).

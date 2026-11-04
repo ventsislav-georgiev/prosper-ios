@@ -234,8 +234,9 @@ struct LocalModel: Equatable {
 }
 
 /// #615: one row of commandsResp 0x2a. `argument`, the input's placeholder hint, means it takes
-/// text; none, it runs on a tap. `icon` is an SF Symbol name; `ext` the extension's title.
-struct MacCommand: Equatable, Identifiable {
+/// text; none, it runs on a tap. `icon` is an SF Symbol name; `ext` the extension's title. Codable for
+/// the keyboards' copy of the list (`CommandStore`, #735).
+struct MacCommand: Codable, Equatable, Identifiable {
     var id: String
     var title: String
     var subtitle: String?

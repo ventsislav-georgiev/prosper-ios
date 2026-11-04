@@ -529,7 +529,11 @@ struct SessionListView: View {
             HistorySheet(transport: transport, ops: ops) { await refresh() }
         }
         .sheet(isPresented: $showingChat) { ChatScreen(chat: ChatSession(transport: transport)) }
-        .sheet(isPresented: $showingCommands) { CommandsScreen(session: CommandsSession(transport: transport)) }
+        .sheet(isPresented: $showingCommands) {
+            // #735: each list fetched goes to the keyboards too, with this Mac's addresses.
+            let cache = (liveMachine ?? machine).flatMap { m in CommandStore.shared().map { (store: $0, machine: m) } }
+            CommandsScreen(session: CommandsSession(transport: transport, cache: cache))
+        }
         .alert("New session", isPresented: $creating) {
             TextField("Name (optional)", text: $newName)
             Button("Create") { startNew() }
@@ -821,6 +825,7 @@ struct SessionListView: View {
         // on the Mac, which has them already. Its own task: a slow reply never holds the list.
         #if !targetEnvironment(macCatalyst)
         if info.ops.contains(.library), let mm = liveMachine { Task { try? await MacLibrary.sync(mm, over: t) } }
+        if let mm = liveMachine { CommandStore.shared()?.connected(mm) }   // #735: the keyboards' Commands tile
         ClipboardSync.offer(info.ops, over: t, machine: m.id.uuidString)   // #621: and a sync, if it lists clipboard
         SnippetPush.offer(info.ops, over: t, machine: m.id.uuidString)   // #730: the phone's snippets, if it lists snippets_put
         #endif

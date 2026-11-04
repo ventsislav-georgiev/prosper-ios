@@ -691,12 +691,18 @@ final class SuggestionBar: UIView {
     var snippets: SnippetStore?
     /// Quicklinks (#613), as the snippets.
     var quicklinks: QuicklinkStore?
+    /// The Mac's commands (#735), the controller's App Group copy; nil in the app and tests that
+    /// don't set one. Its tile shows with a Mac in it, its list fetched or not, and Full Access.
+    var commandStore: CommandStore?
+    /// How the panel and a run reach the cached Mac's addresses (#735); the tests' never dial one.
+    var reach: ([String]) -> () async throws -> (SessionTransport, [MacCommand]) = CommandsSession.reach
     /// The panel over the keys while open: the history's (`showClips`), the snippets' or the
     /// quicklinks'.
     private(set) var panel: KeysPanel?
     var clipsPanel: ClipboardPanel? { panel as? ClipboardPanel }
     var snippetsPanel: SnippetPanel? { panel as? SnippetPanel }
     var quicklinksPanel: QuicklinkPanel? { panel as? QuicklinkPanel }
+    var commandsPanel: CommandPanel? { panel as? CommandPanel }
     /// Fix, Rewrite and Summarize's while open (`showRewrite`, #612).
     var rewritePanel: AIPanel? { panel as? AIPanel }
     /// The toggle's hold menu while open (`showMenu`, #623).
@@ -931,7 +937,7 @@ final class SuggestionBar: UIView {
 
     /// What the menu offers here (#623), in the terminal's order (`ToggleMenu.items`, #691): each
     /// panel (Rewrite's too, #612) and the mic gated as its toolbar key (`addToolbar`), on the
-    /// toolbar or not, Appearance (#641) and Next Keyboard always.
+    /// toolbar or not, Commands (#735) as `showCommands`, Appearance (#641) and Next Keyboard always.
     var menuItems: [ToggleMenu.Item] {
         let full = suggestions.pasteboard() != nil
         func run(_ act: @escaping (SuggestionBar) -> Void) -> () -> Void { { [weak self] in self.map(act) } }
@@ -941,6 +947,7 @@ final class SuggestionBar: UIView {
                                 quicklinks: full && quicklinks != nil ? run { $0.showQuicklinks(true) } : nil,
                                 dictate: full && dictation != nil ? run { $0.dictation?.tap() } : nil,
                                 rewrite: rewrites ? run { $0.showRewrite(true) } : nil,
+                                commands: full && commandStore?.load() != nil ? run { $0.showCommands(true) } : nil,
                                 appearance: run { $0.showAppearance(true) }, nextKeyboard: run { $0.nextKeyboard?() })
     }
 
@@ -1139,6 +1146,38 @@ final class SuggestionBar: UIView {
         let list = on && suggestions.pasteboard() != nil ? snippets.map(SnippetPanel.init) : nil
         list?.onPick = { [weak self] in self?.insert($0) }
         cover(list)
+    }
+
+    /// The Mac's commands over the keys, or the keys back (#735); Full Access only, as the network
+    /// is, and only with a Mac there. The App Group's copy at once, and the list fetched again as it
+    /// opens (one 0x28, no polling); a run dials the Mac that answered.
+    func showCommands(_ on: Bool) {
+        let store = on && suggestions.pasteboard() != nil ? commandStore : nil
+        let list = store.flatMap { s in
+            s.load().map { cached -> CommandPanel in
+                let session = CommandsSession(cached: cached, store: s, reach: reach(cached.machine.addresses))
+                session.refresh()
+                return CommandPanel(session: session, recent: s.recent)
+            }
+        }
+        list?.selected = { [weak self] in (self?.keyboard?.target as? UITextDocumentProxy)?.selectedText }
+        list?.onInsert = { [weak self] in self?.insert(result: $0) }
+        cover(list)
+    }
+
+    /// A command's reply typed at the cursor, over the selection it ran on (#735). The keys come back.
+    private func insert(result text: String) {
+        cover(nil)
+        UIDevice.current.playInputClick()
+        keyboard?.finish { [weak self] in
+            guard let self, let keyboard = self.keyboard, let doc = keyboard.target as? UITextDocumentProxy,
+                  keyboard.writable() else { return }
+            doc.insertText(text)
+            self.suggestions.caretMoved()
+            keyboard.resetWord()
+            keyboard.autoCapitalize()
+            self.refresh()
+        }
     }
 
     /// The Appearance panel over the keys, or the keys back (#641). Drawn again in a pick's new
@@ -2382,7 +2421,7 @@ final class ToggleMenu: KeysPanel {
     /// takes its place.
     static func items(keyboard: TerminalKeyboard?, close: @escaping () -> Void,
                       clipboard: (() -> Void)?, snippets: (() -> Void)?, quicklinks: (() -> Void)?,
-                      dictate: (() -> Void)?, rewrite: (() -> Void)? = nil,
+                      dictate: (() -> Void)?, rewrite: (() -> Void)? = nil, commands: (() -> Void)? = nil,
                       appearance: (() -> Void)?, nextKeyboard: (() -> Void)?) -> [Item] {
         var items: [Item] = []
         func add(_ title: String, _ symbol: String?, closes: Bool = true, _ run: (() -> Void)?) {
@@ -2394,6 +2433,7 @@ final class ToggleMenu: KeysPanel {
         add("Quicklinks", Shortcuts.quicklinks.systemImage, quicklinks)
         add("Dictate", Shortcuts.dictate.systemImage, dictate)
         add("Rewrite", Shortcuts.rewrite.systemImage, rewrite)
+        add("Commands", "command", commands)   // #735
         if let keyboard {
             add("Emoji", "face.smiling") { [weak keyboard] in keyboard?.showEmoji(true) }
             add("Numbers", "textformat.123") { [weak keyboard] in keyboard?.showNumpad(true) }

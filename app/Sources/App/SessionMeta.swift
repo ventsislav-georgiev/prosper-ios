@@ -1,4 +1,9 @@
+// The keyboards build the data types without SwiftUI (#735); `SessionRow` is the app's.
+#if KEYBOARD
+import Foundation
+#else
 import SwiftUI
+#endif
 
 /// A session's PRs and tasks as the Mac's list reports them (its `meta` key), drawn
 /// under the row the way the Mac's Agent Island draws them.
@@ -187,6 +192,7 @@ extension DchSession {
     }
 }
 
+#if !KEYBOARD
 /// A session row as the Mac's Agent Island draws it: a state glyph, then line 1 the
 /// title and "+N agents", line 2 the state, the name under an alias (Session name) and the task
 /// summary, line 3 the PR chips and "N merged". Nothing animates.
@@ -323,3 +329,4 @@ struct SessionRow: View {
             .background(Color.primary.opacity(0.1), in: Capsule())
     }
 }
+#endif

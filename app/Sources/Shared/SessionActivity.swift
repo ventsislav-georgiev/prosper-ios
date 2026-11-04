@@ -1,4 +1,9 @@
+// The keyboards build this without SwiftUI (#735): `tint` is the app's and widgets' alone.
+#if KEYBOARD
+import Foundation
+#else
 import SwiftUI
+#endif
 
 /// How a dch agent state reads on screen: the session list and the Live Activity, so the
 /// two can't drift apart.
@@ -40,6 +45,7 @@ enum SessionStateStyle: String, CaseIterable {
         }
     }
 
+    #if !KEYBOARD
     /// Agent Island's colours in dark mode; darker ones in light mode, so the amber
     /// still reads on white.
     var tint: Color {
@@ -58,6 +64,7 @@ enum SessionStateStyle: String, CaseIterable {
             return UIColor(red: c.r, green: c.g, blue: c.b, alpha: 1)
         })
     }
+    #endif
 
     /// "+2 agents" / "+1 agent" for a session's live subagents, nil for none: the row
     /// draws no chip rather than a zero.

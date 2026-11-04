@@ -416,14 +416,19 @@ class KeysPanel: UIView {
     }
 
     /// Filter mode over the list, or the list back as it was. Its results are the list's own
-    /// rows, drawn and picked through the table's data source and delegate.
-    func filter(_ on: Bool) {
+    /// rows, drawn and picked through the table's data source and delegate. `asking` (#735): the
+    /// field as one row's text instead, its placeholder the given one, that row alone under it,
+    /// Return handing the text over.
+    func filter(_ on: Bool, asking: (placeholder: String, row: IndexPath, take: (String) -> Void)? = nil) {
         filter?.removeFromSuperview()
         filter = nil
-        overBar?(on && search != nil)
-        guard on, let search else { return UIAccessibility.post(notification: .screenChanged, argument: search) }
-        let rows = searchable
-        let f = PanelFilter(placeholder: search.accessibilityLabel ?? "", layout: layout, fields: rows.map(\.fields))
+        overBar?(on && (search != nil || asking != nil))
+        guard on, let placeholder = asking?.placeholder ?? search?.accessibilityLabel else {
+            return UIAccessibility.post(notification: .screenChanged, argument: search)
+        }
+        let rows = asking.map { [(row: $0.row, fields: [String]())] } ?? searchable
+        let f = PanelFilter(placeholder: placeholder, layout: layout, fields: rows.map(\.fields),
+                            rank: asking.map { _ in { _ in [0] } })
         let table = table
         f.cell = { table.dataSource?.tableView(table, cellForRowAt: rows[$0].row) ?? UITableViewCell() }
         f.pickable = {
@@ -431,6 +436,10 @@ class KeysPanel: UIView {
             return table.delegate?.tableView?(table, willSelectRowAt: rows[$0].row) != nil
         }
         f.pick = { table.delegate?.tableView?(table, didSelectRowAt: rows[$0].row) }
+        if let asking {
+            f.pick = { [weak f] _ in asking.take(f?.query ?? "") }
+            f.go.accessibilityLabel = "Run"
+        }
         f.onDone = { [weak self] in self?.filter(false) }
         f.frame = bounds
         f.autoresizingMask = [.flexibleWidth, .flexibleHeight]

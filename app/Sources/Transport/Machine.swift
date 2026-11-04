@@ -1,5 +1,5 @@
+import Combine   // MachineStore's @Published; no SwiftUI, so the keyboards don't link it (#735)
 import Foundation
-import SwiftUI
 
 /// Identity reported by a Mac over the `0x08`/`0x18` handshake (PLAN §2a). Non-secret:
 /// `wakeId` is only *actionable* with the owner's session (the server re-derives the

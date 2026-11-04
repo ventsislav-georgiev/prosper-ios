@@ -124,6 +124,11 @@ targets:
     sources:
       - path: Keyboard
       - path: Sources/Keys
+      - path: Sources/Transport/ProsperTransport.swift
+      - path: Sources/Transport/SessionTransport.swift
+      - path: Sources/Transport/Machine.swift
+      - path: Sources/App/SessionMeta.swift
+      - path: Sources/Shared/SessionActivity.swift
     # NSExtension has to be a real plist dict — INFOPLIST_KEY_NSExtensionPointIdentifier
     # is silently dropped by the generated plist, and an appex without it never loads.
     info:
@@ -139,13 +144,16 @@ targets:
             IsASCIICapable: true
             PrefersRightToLeft: false
             PrimaryLanguage: en-US
-            # So the user can opt in to key clicks, haptics and the bar's Paste, which iOS
-            # withholds from a keyboard without full access. The keyboard never touches the
-            # network, and the pasteboard only through Paste.
+            # So the user can opt in to key clicks, haptics, the bar's Paste and Commands,
+            # which iOS withholds from a keyboard without full access. The keyboard touches the
+            # network only for a Mac command run from the menu (#735: the list and run verbs
+            # alone, no polling), and the pasteboard only through Paste.
             RequestsOpenAccess: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.keyboard
+        # Keeps the SwiftUI-only parts of the shared sources out of the keyboard (#735).
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) KEYBOARD
         # The app's App Group, for the Keyboard settings (KeyboardSettings).
         CODE_SIGN_ENTITLEMENTS: Keyboard/Keyboard.entitlements
         SWIFT_VERSION: "5.9"
@@ -163,6 +171,11 @@ targets:
     sources:
       - path: Keyboard/KeyboardViewController.swift
       - path: Sources/Keys
+      - path: Sources/Transport/ProsperTransport.swift
+      - path: Sources/Transport/SessionTransport.swift
+      - path: Sources/Transport/Machine.swift
+      - path: Sources/App/SessionMeta.swift
+      - path: Sources/Shared/SessionActivity.swift
     info:
       path: KeyboardBulgarian/Info.plist
       properties:
@@ -185,6 +198,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: eu.illegible.prosperios.keyboard-bg
+        # As in ProsperKeyboard.
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) KEYBOARD
         # As in ProsperKeyboard.
         CODE_SIGN_ENTITLEMENTS: Keyboard/Keyboard.entitlements
         SWIFT_VERSION: "5.9"
