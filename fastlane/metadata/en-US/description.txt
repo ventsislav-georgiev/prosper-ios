@@ -24,6 +24,7 @@ Add it in Settings › General › Keyboard › Keyboards.
 • Snippets and quicklinks, with search: your own, plus your Mac's with Sync from Mac.
 • Dictation, on device, in English (iOS 26).
 • Fix, Rewrite and Summarize with Apple Intelligence, on device (iOS 26, on supported devices).
+• Your Mac's commands from the keyboard's menu: calculate, lock the screen, and the commands your Prosper extensions add, with the result ready to insert.
 • Every emoji group, with search and skin tones.
 • Themes, separate toolbar themes and accents; Normal, Medium or Large keys; a numbers row or a 123 key with a numpad.
 • English and Bulgarian: switch with one language key, or add a keyboard per language for the globe.
