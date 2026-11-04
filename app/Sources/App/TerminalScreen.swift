@@ -1327,12 +1327,13 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     // The single tap also waits for the double tap, so a double tap never delivers the
     // tap's mouse click or keyboard raise; every single tap pays the double-tap interval.
     // And for the pan: UIKit still counts a drag under ~45 pt as a tap. A pan that never
-    // began fails at lift, costing a tap nothing.
+    // began fails at lift, costing a tap nothing. Same for the strip's scroll pan: a
+    // short jog that began is no tap (no keyboard, no click) (#738).
     func gestureRecognizer(_ g: UIGestureRecognizer,
                            shouldRequireFailureOf other: UIGestureRecognizer) -> Bool {
         (other === longPress && g !== longPress && g !== handlePress)
             || (other === handlePress && g !== handlePress && g !== doubleTap)
-            || (g === singleTap && (other === doubleTap || other === selectPan))
+            || (g === singleTap && (other === doubleTap || other === selectPan || other === scrollPan))
     }
 
     // SwiftTerm's mouse-mode pan (no delegate of its own) waits for the scroll pan, so a

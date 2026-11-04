@@ -61,6 +61,20 @@ final class ScrollThumbGeometryTests: XCTestCase {
         XCTAssertTrue(vc.gestureRecognizer(scroll, shouldRequireFailureOf: press), "a handle grab beats the jog")
     }
 
+    /// A short jog (20–30 pt, under ~0.7 s) is still a tap to UIKit, so the single tap
+    /// waits for the scroll pan: a jog that began is no tap (no keyboard). A tap that
+    /// never moves fails the pan at lift, so it costs nothing; the double tap and the
+    /// jog itself wait for neither (#738).
+    func testAJogThatBeganIsNoTap() throws {
+        let vc = makeVC(CGSize(width: 393, height: 852))
+        let scroll = try XCTUnwrap(vc.scrollPan)
+        let single = try XCTUnwrap(vc.singleTap), double = try XCTUnwrap(vc.doubleTap)
+        XCTAssertTrue(vc.gestureRecognizer(single, shouldRequireFailureOf: scroll), "a short jog fired the tap")
+        XCTAssertFalse(vc.gestureRecognizer(double, shouldRequireFailureOf: scroll), "a double tap selects on the strip")
+        XCTAssertFalse(vc.gestureRecognizer(scroll, shouldRequireFailureOf: single), "the jog never waits for a tap")
+        XCTAssertFalse(vc.gestureRecognizer(scroll, shouldRequireFailureOf: double))
+    }
+
     /// The strip must start where the black screen starts — the nav bar lives inside the
     /// top safe area, so a strip anchored to the view's top hides behind it and rests the
     /// pill half a nav bar high. Same edge as the terminal view, on device and here.
