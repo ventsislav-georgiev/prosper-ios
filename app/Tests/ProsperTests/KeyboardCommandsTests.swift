@@ -304,12 +304,48 @@ final class KeyboardCommandsTests: XCTestCase {
         XCTAssertNil(bar.commandsPanel, "Insert closes the panel")
 
         mac.reply = .success(CommandResult(text: " "))
+        doc.selectedText = "0/1"
         bar.showCommands(true)
         let again = try XCTUnwrap(bar.commandsPanel)
-        again.tap(command("toggles.screensaver"), in: "System")
+        again.tap(command("calc.eval"), in: "Calculator")
         try await waitUntil("the reply") { again.session.outcome != nil }
-        XCTAssertNil(button(cell(again, "System", 2), "Insert"), "no text, no Insert")
+        XCTAssertNil(button(cell(again, "Calculator", 1), "Insert"), "no text, no Insert, even where it inserts")
         withExtendedLifetime((kb, view)) {}
+    }
+
+    /// #740: Insert only on a content reply: Calculate's and an extension's, never an action's
+    /// acknowledgement ("Screen locked"), the fans' Manual with its text included.
+    func testInsertOnlyOnContentReplies() async throws {
+        XCTAssertFalse(CommandsSession.inserts(MacCommand(id: "fans.manual", title: "Fans: Manual", ext: "Fans", argument: "60%")))
+        let p = panel()
+        // Calculate's field: * on the 123 keys' #+= page.
+        p.tap(command("calc.eval"), in: "Calculator")
+        let field = try XCTUnwrap(p.filter)
+        func key(_ c: String) throws { try XCTUnwrap(field.rows.joined().first { $0.configuration?.title == c }, c).sendActions(for: .touchUpInside) }
+        field.toggle.sendActions(for: .touchUpInside)
+        try key("6")
+        field.more.sendActions(for: .touchUpInside)
+        try key("*")
+        field.more.sendActions(for: .touchUpInside)
+        try key("7")
+        field.pickFirst()
+        try await waitUntil("the reply") { p.session.running == nil && mac.runs.count == 1 }
+        XCTAssertEqual(mac.runs.last?.argument, "6*7")
+        XCTAssertNotNil(button(cell(p, "Calculator", 1), "Insert"), "Calculate's")
+
+        mac.reply = .success(CommandResult(text: "Screen locked"))
+        p.tap(command("toggles.lock"), in: "System")
+        try XCTUnwrap(button(cell(p, "System", 1), "Run")).sendActions(for: .touchUpInside)
+        try await waitUntil("the reply") { p.session.running == nil && mac.runs.count == 2 }
+        XCTAssertEqual(labels(cell(p, "System", 1)).first?.text, "Screen locked")
+        XCTAssertNil(button(cell(p, "System", 1), "Insert"), "an acknowledgement")
+
+        mac.reply = .success(CommandResult(text: "Note 12 created"))
+        p.selected = { "Groceries" }
+        p.tap(command("acme.notes/new"), in: "Acme Notes")
+        try XCTUnwrap(button(cell(p, "Acme Notes", 1), "Run")).sendActions(for: .touchUpInside)
+        try await waitUntil("the reply") { p.session.running == nil && mac.runs.count == 3 }
+        XCTAssertNotNil(button(cell(p, "Acme Notes", 1), "Insert"), "an extension's")
     }
 
     /// An unreachable Mac, and the Mac's refusals, in red under the row; neither goes into Recent.

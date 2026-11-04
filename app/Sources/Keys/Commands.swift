@@ -20,6 +20,10 @@ final class CommandsSession: ObservableObject {
     static let confirmed: Set<String> = ["toggles.lock", "toggles.displayoff", "openlid.toggle",
                                          "fans.auto", "fans.manual"]
     static func asks(_ id: String) -> Bool { confirmed.contains(id) || id.contains("/") }
+    /// #740: a reply worth typing (the panel's Insert): an extension's, or one taking text that
+    /// doesn't act on the Mac (calc, units, currency). The Mac's other built-ins only say what they
+    /// did ("Screen locked", "Manual · 1800 rpm"), and its reply carries no kind to tell them by.
+    static func inserts(_ c: MacCommand) -> Bool { c.id.contains("/") || c.argument != nil && !confirmed.contains(c.id) }
 
     @Published private(set) var commands: [MacCommand]?   // nil until the first list lands
     @Published private(set) var listError: String?
@@ -430,7 +434,7 @@ final class CommandPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate 
         Self.fill(cell, with: row)
     }
 
-    /// The reply's text big and its detail small, Insert beside a text one; or the error in red.
+    /// The reply's text big and its detail small, Insert beside a text one (`inserts`, #740); or the error in red.
     private func outcome(_ o: CommandsSession.Outcome, _ cell: UITableViewCell) {
         var views: [UIView]
         if let r = o.result {
@@ -440,7 +444,8 @@ final class CommandPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate 
             lines.spacing = 2
             lines.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             views = [lines]
-            if r.text.contains(where: { !$0.isWhitespace }) {
+            if r.text.contains(where: { !$0.isWhitespace }),
+               session.commands?.first(where: { $0.id == o.id }).map(CommandsSession.inserts) == true {   // #740
                 views.append(Self.button("Insert", filled: true) { [weak self] in self?.onInsert?(r.text) })
             }
             cell.accessibilityLabel = [r.text, r.detail].compactMap { $0 }.joined(separator: ", ")
