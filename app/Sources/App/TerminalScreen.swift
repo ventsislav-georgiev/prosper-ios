@@ -915,11 +915,17 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // always on screen — resting at the bottom or riding the keyboard — measured
         // against the bar itself, not the keyboard height, which is relative to the safe
         // area and would leave the pill half an inset low.
+        // Wide: the right fifth of the terminal, never under a fingertip (44 pt). A thin
+        // strip had to be found before it could be used; a fifth is hit without looking.
+        // A multiplier, so rotation and iPad resizing carry it along (#736).
+        let share = thumb.widthAnchor.constraint(equalTo: tv.widthAnchor, multiplier: ScrollThumb.widthShare)
+        share.priority = .required - 1
         NSLayoutConstraint.activate([
             thumb.rightAnchor.constraint(equalTo: view.rightAnchor),
             thumb.topAnchor.constraint(equalTo: tv.topAnchor),
             thumb.bottomAnchor.constraint(equalTo: shortcutBar?.topAnchor ?? view.bottomAnchor),
-            thumb.widthAnchor.constraint(equalToConstant: ScrollThumb.trackWidth),
+            thumb.widthAnchor.constraint(greaterThanOrEqualToConstant: ScrollThumb.minWidth),
+            share,
         ])
         scrollThumb = thumb
     }
@@ -1340,7 +1346,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     // A touch that comes down on the scroll strip scrolls; there the copy-mode pan and the
     // hold stand aside, and a still hold lifted there is no tap either (no keyboard, no
-    // click). The handle press begins only on a handle.
+    // click). The handle press begins only on a handle — and wins even on the strip,
+    // since every other recognizer waits for it to fail. With the strip a fifth of the
+    // width, copy mode and the hold start left of it (#736).
     func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
         if g === handlePress { return handle(at: touchDown ?? g.location(in: tv)) != nil }
         if g === scrollPan { return touchOnStrip }
@@ -1572,7 +1580,8 @@ enum TerminalFont {
     }
 }
 
-/// Auto-hiding jog wheel for scrolling the terminal. A 44 pt strip on the right edge:
+/// Auto-hiding jog wheel for scrolling the terminal. A strip over the right fifth of
+/// the terminal (at least 44 pt), revealed as a faint band with the pill on its edge:
 /// a drag that comes down on it scrolls, shown or hidden, and never starts a text
 /// selection. The strip itself takes no touches (its `pan` lives on the terminal), so
 /// taps and double taps reach the last columns.
@@ -1583,14 +1592,16 @@ enum TerminalFont {
 /// runs in has no scrollback to be positioned in, so there is no position to show
 /// and no absolute target to drag to.
 private final class ScrollThumb: UIView {
-    static let trackWidth: CGFloat = 44
+    /// The strip's share of the terminal's width, and its floor (#736).
+    static let widthShare: CGFloat = 0.2
+    static let minWidth: CGFloat = 44
     private static let pillSize = CGSize(width: 18, height: 88)
     private static let idleDelay: TimeInterval = 1.6
     /// The pill runs the WHOLE strip, and full deflection is the end of it. A short
     /// capped travel put top speed a thumb-length from center, which left no room to
     /// aim: everything past that point felt identical. With the full track the near
-    /// half stays precise (the rate is squared) and dragging to the very top is a
-    /// distinct, deliberate "take me through all of it".
+    /// half stays precise (the rate is cubed) and dragging to the very top is a
+    /// distinct, deliberate "as fast as it goes".
     private static func travel(in bounds: CGRect) -> CGFloat {
         max(0, (bounds.height - pillSize.height) / 2)
     }
@@ -1603,6 +1614,9 @@ private final class ScrollThumb: UIView {
     /// The jog drag. The host adds it to the terminal view and gates it to the strip.
     let pan = UIPanGestureRecognizer()
     private let pill = UIView()
+    /// The zone itself, shown with the pill: a faint full-height band, hairline on its
+    /// left edge. The terminal is always black, so a white tint reads on it (#736).
+    private let band = UIView()
     private var pillY: NSLayoutConstraint!
     private var hideTimer: Timer?
     private var jog: CADisplayLink?
@@ -1614,6 +1628,16 @@ private final class ScrollThumb: UIView {
         super.init(frame: frame)
         pill.alpha = 0
         isUserInteractionEnabled = false
+        band.alpha = 0
+        band.isUserInteractionEnabled = false
+        band.backgroundColor = UIColor.white.withAlphaComponent(0.06)
+        band.frame = bounds
+        band.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        let hairline = UIView(frame: CGRect(x: 0, y: 0, width: 0.5, height: bounds.height))
+        hairline.backgroundColor = UIColor.white.withAlphaComponent(0.18)
+        hairline.autoresizingMask = [.flexibleHeight, .flexibleRightMargin]
+        band.addSubview(hairline)
+        addSubview(band)
         pill.backgroundColor = UIColor.white.withAlphaComponent(0.55)
         pill.layer.cornerRadius = Self.pillSize.width / 2
         pill.isUserInteractionEnabled = false
@@ -1633,7 +1657,7 @@ private final class ScrollThumb: UIView {
 
     func show() {
         hideTimer?.invalidate()
-        if pill.alpha < 1 { UIView.animate(withDuration: 0.15) { self.pill.alpha = 1 } }
+        if pill.alpha < 1 { UIView.animate(withDuration: 0.15) { self.pill.alpha = 1; self.band.alpha = 1 } }
         scheduleHide()
     }
 
@@ -1641,7 +1665,7 @@ private final class ScrollThumb: UIView {
         hideTimer?.invalidate()
         hideTimer = Timer.scheduledTimer(withTimeInterval: Self.idleDelay, repeats: false) { [weak self] _ in
             guard let self, !self.dragging else { return }
-            UIView.animate(withDuration: 0.3) { self.pill.alpha = 0 }
+            UIView.animate(withDuration: 0.3) { self.pill.alpha = 0; self.band.alpha = 0 }
         }
     }
 

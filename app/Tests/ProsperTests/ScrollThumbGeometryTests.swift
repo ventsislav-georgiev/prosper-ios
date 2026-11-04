@@ -16,12 +16,49 @@ final class ScrollThumbGeometryTests: XCTestCase {
         return vc
     }
 
-    /// The strip (44pt wide, right edge) and the pill inside it.
+    /// The strip (right edge) and the pill inside it, in front of the band.
     private func thumbAndPill(_ vc: TerminalHostVC) throws -> (strip: UIView, pill: UIView) {
-        let strip = try XCTUnwrap(vc.view.subviews.first { $0.bounds.width == 44 },
-                                 "no 44pt scroll strip in the hierarchy")
-        let pill = try XCTUnwrap(strip.subviews.first, "the strip has no pill")
+        let strip = try XCTUnwrap(vc.view.subviews.first { "\(type(of: $0))" == "ScrollThumb" },
+                                 "no scroll strip in the hierarchy")
+        let pill = try XCTUnwrap(strip.subviews.last, "the strip has no pill")
         return (strip, pill)
+    }
+
+    /// The zone is the right fifth of the terminal (never under 44 pt) over all of
+    /// the visible terminal, on a phone, an iPad and a narrow split view (#736).
+    func testTheZoneIsTheRightFifthOverTheWholeVisibleTerminal() throws {
+        for (size, width) in [(CGSize(width: 393, height: 852), 78.6),
+                              (CGSize(width: 1032, height: 1376), 206.4),
+                              (CGSize(width: 180, height: 700), 44)] {
+            let vc = makeVC(size)
+            let (strip, _) = try thumbAndPill(vc)
+            let tv = try XCTUnwrap(vc.view.subviews.first { $0 is TerminalView }, "no terminal view")
+            let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar }, "no shortcut bar")
+            XCTAssertEqual(tv.frame.width, size.width, accuracy: 0.5, "precondition: full-width terminal")
+            XCTAssertEqual(strip.frame.width, CGFloat(width), accuracy: 0.5, "at \(size.width) pt wide")
+            XCTAssertEqual(strip.frame.maxX, vc.view.bounds.maxX, accuracy: 0.5)
+            XCTAssertEqual(strip.frame.minY, tv.frame.minY, accuracy: 0.5)
+            XCTAssertEqual(strip.frame.maxY, bar.frame.minY, accuracy: 0.5)
+        }
+    }
+
+    /// Only a drag that comes down inside the zone scrolls: 1 pt past its left edge
+    /// does, 1 pt short of it is the terminal's (copy mode, the hold) — and a handle
+    /// grab still wins inside it, since the jog waits for the handle press (#736).
+    func testOnlyATouchInsideTheZoneScrolls() throws {
+        let vc = makeVC(CGSize(width: 393, height: 852))
+        let (strip, _) = try thumbAndPill(vc)
+        let tv = try XCTUnwrap(vc.view.subviews.first { $0 is TerminalView }, "no terminal view")
+        let scroll = try XCTUnwrap(vc.scrollPan), pan = try XCTUnwrap(vc.selectPan)
+        let press = try XCTUnwrap(vc.handlePress)
+        let y = strip.frame.midY
+        vc.touchDown = tv.convert(CGPoint(x: strip.frame.minX + 1, y: y), from: vc.view)
+        XCTAssertTrue(vc.gestureRecognizerShouldBegin(scroll), "inside the zone a drag scrolls")
+        XCTAssertFalse(vc.gestureRecognizerShouldBegin(pan))
+        vc.touchDown = tv.convert(CGPoint(x: strip.frame.minX - 1, y: y), from: vc.view)
+        XCTAssertFalse(vc.gestureRecognizerShouldBegin(scroll), "left of the zone it doesn't")
+        XCTAssertTrue(vc.gestureRecognizerShouldBegin(pan), "and copy mode starts there")
+        XCTAssertTrue(vc.gestureRecognizer(scroll, shouldRequireFailureOf: press), "a handle grab beats the jog")
     }
 
     /// The strip must start where the black screen starts — the nav bar lives inside the

@@ -154,7 +154,7 @@ final class WordSelectionTests: XCTestCase {
     func testTheScrollStripLetsTapsThroughWhileHidden() async throws {
         let (vc, tv, _, _) = try await makeVC()
         let strip = try XCTUnwrap(vc.view.subviews.first { $0 !== tv && $0.frame.maxX == vc.view.bounds.maxX
-                                                          && $0.frame.width == 44 })
+                                                          && "\(type(of: $0))" == "ScrollThumb" })
         let edge = vc.view.bounds.maxX - 6
         XCTAssertTrue(vc.view.hitTest(CGPoint(x: edge, y: strip.frame.minY + 20), with: nil)?.isDescendant(of: tv) == true,
                       "hidden: a tap on the last column reaches the terminal")

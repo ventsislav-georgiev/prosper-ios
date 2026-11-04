@@ -5,12 +5,15 @@ import Foundation
 /// tests can pin the scroll/selection feel without UIKit.
 enum TerminalMath {
     /// Ignore deflections this small a share of the travel — a resting thumb and a
-    /// fingertip wobble must not scroll.
-    static let jogDeadZone: CGFloat = 0.12
-    /// Scroll rate at full deflection. Sized so pulling the pill to the very top
-    /// crosses a full scrollback in a couple of seconds instead of grinding through
-    /// it — the whole point of holding the wheel at its end.
-    static let jogMaxLinesPerSecond: CGFloat = 600
+    /// fingertip wobble must not scroll. Small, so the wheel answers soon (#736).
+    static let jogDeadZone: CGFloat = 0.08
+    /// Scroll rate just past the dead zone: one line at a time, slow enough to read
+    /// each one go by — fine scrolling is what the wheel is mostly for (#736).
+    static let jogMinLinesPerSecond: CGFloat = 4
+    /// Scroll rate at full deflection. Was 600 ("cross a scrollback in a second"), which
+    /// made every pull past the middle a blur; the wheel is for aiming, so the top speed
+    /// is a brisk read, not a fling (#736).
+    static let jogMaxLinesPerSecond: CGFloat = 120
 
     /// Where a tap goes while a mouse-reporting TUI is running: the keyboard, or a
     /// click forwarded to the app.
@@ -190,8 +193,10 @@ enum TerminalMath {
     /// each direction). Negative = up. The fractional part carries in `remainder`, so
     /// a gentle hold still creeps line by line instead of truncating to nothing.
     ///
-    /// Rate grows with the SQUARE of the deflection: precise near the middle, fast at
-    /// the ends, which is what makes one small handle able to cover both.
+    /// Rate grows with the CUBE of the deflection past the dead zone, from
+    /// `jogMinLinesPerSecond` to `jogMaxLinesPerSecond`: most of the travel is slow
+    /// (about 4 lines/s near the middle, 15 at half, 49 at three quarters) and only
+    /// the far end is fast (#736).
     static func jogLines(offset: CGFloat, travel: CGFloat, elapsed: CGFloat,
                          remainder: inout CGFloat) -> Int {
         guard travel > 0, elapsed > 0 else { return 0 }
@@ -199,7 +204,8 @@ enum TerminalMath {
         let magnitude = abs(deflection)
         guard magnitude > jogDeadZone else { remainder = 0; return 0 }
         let past = (magnitude - jogDeadZone) / (1 - jogDeadZone)
-        let lines = past * past * jogMaxLinesPerSecond * elapsed * (deflection < 0 ? -1 : 1)
+        let rate = jogMinLinesPerSecond + (jogMaxLinesPerSecond - jogMinLinesPerSecond) * past * past * past
+        let lines = rate * elapsed * (deflection < 0 ? -1 : 1)
         let total = lines + remainder
         let whole = Int(total)          // truncates toward zero — right in both directions
         remainder = total - CGFloat(whole)

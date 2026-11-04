@@ -10,8 +10,10 @@ final class TerminalMathTests: XCTestCase {
     func testDeadZoneNeverScrolls() {
         var rem: CGFloat = 0
         XCTAssertEqual(TerminalMath.jogLines(offset: 0, travel: 90, elapsed: 1, remainder: &rem), 0)
-        XCTAssertEqual(TerminalMath.jogLines(offset: 8, travel: 90, elapsed: 1, remainder: &rem), 0)
-        XCTAssertEqual(TerminalMath.jogLines(offset: -8, travel: 90, elapsed: 1, remainder: &rem), 0)
+        XCTAssertEqual(TerminalMath.jogLines(offset: 7, travel: 90, elapsed: 1, remainder: &rem), 0)
+        XCTAssertEqual(TerminalMath.jogLines(offset: -7, travel: 90, elapsed: 1, remainder: &rem), 0)
+        // Just past it (0.08 of the travel, #736) the wheel already answers.
+        XCTAssertGreaterThan(TerminalMath.jogLines(offset: 8, travel: 90, elapsed: 1, remainder: &rem), 0)
     }
 
     /// Direction: pulled up scrolls up (negative), pulled down scrolls down.
@@ -23,7 +25,7 @@ final class TerminalMathTests: XCTestCase {
     }
 
     /// Full deflection runs at the stated top speed, and half a pull is much slower
-    /// than half of it (the square law is what makes one short handle usable).
+    /// than half of it (the cube law keeps most of the travel slow, #736).
     func testSpeedGrowsFasterThanTheDeflection() {
         var rem: CGFloat = 0
         let full = TerminalMath.jogLines(offset: 90, travel: 90, elapsed: 1, remainder: &rem)
@@ -32,6 +34,21 @@ final class TerminalMathTests: XCTestCase {
         let half = TerminalMath.jogLines(offset: 45, travel: 90, elapsed: 1, remainder: &rem)
         XCTAssertLessThan(CGFloat(half), CGFloat(full) / 3)
         XCTAssertGreaterThan(half, 0, "half a pull still has to scroll")
+        XCTAssertTrue((15...30).contains(half), "half a pull runs \(half) lines/s")
+    }
+
+    /// The rate never drops as the pull grows, either way (#736).
+    func testRateIsMonotonic() {
+        var last = 0
+        for step in 0...100 {
+            var rem: CGFloat = 0
+            let down = TerminalMath.jogLines(offset: CGFloat(step), travel: 100, elapsed: 10, remainder: &rem)
+            rem = 0
+            let up = TerminalMath.jogLines(offset: -CGFloat(step), travel: 100, elapsed: 10, remainder: &rem)
+            XCTAssertGreaterThanOrEqual(down, last, "slower at \(step)% than at \(step - 1)%")
+            XCTAssertEqual(up, -down, "up and down differ at \(step)%")
+            last = down
+        }
     }
 
     /// A display-link tick is ~16 ms, far less than one line at gentle deflections —
@@ -39,23 +56,29 @@ final class TerminalMathTests: XCTestCase {
     func testSlowHoldStillCreepsLineByLine() {
         var rem: CGFloat = 0
         var lines = 0
-        // A fifth of the way out, over the dead zone but barely: the near half of the
-        // track is where you aim, so a second of it moves a handful of lines.
-        for _ in 0..<60 { lines += TerminalMath.jogLines(offset: 60, travel: 300,
-                                                        elapsed: 1.0 / 60, remainder: &rem) }
-        XCTAssertGreaterThan(lines, 0, "a one-second gentle hold scrolled nothing")
-        XCTAssertLessThan(lines, 25, "gentle hold should creep, not race")
+        // Just past the dead zone: one line at a time, a few a second — slow enough
+        // to read each line go by (#736).
+        for _ in 0..<60 {
+            let tick = TerminalMath.jogLines(offset: 30, travel: 300, elapsed: 1.0 / 60, remainder: &rem)
+            XCTAssertLessThanOrEqual(tick, 1, "a gentle hold moves one line at a time")
+            lines += tick
+        }
+        XCTAssertTrue((2...6).contains(lines), "a one-second gentle hold moved \(lines) lines")
     }
 
-    /// Held at the end of the track, SwiftTerm's whole 500-line scrollback goes by in
-    /// about a second. That is the reason the wheel reaches so far: pulling to the top
-    /// means "take me through all of it", not "scroll a bit faster".
-    func testFullPullCrossesAScrollbackInAboutASecond() {
+    /// The wheel is for fine scrolling: even held at the end of the track it reads
+    /// as a brisk scroll, not a blur — at most 120 lines a second, either way (#736).
+    func testFullPullIsCappedAndSymmetric() {
+        var up = 0, down = 0
         var rem: CGFloat = 0
-        var lines = 0
-        for _ in 0..<60 { lines += TerminalMath.jogLines(offset: -300, travel: 300,
-                                                        elapsed: 1.0 / 60, remainder: &rem) }
-        XCTAssertLessThan(lines, -500, "one second at full pull covered only \(-lines) lines")
+        for _ in 0..<60 { up += TerminalMath.jogLines(offset: -300, travel: 300,
+                                                     elapsed: 1.0 / 60, remainder: &rem) }
+        rem = 0
+        for _ in 0..<60 { down += TerminalMath.jogLines(offset: 300, travel: 300,
+                                                       elapsed: 1.0 / 60, remainder: &rem) }
+        XCTAssertLessThanOrEqual(down, 120, "one second at full pull covered \(down) lines")
+        XCTAssertGreaterThan(down, 60, "the far end must still be distinctly fast")
+        XCTAssertEqual(up, -down)
     }
 
     // MARK: tapRaisesKeyboard — where a tap goes under a mouse-mode TUI
