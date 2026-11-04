@@ -268,6 +268,8 @@ final class CommandPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate 
     /// A run refused before the Mac: its text over the Mac's cap.
     private(set) var refusal: CommandsSession.Outcome?
     private var watch: AnyCancellable?
+    /// The row under the tapped command as last drawn: a new one is scrolled to (#741).
+    private var under: Row?
     /// Over the note while an empty list is fetched (`CommandsSession.refresh`).
     let spinner = UIActivityIndicatorView(style: .medium)
 
@@ -310,6 +312,18 @@ final class CommandPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate 
         if fetching { spinner.startAnimating() } else { spinner.stopAnimating() }
         showSearch()
         table.reloadData()
+        // #741: a Run or a reply new under the tapped command, the reply a turn after its run, clear of
+        // the card's bottom and the keys' pad (`contentInset`, `SuggestionBar.showCommands`); else the list stays.
+        let s = sections.firstIndex { $0.title == focus?.section }
+        let row = s.flatMap { s in sections[s].rows.firstIndex { if case .command = $0 { false } else { true } }.map { IndexPath(row: $0, section: s) } }
+        let new = row.map { sections[$0.section].rows[$0.row] }
+        if let row, new != under {
+            for _ in 0..<2 {   // the second on the row's own height, the first scrolled on its estimate
+                layoutIfNeeded()
+                table.scrollToRow(at: row, at: .none, animated: false)
+            }
+        }
+        under = new
     }
 
     /// `c`'s row, and under it where it was tapped its Run or its reply.
@@ -362,9 +376,6 @@ final class CommandPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate 
             session.run(c, confirmed: confirmed)
         }
         reload()
-        if let row = indexPath(c, in: focus?.section ?? ""), sections[row.section].rows.count > row.row + 1 {
-            table.scrollToRow(at: IndexPath(row: row.row + 1, section: row.section), at: .none, animated: false)
-        }
     }
 
     func cancel() {

@@ -1162,6 +1162,7 @@ final class SuggestionBar: UIView {
         }
         list?.selected = { [weak self] in (self?.keyboard?.target as? UITextDocumentProxy)?.selectedText }
         list?.onInsert = { [weak self] in self?.insert(result: $0) }
+        list?.table.contentInset.bottom = keyboard?.bottomInset ?? 0   // #741: as Appearance's (#649)
         cover(list)
     }
 

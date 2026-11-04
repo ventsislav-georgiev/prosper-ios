@@ -538,6 +538,56 @@ final class KeyboardCommandsTests: XCTestCase {
 
     // MARK: - Render
 
+    /// #741: in a list taller than the card, the last command's Run row, then its reply landing a
+    /// turn later, scroll clear of the card's bottom and the keys' pad, their buttons hittable there.
+    func testTheRowUnderTheLastCommandScrollsIntoView() async throws {
+        let long = (1...20).map { MacCommand(id: "acme.notes/c\($0)", title: "Note \($0)", ext: "Acme Notes") }
+        mac.list = long
+        mac.hold = true
+        store.save(.init(machine: Self.studio, commands: long))
+        let (kb, bar, _, view) = rig(store: store)
+        kb.bottomInset = TerminalKeyboard.extensionBottomInset
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.isHidden = false
+        defer { window.isHidden = true }
+        let height = try XCTUnwrap(kb.constraints.first { $0.firstItem === kb && $0.firstAttribute == .height }).constant
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: SuggestionBar.height + height)
+        view.frame = window.bounds
+        window.addSubview(view)
+        bar.showCommands(true)
+        let p = try XCTUnwrap(bar.commandsPanel)
+        window.layoutIfNeeded()
+        XCTAssertEqual(p.table.contentInset.bottom, TerminalKeyboard.extensionBottomInset, "the keys' pad")
+        XCTAssertGreaterThan(p.table.contentSize.height, p.table.bounds.height, "a list that scrolls")
+        let s = try XCTUnwrap(p.sections.firstIndex { $0.title == "Acme Notes" })
+        let last = IndexPath(row: p.sections[s].rows.count - 1, section: s)
+        p.tableView(p.table, didSelectRowAt: last)
+        let under = IndexPath(row: last.row + 1, section: s)
+        func clear(_ title: String) throws {
+            window.layoutIfNeeded()
+            let cell = try XCTUnwrap(p.table.cellForRow(at: under), "\(title)'s row drawn")
+            var card = p.convert(p.table.bounds, from: p.table)
+            card.size.height -= p.table.adjustedContentInset.bottom
+            XCTAssertTrue(card.insetBy(dx: 0, dy: -0.01).contains(p.convert(cell.bounds, from: cell)), "\(title)'s row \(p.convert(cell.bounds, from: cell)) within the card \(card), above the pad")   // a rounding's slack
+            let b = try XCTUnwrap(button(cell, title))
+            let hit = p.hitTest(p.convert(CGPoint(x: b.bounds.midX, y: b.bounds.midY), from: b), with: nil)
+            XCTAssertTrue(hit?.isDescendant(of: b) == true, "\(title) hittable")
+        }
+        XCTAssertEqual(p.sections[s].rows[under.row], .confirm(long[19]))
+        try clear("Run")
+        p.go(long[19], confirmed: true)
+        try await waitUntil("the run sent") { mac.runs.count == 1 }
+        mac.release()
+        try await waitUntil("the reply") { p.session.outcome != nil }
+        XCTAssertEqual(p.sections[s].rows[under.row], p.session.outcome.map(Row.outcome))
+        try clear("Insert")
+        let offset = p.table.contentOffset
+        p.reload()
+        XCTAssertEqual(p.table.contentOffset, offset, "nothing new, no jump")
+        withExtendedLifetime((kb, view)) {}
+    }
+
     /// Render check, run by hand: `TEST_RUNNER_CMD_SNAPSHOT_DIR=<dir>` saves the panel, portrait, as
     /// the extension rigs the keyboard, with Recent, Run's row and a reply.
     func testSnapshot() async throws {
