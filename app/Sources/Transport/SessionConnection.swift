@@ -54,6 +54,10 @@ final class SessionConnection: ObservableObject {
     /// A paste's frames so far, waiting for its closer (`send`).
     private var heldPaste: [UInt8]?
     private var pasteWait: Task<Void, Never>?
+    /// #771: detached in the background (`background`); the loop waits at `unpause`.
+    private var paused = false
+    private var unpause: CheckedContinuation<Void, Never>?
+    private var detachTimer: Task<Void, Never>?
 
     /// ponytail: 64 KB of keystrokes/paste held across a drop, counted as framed bytes —
     /// a bracketed paste's 12-byte wrapper included, so 65524 bytes of pasted text. A
@@ -402,8 +406,44 @@ final class SessionConnection: ObservableObject {
     /// just pressed redraw.
     static let snapshotDeadline: Duration = .milliseconds(2500)
 
+    /// #771: the app went to the background. Past `grace` the stream detaches, so output
+    /// nobody sees isn't streamed and parsed; the dch session keeps running. A pause, not a
+    /// drop: no backoff, no state change, input queues as it does across a drop.
+    func background(grace: Duration) {
+        detachTimer?.cancel()
+        guard grace > .zero else { return pause() }
+        detachTimer = Task { [weak self] in
+            try? await Task.sleep(for: grace)
+            if !Task.isCancelled { self?.pause() }
+        }
+    }
+
+    /// Back in the foreground: a pending detach is off; a detached stream reattaches through
+    /// the reconnect path (resize, redraw, dch's mirror), and the queue flushes once it's live.
+    func foreground() {
+        detachTimer?.cancel()
+        detachTimer = nil
+        guard paused else { return }
+        paused = false
+        unpause?.resume()
+        unpause = nil
+    }
+
+    private func pause() {
+        guard !paused, !userClosed else { return }
+        paused = true
+        snapshotWait?.cancel()
+        liveFallback?.cancel()
+        live = false
+        stream?.close()   // detach only: the server keeps the session
+        stream = nil      // tells the loop this end was ours
+    }
+
     func close() {
         userClosed = true
+        detachTimer?.cancel()
+        unpause?.resume()
+        unpause = nil
         snapshotWait?.cancel()
         loop?.cancel()
         liveFallback?.cancel()
@@ -418,10 +458,12 @@ final class SessionConnection: ObservableObject {
     private func runLoop() async {
         var attempt = 0
         while !userClosed {
+            if paused { await withCheckedContinuation { unpause = $0 }; continue }
             do {
                 let s = try await transport.attach(name: session.name, cols: cols, rows: rows)
                 // Closed while the attach was in flight: don't install a stream nobody owns.
                 if userClosed { s.close(); return }
+                if paused { s.close(); continue }
                 s.onScreen = { [weak self] screen in
                     Task { @MainActor in self?.onScreen?(screen) }
                 }
@@ -453,16 +495,20 @@ final class SessionConnection: ObservableObject {
                     onBytes?(chunk)
                     if !live { goLive(s) }
                 }
-                // Stream ended. Clean exit / user close → done; otherwise the link dropped.
+                // Stream ended. Clean exit / user close → done; `pause` → reattach on resume
+                // (it may have come already); otherwise the link dropped.
+                let detached = stream !== s
                 stream = nil
                 live = false
                 liveFallback?.cancel()
                 if s.exited { state = .ended; clearOutbox(); return }
                 if userClosed { return }
+                if detached { continue }
             } catch {
                 stream = nil
                 live = false
                 if userClosed { return }
+                if paused { continue }
             }
             // Reconnect path.
             attempt += 1

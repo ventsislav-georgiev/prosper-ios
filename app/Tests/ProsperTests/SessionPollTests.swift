@@ -50,6 +50,13 @@ final class SessionPollTests: XCTestCase {
         XCTAssertGreaterThan(SessionPoll.failureBackoff, SessionPoll.fastest(.live) * 2)
     }
 
+    /// #771: Real-time rides out a quick app switch; Battery saver detaches at once.
+    func testDetachGrace() {
+        XCTAssertEqual(UpdateMode.live.detachGrace, .seconds(30))
+        XCTAssertEqual(UpdateMode.saver.detachGrace, .zero)
+        XCTAssertEqual(UpdateMode.resolve(stored: "live", lowPower: true).detachGrace, .zero, "Low Power Mode is saver")
+    }
+
     func testStateStyleParsing() {
         XCTAssertEqual(SessionStateStyle("blocked"), .blocked)
         XCTAssertEqual(SessionStateStyle("done"), .done)

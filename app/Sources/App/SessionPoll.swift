@@ -17,6 +17,10 @@ enum UpdateMode: String, CaseIterable, Identifiable {
     static var effective: UpdateMode {
         resolve(stored: UserDefaults.standard.string(forKey: key), lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
     }
+
+    /// #771: how long an open terminal keeps streaming in the background before it detaches.
+    /// Real-time rides out a quick app switch; Battery saver stops parsing output nobody sees.
+    var detachGrace: Duration { self == .live ? .seconds(30) : .zero }
 }
 
 /// The session list's poll (#764): fast while the list moves, slower while it doesn't.

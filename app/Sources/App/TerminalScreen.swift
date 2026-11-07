@@ -409,7 +409,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
                        name: UIApplication.didEnterBackgroundNotification, object: nil)
     }
 
-    @objc private func onBackground() { dictation?.disappear() }
+    @objc private func onBackground() {
+        dictation?.disappear()
+        conn.background(grace: UpdateMode.effective.detachGrace)   // #771: battery
+    }
 
     /// OQ-13 (a): a `.failed` session takes no input until retried — the keyboard is
     /// not silently eating keys. `send` dropping while failed stays as the backstop.
@@ -1268,7 +1271,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
     }
 
-    @objc private func onForeground() { forceRedraw() }
+    @objc private func onForeground() {
+        conn.foreground()   // #771: reattach if the background grace detached it
+        forceRedraw()
+    }
 
     /// Drag over the text = copy mode. The whole buffer (scrollback and screen) opens
     /// in a native text view, scrolled to the bottom, so selecting is the system's —

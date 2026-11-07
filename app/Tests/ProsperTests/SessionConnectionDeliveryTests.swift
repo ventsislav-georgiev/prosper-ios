@@ -1062,6 +1062,88 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         try await waitUntil("fallback flush") { t.streams[0].text == "q" }
     }
 
+    // MARK: - #771 background detach
+
+    /// Past the grace the stream detaches; nothing reattaches until the foreground, which
+    /// reattaches once. A hand-back from the detached stream and keys typed meanwhile go
+    /// out once, in order, and the state never shows a reconnect.
+    func testBackgroundDetachesAndForegroundReattachesOnce() async throws {
+        let (conn, t) = make()
+        var states: [ConnectionState] = []
+        let sub = conn.$state.sink { states.append($0) }
+        defer { sub.cancel() }
+        let s1 = try await startLive(conn, t)
+        conn.send(Array("p".utf8)[...])
+        XCTAssertEqual(s1.text, "p")
+
+        conn.background(grace: .zero)
+        XCTAssertTrue(s1.closed, "battery saver detaches right away")
+        s1.bounce(.bytes(Array("p".utf8)))   // the close couldn't put it on the wire
+        conn.send(Array("x".utf8)[...])
+        try await waitUntil("hand-back queued") { conn.queuedByteCount == 2 }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(t.calls, 1, "a pause is not a drop: no reattach while in the background")
+
+        conn.foreground()
+        try await waitUntil("reattach") { t.streams.count == 2 }
+        let s2 = t.streams[1]
+        s2.emit("$ ")
+        try await waitUntil("flush") { s2.text == "px" }
+        conn.foreground()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(t.calls, 2, "one attach per resume")
+        XCTAssertEqual(s2.text, "px")
+        XCTAssertEqual(conn.queuedByteCount, 0)
+        XCTAssertTrue(states.allSatisfy { $0 == .connecting || $0 == .connected },
+                      "no Reconnecting chip for a deliberate pause: \(states)")
+    }
+
+    /// A return within the grace keeps the stream; the grace running out detaches it.
+    func testForegroundWithinTheGraceKeepsTheStream() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        conn.background(grace: .milliseconds(150))
+        conn.foreground()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertFalse(s1.closed)
+        conn.send(Array("a".utf8)[...])
+        XCTAssertEqual(s1.text, "a")
+
+        conn.background(grace: .milliseconds(100))
+        XCTAssertFalse(s1.closed, "not before the grace")
+        try await waitUntil("detached after the grace") { s1.closed }
+        XCTAssertEqual(t.calls, 1)
+    }
+
+    /// Backgrounded while a reattach was in flight: the attach that lands is let go, and
+    /// the foreground attaches again.
+    func testBackgroundDuringAnAttachDropsItAndWaits() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        try await stall(s1, conn, t)
+        conn.background(grace: .zero)
+        t.release()
+        try await waitUntil("in-flight attach let go") { t.streams.count == 2 && t.streams[1].closed }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(t.calls, 2)
+
+        conn.foreground()
+        let s3 = try await reattachLive(conn, t, index: 2)
+        try await waitUntil("connected") { conn.state == .connected }
+        conn.send(Array("a".utf8)[...])
+        try await waitUntil("live") { s3.text == "a" }
+    }
+
+    func testCloseWhileDetachedStaysClosed() async throws {
+        let (conn, t) = make()
+        _ = try await startLive(conn, t)
+        conn.background(grace: .zero)
+        conn.close()
+        conn.foreground()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(t.calls, 1)
+    }
+
     func testDemoSessionStillEchoesTyping() async throws {
         let conn = SessionConnection(transport: DemoTransport(),
                                      session: DchSession(name: "demo", alias: nil))
