@@ -28,12 +28,24 @@ jobs:
           require 'spaceship'
           Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.from_json_file(ENV['KEY'])
           app = Spaceship::ConnectAPI::App.find('eu.illegible.prosperios')
-          puts "APP: #{app.name} (#{app.id})"
+          # No ASC ids in the log (public repo → public Actions logs).
+          puts "APP: #{app.name}"
 
           # Builds (so you know if one is done processing and selectable)
           builds = Spaceship::ConnectAPI::Build.all(app_id: app.id, sort: '-uploadedDate', limit: 5)
           puts "\n== BUILDS (latest 5) =="
           builds.each { |b| puts "  v#{b.version} state=#{b.processing_state} expired=#{b.expired}" }
+
+          # Age rating hangs off appInfo since ASC API 1.3; the appStoreVersion
+          # call raises, which used to read as a false NONE.
+          puts "\n== AGE RATING =="
+          begin
+            info = app.fetch_edit_app_info || app.fetch_latest_app_info
+            ar = info&.fetch_age_rating_declaration
+            puts(ar ? "  declaration present (questionnaire done)" : "  NONE — fill questionnaire")
+          rescue => e
+            puts "  unknown (#{e.class})"
+          end
 
           v = app.get_edit_app_store_version
           unless v
@@ -60,10 +72,6 @@ jobs:
             puts "  screenshots:  #{total} across #{scr.size} sets"
           end
 
-          ar = v.fetch_age_rating_declaration rescue nil
-          puts "\n== AGE RATING =="
-          puts(ar ? "  declaration present (questionnaire likely done)" : "  NONE — fill questionnaire")
-
           rd = v.fetch_app_store_review_detail rescue nil
           # Never print the actual contact (public repo → public Actions logs).
           puts "\n== REVIEW CONTACT =="
@@ -72,3 +80,208 @@ jobs:
           puts(ok ? "  OK (all fields set)" : "  MISSING")
           RUBY
           KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/status.rb
+      # Crash data, read-only except for one idempotent analytics report request.
+      # Public logs: counts, versions, devices, OS, exception and our own frames
+      # only — never tester fields, comments, ids or file paths.
+      - name: Crashes
+        if: always()
+        run: |
+          cat > /tmp/crashes.rb <<'RUBY'
+          require 'json'
+          require 'net/http'
+          require 'stringio'
+          require 'zlib'
+
+          OURS = /\AProsper/ # app, keyboards, widgets, share extension
+
+          # Strip source paths (they carry the build machine's user name).
+          def clean(sym) = sym.to_s.gsub(%r{\(?/\S*/([^/\s)]+)\)?}, '(\1)').strip[0, 120]
+
+          # Summarize one crash log (.ips JSON or classic text) to a few safe fields.
+          def summarize_crash(text)
+            text = text.to_s
+            lines = text.lines
+            if lines.first.to_s.strip.start_with?('{')
+              head = JSON.parse(lines.first) rescue {}
+              body = JSON.parse(lines.drop(1).join) rescue {}
+              ex = body['exception'] || {}
+              imgs = body['usedImages'] || []
+              th = (body['threads'] || []).find { |t| t['triggered'] } ||
+                   (body['threads'] || [])[body['faultingThread'].to_i] || {}
+              frames = (th['frames'] || []).map do |f|
+                [imgs.dig(f['imageIndex'].to_i, 'name').to_s,
+                 [f['symbol'], f['sourceFile'] && "(#{File.basename(f['sourceFile'])}:#{f['sourceLine']})"].compact.join(' ')]
+              end
+              term = body.dig('termination', 'indicator') || body.dig('termination', 'reasons')&.first
+              { version: [head['app_version'], head['build_version'] && "(#{head['build_version']})"].compact.join(' '),
+                exception: [ex['type'], ex['signal'] && "(#{ex['signal']})"].compact.join(' '),
+                reason: term, frames: frames }
+            else
+              field = ->(k) { text[/^#{k}:\s*(.+)$/, 1]&.strip }
+              n = (field.('Triggered by Thread') || field.('Crashed Thread')).to_i
+              blk = text[/^Thread #{n} Crashed:.*?\n(.*?)(?:\n\s*\n|\z)/m, 1].to_s
+              frames = blk.lines.filter_map { |l| m = l.match(/^\d+\s+(\S+)\s+0x\h+\s+(.*)$/) and [m[1], m[2]] }
+              { version: field.('Version'), exception: field.('Exception Type'),
+                reason: field.('Termination Reason'), frames: frames }
+            end.then do |c|
+              ours = c[:frames].select { |img, _| img =~ OURS }.first(3)
+              top = c[:frames].first(ours.empty? ? 2 : 1).reject { |f| ours.include?(f) }
+              c.merge(exception: c[:exception].to_s.empty? ? 'unknown' : c[:exception],
+                      frames: (top + ours).map { |img, sym| "#{img}  #{clean(sym)}" })
+            end
+          end
+
+          # Group "App Crashes" TSV rows; header names matched loosely.
+          def summarize_tsv(tsv)
+            rows = tsv.lines.map { |l| l.chomp.split("\t") }
+            head = rows.shift or return nil
+            col = ->(re) { head.index { |h| h =~ re } }
+            ci = col.(/^crashes$/i) || col.(/crash/i) or return nil
+            groups = { 'version' => col.(/app version/i), 'device' => col.(/^device/i),
+                       'os' => col.(/platform version|os version/i) }
+            total = 0
+            by = Hash.new { |h, k| h[k] = Hash.new(0) }
+            rows.each do |r|
+              n = r[ci].to_i; total += n
+              groups.each { |g, i| by[g][i ? r[i] : '?'] += n }
+            end
+            [total, by]
+          end
+
+          return unless $PROGRAM_NAME == __FILE__
+
+          require 'spaceship'
+          TOKEN = Spaceship::ConnectAPI::Token.from_json_file(ENV['KEY'])
+          Spaceship::ConnectAPI.token = TOKEN
+          app = Spaceship::ConnectAPI::App.find('eu.illegible.prosperios')
+          API = 'https://api.appstoreconnect.apple.com'
+
+          class HTTPFail < StandardError
+            attr_reader :status
+            def initialize(status)
+              @status = status
+              super("HTTP #{status}")
+            end
+          end
+
+          def asc(path, post: nil)
+            TOKEN.refresh! if TOKEN.expired?
+            uri = URI(path.start_with?('http') ? path : API + path)
+            req = post ? Net::HTTP::Post.new(uri) : Net::HTTP::Get.new(uri)
+            req['Authorization'] = "Bearer #{TOKEN.text}"
+            req['Content-Type'] = 'application/json'
+            req.body = post.to_json if post
+            res = Net::HTTP.start(uri.host, uri.port, use_ssl: true) { |h| h.request(req) }
+            raise HTTPFail.new(res.code.to_i) unless res.is_a?(Net::HTTPSuccess)
+            JSON.parse(res.body)
+          end
+
+          # Follow links.next, capped.
+          def asc_all(path, pages: 5)
+            out = []
+            pages.times do
+              break unless path
+              r = asc(path); out.concat(r['data'] || []); path = r.dig('links', 'next')
+            end
+            out
+          end
+
+          # Pre-signed segment URL: no auth header.
+          def fetch_segment(url, hops = 3)
+            res = Net::HTTP.get_response(URI(url))
+            return fetch_segment(res['location'], hops - 1) if res.is_a?(Net::HTTPRedirection) && hops > 0
+            raise HTTPFail.new(res.code.to_i) unless res.is_a?(Net::HTTPSuccess)
+            body = res.body
+            body.byteslice(0, 2) == "\x1f\x8b".b ? Zlib::GzipReader.new(StringIO.new(body)).read : body
+          end
+
+          def soft(label)
+            yield
+          rescue HTTPFail => e
+            puts(e.status.between?(401, 403) ? "#{label}: API key lacks access (HTTP #{e.status}; Analytics Reports need Admin)" :
+                                               "#{label}: failed (HTTPFail, HTTP #{e.status})")
+          rescue => e
+            puts "#{label}: failed (#{e.class})"
+          end
+
+          top = ->(h, n = 5) { h.sort_by { |k, c| [-c, k.to_s] }.first(n).map { |k, c| "#{k}=#{c}" }.join(', ') }
+
+          # 1. App Store crashes via the Analytics Reports API.
+          puts "\n== APP STORE CRASHES =="
+          soft('App Store crashes') do
+            reqs = asc_all("/v1/apps/#{app.id}/analyticsReportRequests")
+            req = reqs.find { |r| r.dig('attributes', 'accessType') == 'ONGOING' && !r.dig('attributes', 'stoppedDueToInactivity') }
+            since = 'earlier'
+            unless req
+              begin
+                req = asc('/v1/analyticsReportRequests', post: { data: {
+                  type: 'analyticsReportRequests', attributes: { accessType: 'ONGOING' },
+                  relationships: { app: { data: { type: 'apps', id: app.id } } } } })['data']
+              rescue HTTPFail => e
+                raise unless e.status.between?(401, 403)
+                puts "App Store crashes: API key lacks access to Analytics Reports (needs Admin)"; next
+              end
+              since = Time.now.utc.strftime('%F')
+              puts "  requested ONGOING analytics reports today"
+            end
+            reports = asc_all("/v1/analyticsReportRequests/#{req['id']}/reports?filter[category]=APP_USAGE&limit=200")
+                      .select { |r| r.dig('attributes', 'name').to_s =~ /\AApp Crashes( Expanded)?\z/i }
+            shown = 0
+            reports.each do |rep|
+              insts = asc_all("/v1/analyticsReports/#{rep['id']}/instances?filter[granularity]=DAILY&limit=200", pages: 2)
+                      .sort_by { |i| i.dig('attributes', 'processingDate').to_s }.last(7)
+              next if insts.empty?
+              total = 0
+              by = Hash.new { |h, k| h[k] = Hash.new(0) }
+              insts.each do |inst|
+                asc_all("/v1/analyticsReportInstances/#{inst['id']}/segments", pages: 2).each do |seg|
+                  t, b = summarize_tsv(fetch_segment(seg.dig('attributes', 'url')))
+                  next unless t
+                  total += t
+                  b.each { |g, h| h.each { |k, c| by[g][k] += c } }
+                end
+              end
+              dates = insts.map { |i| i.dig('attributes', 'processingDate') }
+              puts "  #{rep.dig('attributes', 'name')} (#{dates.first}..#{dates.last}, #{insts.size} daily): #{total} crashes"
+              %w[version device os].each { |g| puts "    by #{g}: #{top.(by[g])}" unless by[g].empty? }
+              shown += 1
+            end
+            puts "App Store crashes: no data yet (report requested #{since}; data appears 1–2 days after release)" if shown.zero?
+          end
+
+          # 2. TestFlight crash submissions.
+          puts "\n== TESTFLIGHT CRASHES =="
+          soft('TestFlight crashes') do
+            subs = []
+            builds = {}
+            path = "/v1/apps/#{app.id}/betaFeedbackCrashSubmissions?sort=-createdDate&limit=50&include=build" \
+                   "&fields[betaFeedbackCrashSubmissions]=createdDate,deviceModel,osVersion,build&fields[builds]=version"
+            5.times do
+              break unless path
+              r = asc(path)
+              subs.concat(r['data'] || [])
+              (r['included'] || []).each { |i| builds[i['id']] = i.dig('attributes', 'version') if i['type'] == 'builds' }
+              path = r.dig('links', 'next')
+            end
+            if subs.empty?
+              puts "  none"; next
+            end
+            build_of = ->(s) { builds[s.dig('relationships', 'build', 'data', 'id')] || '?' }
+            puts "  total (newest #{subs.size}): by build: #{top.(subs.map(&build_of).tally, 8)}"
+            exc = Hash.new(0)
+            subs.first(10).each do |s|
+              a = s['attributes'] || {}
+              c = begin
+                summarize_crash(asc("/v1/betaFeedbackCrashSubmissions/#{s['id']}/crashLog").dig('data', 'attributes', 'logText'))
+              rescue HTTPFail => e
+                { exception: "log unavailable (HTTP #{e.status})", frames: [] }
+              end
+              exc[c[:exception]] += 1
+              puts "  #{a['createdDate'].to_s[0, 16]}  #{c[:version] || "build #{build_of.(s)}"}  #{a['deviceModel']}  iOS #{a['osVersion']}"
+              puts "    #{c[:exception]}#{c[:reason] ? " — #{clean(c[:reason])}" : ''}"
+              c[:frames].each { |f| puts "      #{f}" }
+            end
+            puts "  newest #{[subs.size, 10].min} by exception: #{top.(exc, 8)}"
+          end
+          RUBY
+          KEY="$RUNNER_TEMP/asc_key.json" ruby /tmp/crashes.rb
