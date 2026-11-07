@@ -117,6 +117,10 @@ protocol SessionTransport: AnyObject {
     func putPhoneSnippets(_ body: Data) async throws -> (count: Int, hash: String)
     /// #761: this side's sidekick pattern out, the Mac's winner of the two back.
     func sidekickSync(_ mine: SidekickValue) async throws -> SidekickValue
+    /// #775: the Mac's 0x2e watch stream, on a connection of its own, as `device`. Finishes when
+    /// the Mac closes it cleanly; throws `.server` on its error 0x13, anything else when it died.
+    /// Ending the consumer closes the connection.
+    func watch(device: String?) -> AsyncThrowingStream<WatchEvent, Error>
 }
 
 /// #590: the demo and the test stubs have no dch behind them. Their machine lists no
@@ -146,6 +150,9 @@ extension SessionTransport {
     func runCommand(id: String, argument: String?) async throws -> CommandResult { throw TransportError.server("Not supported here.") }
     func putPhoneSnippets(_ body: Data) async throws -> (count: Int, hash: String) { throw TransportError.server("Not supported here.") }
     func sidekickSync(_ mine: SidekickValue) async throws -> SidekickValue { throw TransportError.server("Not supported here.") }
+    func watch(device: String?) -> AsyncThrowingStream<WatchEvent, Error> {
+        AsyncThrowingStream { $0.finish(throwing: TransportError.server("Not supported here.")) }
+    }
 }
 
 /// #590: a verb the Mac's server answers beyond the base frames. machineInfo lists them in
@@ -160,6 +167,7 @@ enum SessionVerb: String {
     case clipboardMaxSide = "clipboard_max_side"   // #712: clipboardItem's "max_side"; only together with clipboard
     case snippetsPut = "snippets_put"   // #730: putPhoneSnippets 0x2c, the phone's own snippets to the Mac
     case sidekick      // #761: sidekickSync 0x2d; an older Mac never answers it
+    case watch         // #775: the 0x2e list stream; only while the Mac's Agent Island lists its sessions
 
     /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
     /// clipboard_max_side without clipboard is none either.
@@ -175,6 +183,14 @@ enum SessionVerb: String {
 struct SidekickValue: Equatable {
     var pattern: String
     var updated: Int64
+}
+
+/// #775: one frame of the 0x2e watch stream: the list (0x11), the Mac's sidekick pattern
+/// (ok `{"sidekick"}`), or its 25 s heartbeat (ok `{}`).
+enum WatchEvent: Equatable {
+    case list([DchSession])
+    case sidekick(SidekickValue)
+    case heartbeat
 }
 
 /// #614: libraryResp 0x1c. The etag is opaque: kept and sent back. A file is nil when the Mac

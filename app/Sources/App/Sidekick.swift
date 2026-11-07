@@ -188,15 +188,27 @@ enum SidekickSync {
     private static var pending: Task<Void, Never>?
 
     /// The handshake's ops: a Mac without "sidekick" never answers 0x2d, so it gets none.
+    /// #775: one that lists "watch" pushes its pattern on the stream, so in Real-time connect
+    /// and foreground send none; an edit still does.
     static func offer(_ ops: Set<SessionVerb>, over t: SessionTransport) {
         mac = ops.contains(.sidekick) ? t : nil
+        watched = ops.contains(.watch)
         _ = foreground
-        kick()
+        if !streamed { kick() }
     }
+
+    private(set) static var watched = false
+    private static var streamed: Bool { watched && UpdateMode.effective == .live }
 
     private static let foreground: NSObjectProtocol = NotificationCenter.default.addObserver(
         forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
-        MainActor.assumeIsolated { kick() }
+        MainActor.assumeIsolated { if !streamed { kick() } }
+    }
+
+    /// #775: the Mac's pattern off the watch stream: adopted, unless ours is newer, which only
+    /// a 0x2d takes to the Mac.
+    static func pushed(_ v: SidekickValue) {
+        if local().updated > v.updated { kick() } else { adopt(v) }
     }
 
     /// A sync, unless one runs: then one more after it.

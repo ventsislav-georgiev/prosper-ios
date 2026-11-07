@@ -48,3 +48,50 @@ enum SessionPoll {
         max(wait ?? 0, failureBackoff)
     }
 }
+
+/// #775: the list the Mac pushes over its 0x2e watch stream, instead of the poll, while it lists
+/// "watch" and the mode is Real-time.
+@MainActor
+enum SessionWatch {
+    /// The stream, not the poll: Battery saver and Low Power Mode keep the poll.
+    static func wanted(_ ops: Set<SessionVerb>, _ mode: UpdateMode) -> Bool { mode == .live && ops.contains(.watch) }
+
+    /// A refused stream waits this long for the fresh 0x08 that may offer it again.
+    static let retry: TimeInterval = 60
+    /// The wait before reopening a dead stream, doubling to the poll's failure backoff. Settable for tests.
+    static var reopen: TimeInterval = 1
+
+    /// The same stable per-install id the snippets push sends; `{}` before first unlock.
+    static var device: String? { SnippetPush.currentDevice()?.id }
+
+    /// Applies each list, adopts each sidekick pattern, and reopens a dead stream (silence, a
+    /// dropped socket, an unreachable Mac) with backoff, never while `ready` is false. True when
+    /// the Mac refused it (error 0x13) or closed it cleanly: the caller polls. False once cancelled.
+    static func run(_ t: SessionTransport, device: String?, ready: () -> Bool = { true },
+                    apply: ([DchSession]) -> Void) async -> Bool {
+        var wait: TimeInterval = 0
+        while !Task.isCancelled {
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            guard !Task.isCancelled else { return false }
+            let backoff = min(max(wait * 2, reopen), SessionPoll.failureBackoff)
+            guard ready() else { wait = backoff; continue }
+            var heard = false
+            do {
+                for try await e in t.watch(device: device) {
+                    heard = true
+                    switch e {
+                    case .list(let list): apply(list)
+                    case .sidekick(let v): SidekickSync.pushed(v)
+                    case .heartbeat: break
+                    }
+                }
+                return !Task.isCancelled
+            } catch TransportError.server {
+                return true
+            } catch {
+                wait = heard ? reopen : backoff
+            }
+        }
+        return false
+    }
+}

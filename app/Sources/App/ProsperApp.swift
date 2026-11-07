@@ -358,6 +358,7 @@ struct SessionListView: View {
     @State private var open: DchSession?          // programmatic push target
     @State private var connected = false           // the full refresh and its handshake ran here
     @State private var pollRound = 0               // bumped to list at once and poll fast again
+    @State private var watchRetry: Date?           // #775: refused; a fresh 0x08 may offer it again from then
     @AppStorage(UpdateMode.key) private var updateMode = UpdateMode.live   // #764: Settings › Updates
     @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     @State private var renaming: DchSession?       // rename alert
@@ -478,9 +479,12 @@ struct SessionListView: View {
         // cheap list, not a second handshake.
         .task { if !connected { await refresh() } }
         // Restarted (a list at once) on a return, a foreground, a sheet closing, a verb's
-        // `relist`, a mode change. Off, nil, while the app is away or a sheet covers the list;
-        // a pushed session cancels it on its own (the list's `.task`s end on the push).
-        .task(id: polling ? PollKey(round: pollRound, mode: mode) : nil) { await pollStates(mode) }
+        // `relist`, a mode change, the watch stream offered or refused (#775). Off, nil, while the
+        // app is away or a sheet covers the list; a pushed session cancels it on its own (the
+        // list's `.task`s end on the push). Ending it closes the stream.
+        .task(id: polling ? PollKey(round: pollRound, mode: mode, watch: SessionWatch.wanted(ops, mode)) : nil) {
+            await pollStates(mode)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)
             .receive(on: DispatchQueue.main)) { _ in lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled }
         // Programmatic push for tap-to-attach and newly created sessions.
@@ -661,14 +665,48 @@ struct SessionListView: View {
 
     /// The mode the poll goes by: Settings › Updates, Battery saver in Low Power Mode.
     private var mode: UpdateMode { UpdateMode.resolve(stored: updateMode.rawValue, lowPower: lowPower) }
-    private struct PollKey: Equatable { let round: Int; let mode: UpdateMode }
+    private struct PollKey: Equatable { let round: Int; let mode: UpdateMode; let watch: Bool }
+    /// #775: the polling task runs the watch stream, not the poll.
+    private var watching: Bool { polling && SessionWatch.wanted(ops, mode) }
 
     /// After a verb that changes the list: listed again at once, and the poll back to its
     /// fastest. The full refresh only when the screen is in error, which a list can't clear.
+    /// #775: with the stream up the Mac re-lists on its own; one list now only keeps it snappy.
     private func relist() async {
         guard error == nil, unreachable == nil else { return await refresh() }
         notice = nil
-        pollRound += 1
+        guard watching else { pollRound += 1; return }
+        if let list = try? await transport.listSessions() { show(list) }
+    }
+
+    /// A list from the poll or the stream: kept for the widget, shown when it moved. An equal
+    /// array still marks the state dirty and redraws every row.
+    private func show(_ list: [DchSession]) {
+        remember(list)
+        if !loading, list != sessions { sessions = list }
+    }
+
+    /// #775: the list as the Mac pushes it, until the task ends. Refused (error 0x13, or the
+    /// Mac closed it): "watch" leaves `ops`, so the key changes and the poll takes over, and
+    /// the 0x2d sync goes back to its own triggers.
+    private func watchStates() async {
+        let refused = await SessionWatch.run(transport, device: SessionWatch.device,
+                                             ready: { unreachable == nil && error == nil && !loading }, apply: show)
+        guard refused, !Task.isCancelled else { return }
+        watchRetry = Date().addingTimeInterval(SessionWatch.retry)
+        ops.remove(.watch)
+        SidekickSync.offer(ops, over: transport)
+    }
+
+    /// #775: after a refusal, a fresh 0x08 at most once a `SessionWatch.retry`: "watch" back in
+    /// its ops changes the key, and the stream takes over again.
+    private func recheckWatch() async {
+        watchRetry = Date().addingTimeInterval(SessionWatch.retry)
+        guard let t = transport as? ProsperTransport, let info = try? await t.machineInfo(), !Task.isCancelled,
+              info.ops.contains(.watch) else { return }
+        watchRetry = nil
+        SidekickSync.offer(info.ops, over: t)
+        ops = info.ops
     }
 
     /// Poll the sessions' states while the list is on screen (`polling`).
@@ -680,6 +718,7 @@ struct SessionListView: View {
         // Only ever started while polling (`.task(id:)`), so a change cancels the loop
         // outright instead of leaving a timer ticking.
         guard polling else { return }
+        if SessionWatch.wanted(ops, mode) { return await watchStates() }
         // A first appearance has `.task { refresh() }` in flight, so it waits. Any restart
         // after that lists at once: the rows are as old as the time away.
         var wait: TimeInterval? = connected ? nil : SessionPoll.fastest(mode)
@@ -696,12 +735,10 @@ struct SessionListView: View {
                 continue
             }
             guard !Task.isCancelled else { return }
-            remember(list)
             wait = SessionPoll.next(after: wait, changed: SessionPoll.changed(list, last: last, shown: sessions), mode: mode)
             last = list
-            // Don't touch `sessions` unless something actually moved: an equal array still
-            // marks the state dirty and redraws every row.
-            if !loading, list != sessions { sessions = list }
+            show(list)
+            if mode == .live, let due = watchRetry, Date() >= due { await recheckWatch() }
         }
     }
 
@@ -927,6 +964,7 @@ extension SessionVerb {
         case .clipboardMaxSide: "Clipboard sync"   // #712: never shown, as clipboard's
         case .snippetsPut: "Snippet sync"   // #730: never shown, a push failure is only logged
         case .sidekick: "Sidekick sync"   // #761: never shown, a sync failure is only logged
+        case .watch: "Session list"   // #775: never shown, a refused stream falls back to the poll
         }
     }
 }

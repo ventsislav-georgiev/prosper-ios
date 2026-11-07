@@ -13,6 +13,9 @@ final class ProsperTransport: SessionTransport {
     private let port: UInt16
     /// #761: how long a 0x2d reply may take. Settable for tests.
     var sidekickDeadline: TimeInterval = 5
+    /// #775: how long the watch stream may say nothing before it is dead; the Mac sends at least
+    /// a heartbeat every 25 s. Settable for tests.
+    var watchSilence: TimeInterval = 60
 
     init(host: String, port: UInt16 = 8771) {
         self.host = host
@@ -38,6 +41,7 @@ final class ProsperTransport: SessionTransport {
         static let commands: UInt8 = 0x28, runCommand: UInt8 = 0x29, commandsResp: UInt8 = 0x2a, commandResult: UInt8 = 0x2b
         static let putPhoneSnippets: UInt8 = 0x2c   // #730: the phone's own snippets to the Mac
         static let sidekickSync: UInt8 = 0x2d   // #761
+        static let watch: UInt8 = 0x2e   // #775
         // #621: clipboard history sync.
         static let clipboardList: UInt8 = 0x15, clipboardItem: UInt8 = 0x16
         static let addClipboardHistory: UInt8 = 0x22, clipboardUpload: UInt8 = 0x23
@@ -428,6 +432,56 @@ final class ProsperTransport: SessionTransport {
             throw TransportError.protocolError("unreadable sidekick reply")
         }
         return SidekickValue(pattern: pattern, updated: n.int64Value)
+    }
+
+    // MARK: - Watch stream (#775)
+
+    /// 0x2e `{"device_id"}` (`{}` without one: the Mac takes the tailnet address), then each frame
+    /// as it lands. A Mac's clean close between frames finishes the stream; one cut short, silence
+    /// past `watchSilence` or a dropped socket throws, as does error 0x13 with its message. An
+    /// unreadable sidekick frame reads as a heartbeat.
+    func watch(device: String?) -> AsyncThrowingStream<WatchEvent, Error> {
+        let silence = watchSilence
+        return AsyncThrowingStream { cont in
+            let task = Task {
+                do {
+                    let conn = try await connect()
+                    defer { conn.cancel() }
+                    try Task.checkCancellation()
+                    conn.send(content: FrameCodec.encode(F.watch, json(device.map { ["device_id": $0] } ?? [:])),
+                              completion: .contentProcessed { _ in })
+                    var buf = Data()
+                    while true {
+                        while let (t, p) = try FrameCodec.pop(&buf) {
+                            switch t {
+                            case F.listResp: cont.yield(.list(try Self.decodeList(p)))
+                            case F.ok: cont.yield(Self.decodeWatchOk(p))
+                            case F.error: throw TransportError.server(Self.decodeMessage(p))
+                            default: break
+                            }
+                        }
+                        // Cancelling the connection ends the receive, which ignores task cancellation.
+                        let chunk = try await withDeadline(seconds: silence) {
+                            try await withTaskCancellationHandler { try await FrameCodec.receive(conn) } onCancel: { conn.cancel() }
+                        }
+                        if chunk.isEmpty {
+                            guard buf.isEmpty else { throw TransportError.protocolError("closed before a full frame") }
+                            break
+                        }
+                        buf.append(chunk)
+                    }
+                    cont.finish()
+                } catch { cont.finish(throwing: error) }
+            }
+            cont.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    static func decodeWatchOk(_ payload: Data) -> WatchEvent {
+        let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any]
+        guard let s = o?["sidekick"] as? [String: Any], let d = try? JSONSerialization.data(withJSONObject: s),
+              let v = try? decodeSidekick(d) else { return .heartbeat }
+        return .sidekick(v)
     }
 
     static func decodeNames(_ payload: Data) throws -> [String] {
