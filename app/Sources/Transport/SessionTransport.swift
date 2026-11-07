@@ -115,6 +115,8 @@ protocol SessionTransport: AnyObject {
     func runCommand(id: String, argument: String?) async throws -> CommandResult
     /// #730: the phone's own snippets, replacing the Mac's copy of them; the Mac echoes the hash.
     func putPhoneSnippets(_ body: Data) async throws -> (count: Int, hash: String)
+    /// #761: this side's sidekick pattern out, the Mac's winner of the two back.
+    func sidekickSync(_ mine: SidekickValue) async throws -> SidekickValue
 }
 
 /// #590: the demo and the test stubs have no dch behind them. Their machine lists no
@@ -143,6 +145,7 @@ extension SessionTransport {
     func commands() async throws -> [MacCommand] { throw TransportError.server("Not supported here.") }
     func runCommand(id: String, argument: String?) async throws -> CommandResult { throw TransportError.server("Not supported here.") }
     func putPhoneSnippets(_ body: Data) async throws -> (count: Int, hash: String) { throw TransportError.server("Not supported here.") }
+    func sidekickSync(_ mine: SidekickValue) async throws -> SidekickValue { throw TransportError.server("Not supported here.") }
 }
 
 /// #590: a verb the Mac's server answers beyond the base frames. machineInfo lists them in
@@ -156,6 +159,7 @@ enum SessionVerb: String {
     case reviveNoMessage = "revive_no_message"   // #668: revive's "no_message"; only while the Mac's dch is 1.27.0+
     case clipboardMaxSide = "clipboard_max_side"   // #712: clipboardItem's "max_side"; only together with clipboard
     case snippetsPut = "snippets_put"   // #730: putPhoneSnippets 0x2c, the phone's own snippets to the Mac
+    case sidekick      // #761: sidekickSync 0x2d; an older Mac never answers it
 
     /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
     /// clipboard_max_side without clipboard is none either.
@@ -164,6 +168,13 @@ enum SessionVerb: String {
         if !verbs.contains(.clipboard) { verbs.remove(.clipboardMaxSide) }
         return verbs
     }
+}
+
+/// #761: a sidekick pattern as typed (only matching trims it) and its last edit, ms since
+/// epoch; 0 = never edited.
+struct SidekickValue: Equatable {
+    var pattern: String
+    var updated: Int64
 }
 
 /// #614: libraryResp 0x1c. The etag is opaque: kept and sent back. A file is nil when the Mac

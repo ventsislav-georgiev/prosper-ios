@@ -1,7 +1,8 @@
 import XCTest
 @testable import Prosper
 
-/// The sessions list's Sessions / Sidekicks split, by the name or alias containing a pattern.
+/// The sessions list's Sessions / Sidekicks split, by the name or alias matching a pattern.
+/// #761: ported with the Mac's AgentIslandTests, the matcher's bounds and fallbacks included.
 final class SidekickSplitTests: XCTestCase {
 
     private func names(_ l: [DchSession]) -> [String] { l.map(\.name) }
@@ -26,6 +27,7 @@ final class SidekickSplitTests: XCTestCase {
             XCTAssertEqual(names(r.primary), ["build", "build-qa"])
             XCTAssertTrue(r.sidekicks.isEmpty)
         }
+        XCTAssertEqual(names(DchSession.split(list, pattern: " -qa ").sidekicks), ["build-qa"], "the pattern is trimmed")
     }
 
     /// A renamed session counts by its alias; a matching name still counts under a plain alias.
@@ -65,5 +67,153 @@ final class SidekickSplitTests: XCTestCase {
         XCTAssertFalse(DchSession.showsSidekicks(r, tab: false))
         XCTAssertFalse(DchSession.showsSidekicks(r, tab: true))
         XCTAssertFalse(DchSession.showsSidekicks(DchSession.split([], pattern: "-qa"), tab: true))
+    }
+
+    // #761: the pattern is a case-insensitive ICU regex, searched, in the name and the alias.
+
+    func testRegexAlternation() {
+        let r = DchSession.split([s("prosper-qa"), s("infra-stats-reviewer"), s("prosper-main"), s("qa-notes")],
+                                 pattern: "-(qa|reviewer)$")
+        XCTAssertEqual(names(r.sidekicks), ["prosper-qa", "infra-stats-reviewer"])
+        XCTAssertEqual(names(r.primary), ["prosper-main", "qa-notes"], "$ anchors the end; no leading dash, no match")
+    }
+
+    func testRegexCaseInsensitive() {
+        let r = DchSession.split([s("Prosper-QA"), s("infra-Reviewer"), s("main")], pattern: "-(qa|REVIEWER)$")
+        XCTAssertEqual(names(r.sidekicks), ["Prosper-QA", "infra-Reviewer"])
+        XCTAssertEqual(names(r.primary), ["main"])
+    }
+
+    func testRegexMatchesAlias() {
+        let r = DchSession.split([s("build", alias: "build-reviewer"), s("notes", alias: "notes-rev")], pattern: "-(qa|reviewer)$")
+        XCTAssertEqual(names(r.sidekicks), ["build"])
+        XCTAssertEqual(names(r.primary), ["notes"])
+    }
+
+    /// A leading "*" is not a valid regex: the pattern is matched as text, ignoring case.
+    func testInvalidRegexFallsBackToText() {
+        XCTAssertNil(DchSession.sidekickRegex("*-qa"))
+        var r = DchSession.split([s("build*-QA"), s("build-qa")], pattern: "*-qa")
+        XCTAssertEqual(names(r.sidekicks), ["build*-QA"])
+        XCTAssertEqual(names(r.primary), ["build-qa"])
+        r = DchSession.split([s("prosper-qa"), s("infra-reviewer"), s("x", alias: "X*.?-(QA|reviewer)")], pattern: "*.?-(qa|reviewer)")
+        XCTAssertEqual(names(r.sidekicks), ["x"], "only the literal text matches")
+        XCTAssertEqual(names(r.primary), ["prosper-qa", "infra-reviewer"])
+    }
+
+    func testRegexValidity() {
+        XCTAssertNotNil(DchSession.sidekickRegex("-qa"))
+        XCTAssertNotNil(DchSession.sidekickRegex(" -(qa|reviewer)$ "))
+        XCTAssertNil(DchSession.sidekickRegex("*.?-(qa|reviewer)"))
+        XCTAssertNil(DchSession.sidekickRegex("-(qa"))
+        XCTAssertNil(DchSession.sidekickRegex("  "), "empty: no regex, and no caption either")
+        XCTAssertEqual(DchSession.sidekickRegex("-QA")?.options.contains(.caseInsensitive), true)
+    }
+
+    // The matcher's bounds and fallbacks. The cache is process-wide, so each pattern here is
+    // used by this one test only.
+
+    /// Unbounded, each search took seconds on main. The deadline is 10 ms of CPU per split
+    /// call; 1 s leaves room for a loaded host.
+    func testCatastrophicPatternIsBoundedThenText() {
+        let list = [s("infra-stats-weekly-report-x"), s("abcdefghijklmnopqr")]
+        let start = Date()
+        for p in ["^(.*)*-qa$", "(.+)+x"] {
+            XCTAssertEqual(DchSession.split(list, pattern: p).sidekicks.count, 0, p)
+            XCTAssertEqual(DchSession.sidekickCaption(p, names: []), "Too slow on a session name: matched as text", p)
+            let r = DchSession.split([s("z\(p)Z")] + list, pattern: p)
+            XCTAssertEqual(names(r.sidekicks), ["z\(p)Z"], "\(p): matched as text from now on")
+            // A render re-splits often: after the flip no call pays the deadline again.
+            for _ in 0..<200 { _ = DchSession.split(list, pattern: p) }
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+    }
+
+    /// A regex that matches "" would make every session a sidekick.
+    func testEmptyMatchingPatternFallsBackToText() {
+        let list = [s("build"), s("notes-QA|x"), s("a", alias: "x*y")]
+        for (p, hit) in [("x*", "a"), ("-qa|", "notes-QA|x"), ("b|", "")] {
+            XCTAssertEqual(DchSession.sidekickCaption(p, names: []), "Matches every session: matched as text", p)
+            XCTAssertEqual(names(DchSession.split(list, pattern: p).sidekicks), hit.isEmpty ? [] : [hit], p)
+        }
+        // Zero-width patterns never match "" alone but match inside every name: a zero-width match is no hit.
+        for p in ["\\b", "(?=build)", "(?<=a)"] {
+            XCTAssertNil(DchSession.sidekickCaption(p, names: []), p)
+            XCTAssertEqual(names(DchSession.split(list, pattern: p).sidekicks), [], p)
+        }
+    }
+
+    private func savingBounds() -> () -> Void {
+        let saved = (DchSession.sidekickDeadline, DchSession.sidekickSlowCall, DchSession.sidekickSlowTotal)
+        return { (DchSession.sidekickDeadline, DchSession.sidekickSlowCall, DchSession.sidekickSlowTotal) = saved }
+    }
+
+    /// A pattern always under the deadline still flips once its slow calls add up.
+    /// Deterministic: the deadline is out of reach and the thresholds are set outright.
+    func testSlowCallTallyFlipsToText() {
+        defer { savingBounds()() }
+        let list = (0..<200).map { s("build-\($0)-tally") }   // 400 searches, far over a µs of CPU
+        DchSession.sidekickDeadline = .max
+        DchSession.sidekickSlowCall = .max   // no call counts toward the tally, so even a zero total holds
+        DchSession.sidekickSlowTotal = 0
+        XCTAssertEqual(DchSession.split(list, pattern: "-1\\d-tally$").sidekicks.count, 10)
+        XCTAssertNil(DchSession.sidekickCaption("-1\\d-tally$", names: []))
+        DchSession.sidekickSlowCall = 0     // every call counts, and any tally is over the total
+        XCTAssertEqual(DchSession.split(list, pattern: "-2\\d-tally$").sidekicks.count, 0, "flipped: matched as text")
+        XCTAssertEqual(DchSession.sidekickCaption("-2\\d-tally$", names: []), "Too slow on a session name: matched as text")
+    }
+
+    /// The "" probe backtracks too. The caption goes first with no names, so only the probe can say slow.
+    func testEmptyProbeIsBoundedThenText() {
+        let p = "(x?|y?){32}\\b"
+        let start = Date()
+        XCTAssertEqual(DchSession.sidekickCaption(p, names: []), "Too slow on a session name: matched as text")
+        let r = DchSession.split([s("xy"), s("z\(p)Z")], pattern: p)
+        XCTAssertEqual(names(r.sidekicks), ["z\(p)Z"], "matched as text")
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+    }
+
+    /// The slow-call bar scales with the texts searched, so many sessions under a cheap
+    /// pattern never flip it.
+    func testManySessionsCheapPatternStaysRegex() {
+        defer { savingBounds()() }
+        let list = (0..<1600).map { s("s\($0)-many", alias: $0 % 2 == 0 ? "a\($0)-reviewer" : nil) }
+        DchSession.sidekickDeadline = .max
+        DchSession.sidekickSlowCall = 300_000
+        DchSession.sidekickSlowTotal = 0   // any call that counts flips it
+        for _ in 0..<3 { XCTAssertEqual(DchSession.split(list, pattern: "-(qa|reviewer|many-x)$").sidekicks.count, 800) }
+        XCTAssertNil(DchSession.sidekickCaption("-(qa|reviewer|many-x)$", names: []))
+    }
+
+    /// The other side: one pathological name among 1600 cheap sessions still counts the call.
+    func testOneSlowNameAmongManyStillFlips() {
+        defer { savingBounds()() }
+        let slow = String(repeating: "x", count: 16)
+        // As a regex it takes "xxy"; as text, only the name holding the pattern.
+        let list = (0..<1600).map { s("s\($0)-few") } + [s(slow), s("xxy"), s("z(x+x+)+yZ")]
+        DchSession.sidekickDeadline = .max
+        DchSession.sidekickSlowCall = 300_000
+        DchSession.sidekickSlowTotal = 0
+        XCTAssertEqual(names(DchSession.split(list, pattern: "(x+x+)+y").sidekicks), ["z(x+x+)+yZ"], "flipped: matched as text")
+        XCTAssertEqual(DchSession.sidekickCaption("(x+x+)+y", names: []), "Too slow on a session name: matched as text")
+    }
+
+    /// Ranges are UTF-16, so `$` finds the end of a Cyrillic + emoji name.
+    func testRegexNonASCIIName() {
+        let r = DchSession.split([s("Проспер-😀-qa"), s("Проспер-😀-qa-x"), s("бележки", alias: "ревю-👩‍💻-REVIEWER")],
+                                 pattern: "😀-qa$|-reviewer$")
+        XCTAssertEqual(names(r.sidekicks), ["Проспер-😀-qa", "бележки"])
+        XCTAssertEqual(names(r.primary), ["Проспер-😀-qa-x"])
+    }
+
+    /// One caption per state, none for a usable regex or an empty pattern.
+    func testCaptionStates() {
+        let names = [String(repeating: "a", count: 20)]
+        XCTAssertNil(DchSession.sidekickCaption("-(qa|reviewer)$", names: names))
+        XCTAssertNil(DchSession.sidekickCaption("  ", names: names))
+        XCTAssertNil(DchSession.sidekickCaption("\\b", names: names), "zero-width: a regex, it just takes no session")
+        XCTAssertEqual(DchSession.sidekickCaption("*-qa", names: names), "Not a valid regex: matched as text")
+        XCTAssertEqual(DchSession.sidekickCaption("a|", names: names), "Matches every session: matched as text")
+        XCTAssertEqual(DchSession.sidekickCaption("([a-z]+)*-qa$", names: names), "Too slow on a session name: matched as text")
     }
 }

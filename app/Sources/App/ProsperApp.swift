@@ -860,6 +860,7 @@ struct SessionListView: View {
         ClipboardSync.offer(info.ops, over: t, machine: m.id.uuidString)   // #621: and a sync, if it lists clipboard
         SnippetPush.offer(info.ops, over: t, machine: m.id.uuidString)   // #730: the phone's snippets, if it lists snippets_put
         #endif
+        SidekickSync.offer(info.ops, over: t)   // #761: the sidekick pattern, if it lists sidekick
         if let session = account.session, let wakeId = info.wakeId {
             let meta = await WakeClient(session: session).meta(wakeId: wakeId)
             store.update(m.id) { mm in
@@ -888,15 +889,7 @@ extension DchSession {
     static let sidekickKey = "sidekickPattern"
     static let sidekickDefault = "-qa"
 
-    /// Splits `list` into primary sessions and sidekicks: a sidekick's real `name` or its
-    /// alias contains `pattern`, case-insensitive (sidekicks are often named by renaming). An
-    /// empty pattern turns the split off. Order is kept.
-    static func split(_ list: [DchSession], pattern: String) -> (primary: [DchSession], sidekicks: [DchSession]) {
-        let p = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !p.isEmpty else { return (list, []) }
-        let isSidekick = { (s: DchSession) in [s.name, s.alias ?? ""].contains { $0.range(of: p, options: .caseInsensitive) != nil } }
-        return (list.filter { !isSidekick($0) }, list.filter(isSidekick))
-    }
+    // `split` and its matcher: Sidekick.swift (#761).
 
     /// Whether the Sidekicks list shows: never without sidekicks, always when they are all
     /// there is (an empty Sessions tab reads as a Mac with no sessions), else the chosen tab.
@@ -933,6 +926,7 @@ extension SessionVerb {
         case .reviveNoMessage: all ? "Resume interrupted (no message)" : "Resume (no message) failed"   // #668
         case .clipboardMaxSide: "Clipboard sync"   // #712: never shown, as clipboard's
         case .snippetsPut: "Snippet sync"   // #730: never shown, a push failure is only logged
+        case .sidekick: "Sidekick sync"   // #761: never shown, a sync failure is only logged
         }
     }
 }

@@ -11,6 +11,8 @@ import CryptoKit
 final class ProsperTransport: SessionTransport {
     private let host: String
     private let port: UInt16
+    /// #761: how long a 0x2d reply may take. Settable for tests.
+    var sidekickDeadline: TimeInterval = 5
 
     init(host: String, port: UInt16 = 8771) {
         self.host = host
@@ -35,6 +37,7 @@ final class ProsperTransport: SessionTransport {
         // #615: the Mac's palette commands.
         static let commands: UInt8 = 0x28, runCommand: UInt8 = 0x29, commandsResp: UInt8 = 0x2a, commandResult: UInt8 = 0x2b
         static let putPhoneSnippets: UInt8 = 0x2c   // #730: the phone's own snippets to the Mac
+        static let sidekickSync: UInt8 = 0x2d   // #761
         // #621: clipboard history sync.
         static let clipboardList: UInt8 = 0x15, clipboardItem: UInt8 = 0x16
         static let addClipboardHistory: UInt8 = 0x22, clipboardUpload: UInt8 = 0x23
@@ -407,6 +410,26 @@ final class ProsperTransport: SessionTransport {
         return (count, hash)
     }
 
+    // MARK: - Sidekick pattern (#761)
+
+    /// ok carries the winner; error 0x13 throws (malformed, or ours over the Mac's cap). The
+    /// read is bounded, so a Mac that never answers can't hold the next sync behind it.
+    func sidekickSync(_ mine: SidekickValue) async throws -> SidekickValue {
+        let frame = try await oneShot(send: F.sidekickSync, payload: json(["pattern": mine.pattern, "updated": mine.updated]),
+                                      deadline: sidekickDeadline)
+        return try Self.decodeSidekick(try Self.expect(frame, F.ok))
+    }
+
+    /// `{pattern, updated}`; a bool `updated` is no number.
+    static func decodeSidekick(_ payload: Data) throws -> SidekickValue {
+        guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              let pattern = o["pattern"] as? String,
+              let n = o["updated"] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else {
+            throw TransportError.protocolError("unreadable sidekick reply")
+        }
+        return SidekickValue(pattern: pattern, updated: n.int64Value)
+    }
+
     static func decodeNames(_ payload: Data) throws -> [String] {
         guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
               let names = o["names"] as? [String] else { throw TransportError.protocolError("unreadable reply") }
@@ -506,12 +529,17 @@ final class ProsperTransport: SessionTransport {
         return conn
     }
 
-    /// Connect, send one request frame, read exactly one response frame, close.
-    private func oneShot(send type: UInt8, payload: Data) async throws -> (UInt8, Data) {
+    /// Connect, send one request frame, read exactly one response frame, close. With a
+    /// `deadline` the read is raced against it; cancelling the connection ends the receive,
+    /// which ignores task cancellation on its own.
+    private func oneShot(send type: UInt8, payload: Data, deadline: TimeInterval? = nil) async throws -> (UInt8, Data) {
         let conn = try await connect()
         defer { conn.cancel() }
         conn.send(content: FrameCodec.encode(type, payload), completion: .contentProcessed { _ in })
-        return try await FrameCodec.readOne(from: conn)
+        guard let deadline else { return try await FrameCodec.readOne(from: conn) }
+        return try await withDeadline(seconds: deadline) {
+            try await withTaskCancellationHandler { try await FrameCodec.readOne(from: conn) } onCancel: { conn.cancel() }
+        }
     }
 
     private func openStream(_ type: UInt8, _ payload: Data) async throws -> TerminalStream {

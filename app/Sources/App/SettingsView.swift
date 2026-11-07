@@ -103,6 +103,8 @@ struct SettingsView: View {
     @ObservedObject private var dictation = DictationService.shared
     @AppStorage(AgentCommand.key) private var agentCommand = ""
     @AppStorage(DchSession.sidekickKey) private var sidekickPattern = DchSession.sidekickDefault
+    /// #761: the last listed sessions, so the caption can say a pattern is too slow on them.
+    private var sidekickNames: [String] { SessionsSnapshot.read()?.rows.flatMap { [$0.name, $0.title] } ?? [] }
     @AppStorage(UpdateMode.key) private var updateMode = UpdateMode.live   // #764
     // Session list rows (`RowDetails`), on this device only.
     @AppStorage(RowDetails.Key.agents) private var rowAgents = RowDetails().agents
@@ -208,14 +210,18 @@ struct SettingsView: View {
             }
 
             Section {
-                TextField("Sidekick pattern", text: $sidekickPattern)
+                // #761: an edit goes through SidekickSync, which stamps it; an adopted Mac value doesn't.
+                TextField("Sidekick pattern", text: Binding { sidekickPattern } set: { SidekickSync.edit($0) })
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.system(.body, design: .monospaced))
+                if let caption = DchSession.sidekickCaption(sidekickPattern, names: sidekickNames) {
+                    Text(caption).font(.footnote).foregroundStyle(.secondary)
+                }
             } header: {
                 Text("Sidekicks")
             } footer: {
-                Text("Sessions whose name or alias contains this, ignoring case, go under a Sidekicks tab in the session list. Empty shows every session together.")
+                Text("Sessions whose name or alias matches this regular expression, ignoring case, go under a Sidekicks tab in the session list. Empty shows every session together. Kept the same on your Mac.")
             }
 
             // Apple's Settings › General › Keyboard, in its order, for what Prosper's has.
@@ -366,7 +372,10 @@ struct SettingsView: View {
 
             if let error { Section { Text(error).foregroundStyle(.red).font(.callout) } }
         }
-        .onAppear { previewID = UUID() }
+        .onAppear {
+            previewID = UUID()
+            SidekickSync.kick()   // #761
+        }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showLogin) { LoginView(account: account) }
