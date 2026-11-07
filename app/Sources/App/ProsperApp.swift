@@ -356,6 +356,10 @@ struct SessionListView: View {
     @State private var trying: String?             // address being dialed right now
     @State private var unreachable: String?        // host-unreachable → offer Wake
     @State private var open: DchSession?          // programmatic push target
+    @State private var connected = false           // the full refresh and its handshake ran here
+    @State private var pollRound = 0               // bumped to list at once and poll fast again
+    @AppStorage(UpdateMode.key) private var updateMode = UpdateMode.live   // #764: Settings › Updates
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     @State private var renaming: DchSession?       // rename alert
     @State private var renameText = ""
     @State private var killing: DchSession?        // kill-confirm alert
@@ -470,9 +474,15 @@ struct SessionListView: View {
             Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
                 .disabled(sleeping || loading)
         }
-        .task { await refresh() }
-        // Keyed on the scene phase: the poll exists only while the app is in front.
-        .task(id: scenePhase == .active) { await pollStates() }
+        // A `.task` reruns each time a pushed session pops back: that return is the poll's
+        // cheap list, not a second handshake.
+        .task { if !connected { await refresh() } }
+        // Restarted (a list at once) on a return, a foreground, a sheet closing, a verb's
+        // `relist`, a mode change. Off, nil, while the app is away or a sheet covers the list;
+        // a pushed session cancels it on its own (the list's `.task`s end on the push).
+        .task(id: polling ? PollKey(round: pollRound, mode: mode) : nil) { await pollStates(mode) }
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)
+            .receive(on: DispatchQueue.main)) { _ in lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled }
         // Programmatic push for tap-to-attach and newly created sessions.
         .navigationDestination(isPresented: Binding(get: { open != nil },
                                                     set: { if !$0 { open = nil } })) {
@@ -501,7 +511,7 @@ struct SessionListView: View {
         .alert("Stop \(killing?.title ?? "")?", isPresented: Binding(get: { killing != nil },
                                                                      set: { if !$0 { killing = nil } })) {
             Button("Stop", role: .destructive) {
-                if let k = killing { Task { try? await transport.kill(name: k.name); await refresh() } }
+                if let k = killing { Task { try? await transport.kill(name: k.name); await relist() } }
                 killing = nil
             }
             Button("Cancel", role: .cancel) { killing = nil }
@@ -526,7 +536,7 @@ struct SessionListView: View {
             Button("OK", role: .cancel) {}
         } message: { Text(failed?.message ?? "") }
         .sheet(isPresented: $showingHistory) {
-            HistorySheet(transport: transport, ops: ops) { await refresh() }
+            HistorySheet(transport: transport, ops: ops) { await relist() }
         }
         .sheet(isPresented: $showingChat) { ChatScreen(chat: ChatSession(transport: transport)) }
         .sheet(isPresented: $showingCommands) {
@@ -631,7 +641,7 @@ struct SessionListView: View {
         Task {
             if let f = await Self.attempt(title, on: t, op) { failed = f }
             for n in rows where running[n] == text { running[n] = nil }
-            await refresh()
+            await relist()
         }
     }
 
@@ -644,31 +654,51 @@ struct SessionListView: View {
         }
     }
 
-    /// Poll the sessions' states while the app is in front.
+    /// The poll runs: the app in front and no sheet over the list.
+    private var polling: Bool {
+        scenePhase == .active && !showingHistory && !showingChat && !showingCommands
+    }
+
+    /// The mode the poll goes by: Settings › Updates, Battery saver in Low Power Mode.
+    private var mode: UpdateMode { UpdateMode.resolve(stored: updateMode.rawValue, lowPower: lowPower) }
+    private struct PollKey: Equatable { let round: Int; let mode: UpdateMode }
+
+    /// After a verb that changes the list: listed again at once, and the poll back to its
+    /// fastest. The full refresh only when the screen is in error, which a list can't clear.
+    private func relist() async {
+        guard error == nil, unreachable == nil else { return await refresh() }
+        notice = nil
+        pollRound += 1
+    }
+
+    /// Poll the sessions' states while the list is on screen (`polling`).
     ///
     /// The row's working/idle/blocked label is the reason to open the list at all, and
-    /// without the poll it stays frozen at whatever the last manual refresh saw. One small
-    /// list round-trip every few seconds is cheaper than a user pressing refresh to find out.
-    private func pollStates() async {
-        // Only ever started while the app is in front (`.task(id:)` on the scene phase), so
-        // going away cancels the loop outright instead of leaving a timer ticking.
-        guard scenePhase == .active else { return }
-        let poll = UInt64(SessionPoll.interval * 1_000_000_000)
-        let backoff = UInt64(SessionPoll.failureBackoff * 1_000_000_000)
-        // A fresh screen already has `.task { refresh() }` in flight, so wait a beat. Coming
-        // back from the background has no such refresh, and the rows on screen are as stale
-        // as the time away — poll those at once instead of showing yesterday's states for
-        // another interval.
-        var immediate = !sessions.isEmpty
+    /// without the poll it stays frozen at whatever the last manual refresh saw. Each poll
+    /// is a connection of its own, so the wait grows while nothing moves (`SessionPoll`).
+    private func pollStates(_ mode: UpdateMode) async {
+        // Only ever started while polling (`.task(id:)`), so a change cancels the loop
+        // outright instead of leaving a timer ticking.
+        guard polling else { return }
+        // A first appearance has `.task { refresh() }` in flight, so it waits. Any restart
+        // after that lists at once: the rows are as old as the time away.
+        var wait: TimeInterval? = connected ? nil : SessionPoll.fastest(mode)
+        var last = sessions
         while !Task.isCancelled {
-            if immediate { immediate = false } else { try? await Task.sleep(nanoseconds: poll) }
+            if let wait { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
             guard !Task.isCancelled else { return }
-            guard unreachable == nil, error == nil else { continue }
-            guard let list = try? await transport.listSessions() else {
-                try? await Task.sleep(nanoseconds: backoff)      // asleep Mac: stop hammering
+            guard unreachable == nil, error == nil, !loading else {
+                wait = SessionPoll.next(after: wait, changed: false, mode: mode)
                 continue
             }
+            guard let list = try? await transport.listSessions() else {
+                wait = SessionPoll.failed(after: wait)
+                continue
+            }
+            guard !Task.isCancelled else { return }
             remember(list)
+            wait = SessionPoll.next(after: wait, changed: list != last, mode: mode)
+            last = list
             // Don't touch `sessions` unless something actually moved: an equal array still
             // marks the state dirty and redraws every row.
             if !loading, list != sessions { sessions = list }
@@ -678,7 +708,7 @@ struct SessionListView: View {
     private func commitRename(_ alias: String) {
         guard let r = renaming else { return }
         let a = alias.trimmingCharacters(in: .whitespaces)
-        Task { try? await transport.rename(name: r.name, alias: a.isEmpty ? nil : a); await refresh() }
+        Task { try? await transport.rename(name: r.name, alias: a.isEmpty ? nil : a); await relist() }
         renaming = nil
     }
 
@@ -765,6 +795,7 @@ struct SessionListView: View {
             }
             loading = false          // connected: stop spinning + re-enable +/refresh BEFORE the slow handshake
             await handshake()        // opportunistic, may take ~2s — must not gate the toolbar
+            if !Task.isCancelled { connected = true }   // a push mid-handshake: again on the return
         } catch let e as TransportError {
             loading = false
             // Host-unreachable on a real machine → surface the Wake card; other errors

@@ -152,6 +152,7 @@ final class LiveStatusTests: XCTestCase {
         var c = PushTokens(base: URL(string: "https://worker.test")!, session: "bearer-1", deviceId: "dev-12345678", env: env)
         c.send = rec.send
         c.retryDelays = [0, 0, 0]
+        c.mode = .live
         return c
     }
 
@@ -164,19 +165,19 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(r.url?.absoluteString, "https://worker.test/push/tokens")
         XCTAssertEqual(r.value(forHTTPHeaderField: "Authorization"), "Bearer bearer-1")
         XCTAssertEqual(r.value(forHTTPHeaderField: "Content-Type"), "application/json")
-        XCTAssertEqual(rec.body(), ["device_id": "dev-12345678", "kind": "alert", "token": tok, "env": "sandbox"])
+        XCTAssertEqual(rec.body(), ["device_id": "dev-12345678", "kind": "alert", "token": tok, "env": "sandbox", "mode": "live"])
     }
 
     func testPushToStartTokenBody() async {
         let rec = Recorder()
         await client(rec, env: "production").post(.laStart, token: tok)
-        XCTAssertEqual(rec.body(), ["device_id": "dev-12345678", "kind": "la_start", "token": tok, "env": "production"])
+        XCTAssertEqual(rec.body(), ["device_id": "dev-12345678", "kind": "la_start", "token": tok, "env": "production", "mode": "live"])
     }
 
     func testActivityUpdateTokenBody() async {
         let rec = Recorder()
         await client(rec).post(.laUpdate, token: tok, activityId: "act-1", macId: "mac-hex")
-        XCTAssertEqual(rec.body(), ["device_id": "dev-12345678", "kind": "la_update", "token": tok, "env": "sandbox",
+        XCTAssertEqual(rec.body(), ["device_id": "dev-12345678", "kind": "la_update", "token": tok, "env": "sandbox", "mode": "live",
                                     "activity_id": "act-1", "mac_id": "mac-hex"])
     }
 
@@ -272,9 +273,9 @@ final class LiveStatusTests: XCTestCase {
         let bodies = rec.requests.indices.map { rec.body($0) }.sorted { ($0["kind"] ?? "") < ($1["kind"] ?? "") }
         XCTAssertEqual(rec.requests.map(\.httpMethod), ["POST", "POST", "POST"])
         XCTAssertEqual(bodies, [
-            ["device_id": "dev-12345678", "kind": "alert", "token": tok, "env": "sandbox"],
-            ["device_id": "dev-12345678", "kind": "la_start", "token": tok, "env": "sandbox"],
-            ["device_id": "dev-12345678", "kind": "la_update", "token": tok, "env": "sandbox",
+            ["device_id": "dev-12345678", "kind": "alert", "token": tok, "env": "sandbox", "mode": "live"],
+            ["device_id": "dev-12345678", "kind": "la_start", "token": tok, "env": "sandbox", "mode": "live"],
+            ["device_id": "dev-12345678", "kind": "la_update", "token": tok, "env": "sandbox", "mode": "live",
              "activity_id": "act-1", "mac_id": "mac-a"],
         ])
 
@@ -307,6 +308,7 @@ final class LiveStatusTests: XCTestCase {
         var requests: [URLRequest] = []
         var rows: Set<String> = []
         var holdNext = false
+        var status = 204   // the Worker's answer
         private var held: CheckedContinuation<Void, Never>?
         var holding: Bool { held != nil }
         func send(_ r: URLRequest) async throws -> Int {
@@ -318,7 +320,7 @@ final class LiveStatusTests: XCTestCase {
             let b = (try? JSONSerialization.jsonObject(with: r.httpBody ?? Data())) as? [String: String] ?? [:]
             if r.httpMethod == "POST" { rows.insert(b["kind"]! + (b["activity_id"] ?? "")) }
             else if b["kind"] == nil { rows = [] }
-            return 204
+            return status
         }
         func release() { held?.resume(); held = nil }
         func waitHeld() async {
@@ -331,12 +333,15 @@ final class LiveStatusTests: XCTestCase {
     private func liveStatus(_ gate: Gate, on: Bool = true, notifications: Bool = true) -> LiveStatus {
         let d = UserDefaults(suiteName: "LiveStatusTests-\(UUID())")!
         d.set(on, forKey: LiveStatus.enabledKey)
-        return LiveStatus(defaults: d, client: {
+        let ls = LiveStatus(defaults: d, client: {
             var c = PushTokens(base: URL(string: "https://worker.test")!, session: "b", deviceId: "dev-12345678", env: "sandbox")
             c.send = gate.send
             c.retryDelays = [0]
             return c
         }, notificationsAllowed: { notifications }, requestAuthorization: { true })
+        ls.modeNow = { .live }
+        ls.modeDebounce = .milliseconds(10)
+        return ls
     }
 
     @MainActor
@@ -430,6 +435,98 @@ final class LiveStatusTests: XCTestCase {
         gate.release()
         await fg.value
         XCTAssertEqual(gate.methods, ["POST", "POST", "POST", "POST"])
+    }
+
+    /// #764: a foreground within `repostEvery` of a full repost sends nothing; past it, all again.
+    @MainActor
+    func testRepostAtMostEachInterval() async {
+        let gate = Gate()
+        let ls = liveStatus(gate)
+        var clock = Date(timeIntervalSince1970: 1_000_000)
+        ls.now = { clock }
+        await ls.post(.alert, token: tok)
+        await ls.foreground()
+        clock += 60
+        await ls.foreground()
+        XCTAssertEqual(gate.methods, ["POST", "POST"], "the second foreground posts nothing")
+        clock += LiveStatus.repostEvery
+        await ls.foreground()
+        XCTAssertEqual(gate.methods, ["POST", "POST", "POST"])
+    }
+
+    /// A post that didn't go up isn't held back by the interval: the next foreground heals it.
+    @MainActor
+    func testAFailedPostRepostsAtTheNextForeground() async {
+        let gate = Gate()
+        let ls = liveStatus(gate)
+        ls.now = { Date(timeIntervalSince1970: 1_000_000) }
+        await ls.post(.alert, token: tok)
+        await ls.foreground()
+        gate.status = 503
+        await ls.post(.laStart, token: tok)
+        gate.status = 200
+        await ls.foreground()
+        XCTAssertEqual(gate.methods.count, 5, "post, repost, the failed post, then both again")
+    }
+
+    /// #764: every POST carries the effective mode; a DELETE none.
+    func testTokenBodyCarriesTheMode() async {
+        let rec = Recorder()
+        var c = client(rec)
+        c.mode = .saver
+        await c.post(.alert, token: tok)
+        await c.delete()
+        XCTAssertEqual(rec.body(0)["mode"], "saver")
+        XCTAssertNil(rec.body(1)["mode"])
+    }
+
+    /// #764: Low Power Mode wins over the setting; an unknown or absent setting is Real-time.
+    func testEffectiveMode() {
+        XCTAssertEqual(UpdateMode.resolve(stored: nil, lowPower: false), .live)
+        XCTAssertEqual(UpdateMode.resolve(stored: "saver", lowPower: false), .saver)
+        XCTAssertEqual(UpdateMode.resolve(stored: "bogus", lowPower: false), .live)
+        XCTAssertEqual(UpdateMode.resolve(stored: "live", lowPower: true), .saver)
+        XCTAssertEqual(UpdateMode.allCases.map(\.rawValue), ["live", "saver"], "the wire values")
+        XCTAssertEqual(UpdateMode.allCases.map(\.title), ["Real-time", "Battery saver"])
+    }
+
+    /// #764: a mode change, flipped twice within the debounce, re-registers every token once
+    /// with the new mode, inside the repost interval; another with the mode already sent, nothing.
+    @MainActor
+    func testAModeChangeReregistersOnce() async {
+        let gate = Gate()
+        let ls = liveStatus(gate)
+        await ls.post(.alert, token: tok)
+        await ls.post(.laStart, token: tok)
+        await ls.foreground()   // the mode sent: live
+        XCTAssertEqual(gate.requests.count, 4)
+        ls.modeNow = { .saver }
+        ls.modeChanged()
+        ls.modeChanged()
+        await ls.modeChange?.value
+        XCTAssertEqual(gate.requests.count, 6, "both tokens once more")
+        let modes = gate.requests.suffix(2).map {
+            ((try? JSONSerialization.jsonObject(with: $0.httpBody ?? Data())) as? [String: String])?["mode"]
+        }
+        XCTAssertEqual(modes, ["saver", "saver"])
+        ls.modeChanged()   // still saver: already sent
+        await ls.modeChange?.value
+        XCTAssertEqual(gate.requests.count, 6)
+    }
+
+    /// #764: no token yet, or the switch off: a mode change sends nothing.
+    @MainActor
+    func testAModeChangeWithoutATokenSendsNothing() async {
+        let gate = Gate()
+        let ls = liveStatus(gate)
+        ls.modeNow = { .saver }
+        ls.modeChanged()
+        await ls.modeChange?.value
+        let off = liveStatus(gate, on: false)
+        off.modeNow = { .saver }
+        off.modeChanged()
+        await off.modeChange?.value
+        XCTAssertTrue(gate.requests.isEmpty)
     }
 
     /// An ended card's token is taken back and never reposted.

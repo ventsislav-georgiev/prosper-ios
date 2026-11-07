@@ -315,6 +315,7 @@ final class DictationClient {
             timer = nil
         } else if timer == nil {
             timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.sync() }
+            timer?.tolerance = 0.05   // #764: a backstop to the pings; iOS may batch its wakeups
         }
     }
 }

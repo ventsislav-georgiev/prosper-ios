@@ -142,6 +142,7 @@ final class DictationService: ObservableObject {
             beat = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
                 Task { @MainActor in DictationService.shared.tick() }
             }
+            beat?.tolerance = 0.2   // #764: well inside `Dictation.stale`; iOS may batch the wakeups
         }
     }
 

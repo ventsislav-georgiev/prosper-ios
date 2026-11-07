@@ -35,6 +35,9 @@ struct PushTokens {
     let session: String
     let deviceId: String
     var env = PushEnv.current
+    /// #764: the effective update mode, on every POST: the Worker paces this phone's pushes by
+    /// it. An older Worker ignores it.
+    var mode = UpdateMode.effective
     /// Sends one request and returns the status code. Tests substitute it.
     var send: (URLRequest) async throws -> Int = { req in
         let (_, resp) = try await URLSession.shared.data(for: req)
@@ -63,7 +66,7 @@ struct PushTokens {
     @discardableResult
     func post(_ kind: PushKind, token: String, activityId: String? = nil, macId: String? = nil) async -> Bool {
         guard Self.isValidToken(token) else { return false }
-        var body = ["device_id": deviceId, "kind": kind.rawValue, "token": token, "env": env]
+        var body = ["device_id": deviceId, "kind": kind.rawValue, "token": token, "env": env, "mode": mode.rawValue]
         if kind == .laUpdate {
             guard let activityId, Self.isValidActivityId(activityId), let macId, !macId.isEmpty else { return false }
             body["activity_id"] = activityId
@@ -111,9 +114,10 @@ struct PushTokens {
     }
 }
 
-/// The last token per key (alert, la_start, la_update per activity), re-posted on every
-/// foreground: the Worker keeps a few install ids per account and evicts the least
-/// recently updated, so a resident app that posted once at launch would drop off.
+/// The last token per key (alert, la_start, la_update per activity), re-posted on a
+/// foreground (at most each `LiveStatus.repostEvery`): the Worker keeps a few install ids
+/// per account and evicts the least recently updated, so a resident app that posted once at
+/// launch would drop off.
 /// Keyed, so one foreground posts each key once.
 struct PushTokenCache {
     struct Entry: Equatable {
@@ -135,10 +139,14 @@ struct PushTokenCache {
         entries.values.compactMap { $0.kind == .laUpdate ? $0.activityId : nil }.filter { !live.contains($0) }
     }
 
-    func repost(_ client: PushTokens) async {
+    /// True when every one went up.
+    @discardableResult
+    func repost(_ client: PushTokens) async -> Bool {
+        var all = true
         for e in entries.values {
-            await client.post(e.kind, token: e.token, activityId: e.activityId, macId: e.macId)
+            if !(await client.post(e.kind, token: e.token, activityId: e.activityId, macId: e.macId)) { all = false }
         }
+        return all
     }
 }
 
@@ -217,7 +225,7 @@ extension Data {
 ///
 /// Tokens are posted on every launch (the device token comes back from
 /// `registerForRemoteNotifications`, the activity sequences replay the current token) and
-/// re-posted from `cache` on every foreground, so one that failed to post heals then.
+/// re-posted from `cache` on a foreground, so one that failed to post heals then.
 @MainActor
 final class LiveStatus: ObservableObject {
     static let shared = LiveStatus()
@@ -245,6 +253,20 @@ final class LiveStatus: ObservableObject {
     private var tracked: Set<String> = []
     private(set) var cache = PushTokenCache()
     private var reposting = false
+    /// The last repost that all went up (#764): a foreground within `repostEvery` of it sends
+    /// nothing. iOS calls "active" after every Control Center pull and Face ID sheet too.
+    private var repostedAt: Date?
+    static let repostEvery: TimeInterval = 15 * 60
+    /// Settable for tests.
+    var now: () -> Date = Date.init
+    /// #764: the mode the tokens last all went up with; a foreground with another reposts
+    /// whatever the interval (a change while suspended was never heard).
+    private var sentMode: UpdateMode?
+    /// The mode change waiting out `modeDebounce` (`modeChanged`).
+    private(set) var modeChange: Task<Void, Never>?
+    /// Settable for tests.
+    var modeNow: () -> UpdateMode = { .effective }
+    var modeDebounce: Duration = .seconds(2)
     /// Token tries on the wire. forget() waits them out before its DELETE (#577): the
     /// server may still apply a cancelled one, and a row it commits after the DELETE
     /// outlives the switch.
@@ -274,6 +296,11 @@ final class LiveStatus: ObservableObject {
                                                object: nil, queue: .main) { _ in
             Task { @MainActor in await LiveStatus.shared.foreground() }
         }
+        // #764: Low Power Mode is Battery saver; Settings › Updates calls `modeChanged` itself.
+        NotificationCenter.default.addObserver(forName: .NSProcessInfoPowerStateDidChange,
+                                               object: nil, queue: .main) { _ in
+            Task { @MainActor in LiveStatus.shared.modeChanged() }
+        }
     }
 
     /// Re-post every cached token, once per key; a foreground while one is in flight
@@ -296,7 +323,25 @@ final class LiveStatus: ObservableObject {
             for id in cache.stale(live: live) { await ended(id) }
         }
         #endif
-        await cache.repost(client)
+        // A failed one goes again at the next foreground: only a full repost counts.
+        if let at = repostedAt, now().timeIntervalSince(at) < Self.repostEvery, client.mode == sentMode { return }
+        if await cache.repost(client) { repostedAt = now(); sentMode = client.mode }
+    }
+
+    /// #764: the effective mode moved (Settings › Updates, Low Power Mode): every token again
+    /// with it, once it has held `modeDebounce`, so a quick flip and back sends nothing.
+    /// Nothing with the switch off, signed out, or no token yet.
+    func modeChanged() {
+        modeChange?.cancel()
+        let wait = modeDebounce
+        modeChange = Task { [weak self] in
+            try? await Task.sleep(for: wait)
+            guard !Task.isCancelled, let self else { return }
+            guard enabled, !reposting, !cache.entries.isEmpty, let client = client(), client.mode != sentMode else { return }
+            reposting = true
+            defer { reposting = false }
+            if await cache.repost(client) { repostedAt = now(); sentMode = client.mode }
+        }
     }
 
     /// From the app delegate at launch, and after Turn On.
@@ -336,6 +381,8 @@ final class LiveStatus: ObservableObject {
     /// stop(), and what it posted goes again after the DELETE took it.
     private func forget(_ tokens: PushTokens?) async {
         enabled = false
+        repostedAt = nil
+        sentMode = nil
         await stop()
         // ponytail: bounded by each try's 10 s timeout, and the tries run side by side.
         for t in sending.values { _ = try? await t.value }
@@ -349,6 +396,7 @@ final class LiveStatus: ObservableObject {
 
     private func client() -> PushTokens? {
         guard var c = signedIn() else { return nil }
+        c.mode = modeNow()
         c.live = { [weak self] in self?.enabled == true }
         let send = c.send
         c.send = { [weak self] req in
@@ -371,7 +419,7 @@ final class LiveStatus: ObservableObject {
     func post(_ kind: PushKind, token: String, activityId: String? = nil, macId: String? = nil) async {
         guard enabled, let client = client() else { return }
         cache.remember(.init(kind: kind, token: token, activityId: activityId, macId: macId))
-        await client.post(kind, token: token, activityId: activityId, macId: macId)
+        if !(await client.post(kind, token: token, activityId: activityId, macId: macId)) { repostedAt = nil }   // heal at the next foreground
     }
 
     private func observeActivities() {

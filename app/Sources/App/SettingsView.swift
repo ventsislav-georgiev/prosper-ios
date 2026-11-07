@@ -103,6 +103,7 @@ struct SettingsView: View {
     @ObservedObject private var dictation = DictationService.shared
     @AppStorage(AgentCommand.key) private var agentCommand = ""
     @AppStorage(DchSession.sidekickKey) private var sidekickPattern = DchSession.sidekickDefault
+    @AppStorage(UpdateMode.key) private var updateMode = UpdateMode.live   // #764
     // Session list rows (`RowDetails`), on this device only.
     @AppStorage(RowDetails.Key.agents) private var rowAgents = RowDetails().agents
     @AppStorage(RowDetails.Key.openPRs) private var rowOpenPRs = RowDetails().openPRs
@@ -195,6 +196,15 @@ struct SettingsView: View {
             } footer: {
                 // #615: where Commands comes from when the ⋯ menu has none.
                 Text("Row details each session shows. Its title and state always show.\n\nThe ⋯ menu above the list runs the Mac's commands, like Calculator, conversions and Lock Screen, once the Mac has Settings › Remote Terminal › Run commands from iPhone on.")
+            }
+
+            Section {
+                Picker("Updates", selection: $updateMode) {
+                    ForEach(UpdateMode.allCases) { Text($0.title).tag($0) }
+                }
+                .onChange(of: updateMode) { _ in LiveStatus.shared.modeChanged() }   // the Worker paces pushes by it
+            } footer: {
+                Text("Real-time checks your Mac every 5 to 30 seconds while the session list is open, more often while it changes. Battery saver checks every 15 seconds to 2 minutes. Low Power Mode uses Battery saver while it's on.")
             }
 
             Section {

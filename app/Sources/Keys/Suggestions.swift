@@ -1113,6 +1113,7 @@ final class SuggestionBar: UIView {
         poll = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkClip() }
         }
+        poll?.tolerance = 0.3   // #764: iOS may batch the wakeups; Paste still shows within the second or so
     }
 
     /// The keyboard goes (#612): Rewrite's panel closes, its request with it; the poll stops (#659).

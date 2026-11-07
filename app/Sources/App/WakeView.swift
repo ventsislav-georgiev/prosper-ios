@@ -99,17 +99,19 @@ struct WakeFailedView: View {
 
     @State private var meta: WakeMeta?            // nil = still loading
     @State private var deadline: Date?            // set while waking
-    @State private var now = Date()
     @State private var error: String?
     @State private var showLogin = false
     @State private var waitTask: Task<Void, Never>?
     @State private var armedOnce = false
-    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 10) {
             if let deadline {
-                wakingBody(deadline: deadline)
+                // A tick a second only while counting down (#764): the Wake button and Still
+                // asleep need none, and the card can sit there for minutes.
+                TimelineView(.explicit(Array(stride(from: armedAt, to: deadline, by: 1)) + [deadline])) { ctx in
+                    wakingBody(deadline: deadline, now: ctx.date)
+                }
             } else {
                 gatingBody
             }
@@ -117,7 +119,6 @@ struct WakeFailedView: View {
         .padding(16)
         .frame(maxWidth: 340)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
-        .onReceive(timer) { now = $0 }
         .task { await loadMeta() }
         .onDisappear { waitTask?.cancel() }
         .sheet(isPresented: $showLogin) {
@@ -155,7 +156,7 @@ struct WakeFailedView: View {
 
     // MARK: waking (PLAN §4 — countdown + silent reconnect + timeout)
 
-    @ViewBuilder private func wakingBody(deadline: Date) -> some View {
+    @ViewBuilder private func wakingBody(deadline: Date, now: Date) -> some View {
         let total = max(1, deadline.timeIntervalSince(armedAt))
         let elapsed = max(0, now.timeIntervalSince(armedAt))
         if now < deadline {
@@ -196,7 +197,7 @@ struct WakeFailedView: View {
 
     // armedAt = deadline minus the computed window; derived so we don't store both.
     private var armedAt: Date {
-        guard let deadline, case .enabled(let batt, _) = meta else { return now }
+        guard let deadline, case .enabled(let batt, _) = meta else { return deadline ?? Date() }
         return deadline.addingTimeInterval(-Double(batt + wakeSlackSeconds))
     }
 
