@@ -110,10 +110,6 @@ struct SettingsView: View {
     @AppStorage(RowDetails.Key.agents) private var rowAgents = RowDetails().agents
     @AppStorage(RowDetails.Key.openPRs) private var rowOpenPRs = RowDetails().openPRs
     @AppStorage(RowDetails.Key.merged) private var rowMerged = RowDetails().merged
-    @AppStorage(RowDetails.Key.tasksDone) private var rowTasksDone = RowDetails().tasksDone
-    @AppStorage(RowDetails.Key.inProgress) private var rowInProgress = RowDetails().inProgress
-    @AppStorage(RowDetails.Key.queued) private var rowQueued = RowDetails().queued
-    @AppStorage(RowDetails.Key.sessionName) private var rowSessionName = RowDetails().sessionName
     // #614: Sync from Mac, and the copy last synced.
     @AppStorage(MacLibrary.syncKey) private var syncFromMac = true
     @State private var library = MacLibrary.sharedRoot().flatMap(MacLibrary.load)
@@ -189,10 +185,6 @@ struct SettingsView: View {
                 Toggle("Agents", isOn: $rowAgents)
                 Toggle("Open PRs", isOn: $rowOpenPRs)
                 Toggle("Merged", isOn: $rowMerged)
-                Toggle("Tasks done", isOn: $rowTasksDone)
-                Toggle("In progress", isOn: $rowInProgress)
-                Toggle("Queued", isOn: $rowQueued)
-                Toggle("Session name", isOn: $rowSessionName)
             } header: {
                 Text("Session list")
             } footer: {

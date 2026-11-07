@@ -2,7 +2,7 @@ import XCTest
 import SwiftUI
 @testable import Prosper
 
-/// The list row's PRs and tasks (the Mac's `meta`), decoded and drawn like Agent Island.
+/// The list row's PRs (the Mac's `meta`), decoded and drawn like Agent Island.
 final class SessionMetaTests: XCTestCase {
 
     private func meta(_ json: String) -> SessionMeta? {
@@ -14,9 +14,8 @@ final class SessionMetaTests: XCTestCase {
     }
 
     func testDecodeFull() {
-        let m = meta(#"{"tasks":{"done":3,"total":7,"in_progress":1,"queued":2},"prs":{"open":[{"url":"https://github.com/o/prosper/pull/12","repo":"o/prosper","num":12,"title":"Fix it"}],"merged":4}}"#)
-        XCTAssertEqual(m, SessionMeta(done: 3, total: 7, inProgress: 1, queued: 2,
-                                      open: [.init(url: URL(string: "https://github.com/o/prosper/pull/12"),
+        let m = meta(#"{"prs":{"open":[{"url":"https://github.com/o/prosper/pull/12","repo":"o/prosper","num":12,"title":"Fix it"}],"merged":4}}"#)
+        XCTAssertEqual(m, SessionMeta(open: [.init(url: URL(string: "https://github.com/o/prosper/pull/12"),
                                                    repo: "o/prosper", num: 12, title: "Fix it")], merged: 4))
     }
 
@@ -28,9 +27,8 @@ final class SessionMetaTests: XCTestCase {
     }
 
     func testDecodePartial() {
-        let m = meta(#"{"tasks":{"queued":2},"prs":{"open":[{"repo":"o/r","url":"https://github.com/o/r/pull/1"}]}}"#)!
-        XCTAssertEqual(m.queued, 2)
-        XCTAssertNil(m.done); XCTAssertNil(m.total); XCTAssertNil(m.merged)
+        let m = meta(#"{"prs":{"open":[{"repo":"o/r","url":"https://github.com/o/r/pull/1"}]}}"#)!
+        XCTAssertNil(m.merged)
         XCTAssertEqual(m.open, [.init(url: URL(string: "https://github.com/o/r/pull/1"), repo: "o/r", num: nil, title: "")])
     }
 
@@ -41,13 +39,20 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertNil(meta(#"{"tasks":[],"prs":{"open":{"url":"x"},"merged":-2}}"#))
     }
 
+    /// #763: the phone draws no tasks; a Mac that still sends them changes nothing.
+    func testTasksKeyIgnored() {
+        XCTAssertEqual(meta(#"{"tasks":{"done":3,"total":7,"in_progress":1,"queued":2},"prs":{"merged":4}}"#),
+                       SessionMeta(merged: 4))
+        XCTAssertNil(meta(#"{"tasks":{"done":3,"total":7,"in_progress":1,"queued":2}}"#), "tasks alone draw nothing")
+        XCTAssertNil(meta(#"{"tasks":"junk"}"#))
+    }
+
     /// A meta with nothing to draw is nil, so the row gains no empty gap.
     func testNothingToShowIsNil() {
         for j in [#"{}"#, #"{"prs":{"open":[]}}"#, #"{"prs":{"open":[],"merged":0}}"#, #"{"tasks":{"done":0,"total":0}}"#] {
             XCTAssertNil(meta(j), j)
         }
         XCTAssertNotNil(meta(#"{"prs":{"open":[],"merged":4}}"#))
-        XCTAssertNotNil(meta(#"{"tasks":{"queued":2}}"#))
     }
 
     /// A whole list row with meta keeps the row; a row without keeps meta nil.
@@ -71,20 +76,8 @@ final class SessionMetaTests: XCTestCase {
     func testCountCap() {
         XCTAssertEqual(SessionMeta.count(99_999), "99999")
         XCTAssertEqual(SessionMeta.count(100_000), "99999+")
-        XCTAssertEqual(SessionMeta(done: 100_000, total: 100_000).taskLine, "99999+/99999+ done")
         XCTAssertEqual(SessionMeta(merged: 1_000_000).mergedLabel, "99999+ merged")
-        XCTAssertEqual(meta("{\"tasks\":{\"done\":\(Int.max),\"total\":\(Int.max)}}")?.taskLine, "99999+/99999+ done", "Int.max")
-    }
-
-    func testTaskLine() {
-        XCTAssertEqual(SessionMeta(done: 22, total: 26, inProgress: 2, queued: 2).taskLine,
-                       "22/26 done · 2 in progress · 2 queued")
-        XCTAssertEqual(SessionMeta(done: 22, total: 26, inProgress: 0).taskLine, "22/26 done")
-        XCTAssertEqual(SessionMeta(inProgress: 2, queued: 2).taskLine, "2 in progress · 2 queued")
-        XCTAssertEqual(SessionMeta(total: 5, queued: 1).taskLine, "0/5 done · 1 queued")
-        XCTAssertEqual(SessionMeta(done: 7, total: 3).taskLine, "7/3 done", "done > total as is")
-        XCTAssertNil(SessionMeta(done: 3).taskLine)
-        XCTAssertNil(SessionMeta().taskLine)
+        XCTAssertEqual(meta("{\"prs\":{\"merged\":\(Int.max)}}")?.mergedLabel, "99999+ merged", "Int.max")
     }
 
     func testChipsMoreAndMerged() {
@@ -114,11 +107,6 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(meta(#"{"prs":{"open":["# + (1...60).map(valid).joined(separator: ",") + "]}}")?.open.count, 50)
     }
 
-    func testQueuedZeroLeftOut() {
-        XCTAssertEqual(SessionMeta(done: 1, total: 2, queued: 0).taskLine, "1/2 done")
-        XCTAssertNil(SessionMeta(queued: 0).taskLine)
-    }
-
     func testEmptyRepoDroppedAndRepoCleaned() {
         let m = meta(#"{"prs":{"open":[{"repo":"","num":1},{"repo":"o/\u202Eab\u0000c\nd","num":2}]}}"#)!
         XCTAssertEqual(m.open.map(\.repo), ["o/abc d"])
@@ -132,30 +120,15 @@ final class SessionMetaTests: XCTestCase {
 
     // MARK: - Row details (#533)
 
-    private let full = SessionMeta(done: 41, total: 68, inProgress: 8, queued: 19,
-                                   open: [.init(url: nil, repo: "o/repo", num: 12, title: "")], merged: 75)
+    private let full = SessionMeta(open: [.init(url: nil, repo: "o/repo", num: 12, title: "")], merged: 75)
 
     private func with(_ change: (inout RowDetails) -> Void) -> RowDetails {
         var d = RowDetails(); change(&d); return d
     }
 
-    /// Agents, Open PRs and Merged on; Tasks done, In progress, Queued and Session name
-    /// off, so a default row has no task summary and no name under its alias.
+    /// Agents, Open PRs and Merged, all on.
     func testRowDetailsDefaults() {
-        XCTAssertEqual(RowDetails(), RowDetails(agents: true, openPRs: true, merged: true,
-                                                tasksDone: false, inProgress: false, queued: false, sessionName: false))
-        XCTAssertNil(full.summary(RowDetails()))
-    }
-
-    func testSummaryFollowsToggles() {
-        XCTAssertEqual(full.summary(.all), "41/68 done · 8 in progress · 19 queued")
-        XCTAssertEqual(full.summary(with { $0.tasksDone = true }), "41/68 done")
-        XCTAssertEqual(full.summary(with { $0.inProgress = true }), "8 in progress")
-        XCTAssertEqual(full.summary(with { $0.queued = true }), "19 queued")
-        XCTAssertEqual(full.summary(with { $0.tasksDone = true; $0.queued = true }), "41/68 done · 19 queued")
-        XCTAssertNil(SessionMeta(done: 1, total: 2, queued: 0).summary(with { $0.queued = true }), "a zero part is dropped")
-        XCTAssertNil(SessionMeta(inProgress: 3).summary(with { $0.tasksDone = true }), "an unknown part is dropped")
-        XCTAssertEqual(SessionMeta(inProgress: 100_000).summary(.all), "99999+ in progress")
+        XCTAssertEqual(RowDetails(), RowDetails(agents: true, openPRs: true, merged: true))
     }
 
     func testPendingWording() {
@@ -219,19 +192,12 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(full.prLines(with { $0.merged = false }).first, .init(chips: ["repo#12"], more: nil, merged: nil))
         XCTAssertEqual(full.prLines(with { $0.openPRs = false; $0.merged = false }), [], "no line 3")
         XCTAssertEqual(SessionMeta(merged: 4).prLines(with { $0.merged = false }), [])
-        XCTAssertEqual(SessionMeta(done: 1, total: 2).prLines(RowDetails()), [], "no PRs, no line 3")
     }
 
     func testMenuOnlyWithOpenPRs() {
         XCTAssertTrue(full.hasMenu(RowDetails()))
         XCTAssertFalse(full.hasMenu(with { $0.openPRs = false }))
         XCTAssertFalse(SessionMeta(merged: 2).hasMenu(RowDetails()), "a lone merged count has nothing to pick")
-    }
-
-    func testSpokenSummary() {
-        XCTAssertEqual(full.summary(.all, spoken: true), "41 of 68 tasks done, 8 in progress, 19 queued")
-        XCTAssertEqual(full.summary(with { $0.inProgress = true; $0.queued = true }, spoken: true), "8 in progress, 19 queued")
-        XCTAssertNil(full.summary(RowDetails(), spoken: true))
     }
 
     /// QA at accessibility sizes: the fixed agents chip squeezed the title to "…" and
@@ -253,23 +219,6 @@ final class SessionMetaTests: XCTestCase {
             XCTAssertGreaterThan(size(row, t, w).height, size(short, t, w).height, "\(t): the title wraps, not cut to …")
         }
         XCTAssertEqual(size(row, .large, 300).height, size(lone, .large, 300).height, "below them the chip sits by the title")
-    }
-
-    /// #588: the name under an alias draws only with Session name on; a row without an
-    /// alias keeps its name as the title either way.
-    @MainActor func testSessionNameFollowsToggle() {
-        let store = UserDefaults(suiteName: "SessionMetaTests.name")!
-        store.removePersistentDomain(forName: "SessionMetaTests.name")
-        func height(_ s: DchSession) -> CGFloat {   // at accessibility sizes the name has its own line
-            UIHostingController(rootView: SessionRow(session: s).environment(\.dynamicTypeSize, .accessibility1).defaultAppStorage(store))
-                .sizeThatFits(in: CGSize(width: 300, height: CGFloat.greatestFiniteMagnitude)).height
-        }
-        let aliased = DchSession(name: "api-main-2", alias: "Docs", state: "working")
-        let plain = DchSession(name: "Docs", alias: nil, state: "working")
-        XCTAssertEqual(height(aliased), height(plain), "off by default: no name under the alias")
-        store.set(true, forKey: RowDetails.Key.sessionName)
-        XCTAssertGreaterThan(height(aliased), height(plain), "on: the name shows under the alias")
-        XCTAssertEqual(DchSession(name: "api-main-2", alias: nil).rowAccessibility(RowDetails()), "api-main-2")
     }
 
     /// #531: a blank title leaves no dangling dash.
@@ -294,11 +243,10 @@ final class SessionMetaTests: XCTestCase {
         let s = DchSession(name: "sec-1", alias: "Docs", state: "working", agents: 4, meta: full)
         XCTAssertEqual(s.rowAccessibility(RowDetails()),
                        "Docs, Working, 4 agents, open pull requests repo#12, 75 merged")
-        XCTAssertEqual(s.rowAccessibility(.all),
-                       "Docs, Working, 4 agents, sec-1, 41 of 68 tasks done, 8 in progress, 19 queued, open pull requests repo#12, 75 merged")
-        XCTAssertEqual(s.rowAccessibility(RowDetails(agents: false, openPRs: false, merged: false, sessionName: true)), "Docs, Working, sec-1")
-        XCTAssertEqual(s.rowAccessibility(with { $0.agents = false; $0.queued = true }),
-                       "Docs, Working, 19 queued, open pull requests repo#12, 75 merged")
+        XCTAssertEqual(s.rowAccessibility(RowDetails(agents: false, openPRs: false, merged: false)), "Docs, Working",
+                       "no dch name under the alias")
+        XCTAssertEqual(s.rowAccessibility(with { $0.agents = false }),
+                       "Docs, Working, open pull requests repo#12, 75 merged")
         XCTAssertEqual(DchSession(name: "a", alias: nil, agents: 1).rowAccessibility(RowDetails()), "a, 1 agent")
     }
 

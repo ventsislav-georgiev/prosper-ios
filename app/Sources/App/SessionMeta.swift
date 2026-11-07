@@ -5,8 +5,8 @@ import Foundation
 import SwiftUI
 #endif
 
-/// A session's PRs and tasks as the Mac's list reports them (its `meta` key), drawn
-/// under the row the way the Mac's Agent Island draws them.
+/// A session's PRs as the Mac's list reports them (its `meta` key), drawn under the row
+/// the way the Mac's Agent Island draws them. Any other key, `tasks` included, is ignored.
 struct SessionMeta: Hashable {
     struct PR: Hashable {
         var url: URL?           // nil unless https://github.com/…, then the chip is a label
@@ -32,7 +32,6 @@ struct SessionMeta: Hashable {
         }
     }
 
-    var done: Int?, total: Int?, inProgress: Int?, queued: Int?
     var open: [PR] = []
     var merged: Int?
 
@@ -43,10 +42,6 @@ struct SessionMeta: Hashable {
     /// type or a negative count is dropped on its own; it never costs the row.
     init?(json: Any?) {
         guard let o = json as? [String: Any] else { return nil }
-        if let t = o["tasks"] as? [String: Any] {
-            (done, total) = (Self.count(t["done"]), Self.count(t["total"]))
-            (inProgress, queued) = (Self.count(t["in_progress"]), Self.count(t["queued"]))
-        }
         if let p = o["prs"] as? [String: Any] {
             merged = Self.count(p["merged"])
             // ponytail: at most 50 kept, so beyond 50 open PRs "+M" undercounts; send a total if that matters.
@@ -57,12 +52,10 @@ struct SessionMeta: Hashable {
                           title: Self.plain(e["title"] as? String ?? ""))
             }.prefix(50))
         }
-        if open.isEmpty && mergedLabel == nil && taskLine == nil { return nil }
+        if open.isEmpty && mergedLabel == nil { return nil }
     }
 
-    init(done: Int? = nil, total: Int? = nil, inProgress: Int? = nil, queued: Int? = nil,
-         open: [PR] = [], merged: Int? = nil) {
-        (self.done, self.total, self.inProgress, self.queued) = (done, total, inProgress, queued)
+    init(open: [PR] = [], merged: Int? = nil) {
         (self.open, self.merged) = (open, merged)
     }
 
@@ -95,22 +88,6 @@ struct SessionMeta: Hashable {
 
     /// Every count drawn: "99999+" above 99999, so a runaway number can't squeeze the row.
     static func count(_ n: Int) -> String { n > 99_999 ? "99999+" : "\(n)" }
-
-    /// "22/26 done · 2 in progress · 2 queued", zero and unknown parts left out.
-    var taskLine: String? { summary(.all) }
-
-    /// The task line with only the parts `d` turns on; nil leaves no summary. `spoken`
-    /// words it for VoiceOver: "41 of 68 tasks done, 8 in progress".
-    func summary(_ d: RowDetails, spoken: Bool = false) -> String? {
-        var parts: [String] = []
-        if d.tasksDone, let total, total > 0 {
-            let (n, of) = (Self.count(done ?? 0), Self.count(total))
-            parts.append(spoken ? "\(n) of \(of) tasks done" : "\(n)/\(of) done")
-        }
-        if d.inProgress, let n = inProgress, n > 0 { parts.append("\(Self.count(n)) in progress") }
-        if d.queued, let n = queued, n > 0 { parts.append("\(Self.count(n)) queued") }
-        return parts.isEmpty ? nil : parts.joined(separator: spoken ? ", " : " · ")
-    }
 
     var mergedLabel: String? { merged.flatMap { $0 > 0 ? "\(Self.count($0)) merged" : nil } }
 
@@ -157,7 +134,7 @@ struct SessionMeta: Hashable {
     }
 }
 
-/// Which details a session row draws besides its title, state and name, set in
+/// Which details a session row draws besides its title and state, set in
 /// Settings › Session list and kept per device. Labels and defaults match the Mac's
 /// Agent Island.
 struct RowDetails: Equatable {
@@ -165,19 +142,9 @@ struct RowDetails: Equatable {
         static let agents = "sessionRow.agents"
         static let openPRs = "sessionRow.openPRs"
         static let merged = "sessionRow.merged"
-        static let tasksDone = "sessionRow.tasksDone"
-        static let inProgress = "sessionRow.inProgress"
-        static let queued = "sessionRow.queued"
-        static let sessionName = "sessionRow.sessionName"
     }
 
     var agents = true, openPRs = true, merged = true
-    var tasksDone = false, inProgress = false, queued = false
-    /// The dch name beside the state on an aliased row; a row without an alias keeps it as its title.
-    var sessionName = false
-
-    static let all = RowDetails(agents: true, openPRs: true, merged: true, tasksDone: true, inProgress: true, queued: true,
-                                sessionName: true)
 }
 
 extension DchSession {
@@ -187,36 +154,27 @@ extension DchSession {
         let agents: String? = d.agents && n > 0 ? (n == 1 ? "1 agent" : "\(n) agents") : nil
         let prs: String? = d.openPRs ? meta?.prAccessibility : nil
         let merged: String? = d.merged ? meta?.mergedLabel : nil
-        return [title, SessionStateStyle(state)?.label, agents, d.sessionName && title != name ? name : nil,
-                meta?.summary(d, spoken: true), prs, merged].compactMap { $0 }.joined(separator: ", ")
+        return [title, SessionStateStyle(state)?.label, agents, prs, merged].compactMap { $0 }.joined(separator: ", ")
     }
 }
 
 #if !KEYBOARD
 /// A session row as the Mac's Agent Island draws it: a state glyph, then line 1 the
-/// title and "+N agents", line 2 the state, the name under an alias (Session name) and the task
-/// summary, line 3 the PR chips and "N merged". Nothing animates.
-/// The chips are inert, so a tap anywhere opens the session: a Link's 44 pt hit band
-/// covered the name and the task line. A long press on the PR line lists the PRs.
+/// title and "+N agents", line 2 the state, line 3 the PR chips and "N merged". Nothing
+/// animates. The chips are inert, so a tap anywhere opens the session: a Link's 44 pt hit
+/// band covered the lines above. A long press on the PR line lists the PRs.
 struct SessionRow: View {
     let session: DchSession
     @AppStorage(RowDetails.Key.agents) private var agents = RowDetails().agents
     @AppStorage(RowDetails.Key.openPRs) private var openPRs = RowDetails().openPRs
     @AppStorage(RowDetails.Key.merged) private var merged = RowDetails().merged
-    @AppStorage(RowDetails.Key.tasksDone) private var tasksDone = RowDetails().tasksDone
-    @AppStorage(RowDetails.Key.inProgress) private var inProgress = RowDetails().inProgress
-    @AppStorage(RowDetails.Key.queued) private var queued = RowDetails().queued
-    @AppStorage(RowDetails.Key.sessionName) private var sessionName = RowDetails().sessionName
     @ScaledMetric(relativeTo: .subheadline) private var glyphWidth: CGFloat = 14
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        let d = RowDetails(agents: agents, openPRs: openPRs, merged: merged,
-                           tasksDone: tasksDone, inProgress: inProgress, queued: queued, sessionName: sessionName)
+        let d = RowDetails(agents: agents, openPRs: openPRs, merged: merged)
         let style = SessionStateStyle(session.state)
-        let alias: String? = d.sessionName && session.title != session.name ? session.name : nil
-        let summary: String? = session.meta?.summary(d)
         let lines: [SessionMeta.PRLine] = session.meta?.prLines(d) ?? []
         let agentsChip: String? = d.agents ? SessionStateStyle.agents(session.agents) : nil
         let big = typeSize.isAccessibilitySize
@@ -229,36 +187,17 @@ struct SessionRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 if big {
                     // Accessibility sizes: nothing shares a line with the title or the
-                    // state word, and both may wrap, so the name and state always show.
+                    // state word, and both may wrap, so both always show.
                     Text(session.title).fontWeight(.medium).lineLimit(2)
                     if let agentsChip { chip(agentsChip) }
-                    VStack(alignment: .leading, spacing: 2) {
-                        stateAndName(style, alias)
-                        if let summary { summaryText(summary) }
-                    }
-                    .font(.footnote)
-                    .lineLimit(2)
                 } else {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(session.title).fontWeight(.medium).lineLimit(1)
                         if let agentsChip { chip(agentsChip).layoutPriority(1) }
                     }
                 }
-                if !big, style != nil || alias != nil || summary != nil {
-                    // A phone row rarely fits every part: the summary moves under the state
-                    // rather than truncate its numbers.
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            stateAndName(style, alias)
-                            if let summary { Spacer(minLength: 6); summaryText(summary) }
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(alignment: .firstTextBaseline, spacing: 6) { stateAndName(style, alias) }
-                            if let summary { summaryText(summary) }
-                        }
-                    }
-                    .font(.footnote)
-                    .lineLimit(1)
+                if let style {
+                    Text(style.label).foregroundStyle(style.tint).font(.footnote).lineLimit(big ? 2 : 1)
                 }
                 if !lines.isEmpty {
                     ViewThatFits(in: .horizontal) {
@@ -278,15 +217,6 @@ struct SessionRow: View {
                 }
             }
         }
-    }
-
-    @ViewBuilder private func stateAndName(_ style: SessionStateStyle?, _ alias: String?) -> some View {
-        if let style { Text(style.label).foregroundStyle(style.tint).layoutPriority(1) }   // the name truncates first
-        if let alias { Text(verbatim: alias).font(.caption2.monospaced()).foregroundStyle(.secondary) }
-    }
-
-    private func summaryText(_ s: String) -> some View {
-        Text(verbatim: s).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
     }
 
     /// Lists the PRs to open; with Open PRs off the line has no chips and no menu.

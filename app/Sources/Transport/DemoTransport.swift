@@ -11,17 +11,14 @@ final class DemoTransport: SessionTransport {
     func listSessions() async throws -> [DchSession] {
         [DchSession(name: "demo", alias: "Demo session", state: "idle"),
          DchSession(name: "claude", alias: "claude (sample)", state: "working", agents: 2, meta: SessionMeta(
-            done: 22, total: 26, inProgress: 2, queued: 2,
             open: [12, 15, 18, 21].map { (n: Int) in      // no URL: the sample repo doesn't exist
                 SessionMeta.PR(url: nil, repo: "example/app", num: n, title: "Sample change #\(n)")
             }, merged: 4)),
          // More made-up rows so the list reads like a working day: one waiting, one busy, one done.
          DchSession(name: "api", alias: "api refactor", state: "blocked", agents: 1, meta: SessionMeta(
-            done: 3, total: 7, inProgress: 1, queued: 3,
             open: [SessionMeta.PR(url: nil, repo: "example/api", num: 31, title: "Sample refactor")])),
          DchSession(name: "web", alias: "web build", state: "working"),
-         DchSession(name: "docs", alias: "docs site", state: "done", meta: SessionMeta(
-            done: 5, total: 5, merged: 2))]
+         DchSession(name: "docs", alias: "docs site", state: "done", meta: SessionMeta(merged: 2))]
     }
     func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream {
         DemoStream(kind: name == "claude" ? .claude : .shell)

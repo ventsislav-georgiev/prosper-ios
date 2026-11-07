@@ -935,12 +935,6 @@ extension DchHistoryRow {
     /// #593: the agent's session name outranks the dch name, as on the Sessions tab.
     var title: String { alias ?? agentName ?? name }
 
-    /// #593: the dch name under the title, only with the Session name row detail on (#588)
-    /// and when it says something the title doesn't.
-    static func dchName(_ r: DchHistoryRow, shown: Bool) -> String? {
-        shown && r.title != r.name ? r.name : nil
-    }
-
     /// #589: the island's end words (#585); nothing the user did on purpose reads as a crash.
     /// "closed" (dch -k), "exited" / "exited (N)", "ended (signal N)" for TERM, HUP and INT,
     /// "crashed (signal N)" for any other signal, "vanished" ("" too); else as dch wrote it.
@@ -1005,7 +999,6 @@ struct HistorySheet: View {
     @State private var failed: (title: String, message: String)?
     @State private var confirmClear = false
     @State private var clearing = false
-    @AppStorage(RowDetails.Key.sessionName) private var sessionName = RowDetails().sessionName
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -1083,9 +1076,6 @@ struct HistorySheet: View {
                 if r.pinned {
                     Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary).accessibilityLabel("Pinned")
                 }
-            }
-            if let dch = DchHistoryRow.dchName(r, shown: sessionName) {
-                Text(verbatim: dch).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             // #585: only a crash is coloured, the island's orange.
             (Text(end).foregroundColor(end.hasPrefix("crashed") ? .orange : .secondary)

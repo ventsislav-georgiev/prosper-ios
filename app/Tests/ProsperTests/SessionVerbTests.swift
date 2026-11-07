@@ -223,17 +223,6 @@ final class SessionVerbTests: XCTestCase {
         XCTAssertEqual(r.title, "API", "the alias outranks the agent name")
     }
 
-    /// #593: the dch name shows only with Session name on and when it isn't the title.
-    func testHistoryDchNameGate() {
-        let r = DchHistoryRow(name: "api-main-2", alias: nil, agentName: "harness", end: "exit 0", lastSeen: 2,
-                              started: 1, runtime: 1, cwd: nil, command: nil, takes: false)
-        XCTAssertNil(DchHistoryRow.dchName(r, shown: false), "toggle off hides it")
-        XCTAssertEqual(DchHistoryRow.dchName(r, shown: true), "api-main-2")
-        var plain = r
-        plain.agentName = nil
-        XCTAssertNil(DchHistoryRow.dchName(plain, shown: true), "the name equal to the title hides it")
-    }
-
     func testResumeInterruptedCountsOnlyTakes() {
         func row(_ name: String, _ takes: Bool) -> DchHistoryRow {
             DchHistoryRow(name: name, alias: nil, agentName: nil, end: "signal 9", lastSeen: 2, started: 1, runtime: 1,
