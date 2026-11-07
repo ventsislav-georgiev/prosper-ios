@@ -64,4 +64,11 @@ final class SessionPollTests: XCTestCase {
         XCTAssertNil(SessionStateStyle(nil))
         XCTAssertNil(SessionStateStyle(""))
     }
+
+    func testFirstPollComparesAgainstShownList() {
+        XCTAssertFalse(SessionPoll.changed([1, 2], last: nil, shown: [1, 2]), "#774: refresh filled the list after the task started")
+        XCTAssertTrue(SessionPoll.changed([1, 2], last: nil, shown: [1]))
+        XCTAssertTrue(SessionPoll.changed([1, 2], last: [1], shown: [1, 2]), "later polls compare against the previous poll")
+        XCTAssertFalse(SessionPoll.changed([1], last: [1], shown: []))
+    }
 }

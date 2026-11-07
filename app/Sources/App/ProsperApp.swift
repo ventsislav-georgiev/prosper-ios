@@ -683,7 +683,7 @@ struct SessionListView: View {
         // A first appearance has `.task { refresh() }` in flight, so it waits. Any restart
         // after that lists at once: the rows are as old as the time away.
         var wait: TimeInterval? = connected ? nil : SessionPoll.fastest(mode)
-        var last = sessions
+        var last: [DchSession]? = nil   // #774: read `sessions` at the first poll, after refresh()
         while !Task.isCancelled {
             if let wait { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
             guard !Task.isCancelled else { return }
@@ -697,7 +697,7 @@ struct SessionListView: View {
             }
             guard !Task.isCancelled else { return }
             remember(list)
-            wait = SessionPoll.next(after: wait, changed: list != last, mode: mode)
+            wait = SessionPoll.next(after: wait, changed: SessionPoll.changed(list, last: last, shown: sessions), mode: mode)
             last = list
             // Don't touch `sessions` unless something actually moved: an equal array still
             // marks the state dirty and redraws every row.

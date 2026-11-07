@@ -32,6 +32,10 @@ enum SessionPoll {
     /// An asleep or unreachable Mac: stop hammering.
     static let failureBackoff: TimeInterval = 20
 
+    /// #774: whether a poll moved the list. `last` is nil before the loop's first poll, which
+    /// compares against what is shown: the first appearance's refresh lands after the task starts.
+    static func changed<T: Equatable>(_ list: [T], last: [T]?, shown: [T]) -> Bool { list != (last ?? shown) }
+
     /// The wait before the next poll. `wait` is the one before this poll, nil for a poll
     /// taken at once. A change starts over at `fastest`; a still list doubles, to `slowest`.
     static func next(after wait: TimeInterval?, changed: Bool, mode: UpdateMode = .live) -> TimeInterval {
