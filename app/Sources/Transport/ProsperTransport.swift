@@ -707,6 +707,11 @@ final class ProsperStream: TerminalStream {
     private var buf = Data()
     private(set) var exited = false
     private(set) var refusal: String?
+    /// Pump state (connection queue only). A 0x13 before any server 0x10/0x19 answers the
+    /// attach and is terminal; a later one answers a control frame and stays pending:
+    /// the next 0x10/0x19 clears it, a FIN or error while it's pending makes it the refusal.
+    private var live = false
+    private var heldError: String?
 
     // `send` runs on main, completions and the pump on the connection's queue.
     private let lock = NSLock()
@@ -746,17 +751,22 @@ final class ProsperStream: TerminalStream {
                     catch { self.close(); return }   // oversized frame — kill the stream
                     guard let (type, payload) = frame else { break frameLoop }
                     switch type {
-                    case F.data: self.cont.yield(ArraySlice([UInt8](payload)))
-                    // Empty = the session's master has no VT mirror; nothing to paint.
-                    case F.snapshotResp where !payload.isEmpty:
-                        self.onScreen?(ArraySlice([UInt8](payload)))
+                    case F.data:
+                        self.live = true; self.heldError = nil
+                        self.cont.yield(ArraySlice([UInt8](payload)))
+                    case F.snapshotResp:
+                        self.live = true; self.heldError = nil
+                        // Empty = the session's master has no VT mirror; nothing to paint.
+                        if !payload.isEmpty { self.onScreen?(ArraySlice([UInt8](payload))) }
                     case F.exit: self.exited = true; self.close(); return
-                    case F.error: self.refusal = ProsperTransport.decodeMessage(payload); self.close(); return
+                    case F.error where !self.live:
+                        self.refusal = ProsperTransport.decodeMessage(payload); self.close(); return
+                    case F.error: self.heldError = ProsperTransport.decodeMessage(payload)
                     default: break
                     }
                 }
             }
-            if isComplete || error != nil { self.close(); return }
+            if isComplete || error != nil { self.refusal = self.heldError; self.close(); return }
             if !self.isClosed { self.pump() }
         }
     }

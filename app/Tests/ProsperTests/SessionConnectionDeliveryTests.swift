@@ -1223,6 +1223,55 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         conn.close()
     }
 
+    /// #813: a 0x13 after the repaint answers a control frame on a live session, not the
+    /// attach: the session stays attached and later output still arrives.
+    func testErrorOnALiveSessionKeepsItAttached() async throws {
+        let accepted = Box(0)
+        let listener = try loopbackServer { c in
+            accepted.v += 1
+            var d = FrameCodec.encode(0x10, Data("repaint".utf8))
+            d.append(FrameCodec.encode(0x13, Data(#"{"message":"busy with an earlier request"}"#.utf8)))
+            d.append(FrameCodec.encode(0x10, Data("after".utf8)))
+            c.send(content: d, completion: .idempotent)   // and the connection stays open
+        }
+        defer { listener.cancel() }
+        try await waitUntil("listener") { (listener.port?.rawValue ?? 0) != 0 }
+
+        let conn = SessionConnection(transport: ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue),
+                                     session: DchSession(name: "t", alias: nil))
+        let out = Box(Data())
+        conn.onBytes = { b in DispatchQueue.main.async { out.v.append(contentsOf: b) } }
+        conn.start(cols: 80, rows: 24)
+        try await waitUntil("after") { String(decoding: out.v, as: UTF8.self).contains("after") }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(conn.state, .connected)
+        XCTAssertEqual(accepted.v, 1, "a live session's 0x13 must not reattach")
+        conn.close()
+    }
+
+    /// #813: a 0x13 followed by the server's FIN is terminal even after server bytes.
+    func testErrorThenFinAfterBytesIsTerminal() async throws {
+        let accepted = Box(0)
+        let listener = try loopbackServer { c in
+            accepted.v += 1
+            var d = FrameCodec.encode(0x10, Data("repaint".utf8))
+            d.append(FrameCodec.encode(0x13, Data(#"{"message":"Could not start the session: x"}"#.utf8)))
+            c.send(content: d, completion: .contentProcessed { _ in c.cancel() })
+        }
+        defer { listener.cancel() }
+        try await waitUntil("listener") { (listener.port?.rawValue ?? 0) != 0 }
+
+        let conn = SessionConnection(transport: ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue),
+                                     session: DchSession(name: "t", alias: nil))
+        conn.onBytes = { _ in }
+        conn.start(cols: 80, rows: 24)
+        try await waitUntil("refused") { conn.state == .failed("Could not start the session: x") }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(accepted.v, 1)
+        XCTAssertEqual(conn.state, .failed("Could not start the session: x"))
+        conn.close()
+    }
+
     /// 0x12 still ends the stream cleanly, not as a refusal.
     func testExitFrameStillEndsCleanly() async throws {
         let listener = try loopbackServer { c in
