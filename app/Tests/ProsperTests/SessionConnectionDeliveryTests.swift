@@ -1198,6 +1198,46 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertFalse(stream.putClipboard(Data([1])))
     }
 
+    /// #806: a server that refuses the attach (0x13, dch serve's unknown name) ends the
+    /// session with its own message: one connection, no reattach loop.
+    func testAttachRefusalShowsTheServerMessageAndNeverReattaches() async throws {
+        let accepted = Box(0)
+        let listener = try loopbackServer { c in
+            accepted.v += 1
+            c.send(content: FrameCodec.encode(0x13, Data(#"{"message":"no session named t"}"#.utf8)),
+                   completion: .contentProcessed { _ in c.cancel() })
+        }
+        defer { listener.cancel() }
+        try await waitUntil("listener") { (listener.port?.rawValue ?? 0) != 0 }
+
+        let conn = SessionConnection(transport: ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue),
+                                     session: DchSession(name: "t", alias: nil))
+        conn.onBytes = { _ in }
+        conn.start(cols: 80, rows: 24)
+        try await waitUntil("refused") { conn.state == .failed("no session named t") }
+        conn.send([0x61][...])   // typed after the refusal: dropped, like `.ended`
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(accepted.v, 1, "a refused attach must not reattach")
+        XCTAssertEqual(conn.state, .failed("no session named t"))
+        XCTAssertEqual(conn.queuedByteCount, 0)
+        conn.close()
+    }
+
+    /// 0x12 still ends the stream cleanly, not as a refusal.
+    func testExitFrameStillEndsCleanly() async throws {
+        let listener = try loopbackServer { c in
+            c.send(content: FrameCodec.encode(0x12, Data()), completion: .idempotent)
+        }
+        defer { listener.cancel() }
+        try await waitUntil("listener") { (listener.port?.rawValue ?? 0) != 0 }
+
+        let stream = try await ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue)
+            .attach(name: "t", cols: 80, rows: 24)
+        for await _ in stream.output {}
+        XCTAssertTrue(stream.exited)
+        XCTAssertNil(stream.refusal)
+    }
+
     /// A real ProsperStream to a loopback host that says "$ " and records what it reads.
     /// `q` is the stream's callback queue: suspended, no send completion can report.
     private func loopbackStream(on q: DispatchQueue) async throws -> (ProsperStream, Wire, NWListener) {

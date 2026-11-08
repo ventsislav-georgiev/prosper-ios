@@ -27,6 +27,9 @@ protocol TerminalStream: AnyObject {
     /// True once the remote process exited (server sent the exit frame). Lets the
     /// reconnect loop tell a clean `exit` apart from a dropped link.
     var exited: Bool { get }
+    /// The server's own words when it refused the attach (error 0x13, e.g. dch serve's
+    /// "no session named …"). Set before `output` finishes; the session is over, no retry.
+    var refusal: String? { get }
     /// Send keystrokes / pasted bytes to the pty. Returns false when the stream is
     /// already closed and did NOT take the bytes — the caller still owns them. True
     /// means handed to the transport; if the transport later finds they never reached
@@ -57,6 +60,10 @@ protocol TerminalStream: AnyObject {
     var onScreen: ((ArraySlice<UInt8>) -> Void)? { get set }
     /// Detach this client (session keeps running).
     func close()
+}
+
+extension TerminalStream {
+    var refusal: String? { nil }   // a Prosper Mac never refuses an attach
 }
 
 /// One user-originated write, queued by `SessionConnection` while no stream can take it.

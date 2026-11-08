@@ -706,6 +706,7 @@ final class ProsperStream: TerminalStream {
     private var cont: AsyncStream<ArraySlice<UInt8>>.Continuation!
     private var buf = Data()
     private(set) var exited = false
+    private(set) var refusal: String?
 
     // `send` runs on main, completions and the pump on the connection's queue.
     private let lock = NSLock()
@@ -722,7 +723,7 @@ final class ProsperStream: TerminalStream {
     private enum F {
         static let resize: UInt8 = 0x05, redraw: UInt8 = 0x07, snapshot: UInt8 = 0x09
         static let putClipboard: UInt8 = 0x0a
-        static let data: UInt8 = 0x10, exit: UInt8 = 0x12, snapshotResp: UInt8 = 0x19
+        static let data: UInt8 = 0x10, exit: UInt8 = 0x12, error: UInt8 = 0x13, snapshotResp: UInt8 = 0x19
     }
 
     init(conn: NWConnection) {
@@ -750,6 +751,7 @@ final class ProsperStream: TerminalStream {
                     case F.snapshotResp where !payload.isEmpty:
                         self.onScreen?(ArraySlice([UInt8](payload)))
                     case F.exit: self.exited = true; self.close(); return
+                    case F.error: self.refusal = ProsperTransport.decodeMessage(payload); self.close(); return
                     default: break
                     }
                 }

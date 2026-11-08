@@ -516,6 +516,11 @@ final class SessionConnection: ObservableObject {
                 live = false
                 liveFallback?.cancel()
                 if s.exited { state = .ended; clearOutbox(); return }
+                // Refused (0x13): `.ended` would dismiss the screen silently, so the
+                // server's message goes on the `.failed` line instead, with no reattach.
+                if let msg = s.refusal, !userClosed {
+                    state = .failed(msg); clearOutbox(); clearNotice(force: true); return
+                }
                 if userClosed { return }
                 if detached { continue }
             } catch {

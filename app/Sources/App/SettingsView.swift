@@ -45,6 +45,7 @@ enum AgentCommand {
         let stream = try await transport.create(name: name, command: argv(setting), cols: 80, rows: 24)
         for await _ in stream.output { break }
         stream.close()
+        if let msg = stream.refusal { throw TransportError.server(msg) }   // 0x13: no session made
         return name
     }
 }
