@@ -17,10 +17,10 @@ struct TerminalScreen: View {
     @State private var confirmKill = false
     @Environment(\.dismiss) private var dismiss
 
-    init(transport: SessionTransport, session: DchSession) {
+    init(transport: SessionTransport, session: DchSession, pastesImages: Bool = true) {
         self.transport = transport
         self.session = session
-        _conn = StateObject(wrappedValue: SessionConnection(transport: transport, session: session))
+        _conn = StateObject(wrappedValue: SessionConnection(transport: transport, session: session, pastesImages: pastesImages))
     }
 
     var body: some View {
@@ -828,6 +828,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// ponytail: sends the image at full size. Downscale if big screenshots ever feel
     /// slow over the tailnet.
     func pasteImage(then keystroke: [UInt8]) {
+        // #779: a host without image paste gets neither the image nor a lone ctrl-V, which sends
+        // a TUI to an empty clipboard; the pasteboard isn't even read.
+        guard conn.pastesImages else { return conn.refuseImagePaste() }
         if let png = copiedImagePNG() { conn.putClipboard(png) }
         conn.send(ArraySlice(keystroke))
     }

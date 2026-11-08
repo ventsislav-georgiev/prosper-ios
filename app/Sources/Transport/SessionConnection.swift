@@ -86,10 +86,16 @@ final class SessionConnection: ObservableObject {
     /// Full-screen sink — a `resync()` reply carrying dch's rendered screen.
     var onScreen: ((ArraySlice<UInt8>) -> Void)?
 
-    init(transport: SessionTransport, session: DchSession, backoff: BackoffPolicy = BackoffPolicy()) {
+    /// #779: the host takes 0x0a (`SessionVerb.pasteImage`); false keeps the image here.
+    let pastesImages: Bool
+    static let noImagePaste = "Image paste needs Prosper on the host."
+
+    init(transport: SessionTransport, session: DchSession, backoff: BackoffPolicy = BackoffPolicy(),
+         pastesImages: Bool = true) {
         self.transport = transport
         self.session = session
         self.backoff = backoff
+        self.pastesImages = pastesImages
     }
 
     func start(cols: Int, rows: Int) {
@@ -324,7 +330,7 @@ final class SessionConnection: ObservableObject {
     }
 
     private func showTypedLost() {
-        if notice == nil || !noticeSticky || notice == Self.pasteLost { show(Self.typedLost, sticky: true) }
+        if notice == nil || !noticeSticky || [Self.pasteLost, Self.noImagePaste].contains(notice) { show(Self.typedLost, sticky: true) }
     }
 
     private func clearOutbox() {
@@ -364,7 +370,15 @@ final class SessionConnection: ObservableObject {
     /// the paste keystroke. Frames are ordered on one connection and the server sets
     /// the clipboard before acking, so a ctrl-V sent right after lands second.
     /// Queued like keystrokes, so it stays ahead of the ctrl-V that follows it.
-    func putClipboard(_ image: Data) { flushPaste(); write(.clipboard(image)) }
+    /// #779: a host without it gets no 0x0a, and the user the status line instead: sticky, so
+    /// the ctrl-V right behind it doesn't clear it.
+    func putClipboard(_ image: Data) {
+        guard pastesImages else { return refuseImagePaste() }
+        flushPaste(); write(.clipboard(image))
+    }
+
+    /// #779: the line a refused image paste shows; its caller sends no ctrl-V either.
+    func refuseImagePaste() { show(Self.noImagePaste, sticky: true) }
 
     /// Repair the screen after anything that can leave it stale (rotation, font
     /// change, foreground, reattach). Two independent paths, weakest first:

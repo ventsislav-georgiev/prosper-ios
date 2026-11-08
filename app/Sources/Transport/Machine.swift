@@ -10,6 +10,26 @@ struct MachineInfo {
     let hostname: String?
     let wakeId: String?
     var ops: Set<SessionVerb> = []   // #590: empty from an older Mac
+    // #779: protocol 1.0's keys, each nil from a pre-#776 Prosper.
+    var server: String? = nil   // "prosper" or "dch"
+    var os: String? = nil       // "macOS 27.0", "Linux 6.8"
+    var name: String? = nil     // the host's display name
+    var proto: String? = nil    // "<major>.<minor>"; nil is 1.0
+
+    /// #779: the newest protocol major this app speaks; a host on a newer one is refused.
+    static let protoMajor = 1
+
+    /// #779: `proto`'s major: "<major>.<minor>", both decimal. nil when it isn't that shape.
+    static func major(_ proto: String) -> Int? {
+        let parts = proto.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy { ("0"..."9").contains($0) } }) else { return nil }
+        return Int(parts[0])
+    }
+
+    /// #779: false for a host on a newer major. Missing or unreadable reads as 1.0.
+    static func supports(_ proto: String?) -> Bool {
+        (proto.flatMap(major) ?? 1) <= protoMajor
+    }
 }
 
 /// Cached remote-wake state for a Machine, mirrored from `GET /wake/:id/meta`
@@ -34,6 +54,31 @@ struct Machine: Codable, Identifiable, Equatable {
     var cachedWake: WakeInfo?
     /// #614: the handshake listed `library`; nil before one, or from an older Mac.
     var offersLibrary: Bool?
+    // #779: from the handshake, as `serverDeviceId`; nil before one, or from an older Prosper.
+    var server: String?
+    var os: String?
+    var hostName: String?   // the host's `name`, else its `hostname`
+    var proto: String?
+
+    /// #779: what the Machines screen and the session list call it: the name the user gave it
+    /// (#628), or the host's own name when they gave none (blank, or an address: migrated ones).
+    var label: String { name.isEmpty || addresses.contains(name) ? hostName ?? name : name }
+
+    /// #779: "Linux 6.8 · dch" under a dch host; nil for Prosper.
+    var osLine: String? { server == "dch" ? [os, "dch"].compactMap { $0 }.joined(separator: " · ") : nil }
+
+    /// A handshake's identity, overwriting the last one. An absent wakeId keeps the old one (wake
+    /// off, not configured), except on a dch host, which has no wake (#779). A host on a newer
+    /// protocol offers no library.
+    mutating func adopt(_ info: MachineInfo) {
+        serverDeviceId = info.deviceId
+        if let w = info.wakeId { wakeId = w } else if info.server == "dch" { wakeId = nil; cachedWake = nil }
+        offersLibrary = MachineInfo.supports(info.proto) && info.ops.contains(.library)
+        server = info.server
+        os = info.os
+        hostName = info.name ?? info.hostname
+        proto = info.proto
+    }
 }
 
 /// Persisted list of Machines (PLAN §3). Replaces the old newline `hostHistory`

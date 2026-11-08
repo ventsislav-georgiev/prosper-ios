@@ -12,7 +12,7 @@ struct SessionsWidget: Widget {
             SessionsWidgetView(snapshot: entry.snapshot, now: entry.date)
         }
         .configurationDisplayName("Sessions")
-        .description("Your Mac's sessions as Prosper last saw them. Tap one to open it.")
+        .description("Your sessions as Prosper last saw them. Tap one to open it.")
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
@@ -72,7 +72,7 @@ struct SessionsWidgetView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .widgetURL(rows.first.map(snapshot.link))
         } else {
-            Text("Open Prosper to list your Mac's sessions.").font(.caption).foregroundStyle(.secondary)
+            Text("Open Prosper to list your sessions.").font(.caption).foregroundStyle(.secondary)
         }
     }
 

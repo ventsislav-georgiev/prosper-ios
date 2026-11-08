@@ -168,6 +168,9 @@ enum SessionVerb: String {
     case snippetsPut = "snippets_put"   // #730: putPhoneSnippets 0x2c, the phone's own snippets to the Mac
     case sidekick      // #761: sidekickSync 0x2d; an older Mac never answers it
     case watch         // #775: the 0x2e list stream; only while the Mac's Agent Island lists its sessions
+    // #779: base frames a Prosper host serves unlisted; another host only when it lists them.
+    case create        // 0x02
+    case pasteImage = "paste_image"   // 0x0a, the image onto the host's clipboard
 
     /// The verbs in a machineInfo `ops` value; unknown names and a missing key give none.
     /// clipboard_max_side without clipboard is none either.
@@ -175,6 +178,12 @@ enum SessionVerb: String {
         var verbs = Set((ops as? [String] ?? []).compactMap(SessionVerb.init(rawValue:)))
         if !verbs.contains(.clipboard) { verbs.remove(.clipboardMaxSide) }
         return verbs
+    }
+
+    /// #779: whether `self` may be sent to a host: always to Prosper, or a host that names no
+    /// `server` (an older Prosper), else only when its `ops` list it.
+    func allowed(server: String?, ops: Set<SessionVerb>) -> Bool {
+        server == nil || server == "prosper" || ops.contains(self)
     }
 }
 

@@ -205,7 +205,7 @@ final class ShareTests: XCTestCase {
     func testNoMacAndUnreachableMacSayWhy() async {
         let none = ShareModel(machines: [])
         await none.load()
-        XCTAssertEqual(none.note, "Add your Mac in Prosper first.")
+        XCTAssertEqual(none.note, "Add a machine in Prosper first.")
 
         let model = ShareModel(machines: [Machine(name: "Studio", addresses: ["studio"])])
         model.list = { _ in throw TransportError.hostUnreachable("timed out") }

@@ -34,7 +34,7 @@ final class ShareModel: ObservableObject {
 
     func load() async {
         guard let m = machines.first(where: { $0.id == machine }) else {
-            note = "Add your Mac in Prosper first."
+            note = "Add a machine in Prosper first."
             return
         }
         loading = true
@@ -110,7 +110,7 @@ struct ShareSheet: View {
                     Text("Pasted at the prompt, never run: press Return in Prosper.")
                 }
                 if model.machines.count > 1 {
-                    Picker("Mac", selection: $model.machine) {
+                    Picker("Machine", selection: $model.machine) {
                         ForEach(model.machines) { Text($0.name).tag(Optional($0.id)) }
                     }
                 }

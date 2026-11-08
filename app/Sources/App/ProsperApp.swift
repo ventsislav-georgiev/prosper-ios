@@ -199,7 +199,7 @@ struct HomeView: View {
                 // half-finished `trying` address, and its leftover error text. A new tap is
                 // a fresh list too, so its session opens even if an earlier tap opened it.
                 SessionListView(transport: ProsperTransport(host: m.addresses.first ?? m.name),
-                                title: m.name, machine: m, store: store, account: account,
+                                title: m.label, machine: m, store: store, account: account,
                                 onChangeMachine: { path.append(Route.connect) }, openSession: open)
                     .id(Route.sessions(ref, open: open, tap: tap))
             } else {
@@ -234,7 +234,7 @@ struct ConnectScreen: View {
         List {
             if store.machines.isEmpty {
                 Section {
-                    Text("Add your Mac to get started — its Tailscale name or IP, running Prosper.")
+                    Text("Add a machine to get started — its Tailscale name or IP, running Prosper (Mac) or dch serve (Mac or Linux).")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
@@ -243,9 +243,10 @@ struct ConnectScreen: View {
                     Button { onConnect(.machine(m.id)) } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(m.name).font(.headline).foregroundStyle(.primary)
+                                Text(m.label).font(.headline).foregroundStyle(.primary)
                                 if let first = m.addresses.first {
-                                    Text(first).font(.caption).foregroundStyle(.secondary)
+                                    Text([first, m.osLine].compactMap { $0 }.joined(separator: " · "))
+                                        .font(.caption).foregroundStyle(.secondary)
                                 }
                             }
                             Spacer()
@@ -264,7 +265,7 @@ struct ConnectScreen: View {
                     Label("Add machine", systemImage: "plus")
                 }
             } footer: {
-                Text("Each machine's [Tailscale](https://tailscale.com) name(s) or IP(s), running Prosper. [How it works](prosper://help)")
+                Text("Each machine's [Tailscale](https://tailscale.com) name(s) or IP(s), running Prosper (Mac) or dch serve (Mac or Linux). [How it works](prosper://help)")
             }
             // Secondary: an offline sample so the app is explorable before a real
             // machine is set up. Tucked at the bottom, out of the daily path.
@@ -405,7 +406,10 @@ struct SessionListView: View {
             Button { onChangeMachine() } label: {
                 HStack {
                     Image(systemName: "desktopcomputer")
-                    Text(title).font(.headline)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title).font(.headline)
+                        if let os = liveMachine?.osLine { Text(os).font(.caption).foregroundStyle(.secondary) }
+                    }
                     WakeBadge(wake: liveMachine?.cachedWake)
                     Spacer()
                     Text("Change").font(.caption).foregroundStyle(.secondary)
@@ -420,8 +424,8 @@ struct SessionListView: View {
                     Text(connectLabel).foregroundStyle(.secondary)
                 }
             }
-            // Host unreachable + a real machine → the Wake gating/waking card.
-            if let msg = unreachable, let m = machine {
+            // Host unreachable + a real machine → the Wake gating/waking card; a dch host has no wake (#779).
+            if let msg = unreachable, let m = machine, liveMachine?.server != "dch" {
                 Section {
                     WakeFailedView(machine: m, message: msg, account: account, machines: store) { t, _ in
                         transport = t
@@ -431,7 +435,7 @@ struct SessionListView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .listRowBackground(Color.clear)
                 }
-            } else if let line = error ?? notice {
+            } else if let line = error ?? notice ?? unreachable {
                 Text(line).foregroundStyle(.secondary)
             }
             if let line = running[""] {
@@ -469,8 +473,11 @@ struct SessionListView: View {
                 }
                 .disabled(sleeping || unreachable != nil || error != nil || loading)   // can't sleep an unreachable Mac
             }
-            Button { newName = ""; notice = nil; creating = true } label: { Image(systemName: "plus") }
-                .disabled(sleeping || unreachable != nil || error != nil || loading)   // no new session on an unreachable Mac
+            // #779: only once this screen's handshake ran (no + flashing on a dch host); a dch host lists it.
+            if connected, SessionVerb.create.allowed(server: liveMachine?.server, ops: ops) {
+                Button { newName = ""; notice = nil; creating = true } label: { Image(systemName: "plus") }
+                    .disabled(sleeping || unreachable != nil || error != nil || loading)   // no new session on an unreachable Mac
+            }
             controlsMenu
             Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
                 .disabled(sleeping || loading)
@@ -492,7 +499,8 @@ struct SessionListView: View {
                                                     set: { if !$0 { open = nil } })) {
             if let open {
                 // Tracked so that session's own "needs you" alert doesn't banner over it.
-                TerminalScreen(transport: transport, session: open)
+                TerminalScreen(transport: transport, session: open,
+                               pastesImages: SessionVerb.pasteImage.allowed(server: liveMachine?.server, ops: ops))
                     .onAppear {
                         LiveStatus.shared.attached = LiveTarget(macId: liveMachine?.serverDeviceId, session: open.name)
                         if let machine { ShareInbox.last = ShareTarget(machine: machine.id, session: open.name) }   // #610
@@ -703,7 +711,7 @@ struct SessionListView: View {
     private func recheckWatch() async {
         watchRetry = Date().addingTimeInterval(SessionWatch.retry)
         guard let t = transport as? ProsperTransport, let info = try? await t.machineInfo(), !Task.isCancelled,
-              info.ops.contains(.watch) else { return }
+              info.ops.contains(.watch), MachineInfo.supports(info.proto) else { return }
         watchRetry = nil
         SidekickSync.offer(info.ops, over: t)
         ops = info.ops
@@ -816,6 +824,14 @@ struct SessionListView: View {
     }
 
     private func refresh() async {
+        // #779: a host refused for a newer protocol gets only the 0x08 that may lift it.
+        if let m = liveMachine, !MachineInfo.supports(m.proto), let t = transport as? ProsperTransport {
+            loading = true
+            let info = try? await t.machineInfo()
+            loading = false
+            if let info { store.update(m.id) { $0.adopt(info) } }
+            guard MachineInfo.supports(info?.proto ?? m.proto) else { return refuse() }
+        }
         loading = true
         trying = nil                 // never label this dial with the previous one's address
         defer { trying = nil }
@@ -854,6 +870,15 @@ struct SessionListView: View {
         }
     }
 
+    /// #779: a host on a newer protocol. Its rows go and the screen shows why; the poll, the
+    /// stream and every control wait on `error`, so nothing more is sent to it.
+    private func refuse() {
+        sessions = []
+        ops = []
+        error = Self.newerProtocol
+    }
+    static let newerProtocol = "This host needs a newer Prosper. Update the app."
+
     /// The sessions widget's snapshot (#611): a saved Mac's list, as just listed.
     private func remember(_ list: [DchSession]) {
         if let m = liveMachine ?? machine { SessionsSnapshot.save(SessionsSnapshot(machine: m, sessions: list)) }
@@ -883,17 +908,17 @@ struct SessionListView: View {
     private func handshake() async {
         guard let m = machine, let t = transport as? ProsperTransport else { return }
         guard let info = try? await t.machineInfo() else { return }
+        store.update(m.id) { $0.adopt(info) }
+        // #779: a newer protocol: nothing more goes to this host, the syncs below included.
+        guard MachineInfo.supports(info.proto) else { return refuse() }
         ops = info.ops
-        store.update(m.id) {
-            $0.serverDeviceId = info.deviceId
-            if let w = info.wakeId { $0.wakeId = w }
-            $0.offersLibrary = info.ops.contains(.library)
-        }
         // #614: the Mac's snippets and quicklinks, for the keyboards and the terminal bar; not
         // on the Mac, which has them already. Its own task: a slow reply never holds the list.
         #if !targetEnvironment(macCatalyst)
         if info.ops.contains(.library), let mm = liveMachine { Task { try? await MacLibrary.sync(mm, over: t) } }
-        if let mm = liveMachine { CommandStore.shared()?.connected(mm) }   // #735: the keyboards' Commands tile
+        if let mm = liveMachine, SessionVerb.commands.allowed(server: info.server, ops: info.ops) {
+            CommandStore.shared()?.connected(mm)   // #735: the keyboards' Commands tile; #779: never a dch host without commands
+        }
         ClipboardSync.offer(info.ops, over: t, machine: m.id.uuidString)   // #621: and a sync, if it lists clipboard
         SnippetPush.offer(info.ops, over: t, machine: m.id.uuidString)   // #730: the phone's snippets, if it lists snippets_put
         #endif
@@ -965,6 +990,8 @@ extension SessionVerb {
         case .snippetsPut: "Snippet sync"   // #730: never shown, a push failure is only logged
         case .sidekick: "Sidekick sync"   // #761: never shown, a sync failure is only logged
         case .watch: "Session list"   // #775: never shown, a refused stream falls back to the poll
+        case .create: "New session"   // #779: never shown, the + hides instead
+        case .pasteImage: "Image paste"   // #779: never shown, the terminal says it in its status line
         }
     }
 }
@@ -1268,6 +1295,9 @@ extension ShareItem {
 extension SessionConnection {
     /// A share, queued until the session is live like anything typed before it is.
     func deliver(_ item: ShareItem?) {
+        var item = item
+        // #779: a host without image paste gets neither the image nor its ctrl-V; the text still goes.
+        if !pastesImages, item?.image != nil { item?.image = nil; refuseImagePaste() }
         for out in item?.outbound ?? [] {
             switch out {
             case .bytes(let b): send(b[...])

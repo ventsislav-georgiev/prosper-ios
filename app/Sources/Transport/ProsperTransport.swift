@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import CryptoKit
+import OSLog
 
 /// Talks to Prosper's `DchSessionServer` over the length-prefixed binary frame
 /// protocol (see the server's `DchFrame`). One TCP connection per operation:
@@ -55,7 +56,7 @@ final class ProsperTransport: SessionTransport {
     func machineInfo(timeout: TimeInterval = 2) async throws -> MachineInfo? {
         let conn = try await connect()
         defer { conn.cancel() }
-        conn.send(content: FrameCodec.encode(F.machineInfo, Data()), completion: .contentProcessed { _ in })
+        conn.send(content: FrameCodec.encode(F.machineInfo, Self.machineInfoRequest), completion: .contentProcessed { _ in })
         // Race the read against a timeout; legacy Macs simply never reply.
         let reply: (UInt8, Data)? = try? await withThrowingTaskGroup(of: (UInt8, Data)?.self) { group in
             group.addTask { try await FrameCodec.readOne(from: conn) }
@@ -71,13 +72,23 @@ final class ProsperTransport: SessionTransport {
         return Self.decodeMachineInfo(payload)
     }
 
+    /// #779: the phone's protocol, so a server can refuse a newer client (Q1); Prosper ignores it.
+    static let machineInfoRequest = Data(#"{"proto":"1.0"}"#.utf8)
+
     static func decodeMachineInfo(_ payload: Data) -> MachineInfo? {
         guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
               let deviceId = o["device_id"] as? String else { return nil }
+        func text(_ key: String) -> String? { (o[key] as? String).flatMap { $0.isEmpty ? nil : $0 } }
+        let proto = text("proto")
+        if let proto, MachineInfo.major(proto) == nil {
+            Logger(subsystem: "eu.illegible.prosper", category: "transport")
+                .error("0x18 proto \(proto, privacy: .public) is unreadable; taken as 1.0")
+        }
         return MachineInfo(deviceId: deviceId,
-                           hostname: o["hostname"] as? String,
+                           hostname: text("hostname"),
                            wakeId: o["wakeId"] as? String,
-                           ops: SessionVerb.offered(o["ops"]))
+                           ops: SessionVerb.offered(o["ops"]),
+                           server: text("server"), os: text("os"), name: text("name"), proto: proto)
     }
 
     func listSessions() async throws -> [DchSession] {
@@ -495,7 +506,7 @@ final class ProsperTransport: SessionTransport {
     static func decodeMessage(_ payload: Data) -> String {
         (((try? JSONSerialization.jsonObject(with: payload)) as? [String: Any])?["message"] as? String)?
             .replacingOccurrences(of: "pinned (-f forgets it anyway)", with: "pinned, unpin it first")
-            ?? "The Mac refused the request."
+            ?? "The host refused the request."
     }
 
     static func decodeHistory(_ payload: Data) throws -> [DchHistoryRow] {

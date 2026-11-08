@@ -178,7 +178,7 @@ struct SettingsView: View {
             } header: {
                 Text("Agent command")
             } footer: {
-                Text("Create agent session runs this in your login shell on the Mac, then leaves you at a shell when it exits. Empty uses the default.")
+                Text("Create agent session runs this in your login shell on the host, then leaves you at a shell when it exits. Empty uses the default.")
             }
 
             Section {
@@ -198,7 +198,7 @@ struct SettingsView: View {
                 }
                 .onChange(of: updateMode) { _ in LiveStatus.shared.modeChanged() }   // the Worker paces pushes by it
             } footer: {
-                Text("Real-time checks your Mac every 5 to 30 seconds while the session list is open, more often while it changes. Battery saver checks every 15 seconds to 2 minutes. Low Power Mode uses Battery saver while it's on.")
+                Text("Real-time checks the host every 5 to 30 seconds while the session list is open, more often while it changes. Battery saver checks every 15 seconds to 2 minutes. Low Power Mode uses Battery saver while it's on.")
             }
 
             Section {
