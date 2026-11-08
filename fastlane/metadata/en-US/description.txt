@@ -22,7 +22,6 @@ Add it in Settings › General › Keyboard › Keyboards.
 • A toolbar of edit keys above the letters — word and line jumps, delete to line start or end, delete line, cut line, Paste — in one or two rows, and yours to arrange.
 • Clipboard history with search, kept by the keyboard and synced both ways with your Mac's. Your newest phone copy is ready for ⌘V on the Mac.
 • Snippets and quicklinks, with search: your own, plus your Mac's with Sync from Mac.
-• Dictation, on device, in English (iOS 26).
 • Fix, Rewrite and Summarize with Apple Intelligence, on device (iOS 26, on supported devices).
 • Your Mac's commands from the keyboard's menu: calculate, lock the screen, and the commands your Prosper extensions add, with the result ready to insert.
 • Every emoji group, with search and skin tones.

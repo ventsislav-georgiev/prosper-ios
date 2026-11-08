@@ -17,17 +17,15 @@ THE KEYBOARDS, WITHOUT A MAC
      Optionally tap Prosper > Allow Full Access.
   2. In any text field, tap the globe and pick Prosper. The toolbar toggle at
      the left of its top strip shows the edit keys; holding it opens a menu:
-     Clipboard, Snippets, Quicklinks, Dictate, Rewrite, Emoji, Appearance.
+     Clipboard, Snippets, Quicklinks, Rewrite, Emoji, Appearance.
   3. Settings in Prosper set themes, key size, numbers, languages, toolbar.
 Full Access is used only to share the App Group with the Prosper app (settings,
-toolbar, snippets, quicklinks, emoji recents, learned words), to keep the
+toolbar, snippets, quicklinks, emoji recents, learned words) and to keep the
 clipboard history (iOS asks before a paste from another app unless Settings >
-Apps > Prosper > Paste from Other Apps is Allow), and to open Prosper for
-dictation. The keyboard makes no network requests. No typed text leaves the
+Apps > Prosper > Paste from Other Apps is Allow). The keyboard makes no network requests. No typed text leaves the
 device; clipboard history goes only to the user's own Mac, and only when the
 user turns on sync on both. Without Full Access it types with default settings.
-Dictate (iOS 26) opens Prosper, which asks for the Microphone and Speech
-Recognition; speech is transcribed on device by Apple's engine. Rewrite (Fix,
+Rewrite (Fix,
 Rewrite, Summarize, iOS 26) uses Apple's on-device model and needs Apple
 Intelligence on; without it the panel says so.
 

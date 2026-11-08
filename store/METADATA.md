@@ -14,7 +14,7 @@ everything here is within them.
 **Your desktop terminal anywhere** (30)
 
 ## Promotional text  (max 170, editable without review)
-Your Mac's terminal sessions on your phone, live. Plus the Prosper keyboard for every app: clipboard synced with your Mac, snippets, on-device dictation and rewriting.
+Your Mac's terminal sessions on your phone, live. Plus the Prosper keyboard for every app: clipboard synced with your Mac, snippets, on-device rewriting.
 
 ## Description  (max 4000)
 Prosper Remote puts your Mac's terminal in your pocket, and a better keyboard in every app.
@@ -41,7 +41,6 @@ Add it in Settings › General › Keyboard › Keyboards.
 • A toolbar of edit keys above the letters — word and line jumps, delete to line start or end, delete line, cut line, Paste — in one or two rows, and yours to arrange.
 • Clipboard history with search, kept by the keyboard and synced both ways with your Mac's. Your newest phone copy is ready for ⌘V on the Mac.
 • Snippets and quicklinks, with search: your own, plus your Mac's with Sync from Mac.
-• Dictation, on device, in English (iOS 26).
 • Fix, Rewrite and Summarize with Apple Intelligence, on device (iOS 26, on supported devices).
 • Every emoji group, with search and skin tones.
 • Themes, separate toolbar themes and accents; Normal, Medium or Large keys; a numbers row or a 123 key with a numpad.
@@ -64,7 +63,7 @@ No machine yet? Tap "Try the demo" to explore a sample session with zero setup. 
 Prosper is free.
 
 ## Keywords  (max 100, comma-separated, no spaces after commas)
-keyboard,clipboard,snippets,dictation,ssh,tmux,shell,mac,cli,emoji,devops,session,tailscale,agent
+keyboard,clipboard,snippets,terminal,ssh,tmux,shell,mac,cli,emoji,devops,session,tailscale,agent
 
 ## Support URL  (required)
 https://github.com/ventsislav-georgiev/prosper-ios
@@ -91,7 +90,7 @@ What's new in 1.0:
 • The Prosper keyboard, in every app: a toolbar of edit keys in one or two rows, themes and accents, three key sizes, a numbers row or a numpad, English and Bulgarian, and every emoji with search. Add it in Settings › General › Keyboard › Keyboards.
 • Clipboard history with search, synced both ways with your Mac; your newest phone copy is ready for ⌘V on the Mac.
 • Snippets and quicklinks, your own and your Mac's.
-• Dictation and Fix, Rewrite and Summarize, on device (iOS 26).
+• Fix, Rewrite and Summarize, on device (iOS 26).
 • Live status and alerts: a Lock Screen and Dynamic Island card while agents work on your Mac, and a notification when a session needs you. Optional; sign in, then Turn On.
 • Sessions show their agents, pull requests and tasks; restart or stop agents, resume ended sessions from History, chat with your Mac's local model and run its commands.
 • Terminal: a new compact keyboard and shortcut bar, tap-to-open links, double-tap word selection, and Share from any app to a session.

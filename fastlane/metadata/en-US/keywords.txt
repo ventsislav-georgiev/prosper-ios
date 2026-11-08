@@ -1,1 +1,1 @@
-keyboard,clipboard,snippets,dictation,ssh,tmux,shell,mac,cli,emoji,devops,session,tailscale,agent
+keyboard,clipboard,snippets,terminal,ssh,tmux,shell,mac,cli,emoji,devops,session,tailscale,agent
