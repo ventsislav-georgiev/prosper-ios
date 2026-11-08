@@ -753,8 +753,17 @@ struct SessionListView: View {
     private func commitRename(_ alias: String) {
         guard let r = renaming else { return }
         let a = alias.trimmingCharacters(in: .whitespaces)
-        Task { try? await transport.rename(name: r.name, alias: a.isEmpty ? nil : a); await relist() }
+        let t = transport
+        Task {
+            if let f = await Self.rename(r.name, to: a.isEmpty ? nil : a, on: t) { failed = f }
+            await relist()
+        }
         renaming = nil
+    }
+
+    /// #814: a rename's alert, as `attempt` words it: nil when it went through or was cancelled.
+    static func rename(_ name: String, to alias: String?, on t: SessionTransport) async -> (title: String, message: String)? {
+        await attempt("Rename failed", on: t) { try await $0.rename(name: name, alias: alias); return [] }
     }
 
     private func startNew() {

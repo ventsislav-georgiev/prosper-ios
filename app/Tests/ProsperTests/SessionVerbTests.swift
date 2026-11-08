@@ -384,6 +384,28 @@ final class SessionVerbTests: XCTestCase {
         XCTAssertThrowsError(try ProsperTransport.decodeCleared(Data(#"{"names":[]}"#.utf8)))
     }
 
+    func testRenameErrorThrowsAndAlerts() async throws {
+        let (mac, got, l) = try await fakeMac(0x13, #"{"message":"Couldn't rename t: no session: t"}"#)
+        defer { l.cancel() }
+        do { try await mac.rename(name: "t", alias: "x"); XCTFail("an error reply must throw") } catch {
+            guard case TransportError.server(let m) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(m, "Couldn't rename t: no session: t")
+        }
+        XCTAssertEqual(sent(got).0, 0x06)
+        let (again, _, l2) = try await fakeMac(0x13, #"{"message":"Couldn't rename t: no session: t"}"#)
+        defer { l2.cancel() }
+        let f = await SessionListView.rename("t", to: nil, on: again)
+        XCTAssertEqual(f?.title, "Rename failed")
+        XCTAssertEqual(f?.message, "Couldn't rename t: no session: t")
+    }
+
+    func testRenameOkSucceeds() async throws {
+        let (mac, got, l) = try await fakeMac(0x14, "")
+        defer { l.cancel() }
+        try await mac.rename(name: "t", alias: "x")
+        XCTAssertEqual(sent(got).1, ["name": "t", "alias": "x"])
+    }
+
     func testPinErrorsComeThroughAsWritten() async throws {
         let (mac, _, l) = try await fakeMac(0x13, #"{"message":"Pin needs dch 1.25.0"}"#)
         defer { l.cancel() }

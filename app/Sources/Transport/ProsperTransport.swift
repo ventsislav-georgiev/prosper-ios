@@ -116,7 +116,7 @@ final class ProsperTransport: SessionTransport {
     }
 
     func rename(name: String, alias: String?) async throws {
-        _ = try await oneShot(send: F.rename, payload: json(["name": name, "alias": alias ?? ""]))
+        _ = try await verb(F.rename, json(["name": name, "alias": alias ?? ""]))
     }
 
     func history() async throws -> [DchHistoryRow] {
