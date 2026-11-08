@@ -575,6 +575,7 @@ final class ProsperTransport: SessionTransport {
                 switch state {
                 case .ready:         finish(.success(()))
                 case .failed(let e): finish(.failure(TransportError.hostUnreachable("\(e)")))
+                                     Self.log.error("\(self.host, privacy: .public): connect failed: \(e, privacy: .public)")
                 case .cancelled:     finish(.failure(TransportError.notConnected))
                 default: break       // .waiting (no route to an unreachable host) sits here — the timeout below resolves it
                 }
@@ -587,6 +588,7 @@ final class ProsperTransport: SessionTransport {
             // would tear down the live connection (~6s reconnect loop regression).
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 if finish(.failure(TransportError.hostUnreachable("timed out"))) {
+                    Self.log.error("\(self.host, privacy: .public): connect timed out")
                     conn.cancel()
                 }
             }
@@ -601,11 +603,28 @@ final class ProsperTransport: SessionTransport {
         let conn = try await connect()
         defer { conn.cancel() }
         conn.send(content: FrameCodec.encode(type, payload), completion: .contentProcessed { _ in })
-        guard let deadline else { return try await FrameCodec.readOne(from: conn) }
-        return try await withDeadline(seconds: deadline) {
-            try await withTaskCancellationHandler { try await FrameCodec.readOne(from: conn) } onCancel: { conn.cancel() }
+        // #801: cancellable always, so connectFirst's per-address deadline ends a host that
+        // accepts and never answers instead of waiting on it.
+        let read = { try await withTaskCancellationHandler { try await FrameCodec.readOne(from: conn) } onCancel: { conn.cancel() } }
+        do {
+            guard let deadline else { return try await read() }
+            return try await withDeadline(seconds: deadline, read)
+        } catch where Self.droppedBeforeReply(error) {
+            // #801: a host refusing this peer accepts, then closes with no frame — on the wire
+            // the same as a dropped link, so it reads as unreachable, not as a raw NWError.
+            Self.log.error("\(self.host, privacy: .public): closed with no reply: \(error, privacy: .public)")
+            throw TransportError.hostUnreachable("closed with no reply")
         }
     }
+
+    /// A reset, or an EOF before the reply frame was whole.
+    static func droppedBeforeReply(_ error: Error) -> Bool {
+        if case .posix(.ECONNRESET)? = error as? NWError { return true }
+        if case .protocolError(let m)? = error as? TransportError { return m == FrameCodec.closedEarly }
+        return false
+    }
+
+    private static let log = Logger(subsystem: "eu.illegible.prosper", category: "transport")
 
     private func openStream(_ type: UInt8, _ payload: Data) async throws -> TerminalStream {
         let conn = try await connect()
@@ -625,6 +644,7 @@ enum FrameCodec {
         return out
     }
 
+    static let closedEarly = "closed before a full frame"
     static let maxFrame = 8 << 20   // 8 MB — keeps a rogue tailnet peer from OOM-ing us
 
     /// Read frames off `conn` until one whole frame is assembled, return it.
@@ -638,7 +658,7 @@ enum FrameCodec {
         while true {
             if let frame = try pop(&buf) { return frame }
             let chunk = try await receive(conn)
-            if chunk.isEmpty { throw TransportError.protocolError("closed before a full frame") }
+            if chunk.isEmpty { throw TransportError.protocolError(closedEarly) }
             buf.append(chunk)
         }
     }

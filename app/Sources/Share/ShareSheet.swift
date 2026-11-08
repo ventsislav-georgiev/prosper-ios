@@ -45,8 +45,7 @@ final class ShareModel: ObservableObject {
             note = sessions.isEmpty ? "No sessions on \(m.name)." : nil
         } catch {
             sessions = []
-            if case TransportError.hostUnreachable = error { note = "Can't reach \(m.name) — check Tailscale." }
-            else { note = error.localizedDescription }
+            note = TransportError.message(error, host: m.label)
         }
     }
 

@@ -210,7 +210,7 @@ final class ShareTests: XCTestCase {
         let model = ShareModel(machines: [Machine(name: "Studio", addresses: ["studio"])])
         model.list = { _ in throw TransportError.hostUnreachable("timed out") }
         await model.load()
-        XCTAssertEqual(model.note, "Can't reach Studio — check Tailscale.")
+        XCTAssertEqual(model.note, "Can't reach Studio. Check Tailscale, and that Prosper or dch serve is running on it.")
         XCTAssertNil(model.item)
     }
 

@@ -1,5 +1,6 @@
 import Combine   // MachineStore's @Published; no SwiftUI, so the keyboards don't link it (#735)
 import Foundation
+import OSLog
 
 /// Identity reported by a Mac over the `0x08`/`0x18` handshake (PLAN §2a). Non-secret:
 /// `wakeId` is only *actionable* with the owner's session (the server re-derives the
@@ -177,6 +178,8 @@ func connectFirst<T>(_ addresses: [String], timeout: TimeInterval = addressAttem
             return (try await withDeadline(seconds: timeout) { try await probe(addr) }, addr)
         } catch {
             if isCancellation(error) { throw error }
+            Logger(subsystem: "eu.illegible.prosper", category: "transport")
+                .error("\(addr, privacy: .public) failed: \(error, privacy: .public)")   // #801: the UI shows only the label
             lastError = error
         }
     }

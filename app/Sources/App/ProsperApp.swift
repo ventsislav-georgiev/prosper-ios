@@ -854,10 +854,10 @@ struct SessionListView: View {
             // Host-unreachable on a real machine → surface the Wake card; other errors
             // (protocol/rejected) are plain text since waking won't help.
             if case .hostUnreachable = e, machine != nil {
-                unreachable = e.localizedDescription
+                unreachable = TransportError.message(e, host: title)
                 error = nil
             } else {
-                error = e.localizedDescription
+                error = TransportError.message(e, host: title)
                 unreachable = nil
             }
         } catch {

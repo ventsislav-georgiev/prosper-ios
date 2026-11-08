@@ -318,6 +318,8 @@ struct HistoryCleared: Equatable {
 
 enum TransportError: Error, LocalizedError {
     case notConnected
+    /// The host never answered, or dropped the request with no reply. The value is the reason,
+    /// for the log only: the UI names the host by its label (`message(_:host:)`, #801).
     case hostUnreachable(String)
     case rejected(String)
     case protocolError(String)
@@ -327,10 +329,21 @@ enum TransportError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notConnected:            return "Not connected."
-        case .hostUnreachable(let h):  return "Can't reach \(h) — check Tailscale."
+        case .hostUnreachable:         return Self.unreachable("this host")
         case .rejected(let r):         return "Connection rejected: \(r)"
         case .protocolError(let m):    return "Protocol error: \(m)"
         case .server(let m):           return m
         }
+    }
+
+    /// #801: one line for a host that doesn't answer, named as the session list names it.
+    static func unreachable(_ label: String) -> String {
+        "Can't reach \(label). Check Tailscale, and that Prosper or dch serve is running on it."
+    }
+
+    /// What to show for `error` on the host the user calls `label`.
+    static func message(_ error: Error, host label: String) -> String {
+        if case TransportError.hostUnreachable = error { return unreachable(label) }
+        return error.localizedDescription
     }
 }

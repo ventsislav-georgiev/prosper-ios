@@ -389,7 +389,7 @@ struct SettingsView: View {
             error = nil
         } catch {
             guard !isCancellation(error) else { return }
-            self.error = error.localizedDescription
+            self.error = TransportError.message(error, host: m.label)
         }
     }
 

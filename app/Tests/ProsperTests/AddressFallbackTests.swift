@@ -1,4 +1,5 @@
 import XCTest
+import Network
 @testable import Prosper
 
 /// Walking a machine's several addresses (PLAN §3). The money case is the SILENT one: a
@@ -156,5 +157,54 @@ final class AddressFallbackTests: XCTestCase {
         } catch {
             XCTFail("wrong error: \(error)")
         }
+    }
+}
+
+/// #801: a host that doesn't answer reads as one line naming it by its label, never with the
+/// transport's reason; a host that accepts and closes with no frame is the same as a timeout.
+final class UnreachableLineTests: XCTestCase {
+    private let studio = "Can't reach Studio. Check Tailscale, and that Prosper or dch serve is running on it."
+
+    private func mac(_ accept: @escaping (NWConnection) -> Void) async throws -> (ProsperTransport, NWListener) {
+        let listener = try loopbackServer(accept)
+        let end = Date().addingTimeInterval(3)
+        while (listener.port?.rawValue ?? 0) == 0 {
+            if Date() > end { throw XCTSkip("loopback listener never came up") }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return (ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue), listener)
+    }
+
+    func testATimeoutNamesTheLabelNotTheReason() async throws {
+        let (t, listener) = try await mac { _ in }   // accepts, never answers
+        defer { listener.cancel() }
+        do {
+            _ = try await connectFirst(["127.0.0.1"], timeout: 0.3) { _ in try await t.listSessions() }
+            XCTFail("nothing answered")
+        } catch {
+            guard case TransportError.hostUnreachable = error else { return XCTFail("wrong error: \(error)") }
+            XCTAssertEqual(TransportError.message(error, host: "Studio"), studio)
+            XCTAssertFalse(error.localizedDescription.contains("timed out"))
+        }
+    }
+
+    func testAHostThatClosesWithNoFrameIsUnreachable() async throws {
+        let (t, listener) = try await mac { $0.cancel() }   // a refused peer: accept, then close
+        defer { listener.cancel() }
+        do {
+            _ = try await t.listSessions()
+            XCTFail("nothing answered")
+        } catch {
+            guard case TransportError.hostUnreachable = error else { return XCTFail("raw error: \(error)") }
+            XCTAssertEqual(TransportError.message(error, host: "Studio"), studio)
+        }
+    }
+
+    func testAResetIsUnreachableAndOtherErrorsAreNot() {
+        XCTAssertTrue(ProsperTransport.droppedBeforeReply(NWError.posix(.ECONNRESET)))
+        XCTAssertTrue(ProsperTransport.droppedBeforeReply(TransportError.protocolError(FrameCodec.closedEarly)))
+        XCTAssertFalse(ProsperTransport.droppedBeforeReply(TransportError.protocolError("frame too large")))
+        XCTAssertFalse(ProsperTransport.droppedBeforeReply(TransportError.server("off")))
+        XCTAssertEqual(TransportError.message(TransportError.server("off"), host: "Studio"), "off")
     }
 }
