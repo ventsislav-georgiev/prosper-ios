@@ -360,6 +360,7 @@ struct SessionListView: View {
     @State private var connected = false           // the full refresh and its handshake ran here
     @State private var pollRound = 0               // bumped to list at once and poll fast again
     @State private var watchRetry: Date?           // #775: refused; a fresh 0x08 may offer it again from then
+    @State private var busyWait: TimeInterval?     // #827: refresh turned away "busy": the wait before it tries again
     @AppStorage(UpdateMode.key) private var updateMode = UpdateMode.live   // #764: Settings › Updates
     @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     @State private var renaming: DchSession?       // rename alert
@@ -485,6 +486,7 @@ struct SessionListView: View {
         // A `.task` reruns each time a pushed session pops back: that return is the poll's
         // cheap list, not a second handshake.
         .task { if !connected { await refresh() } }
+        .task(id: busyWait) { await retryBusy() }
         // Restarted (a list at once) on a return, a foreground, a sheet closing, a verb's
         // `relist`, a mode change, the watch stream offered or refused (#775). Off, nil, while the
         // app is away or a sheet covers the list; a pushed session cancels it on its own (the
@@ -842,7 +844,7 @@ struct SessionListView: View {
             let info = try? await t.machineInfo()
             loading = false
             if let info { store.update(m.id) { $0.adopt(info) } }
-            guard MachineInfo.supports(info?.proto ?? m.proto) else { return refuse() }
+            guard MachineInfo.supports(info?.proto ?? m.proto) else { busyWait = nil; return refuse() }
         }
         loading = true
         trying = nil                 // never label this dial with the previous one's address
@@ -861,8 +863,10 @@ struct SessionListView: View {
             loading = false          // connected: stop spinning + re-enable +/refresh BEFORE the slow handshake
             await handshake()        // opportunistic, may take ~2s — must not gate the toolbar
             if !Task.isCancelled { connected = true }   // a push mid-handshake: again on the return
+            busyWait = nil           // #827: last: it ends the retry task, which may be the one running this
         } catch let e as TransportError {
             loading = false
+            busyWait = Self.retryWait(e)
             // Host-unreachable on a real machine → surface the Wake card; other errors
             // (protocol/rejected) are plain text since waking won't help.
             if case .hostUnreachable = e, machine != nil {
@@ -879,7 +883,25 @@ struct SessionListView: View {
             guard !isCancellation(error) else { return }
             self.error = error.localizedDescription
             unreachable = nil
+            busyWait = nil
         }
+    }
+
+    /// #827: a refresh turned away "busy" tries again, its message on the error line meanwhile,
+    /// until one lists or fails otherwise. Leaving the screen cancels it.
+    private func retryBusy() async {
+        while let wait = busyWait {
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            if error != nil, !loading { await refresh() }   // not over a manual refresh still in flight
+        }
+    }
+
+    /// #827: the wait before a refresh turned away "busy" (the host's connection limit) tries
+    /// again, the poll's failure backoff; nil for every other error, which holds until a refresh.
+    static func retryWait(_ error: Error) -> TimeInterval? {
+        if case TransportError.refused("busy", _) = error { return SessionPoll.failed(after: nil) }
+        return nil
     }
 
     /// #779: a host on a newer protocol. Its rows go and the screen shows why; the poll, the

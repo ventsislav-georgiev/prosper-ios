@@ -299,6 +299,40 @@ final class GateRefusalTests: XCTestCase {
         }
     }
 
+    /// #827 QA: the session list's refresh turned away "busy" tries again after the poll's failure
+    /// backoff (it stuck on "Host busy"); a gate refusal, an unreachable host and a cancel hold.
+    func testOnlyABusyRefreshRetries() async throws {
+        let accepted = Box(0)
+        let listener = try await refusingServer(#"{"code":"busy","message":"Host busy"}"#, accepted: accepted)
+        defer { listener.cancel() }
+        do {
+            _ = try await ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue).listSessions()
+            XCTFail("busy")
+        } catch {
+            XCTAssertEqual(SessionListView.retryWait(error), SessionPoll.failureBackoff)
+            XCTAssertEqual(TransportError.message(error, host: "Studio"), "Host busy", "shown meanwhile")
+        }
+        XCTAssertNil(SessionListView.retryWait(TransportError.refused(code: "not_owner", message: "no")))
+        XCTAssertNil(SessionListView.retryWait(TransportError.hostUnreachable("timed out")))
+        XCTAssertNil(SessionListView.retryWait(TransportError.server("Host busy")))
+        XCTAssertNil(SessionListView.retryWait(CancellationError()))
+    }
+
+    /// #827: the keyboard's Commands panel shows a gate refusal as written, never "Mac not reachable".
+    func testTheKeyboardsReachShowsARefusalAsWritten() async throws {
+        let accepted = Box(0)
+        let listener = try await refusingServer(notOwner, accepted: accepted)
+        defer { listener.cancel() }
+        let port = listener.port!.rawValue
+        do {
+            _ = try await CommandsSession.reach(["127.0.0.1"]) { ProsperTransport(host: $0, port: port) }()
+            XCTFail("refused")
+        } catch {
+            XCTAssertEqual(CommandsSession.copy(error.localizedDescription), "This Mac belongs to another tailnet user.")
+        }
+        XCTAssertEqual(accepted.v, 1)
+    }
+
     /// A 0x13 without "code" is the Mac's own error, as before #827: `.server`, its message.
     func testAnErrorWithoutACodeIsStillServer() async throws {
         let accepted = Box(0)

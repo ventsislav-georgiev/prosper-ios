@@ -184,10 +184,16 @@ extension CommandsSession {
     /// list (0x28, the probe, as `connectFirstTransport`'s is the session list, which the keyboard
     /// never asks for). None answering is "Mac not reachable"; a refusal ("commands are off") as said.
     nonisolated static func reach(_ addresses: [String]) -> () async throws -> (SessionTransport, [MacCommand]) {
+        reach(addresses) { ProsperTransport(host: $0) }
+    }
+
+    /// #827: `dial` makes each address's transport; the tests' is a loopback port.
+    nonisolated static func reach(_ addresses: [String], dial: @escaping (String) -> ProsperTransport)
+        -> () async throws -> (SessionTransport, [MacCommand]) {
         {
             do {
                 return try await connectFirst(addresses) { addr -> (SessionTransport, [MacCommand]) in
-                    let t = ProsperTransport(host: addr)
+                    let t = dial(addr)
                     return (t, try await t.commands())
                 }.0
             } catch TransportError.hostUnreachable(_) {
