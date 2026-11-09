@@ -208,3 +208,108 @@ final class UnreachableLineTests: XCTestCase {
         XCTAssertEqual(TransportError.message(TransportError.server("off"), host: "Studio"), "off")
     }
 }
+
+/// #827: a loopback dch serve gate: on accept, before reading a byte, one error 0x13 `json`
+/// and FIN; then it reads until the phone's EOF and closes, as the server does. `accepted`
+/// counts the connections.
+func refusingServer(_ json: String, accepted: Box<Int>) async throws -> NWListener {
+    let listener = try loopbackServer { c in
+        accepted.v += 1
+        c.send(content: FrameCodec.encode(0x13, Data(json.utf8)), contentContext: .finalMessage, isComplete: true,
+               completion: .idempotent)
+        func drain() {
+            c.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { _, _, done, err in
+                if done || err != nil { c.cancel() } else { drain() }
+            }
+        }
+        drain()
+    }
+    let end = Date().addingTimeInterval(3)
+    while (listener.port?.rawValue ?? 0) == 0 {
+        if Date() > end { throw XCTSkip("loopback listener never came up") }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return listener
+}
+
+/// #827: dch serve's gate refusal (error 0x13 with a "code") reads as refused, not offline: its
+/// message as written, the address walk stopped, never the unreachable line.
+@MainActor
+final class GateRefusalTests: XCTestCase {
+    private let notOwner = #"{"code":"not_owner","message":"This Mac belongs to another tailnet user."}"#
+
+    func testListSessionsThrowsTheRefusalWithItsCodeAndMessage() async throws {
+        let accepted = Box(0)
+        let listener = try await refusingServer(notOwner, accepted: accepted)
+        defer { listener.cancel() }
+        do {
+            _ = try await ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue).listSessions()
+            XCTFail("refused")
+        } catch {
+            guard case TransportError.refused(let code, let message) = error else { return XCTFail("wrong error: \(error)") }
+            XCTAssertEqual(code, "not_owner")
+            XCTAssertEqual(message, "This Mac belongs to another tailnet user.")
+            XCTAssertEqual(TransportError.message(error, host: "Studio"), message, "as written, never the unreachable line")
+            XCTAssertTrue((error as? TransportError)?.isRefusal == true)
+        }
+    }
+
+    /// The first address refusing ends the walk: the second is the same host and is never dialed.
+    func testARefusalStopsTheAddressWalk() async throws {
+        let accepted = Box(0)
+        let listener = try await refusingServer(notOwner, accepted: accepted)
+        defer { listener.cancel() }
+        let t = ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue)
+        let probes = Box<[String]>([])
+        do {
+            _ = try await connectFirst(["first", "second"], timeout: 2) { addr -> [DchSession] in
+                probes.v.append(addr)
+                guard addr == "first" else { return [] }
+                return try await t.listSessions()
+            }
+            XCTFail("refused")
+        } catch {
+            guard case TransportError.refused(let code, _) = error else { return XCTFail("wrong error: \(error)") }
+            XCTAssertEqual(code, "not_owner")
+        }
+        XCTAssertEqual(probes.v, ["first"], "no attempt on the second address")
+        XCTAssertEqual(accepted.v, 1)
+    }
+
+    /// An unknown code is still a refusal; "busy" (the connection limit) is not: the walk goes on.
+    func testBusyIsNoStopAndAnUnknownCodeIs() async throws {
+        XCTAssertTrue(TransportError.refused(code: "something_new", message: "no").isRefusal)
+        XCTAssertFalse(TransportError.refused(code: "busy", message: "later").isRefusal)
+        XCTAssertFalse(TransportError.server("off").isRefusal)
+        let accepted = Box(0)
+        let listener = try await refusingServer(#"{"code":"busy","message":"Too many connections.","retry_after":2}"#,
+                                                accepted: accepted)
+        defer { listener.cancel() }
+        let t = ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue)
+        let probes = Box<[String]>([]), first = Box<Error?>(nil)
+        let (_, addr) = try await connectFirst(["first", "second"], timeout: 2) { addr -> [DchSession] in
+            probes.v.append(addr)
+            guard addr == "first" else { return [] }
+            do { return try await t.listSessions() } catch { first.v = error; throw error }
+        }
+        XCTAssertEqual(addr, "second")
+        XCTAssertEqual(probes.v, ["first", "second"])
+        guard case TransportError.refused("busy", "Too many connections.")? = first.v else {
+            return XCTFail("wrong error: \(String(describing: first.v))")
+        }
+    }
+
+    /// A 0x13 without "code" is the Mac's own error, as before #827: `.server`, its message.
+    func testAnErrorWithoutACodeIsStillServer() async throws {
+        let accepted = Box(0)
+        let listener = try await refusingServer(#"{"message":"history is off"}"#, accepted: accepted)
+        defer { listener.cancel() }
+        let t = ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue)
+        for op in [{ _ = try await t.history() }, { _ = try await t.listSessions() }] as [() async throws -> Void] {
+            do { try await op(); XCTFail("an error") } catch {
+                guard case TransportError.server(let m) = error else { return XCTFail("wrong error: \(error)") }
+                XCTAssertEqual(m, "history is off")
+            }
+        }
+    }
+}

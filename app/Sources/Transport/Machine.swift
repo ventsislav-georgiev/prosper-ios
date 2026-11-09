@@ -177,7 +177,8 @@ func connectFirst<T>(_ addresses: [String], timeout: TimeInterval = addressAttem
         do {
             return (try await withDeadline(seconds: timeout) { try await probe(addr) }, addr)
         } catch {
-            if isCancellation(error) { throw error }
+            // #827: a refusal is the host's answer; the next address reaches the same host.
+            if isCancellation(error) || (error as? TransportError)?.isRefusal == true { throw error }
             Logger(subsystem: "eu.illegible.prosper", category: "transport")
                 .error("\(addr, privacy: .public) failed: \(error, privacy: .public)")   // #801: the UI shows only the label
             lastError = error

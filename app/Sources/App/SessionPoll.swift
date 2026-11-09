@@ -88,6 +88,8 @@ enum SessionWatch {
                 return !Task.isCancelled
             } catch TransportError.server {
                 return true
+            } catch let e as TransportError where e.isRefusal {
+                return true   // #827: the poll takes over, shows it and waits for a refresh
             } catch {
                 wait = heard ? reopen : backoff
             }

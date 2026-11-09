@@ -179,6 +179,28 @@ final class SessionWatchTests: XCTestCase {
         XCTAssertEqual(mac.requests.v.count, 1, "not opened again")
     }
 
+    /// #827: dch serve's gate refusal ends the stream for good (the poll shows it and waits for a
+    /// refresh); "busy", the connection limit, is opened again on the usual backoff.
+    func testAGateRefusalIsNotReopenedAndBusyIs() async throws {
+        let accepted = Box(0)
+        let gate = try await refusingServer(#"{"code":"tagged_peer","message":"Tagged devices can't connect."}"#, accepted: accepted)
+        defer { gate.cancel() }
+        let lists = Box<[[DchSession]]>([])
+        let refused = await run(ProsperTransport(host: "127.0.0.1", port: gate.port!.rawValue), lists).value
+        XCTAssertTrue(refused)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(accepted.v, 1, "not opened again")
+
+        let busyCount = Box(0)
+        let busy = try await refusingServer(#"{"code":"busy","message":"Too many connections."}"#, accepted: busyCount)
+        defer { busy.cancel() }
+        let task = run(ProsperTransport(host: "127.0.0.1", port: busy.port!.rawValue), lists)
+        try await waitUntil("busy opened again") { busyCount.v >= 2 }
+        task.cancel()
+        let stopped = await task.value
+        XCTAssertFalse(stopped, "busy is no refusal: only the cancel ended it")
+    }
+
     /// The Mac closing the stream between frames (its island stopped): back to the poll too.
     /// One cut mid-frame is a dead stream, opened again.
     func testACleanCloseFallsBackToThePoll() async throws {

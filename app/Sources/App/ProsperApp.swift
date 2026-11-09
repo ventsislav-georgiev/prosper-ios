@@ -738,7 +738,10 @@ struct SessionListView: View {
                 wait = SessionPoll.next(after: wait, changed: false, mode: mode)
                 continue
             }
-            guard let list = try? await transport.listSessions() else {
+            let list: [DchSession]
+            do { list = try await transport.listSessions() } catch {
+                // #827: refused: its message on the error line, which holds the poll until a refresh.
+                if let e = error as? TransportError, e.isRefusal, !Task.isCancelled { self.error = e.localizedDescription }
                 wait = SessionPoll.failed(after: wait)
                 continue
             }

@@ -92,9 +92,7 @@ final class ProsperTransport: SessionTransport {
     }
 
     func listSessions() async throws -> [DchSession] {
-        let (type, payload) = try await oneShot(send: F.list, payload: Data())
-        guard type == F.listResp else { throw TransportError.protocolError("expected list") }
-        return try Self.decodeList(payload)
+        try Self.decodeList(try Self.expect(try await oneShot(send: F.list, payload: Data()), F.listResp))
     }
 
     /// The list reply's rows. A payload that isn't a JSON array throws, so the screen keeps
@@ -197,7 +195,7 @@ final class ProsperTransport: SessionTransport {
     private static func expect(_ frame: (UInt8, Data), _ type: UInt8) throws -> Data {
         let (t, p) = frame
         if t == type { return p }
-        if t == F.error { throw TransportError.server(decodeMessage(p)) }
+        if t == F.error { throw decodeError(p) }
         throw TransportError.protocolError("unexpected reply 0x\(String(t, radix: 16))")
     }
 
@@ -467,7 +465,7 @@ final class ProsperTransport: SessionTransport {
                             switch t {
                             case F.listResp: cont.yield(.list(try Self.decodeList(p)))
                             case F.ok: cont.yield(Self.decodeWatchOk(p))
-                            case F.error: throw TransportError.server(Self.decodeMessage(p))
+                            case F.error: throw Self.decodeError(p)
                             default: break
                             }
                         }
@@ -499,6 +497,12 @@ final class ProsperTransport: SessionTransport {
         guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
               let names = o["names"] as? [String] else { throw TransportError.protocolError("unreadable reply") }
         return names
+    }
+
+    /// #827: error 0x13 as thrown: with a "code" (dch serve's gate) a refusal, else the Mac's own error.
+    static func decodeError(_ payload: Data) -> TransportError {
+        let code = ((try? JSONSerialization.jsonObject(with: payload)) as? [String: Any])?["code"] as? String
+        return code.map { .refused(code: $0, message: decodeMessage(payload)) } ?? .server(decodeMessage(payload))
     }
 
     /// #634: dch's own pinned refusal (until Mac #633) carries a -f hint the phone can't use;

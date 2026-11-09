@@ -125,7 +125,8 @@ protocol SessionTransport: AnyObject {
     /// #761: this side's sidekick pattern out, the Mac's winner of the two back.
     func sidekickSync(_ mine: SidekickValue) async throws -> SidekickValue
     /// #775: the Mac's 0x2e watch stream, on a connection of its own, as `device`. Finishes when
-    /// the Mac closes it cleanly; throws `.server` on its error 0x13, anything else when it died.
+    /// the Mac closes it cleanly; throws `.server` on its error 0x13 (`.refused` with a code, #827),
+    /// anything else when it died.
     /// Ending the consumer closes the connection.
     func watch(device: String?) -> AsyncThrowingStream<WatchEvent, Error>
 }
@@ -332,6 +333,14 @@ enum TransportError: Error, LocalizedError {
     case protocolError(String)
     /// #590: the server's error 0x13 message, written to be shown as is.
     case server(String)
+    /// #827: dch serve's gate turned this peer away (error 0x13 with a "code"): `message` as written.
+    case refused(code: String, message: String)
+
+    /// #827: a refusal no retry lifts: every code but "busy" (the connection limit), unknown ones too.
+    var isRefusal: Bool {
+        if case .refused(let code, _) = self { return code != "busy" }
+        return false
+    }
 
     var errorDescription: String? {
         switch self {
@@ -340,6 +349,7 @@ enum TransportError: Error, LocalizedError {
         case .rejected(let r):         return "Connection rejected: \(r)"
         case .protocolError(let m):    return "Protocol error: \(m)"
         case .server(let m):           return m
+        case .refused(_, let m):       return m
         }
     }
 
