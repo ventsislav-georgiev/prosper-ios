@@ -301,7 +301,7 @@ final class SessionConnection: ObservableObject {
     }
 
     /// ESC [ <digits ; :> u. The reply to a kitty flags query, ESC[?1u, starts with `?` and is not one.
-    static func isKittyKey(_ b: [UInt8]) -> Bool {
+    nonisolated static func isKittyKey(_ b: [UInt8]) -> Bool {
         b.count >= 4 && b[0] == 0x1b && b[1] == 0x5b && b.last == 0x75
             && b[2...].dropLast().allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x3b || $0 == 0x3a }
     }

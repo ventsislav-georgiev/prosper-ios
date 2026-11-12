@@ -161,9 +161,11 @@ enum TerminalMath {
     /// into back-tab and CR into the meta-enter newline; ctrl is `controlByte`; alt puts
     /// ESC in front (meta). A bar key (`fromBar`) also takes them on a CSI cursor/edit key,
     /// xterm style: ESC [ A → ESC [ 1 ; m A, ESC [ 5 ~ → ESC [ 5 ; m ~. Any other
-    /// multi-byte bar key (back-tab, the newline key) goes out unchanged.
+    /// multi-byte bar key (back-tab, the newline key) goes out unchanged. A kitty key report
+    /// takes them in its modifier field (`kittyModified`, #321).
     static func modified(_ bytes: [UInt8], by mods: Modifiers, fromBar: Bool = false) -> [UInt8]? {
         guard !mods.isEmpty else { return nil }
+        if SessionConnection.isKittyKey(bytes) { return kittyModified(bytes, by: mods) }
         if bytes.count == 1, let b = bytes.first, b < 0x7f {
             var out: [UInt8]
             switch b {
@@ -186,6 +188,27 @@ enum TerminalMath {
         default:
             return nil
         }
+    }
+
+    /// #321: a kitty keyboard protocol key report, ESC [ key[:alternates] ; mods[:type] ; text u
+    /// (every key under flag 8; Esc and chords under flag 1), takes the lit modifiers in its
+    /// modifier field, whose bits are xterm's: ESC[97u → ESC[97;5u with ctrl. A release or
+    /// repeat, or a modifier key's own report (57441-57454), is not the chord's key: nil.
+    /// SwiftTerm sends software-keyboard text as key 0 (ESC[0;;97u under flags 8+16), so one
+    /// character of text becomes the key, lowercased as SwiftTerm's own ctrl does. ctrl or alt
+    /// drop the text, as SwiftTerm's encoder does; shift upper-cases it.
+    static func kittyModified(_ bytes: [UInt8], by mods: Modifiers) -> [UInt8]? {
+        let fields = String(decoding: bytes.dropFirst(2).dropLast(), as: UTF8.self)
+            .split(separator: ";", omittingEmptySubsequences: false)
+        var key = fields[0].split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        let mod = fields.count > 1 ? fields[1].split(separator: ":", omittingEmptySubsequences: false).map { Int($0) } : []
+        guard let code = Int(key[0]), !(57441...57454).contains(code), mod.count < 2 || mod[1] == 1 else { return nil }
+        var text = fields.count > 2 ? fields[2].split(separator: ":").compactMap { UInt32($0).flatMap(Unicode.Scalar.init) } : []
+        if code == 0, text.count == 1, let c = String(text[0]).lowercased().unicodeScalars.first { key = [String(c.value)] }
+        let m = ((mod.first ?? nil) ?? 1) - 1 | Int(mods.rawValue)
+        if m & 6 != 0 { text = [] } else if mods.contains(.shift) { text = Array(String(String.UnicodeScalarView(text)).uppercased().unicodeScalars) }
+        let tail = text.isEmpty ? "" : ";" + text.map { String($0.value) }.joined(separator: ":")
+        return Array("\u{1b}[\(key.joined(separator: ":"));\(m + 1)\(tail)u".utf8)
     }
 
     /// Jog-wheel scrolling: how many whole lines to scroll during `elapsed` seconds

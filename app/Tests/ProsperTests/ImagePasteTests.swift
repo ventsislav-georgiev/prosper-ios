@@ -241,6 +241,31 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertFalse(bar.ctrlArmed, "the typed key must disarm ctrl")
     }
 
+    /// #321 QA #126: under kitty flag 8 a typed key is ESC[97u, so the armed ctrl never applied and
+    /// the bar button stayed lit. It now goes in the modifier field and disarms; a release keeps it.
+    func testCtrlArmedAppliesToKittyKeyReportAndDisarms() async throws {
+        let (vc, spy) = try await makeVC()
+        let (bar, tv) = try barAndTerminal(vc)
+        bar.onKey?(try catalogKey("ctrl"))
+        XCTAssertTrue(bar.ctrlArmed, "precondition: ctrl armed")
+
+        let release = Array("\u{1b}[97;1:3u".utf8)
+        vc.send(source: tv, data: release[...])
+        XCTAssertEqual(spy.sent.last, release, "a key release was modified")
+        XCTAssertTrue(bar.ctrlArmed, "a key release consumed the arm")
+
+        vc.send(source: tv, data: Array("\u{1b}[97u".utf8)[...])
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[97;5u".utf8), "ctrl never reached the kitty key")
+        XCTAssertFalse(bar.ctrlArmed, "the kitty key must disarm ctrl")
+        vc.send(source: tv, data: Array("\u{1b}[98u".utf8)[...])
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[98u".utf8), "a spent ctrl still applied")
+
+        bar.onKey?(try catalogKey("alt"))
+        vc.send(source: tv, data: Array("\u{1b}[98;2u".utf8)[...])
+        XCTAssertEqual(spy.sent.last, Array("\u{1b}[98;4u".utf8), "alt+shift+b")
+        XCTAssertEqual(bar.modes[.alt], .off, "the kitty key must spend a once alt")
+    }
+
     // MARK: sticky ctrl / alt / shift (#450)
 
     private func barAndTerminal(_ vc: TerminalHostVC) throws -> (ShortcutBar, TerminalView) {

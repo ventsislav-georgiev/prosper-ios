@@ -490,6 +490,41 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(mod(csi("6~"), .shift, bar: true), csi("6;2~"))
     }
 
+    /// #321 QA #126: under kitty flag 8 every key is ESC[<key>;<mods>u, so the lit modifiers go
+    /// in its modifier field (bits as xterm's), keeping the alternates, the text only without ctrl/alt.
+    func testKittyKeyReportTakesTheModifiersInItsField() {
+        func k(_ s: String) -> [UInt8] { Array("\u{1b}[\(s)u".utf8) }
+        XCTAssertEqual(mod(k("97"), .ctrl), k("97;5"), "plain a + ctrl is ctrl+a")
+        XCTAssertEqual(mod(k("97;2"), .ctrl), k("97;6"), "shift+a keeps its shift")
+        XCTAssertEqual(mod(k("97;5"), .ctrl), k("97;5"), "a key already holding ctrl is unchanged")
+        XCTAssertEqual(mod(k("97"), .alt), k("97;3"))
+        XCTAssertEqual(mod(k("97"), [.shift, .alt, .ctrl]), k("97;8"))
+        XCTAssertEqual(mod(k("13"), .ctrl), k("13;5"), "enter under flag 8")
+        XCTAssertEqual(mod(k("27"), .ctrl), k("27;5"), "Esc under flag 1")
+        XCTAssertEqual(mod(k("97:65"), .ctrl), k("97:65;5"), "alternates (flag 4) are kept")
+        XCTAssertEqual(mod(k("97;;97"), .ctrl), k("97;5"), "ctrl drops the text (flag 16)")
+        XCTAssertEqual(mod(k("97;;97"), .shift), k("97;2;65"), "shift upper-cases the text")
+        XCTAssertEqual(mod(k("0;;99"), .ctrl), k("99;5"), "SwiftTerm's software-keyboard text becomes the key")
+        XCTAssertEqual(mod(k("0;;67"), .ctrl), k("99;5"), "lowercased, as SwiftTerm's own ctrl does")
+        XCTAssertEqual(mod(k("0;;97"), .shift), k("97;2;65"))
+        XCTAssertEqual(mod(k("0"), .ctrl), k("0;5"), "flag 8 alone loses the text; the key still spends the arm")
+        XCTAssertEqual(mod(k("97;1:1"), .ctrl), k("97;5"), "an explicit press takes them")
+        XCTAssertEqual(mod(k("97"), .ctrl, bar: true), k("97;5"), "a bar key that is a kitty report too")
+    }
+
+    /// Releases, repeats and a modifier key's own report (a hardware shift under flag 8) are not
+    /// the chord's key: nil, so they go out whole and the arm stays lit. So is a non-kitty frame.
+    func testKittyFramesThatDontTakeModifiersAreNil() {
+        func k(_ s: String) -> [UInt8] { Array("\u{1b}[\(s)u".utf8) }
+        XCTAssertNil(mod(k("97;1:3"), .ctrl), "a release")
+        XCTAssertNil(mod(k("97;1:2"), .ctrl), "a repeat")
+        XCTAssertNil(mod(k("57441;2"), .ctrl), "left shift's own press")
+        XCTAssertNil(mod(k("57454"), .ctrl), "ISO level 5 shift")
+        XCTAssertNil(mod(Array("\u{1b}[?1u".utf8), .ctrl), "the flags query reply")
+        XCTAssertNil(mod(Array("\u{1b}[1;5A".utf8), .ctrl), "a modified arrow")
+        XCTAssertNil(mod(k("97"), []), "nothing lit")
+    }
+
     func testControlByte() {
         XCTAssertEqual(TerminalMath.controlByte(0x61), 0x01)
         XCTAssertEqual(TerminalMath.controlByte(0x5a), 0x1a)

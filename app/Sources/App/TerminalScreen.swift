@@ -1535,7 +1535,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         MainActor.assumeIsolated {
             if coalescing != nil {
                 coalescing?.append(contentsOf: data)   // scroll burst — one write, see emitScroll
-            } else if data.count == 1 {
+            } else if data.count == 1 || SessionConnection.isKittyKey(Array(data)) {
                 // Only a single typed ASCII key takes the bar's modifiers: an ESC-led frame
                 // is a terminal reply (OSC/DCS/APC, kitty flags) or a key sequence (arrows,
                 // alt+key, return's ESC CR), multi-byte text (é, emoji) is not a chord, and
@@ -1543,6 +1543,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
                 // replaces — it would go out as ^_ and eat the arm); all pass through whole,
                 // leaving the modifiers lit (#315, #320, #326). A lone Esc is a typed key:
                 // with ctrl it goes out unchanged (controlByte(0x1b) == 0x1b) and disarms.
+                // #321: so does a kitty key report (every key under flag 8): the modifiers go
+                // in its modifier field.
                 sendModified(Array(data), fromBar: false)
             } else {
                 conn.send(data)
