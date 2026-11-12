@@ -545,7 +545,8 @@ final class ProsperTransport: SessionTransport {
         (try? JSONSerialization.data(withJSONObject: o)) ?? Data()
     }
 
-    private func connect(timeout: TimeInterval = 6) async throws -> NWConnection {
+    /// TCP options for every connection to the Mac.
+    static func tcpOptions() -> NWProtocolTCP.Options {
         // A half-open link (roam, Mac asleep) otherwise stays `.ready` for minutes while
         // every keystroke sent into it is accepted by the stack and lost. Keepalive
         // notices an idle dead link in ~30s, the drop time a dead one with unacked
@@ -557,9 +558,16 @@ final class ProsperTransport: SessionTransport {
         tcp.keepaliveInterval = 5
         tcp.keepaliveCount = 3
         tcp.connectionDropTime = 15
+        // Frames are small and interactive; with Nagle on, a key typed while the one
+        // before is unacknowledged waits a round trip.
+        tcp.noDelay = true
+        return tcp
+    }
+
+    private func connect(timeout: TimeInterval = 6) async throws -> NWConnection {
         let conn = NWConnection(host: NWEndpoint.Host(host),
                                 port: NWEndpoint.Port(rawValue: port)!,
-                                using: NWParameters(tls: nil, tcp: tcp))
+                                using: NWParameters(tls: nil, tcp: Self.tcpOptions()))
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             let lock = NSLock()
             var resumed = false

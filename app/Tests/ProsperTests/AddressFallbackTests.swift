@@ -209,6 +209,19 @@ final class UnreachableLineTests: XCTestCase {
     }
 }
 
+/// #889: the options every connection to the Mac uses, read off the value; no socket.
+final class TCPOptionsTests: XCTestCase {
+    func testTCPOptionsKeepaliveDropTimeAndNoDelay() {
+        let tcp = ProsperTransport.tcpOptions()
+        XCTAssertTrue(tcp.enableKeepalive)
+        XCTAssertEqual(tcp.keepaliveIdle, 15)
+        XCTAssertEqual(tcp.keepaliveInterval, 5)
+        XCTAssertEqual(tcp.keepaliveCount, 3)
+        XCTAssertEqual(tcp.connectionDropTime, 15)
+        XCTAssertTrue(tcp.noDelay)
+    }
+}
+
 /// #827: a loopback dch serve gate: on accept, before reading a byte, one error 0x13 `json`
 /// and FIN; then it reads until the phone's EOF and closes, as the server does. `accepted`
 /// counts the connections.
