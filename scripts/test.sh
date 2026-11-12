@@ -18,6 +18,7 @@ slow=(
     KeyboardToolbarTests/testQAHostsTakeTheExtentOnly
     KeyboardToolbarTests/testLineEditsOnALongLineTakeEachCharacterOnce
     TypoRateTests/testRunOnsAndSlipsThroughAutocorrect
+    SentenceTypoTests/testSentencesThroughAutocorrect
     TerminalKeyboardTests/testHostedKeyboardFollowsItsHeight
     SessionVerbTests/testLongWaitStillReturnsTheReply
     KeyboardToolbarTests/testATapQueuedInAStallReachesNothingAfterTheEditsOwnStepsThere
