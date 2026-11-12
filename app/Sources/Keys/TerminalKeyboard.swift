@@ -2215,7 +2215,14 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                 .map { 1 / Double($0.offset + 1) }.reduce(0, +)
             return w > 0 ? w : known(s) ? 0.025 : 0
         }
-        return Self.corrected(nearest(at: point), at: point, keys: keys, prefix: word, known: known, likely: likely)
+        // #945: the word so far is a whole one: the dictionary's, a shell word or one on the screen.
+        func complete(_ s: String) -> Bool {
+            if Suggestions.spelled(s, language: layout.language) || ShellWords.all.contains(s) { return true }
+            if screenCache == nil { screenCache = screenWords?() ?? [] }
+            return screenCache!.contains(s)
+        }
+        return Self.corrected(nearest(at: point), at: point, keys: keys, prefix: word, known: known, likely: likely,
+                              complete: complete)
     }
 
     /// The key nearest `point`, uncorrected: what a hold converts. Never the globe: a
@@ -2525,8 +2532,9 @@ extension TerminalKeyboard {
     /// the touch's distance from each key's center): after "th", a touch on r's left edge
     /// types e, "the" far likelier than "three". A centered hit, an empty prefix or no
     /// neighbor known or likely enough keeps `nearest`, so only an already ambiguous touch
-    /// ever moves. Only letters are corrected: digits and symbols never. A hold isn't
-    /// corrected at all (`fireHold`). Lowercase in and out; `press` applies shift.
+    /// ever moves. A digit, symbol, space or return moves only at its edge, mid-word
+    /// (`edged`). A hold isn't corrected at all (`fireHold`). Lowercase in and out; `press`
+    /// applies shift.
     ///
     /// The center is checked first, so `known` (and the screen it may read) is asked only
     /// for an ambiguous touch.
@@ -2537,13 +2545,11 @@ extension TerminalKeyboard {
     /// ponytail: a password typed at a prompt is corrected too, at a key's edge, like the
     /// system keyboard's own dynamic hit areas. A secure-entry signal could switch it off.
     static func corrected(_ nearest: Key, at point: CGPoint, keys: [(Key, CGRect)],
-                          prefix: String, known: (String) -> Bool, likely: (String) -> Double = { _ in 0 }) -> Key {
-        func letter(_ k: Key) -> String? {
-            if case .char(let c) = k, c.first?.isLetter == true { return c }
-            return nil
-        }
-        guard !prefix.isEmpty, let c = letter(nearest),
-              let frame = keys.first(where: { $0.0 == nearest })?.1 else { return nearest }
+                          prefix: String, known: (String) -> Bool, likely: (String) -> Double = { _ in 0 },
+                          complete: (String) -> Bool = { _ in true }) -> Key {
+        guard !prefix.isEmpty else { return nearest }
+        guard let c = letter(nearest) else { return edged(nearest, at: point, keys: keys, prefix: prefix, known: known, complete: complete) }
+        guard let frame = keys.first(where: { $0.0 == nearest })?.1 else { return nearest }
         let center = frame.insetBy(dx: frame.width / 4, dy: frame.height / 4)
         if center.contains(point) { return nearest }
         let reach = frame.width / 2
@@ -2559,6 +2565,35 @@ extension TerminalKeyboard {
         let mine = score((nearest, frame))
         return candidates.filter { score($0) > mine }.max { score($0) < score($1) }?.0 ?? nearest
     }
+
+    /// The letter `k` types, or nil.
+    private static func letter(_ k: Key) -> String? {
+        if case .char(let c) = k, c.first?.isLetter == true { return c }
+        return nil
+    }
+
+    /// #945: a touch nearest space, return, a digit or a symbol, mid-word, that lands within
+    /// `edgeReach` of a letter's edge types the closest such letter that continues a known
+    /// word, unless the word so far is `complete`: "woma" and a touch on ?'s top edge under
+    /// n is "woman". A word that is one already keeps its space, return or symbol; a touch
+    /// further in keeps the key.
+    ///
+    /// ponytail: a word that is one and the start of a longer one ("ha", "have") keeps the
+    /// space, the digit too ("ho7se"); a bigram could say which.
+    private static func edged(_ nearest: Key, at point: CGPoint, keys: [(Key, CGRect)], prefix: String,
+                              known: (String) -> Bool, complete: (String) -> Bool) -> Key {
+        switch nearest {
+        case .space, .ret, .char: break
+        default: return nearest
+        }
+        let near = keys.filter { letter($0.0) != nil && distance(point, $0.1) <= $0.1.height * edgeReach }
+            .sorted { distance(point, $0.1) < distance(point, $1.1) }
+        guard !near.isEmpty, !complete(prefix) else { return nearest }
+        return near.first { known(prefix + letter($0.0)!) }?.0 ?? nearest
+    }
+    /// How far past a letter's edge, in its heights, a non-letter touch may still be it (#945):
+    /// 6 pt into space's 38, none of its center.
+    static let edgeReach: CGFloat = 0.5
 
     /// English's checker language. Also the extension's suggestions' (`Suggestions`).
     static let language: String? = {

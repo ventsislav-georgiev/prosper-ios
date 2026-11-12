@@ -128,6 +128,66 @@ final class TouchCorrectionTests: XCTestCase {
                                    known: { _ in true }, likely: { ["те": 3, "тр": 0.05][$0] ?? 0 }), .char("е"))
     }
 
+    // MARK: Off a non-letter (#945)
+
+    /// The single-character keys plus space, return and delete.
+    private func allKeys(_ f: [String: CGRect]) -> [(K.Key, CGRect)] {
+        keys(f) + [(.space, f["space"]!), (.ret, f["new line"]!), (.backspace, f["delete"]!)]
+    }
+
+    /// Mid-word, a touch on the top edge of space, return or ?, or the bottom edge of a
+    /// digit, goes to the letter beside it when that continues a word the prefix isn't yet.
+    func testANonLetterEdgeMidWordTypesTheLetterThatContinuesIt() {
+        let (_, f) = laidOut()
+        let v = f["v"]!, m = f["m"]!, n = f["n"]!, e = f["e"]!
+        let space = f["space"]!, ret = f["new line"]!, ask = f["?"]!, three = f["3"]!
+        let notWord: (String) -> Bool = { _ in false }
+        XCTAssertEqual(K.corrected(.space, at: CGPoint(x: v.midX, y: space.minY + 2), keys: allKeys(f), prefix: "ha",
+                                   known: knowing("have"), complete: notWord), .char("v"), "space")
+        XCTAssertEqual(K.corrected(.ret, at: CGPoint(x: m.midX, y: ret.minY + 2), keys: allKeys(f), prefix: "proble",
+                                   known: knowing("problem"), complete: notWord), .char("m"), "return")
+        XCTAssertEqual(K.corrected(.char("?"), at: CGPoint(x: n.midX, y: ask.minY + 2), keys: allKeys(f), prefix: "woma",
+                                   known: knowing("woman"), complete: notWord), .char("n"), "?")
+        XCTAssertEqual(K.corrected(.char("3"), at: CGPoint(x: e.midX, y: three.maxY - 2), keys: allKeys(f), prefix: "ev",
+                                   known: knowing("even"), complete: notWord), .char("e"), "a digit")
+    }
+
+    /// Deliberate keys stay: a word that is one already, a touch well inside the key, no
+    /// letter that continues the word, an empty prefix, or a key that isn't a character.
+    func testADeliberateSpaceReturnOrSymbolStays() {
+        let (_, f) = laidOut()
+        let v = f["v"]!, m = f["m"]!, n = f["n"]!
+        let space = f["space"]!, ret = f["new line"]!, ask = f["?"]!, delete = f["delete"]!
+        let edge = CGPoint(x: v.midX, y: space.minY + 2)
+        XCTAssertEqual(K.corrected(.space, at: edge, keys: allKeys(f), prefix: "ha", known: knowing("have"),
+                                   complete: { $0 == "ha" }), .space, "a whole word keeps its space")
+        XCTAssertEqual(K.corrected(.char("?"), at: CGPoint(x: n.midX, y: ask.minY + 2), keys: allKeys(f), prefix: "what",
+                                   known: knowing("whatnot"), complete: { $0 == "what" }), .char("?"), "and its ?")
+        XCTAssertEqual(K.corrected(.space, at: CGPoint(x: v.midX, y: space.midY), keys: allKeys(f), prefix: "ha",
+                                   known: knowing("have"), complete: { _ in false }), .space, "well inside space")
+        XCTAssertEqual(K.corrected(.ret, at: CGPoint(x: m.midX, y: ret.midY), keys: allKeys(f), prefix: "proble",
+                                   known: knowing("problem"), complete: { _ in false }), .ret, "well inside return")
+        XCTAssertEqual(K.corrected(.space, at: edge, keys: allKeys(f), prefix: "xq", known: knowing("have"),
+                                   complete: { _ in false }), .space, "no letter continues it")
+        XCTAssertEqual(K.corrected(.space, at: edge, keys: allKeys(f), prefix: "", known: knowing("v"),
+                                   complete: { _ in false }), .space, "no word under way")
+        XCTAssertEqual(K.corrected(.backspace, at: CGPoint(x: delete.minX + 1, y: delete.midY), keys: allKeys(f),
+                                   prefix: "ji", known: knowing("jim"), complete: { _ in false }), .backspace, "delete")
+        XCTAssertEqual(K.corrected(.space, at: edge, keys: allKeys(f), prefix: "ha", known: knowing("have")), .space,
+                       "complete defaults to a whole word")
+    }
+
+    /// The real dictionary: "proble" and return's top edge is m; "the" keeps its space.
+    func testRealDictionaryOffANonLetter() {
+        let (kb, f) = laidOut()
+        let m = f["m"]!, v = f["v"]!
+        XCTAssertEqual(type("proble", thenTap: CGPoint(x: m.midX, y: f["new line"]!.minY + 2), on: kb), "m")
+        let (kb2, _) = laidOut()
+        XCTAssertEqual(type("the", thenTap: CGPoint(x: v.midX, y: f["space"]!.minY + 2), on: kb2), " ", "a whole word")
+        let (kb3, _) = laidOut()
+        XCTAssertEqual(type("proble", thenTap: CGPoint(x: m.midX, y: f["new line"]!.midY), on: kb3), "\n", "well inside")
+    }
+
     // MARK: Through the real keyboard
 
     /// The real dictionary's odds: "th" and a touch on r's left edge types e.
