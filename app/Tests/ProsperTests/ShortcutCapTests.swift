@@ -268,6 +268,12 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertEqual(shift.configuration?.background.backgroundColor, idleFill, "off keeps the dark card")
         XCTAssertEqual(altLED.backgroundColor, ctrl.configuration?.baseForegroundColor, "the bar is the lit glyph's colour")
         XCTAssertEqual(alt.configuration?.baseForegroundColor, ctrl.configuration?.baseForegroundColor, "locked glyph is the once glyph")
+        // #955: a cue past the bar's size — locked rings the cap in the bar's ink; once keeps the hairline.
+        XCTAssertEqual(alt.configuration?.background.strokeColor, altLED.backgroundColor, "locked rings the cap in the bar's ink")
+        XCTAssertEqual(alt.configuration?.background.strokeWidth, 1.5)
+        XCTAssertNotEqual(ctrl.configuration?.background.strokeColor, alt.configuration?.background.strokeColor, "once has no ring")
+        XCTAssertEqual(ctrl.configuration?.background.strokeColor, shift.configuration?.background.strokeColor, "once keeps the hairline")
+        XCTAssertEqual(ctrl.configuration?.background.strokeWidth, 1)
 
         // The bar: short, centered under the label, inside the cap.
         let led = altLED.frame
@@ -283,6 +289,7 @@ final class ShortcutCapTests: XCTestCase {
         bar.modes = [:]
         XCTAssertTrue(altLED.isHidden, "off again hides the light")
         XCTAssertNil(alt.accessibilityValue)
+        XCTAssertEqual(alt.configuration?.background.strokeColor, shift.configuration?.background.strokeColor, "off again drops the ring")
         bar.modes = [.alt: .locked]
         bar.layoutIfNeeded()
         XCTAssertEqual(altLED.frame, led, "the bar keeps its place through mode changes")

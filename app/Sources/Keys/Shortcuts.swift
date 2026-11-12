@@ -698,7 +698,7 @@ final class ShortcutBar: UIView {
     }
 
     /// once = the accent's fill and its glyph colour (#626); locked = the once look plus a bar
-    /// in that colour under the label; off = like the rest.
+    /// in that colour under the label and a ring in it round the cap (#955); off = like the rest.
     private func refreshModifiers() {
         for (kind, b) in modifierCaps {
             guard var cfg = b.configuration else { continue }
@@ -706,6 +706,9 @@ final class ShortcutBar: UIView {
             let on = mode != .off
             cfg.baseForegroundColor = on ? bar.onAccent : bar.icon
             cfg.background.image = on ? bar.washImage : nil
+            // #955: locked also rings the cap in the bar's ink — a cue past the bar's size alone.
+            cfg.background.strokeColor = mode == .locked ? bar.onAccent : bar.border
+            cfg.background.strokeWidth = mode == .locked ? 1.5 : 1
             b.configuration = cfg
             b.pressedFill = on ? bar.accent : bar.surfacePressed
             b.idleFill = on ? bar.accent : bar.surface      // applies the fill
