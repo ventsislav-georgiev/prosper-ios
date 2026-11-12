@@ -85,21 +85,34 @@ final class ClipboardHistory {
     /// panel's Paste keeps them. Refused (Allow Paste's Don't Allow), the read finds nothing
     /// though `fresh` saw a text or image: that clip is `refused`, on disk, so no keyboard asks
     /// again whatever its memory holds (#699), and it stays `fresh`, for the panel's Paste.
+    /// #924: the read goes off the main thread and the result lands on it, `reading` till then:
+    /// an Allow Paste left up holds only that queue, keys, bar and walks run on (measured on the
+    /// simulator; main's `changeCount` and `hasStrings` answer in microseconds meanwhile).
     func save(_ pb: UIPasteboard) {
         let change = pb.changeCount
         guard fresh(pb), change != update().refused else { return }
-        let clip = read(pb)
-        if let text = clip.text {
-            keep(text: text, change: change)
-        } else if let name = clip.image.flatMap({ storeImage(Self.source($0 as CFData)) }) {
-            keep(Clip(image: name, date: now()), change: change)
-        } else {
-            update { $0.refused = change }
+        reading = true
+        DispatchQueue.global(qos: .userInitiated).async { [read] in
+            let clip = read(pb)
+            let name = clip.text == nil ? clip.image.flatMap { self.storeImage(Self.source($0 as CFData)) } : nil
+            DispatchQueue.main.async {
+                self.reading = false
+                if let text = clip.text {
+                    self.keep(text: text, change: change)
+                } else if let name {
+                    self.keep(Clip(image: name, date: self.now()), change: change)
+                } else {
+                    self.update { $0.refused = change }
+                }
+            }
         }
     }
 
+    /// `save`'s read under way, off the main thread (#924): no second one meanwhile. Main only.
+    private(set) var reading = false
+
     /// `save`'s one read, the one that raises Allow Paste: plain text, or else an image's
-    /// bytes. Settable for tests.
+    /// bytes. Off the main thread. Settable for tests.
     var read: (UIPasteboard) -> (text: String?, image: Data?) = { pb in
         let conforming = { (type: UTType) in pb.types.first { UTType($0)?.conforms(to: type) == true } }
         if conforming(.plainText) != nil { return (pb.string, nil) }

@@ -2231,9 +2231,12 @@ final class SuggestionBar: UIView {
     /// no timer. A `changeCount` unchanged since the last try costs no read and no disk.
     /// Never without the setting, Full Access (`pasteboard`) or a store, and never while a
     /// toolbar edit or a caret walk is under way (`TerminalKeyboard.editing`): the read is
-    /// synchronous, so an Allow Paste prompt left up held dd's walk for minutes (#699 QA).
+    /// was synchronous, so an Allow Paste prompt left up held dd's walk for minutes (#699 QA).
+    /// #924: the read now runs off the main thread (`ClipboardHistory.save`); a clip copied while
+    /// one is under way is tried at the next refresh after it.
     private func saveCopy() {
-        guard suggestions.settings.saveCopies, keyboard?.editing != true, let history, let pb = suggestions.pasteboard(),
+        guard suggestions.settings.saveCopies, keyboard?.editing != true, let history, !history.reading,
+              let pb = suggestions.pasteboard(),
               pb.changeCount != suggestions.memory.savedClip else { return }
         suggestions.memory.savedClip = pb.changeCount
         history.save(pb)

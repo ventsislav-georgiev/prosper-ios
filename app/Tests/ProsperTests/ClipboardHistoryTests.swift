@@ -289,6 +289,13 @@ final class ClipboardHistoryTests: XCTestCase {
         return { reads }
     }
 
+    /// Till `h`'s auto-save read, off the main thread (#924), has landed.
+    private func settle(_ h: ClipboardHistory) {
+        let deadline = Date() + 5
+        while h.reading, Date() < deadline { RunLoop.main.run(until: Date() + 0.01) }
+        XCTAssertFalse(h.reading, "the read landed")
+    }
+
     /// Save Copies Automatically turned off, or no Full Access: a clip copied elsewhere is
     /// never read (Allow Paste), nor kept: as before #601.
     func testSaveCopiesOffNeverReads() {
@@ -302,6 +309,7 @@ final class ClipboardHistoryTests: XCTestCase {
         pb.string = "elsewhere"
         off.refresh()
         noAccess.refresh()
+        settle(h)
         XCTAssertEqual(reads(), 0)
         XCTAssertEqual(h.clips, [])
         XCTAssertTrue(h.fresh(pb), "the panel's Paste still offers it")
@@ -319,6 +327,7 @@ final class ClipboardHistoryTests: XCTestCase {
         bar.suggestions.settings = KeyboardSettings(defaults)
         pb.string = "alpha"
         bar.refresh()
+        settle(h)
         XCTAssertEqual(h.clips.map(\.text), ["alpha"])
         XCTAssertEqual(reads(), 1)
         XCTAssertEqual(bar.state, .paste, "the fresh clip's Paste stays")
@@ -330,13 +339,16 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertEqual(h.clips.map(\.id), saved, "the Paste's clip isn't kept anew")
         h.delete(try XCTUnwrap(h.clips.first).id)
         bar.refresh()
+        settle(h)
         XCTAssertEqual(reads(), 1, "the same changeCount isn't read again")
         XCTAssertEqual(h.clips, [], "nor kept again")
 
         reads = counting(h) { _ in (nil, nil) }   // Don't Allow
         pb.string = "beta"
         bar.refresh()
+        settle(h)
         bar.refresh()
+        settle(h)
         XCTAssertEqual(reads(), 1, "refused once, not asked again")
         XCTAssertEqual(h.clips, [])
         XCTAssertTrue(h.fresh(pb), "the panel's Paste still offers it")
@@ -344,6 +356,7 @@ final class ClipboardHistoryTests: XCTestCase {
         reads = counting(h)
         pb.setItems([[UTType.utf8PlainText.identifier: "s3cret", "org.nspasteboard.ConcealedType": Data()]])
         bar.refresh()
+        settle(h)
         XCTAssertEqual(reads(), 0, "concealed")
         XCTAssertEqual(h.clips, [])
         withExtendedLifetime(kb) {}
@@ -357,14 +370,17 @@ final class ClipboardHistoryTests: XCTestCase {
         let reads = counting(h) { _ in (nil, nil) }
         pb.string = "elsewhere"
         let (kb, _, _, _) = rig("", history: h)
+        settle(h)
         XCTAssertEqual(reads(), 1, "asked at the open")
         defaults.removeObject(forKey: TypingMemory.savedClipKey)   // a memory without the try
         let (kb2, again, _, _) = rig("", history: h)
         again.refresh()
+        settle(h)
         XCTAssertEqual(reads(), 1, "refused: not asked again")
         XCTAssertTrue(h.fresh(pb), "the panel's Paste still offers it")
         pb.string = "next"
         again.refresh()
+        settle(h)
         XCTAssertEqual(reads(), 2, "a new copy is asked once")
         withExtendedLifetime((kb, kb2)) {}
     }
@@ -389,9 +405,12 @@ final class ClipboardHistoryTests: XCTestCase {
         }
         XCTAssertGreaterThan(polls, 1, "dd walked")
         XCTAssertEqual(doc.text + (doc.after ?? ""), "one two\nfive six")
+        settle(h)
         XCTAssertEqual(reads(), 0, "no read while dd walks")
         bar.refresh()
+        settle(h)
         bar.refresh()
+        settle(h)
         XCTAssertEqual(reads(), 1)
         XCTAssertEqual(h.clips.map(\.text), ["elsewhere"])
         withExtendedLifetime(kb) {}
@@ -403,9 +422,49 @@ final class ClipboardHistoryTests: XCTestCase {
         let (kb, bar, _, _) = rig("", history: h)
         pb.setData(try Data(contentsOf: try jpeg(3000, 1500)), forPasteboardType: UTType.jpeg.identifier)
         bar.refresh()
+        settle(h)
         let clip = try XCTUnwrap(h.clips.first)
         XCTAssertNil(clip.text)
         XCTAssertEqual(Self.pixels(h.url(try XCTUnwrap(clip.image))), CGSize(width: 1024, height: 512))
+        withExtendedLifetime(kb) {}
+    }
+
+    /// An Allow Paste left up holds only the read's queue, not the keyboard (#924; #699's ceiling):
+    /// the read runs off the main thread, the bar refreshes and keys type while it's held, no
+    /// second read starts meanwhile, the answer lands on the main thread, and a clip copied
+    /// meanwhile is read at the next refresh after it.
+    func testAPromptHeldReadLeavesTheKeyboardFree() {
+        let h = ClipboardHistory(dir: dir)
+        let answer = DispatchSemaphore(value: 0)
+        var offMain: [Bool] = []
+        let reads = counting(h) { pb in
+            offMain.append(!Thread.isMainThread)
+            if !offMain.last! { return (nil, nil) }   // the main thread is never held, not even here
+            let text = pb.string                       // the clip asked for
+            _ = answer.wait(timeout: .now() + 5)       // the prompt, till the user answers
+            return (text, nil)
+        }
+        pb.string = "elsewhere"
+        let start = Date()
+        let (kb, bar, doc, _) = rig("", history: h)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1, "the open isn't held")
+        XCTAssertTrue(h.reading, "the read is under way, off the main thread")
+        kb.press(.char("a"))
+        bar.refresh()
+        XCTAssertEqual(doc.text, "a", "a key types meanwhile")
+        pb.string = "later"
+        bar.refresh()
+        XCTAssertEqual(h.clips, [], "nothing lands before the answer")
+        answer.signal()   // Allow Paste
+        settle(h)
+        XCTAssertEqual(h.clips.map(\.text), ["elsewhere"])
+        XCTAssertEqual(reads(), 1, "no second read while one is held")
+        answer.signal()
+        bar.refresh()
+        settle(h)
+        XCTAssertEqual(reads(), 2, "the clip copied meanwhile, at the next refresh")
+        XCTAssertEqual(h.clips.map(\.text), ["later", "elsewhere"])
+        XCTAssertEqual(offMain, [true, true])
         withExtendedLifetime(kb) {}
     }
 }
