@@ -44,7 +44,7 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
             UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(done)),
             oneLineItem,
         ]
-        oneLineItem.isSelected = oneLine
+        styleOneLineItem()
 
         let font = TerminalFont.mono(size: TerminalPrefs.fontSize)
         source.text = text
@@ -127,9 +127,17 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
         sync()
     }
 
+    /// #954: on is a tinted glyph, not `isSelected`, whose filled capsule read as a second
+    /// Done; VoiceOver still hears a toggle (selected trait, On/Off value).
+    private func styleOneLineItem() {
+        oneLineItem.tintColor = oneLine ? .systemBlue : nil
+        oneLineItem.accessibilityValue = oneLine ? "On" : "Off"
+        oneLineItem.accessibilityTraits = oneLine ? [.button, .selected] : .button
+    }
+
     @objc private func toggleOneLine() {
         oneLine.toggle()
-        oneLineItem.isSelected = oneLine
+        styleOneLineItem()
         UserDefaults.standard.set(oneLine, forKey: Self.oneLineKey)
         fillEditor()
         updateCaption()

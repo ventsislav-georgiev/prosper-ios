@@ -76,6 +76,42 @@ final class CopyViewTests: XCTestCase {
         XCTAssertEqual(editor.text, "curl https://example.com -o out")
         let item = try XCTUnwrap(vc.navigationItem.rightBarButtonItems?
             .first { $0.accessibilityLabel == "One line" })
-        XCTAssertTrue(item.isSelected)
+        XCTAssertEqual(item.accessibilityValue, "On")
+    }
+
+    /// #954: One line reads as a toggle, not a second Done. VoiceOver hears On/Off with
+    /// the selected trait; on is a tinted glyph, never `isSelected` (the filled capsule
+    /// Done also wears), and Done stays the only prominent item.
+    @MainActor
+    func testOneLineToggleLooksAndSpeaksLikeAToggle() throws {
+        let saved = UserDefaults.standard.object(forKey: CopyTextVC.oneLineKey)
+        defer { UserDefaults.standard.set(saved, forKey: CopyTextVC.oneLineKey) }
+        UserDefaults.standard.set(true, forKey: CopyTextVC.oneLineKey)
+
+        let vc = CopyTextVC(text: "echo hi", cols: 80)
+        let win = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 700))
+        win.rootViewController = UINavigationController(rootViewController: vc)
+        win.isHidden = false
+        win.layoutIfNeeded()
+        let items = try XCTUnwrap(vc.navigationItem.rightBarButtonItems)
+        let item = try XCTUnwrap(items.first { $0.accessibilityLabel == "One line" })
+        let done = try XCTUnwrap(items.first { $0 !== item })
+        let tap = { UIApplication.shared.sendAction(item.action!, to: item.target, from: item, for: nil) }
+
+        func check(on: Bool, line: UInt = #line) {
+            XCTAssertEqual(item.accessibilityValue, on ? "On" : "Off", line: line)
+            XCTAssertEqual(item.accessibilityTraits.contains(.selected), on, line: line)
+            XCTAssertTrue(item.accessibilityTraits.contains(.button), line: line)
+            XCTAssertFalse(item.isSelected, "selected fills like Done", line: line)
+            XCTAssertEqual(item.style, .plain, line: line)
+            XCTAssertEqual(item.tintColor, on ? .systemBlue : nil, line: line)
+        }
+        check(on: true)
+        XCTAssertEqual(done.style, .done)
+        XCTAssertNotEqual(item.style, done.style)
+        tap()
+        check(on: false)
+        tap()
+        check(on: true)
     }
 }
