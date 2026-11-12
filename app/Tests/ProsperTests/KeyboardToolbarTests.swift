@@ -2493,6 +2493,45 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertLessThan(took, SuggestionBar.answerPolls, "polls")
     }
 
+    /// dd and cut line on a text's first line, on a UITextView whose answer to the walk back,
+    /// a poll after UIKit's guess, shows other than the guess (none past the line's end, or
+    /// the after-context cut at a sentence): the line goes within 30 polls of the press, the
+    /// host's answer taken at once (#688: the text-start wait held 0.8 s after it). Where the
+    /// host shows nothing but the guess, the wait still runs `answerPolls` (UIKit's guess at a
+    /// sentence's start reads the same).
+    func testDdAndCutLineOnTheFirstLineTakeTheHostsAnswerAtOnce() throws {
+        let guessing: (Proxy) -> Void = { Self.textView($0); $0.guesses = true; $0.guessesPastLineEnd = true }
+        let hosts: [(String, Bool, (Proxy) -> Void)] = [
+            ("text view, guessing", true, guessing), ("kit", true, Self.qaHosts()[0].1), ("text view", false, Self.textView),
+        ]
+        for (name, answers, host) in hosts {
+            for (text, after, goes) in [("One. Two", "\nthree", "|three"), ("on", "e\ntwo", "|two")] {
+                for id in ["delLine", "cutLine"] {
+                    let (kb, bar, doc) = rig(text, after: after, keys: Shortcuts.hostOnly)
+                    host(doc)
+                    let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                    addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                    pb.string = "old"
+                    bar.suggestions.pasteboard = { pb }
+                    bar.toolbar?.reload()
+                    bar.press(try key(Shortcuts.hostOnly, id))
+                    var took = 0
+                    for i in 1...3_000 {
+                        doc.catchUp(); kb.pollCaret()
+                        if took == 0, Self.at(doc) == goes { took = i }
+                    }
+                    let what = "\(id) on \(name) from \(text)|\(after)"
+                    XCTAssertEqual(Self.at(doc), goes, what)
+                    XCTAssertEqual(pb.string, id == "cutLine" ? (text + after).components(separatedBy: "\n")[0] : "old", what)
+                    // kit's answer on "on|e" is its guess: no new context, the wait runs out.
+                    if text == "One. Two" || name == "text view, guessing" {
+                        XCTAssertEqual(took < 30, answers, "polls \(took): \(what)")
+                    }
+                }
+            }
+        }
+    }
+
     /// dd and cut line at the text's end: the line and the break before it go, the clip the
     /// line, on the poll the step past the end is sent, so within 1 s on a host on time (#685:
     /// the step, which can't move there and shows no answer, was waited out, 0.3 s for it to

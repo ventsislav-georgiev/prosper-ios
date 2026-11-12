@@ -1499,8 +1499,10 @@ final class SuggestionBar: UIView {
     /// host taking 1 s a move answered the walk back after 0.3 s quiet), or till a context
     /// other than the one the wait began on, its answer and no guess, reads as landed (#689:
     /// a host blocking 150 ms a move held 0.3 s quiet after each answer).
+    /// `heard`: landed only on a context other than UIKit's guess for the last move, the host's
+    /// answer, however soon the host answers (#688).
     private func settled(_ moved: Bool, _ quietFor: Int = 15, walked: (dir: Int, crossed: String)? = nil,
-                         _ go: @escaping (_ answered: Bool) -> Void) {
+                         heard: Bool = false, _ go: @escaping (_ answered: Bool) -> Void) {
         guard moved, let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return go(false) }
         let landed = { () -> Bool in
             guard let (dir, c) = walked else { return false }
@@ -1509,8 +1511,10 @@ final class SuggestionBar: UIView {
                 ? (b.hasSuffix(c) || !b.isEmpty && c.hasSuffix(b)) && (a.first?.isNewline ?? true)
                 : (a.hasPrefix(c) || !a.isEmpty && c.hasPrefix(a)) && (b.last?.isNewline ?? true)
         }
-        let soon = keyboard.lateBy <= TerminalKeyboard.wakeTicks ? keyboard.lateBy : nil
+        let soon = !heard && keyboard.lateBy <= TerminalKeyboard.wakeTicks ? keyboard.lateBy : nil
+        let answer = { [weak keyboard] in keyboard?.guessed.map { $0 != [doc.documentContextBeforeInput, doc.documentContextAfterInput] } == true }
         if soon == 0, landed() { return go(false) }
+        if heard, answer(), landed() { return go(true) }
         let read = { Self.before(doc) + "\u{0}" + (doc.documentContextAfterInput ?? "") }
         let was = read(), start = keyboard.ticks
         var quiet = Quiet(was, at: keyboard.ticks)
@@ -1518,8 +1522,9 @@ final class SuggestionBar: UIView {
         keyboard.wait { [weak keyboard] in
             let ticks = keyboard?.ticks ?? .max
             let over = quiet.over(read(), quietFor, at: ticks)
-            guard over || (soon.map({ ticks - start >= $0 }) == true || read() != was) && landed() else { return false }
-            go(read() != was)
+            let new = heard ? answer() : soon.map({ ticks - start >= $0 }) == true || read() != was
+            guard over || new && landed() else { return false }
+            go(read() != was || heard && new)
             return true
         }
     }
@@ -1575,9 +1580,11 @@ final class SuggestionBar: UIView {
         }
         // An empty one a walk landed on may be UIKit's guess at a window's start: the text's
         // start only once the host answered or `answerPolls` passed (#662: STALL dd took a
-        // sentence and the break for its line).
+        // sentence and the break for its line). One other than UIKit's guess, the line after
+        // it, is the host's answer there: at once (#688: a UITextView's, a poll after the
+        // guess, still held 0.8 s on a first line).
         if b.isEmpty, !line.isEmpty, !answered, !waited {
-            return settled(true, Self.answerPolls) { [weak self] in
+            return settled(true, Self.answerPolls, walked: (-1, line), heard: true) { [weak self] in
                 self?.atStart(line, tail: tail, answered: $0, waits: waits, rewound: rewound, waited: true, into: copy, blind: blind)
             }
         }

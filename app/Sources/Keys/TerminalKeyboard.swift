@@ -1607,7 +1607,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         heldPress = nil
         guard let p = pair else { return }
         pair = nil
-        if p.units != 0 { (target as? UITextDocumentProxy)?.adjustTextPosition(byCharacterOffset: -p.units) }
+        if p.units != 0 { (target as? UITextDocumentProxy)?.adjustTextPosition(byCharacterOffset: -p.units); guessed = nil }
         walk.drop()
     }
 
@@ -1706,7 +1706,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if Self.field(doc) != walkField {
             walkField = Self.field(doc)
             walk = CaretWalk()
-            lateBy = 0; moveShows = nil; moved = []
+            lateBy = 0; moveShows = nil; moved = []; guessed = nil
         }
         walk.wrap = wrapGuess
         let units = walk.step(steps, lines: lines, before: doc.documentContextBeforeInput ?? "",
@@ -1716,6 +1716,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             let owed = moved
             wrote()
             moveShows = [doc.documentContextBeforeInput, doc.documentContextAfterInput]
+            guessed = moveShows
             moved = owed + [(ticks, moveShows ?? [])]
             pair?.units += units
             walkPolls = 0
@@ -1760,7 +1761,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     /// A toolbar edit wrote to the host just now: an answer `stallTicks` past the first write
     /// it owes ends a stall, unless it comes within `wakeTicks` of the last (`pollCaret`).
-    func wrote() { wroteAt = ticks; owedAt = owedAt ?? ticks; moveShows = nil; moved = [] }
+    func wrote() { wroteAt = ticks; owedAt = owedAt ?? ticks; moveShows = nil; moved = []; guessed = nil }
 
     /// The most ticks the field took to answer a move of a toolbar edit's on a later poll,
     /// with another context than the one the move showed at once (UIKit's guess), counted
@@ -1771,6 +1772,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// last move showed at once.
     private(set) var lateBy = 0
     private var moveShows: [String?]?
+    /// The context the last move showed at once, UIKit's guess for it; nil after a write, an
+    /// unwatched move or a field change. A context other than it is the host's (#688).
+    private(set) var guessed: [String?]?
     /// The moves since the host last showed a new context, each with the context it showed at
     /// once (UIKit's guess): an answer is counted from the first whose guess it agrees with
     /// either side, as one disagreeing there was answered before, unseen (#689: a step pair's
