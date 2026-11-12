@@ -437,14 +437,15 @@ final class ClipboardHistoryTests: XCTestCase {
         let h = ClipboardHistory(dir: dir)
         let answer = DispatchSemaphore(value: 0)
         var offMain: [Bool] = []
-        let reads = counting(h) { pb in
+        var copied: String?   // #1015: a named pasteboard read off main is nil on a cold sim
+        let reads = counting(h) { _ in
             offMain.append(!Thread.isMainThread)
             if !offMain.last! { return (nil, nil) }   // the main thread is never held, not even here
-            let text = pb.string                       // the clip asked for
+            let text = copied                          // the clip asked for
             _ = answer.wait(timeout: .now() + 5)       // the prompt, till the user answers
             return (text, nil)
         }
-        pb.string = "elsewhere"
+        pb.string = "elsewhere"; copied = pb.string
         let start = Date()
         let (kb, bar, doc, _) = rig("", history: h)
         XCTAssertLessThan(Date().timeIntervalSince(start), 1, "the open isn't held")
@@ -452,7 +453,7 @@ final class ClipboardHistoryTests: XCTestCase {
         kb.press(.char("a"))
         bar.refresh()
         XCTAssertEqual(doc.text, "a", "a key types meanwhile")
-        pb.string = "later"
+        pb.string = "later"; copied = pb.string
         bar.refresh()
         XCTAssertEqual(h.clips, [], "nothing lands before the answer")
         answer.signal()   // Allow Paste
