@@ -213,6 +213,8 @@ enum Shortcuts {
         }
         /// Only the terminal's: there it is the only way to submit.
         var sendMandatory: Bool { self == .terminal }
+        /// #952: the editor's swipe-to-remove is off on this key (the terminal's send).
+        func locks(_ key: ShortcutKey) -> Bool { sendMandatory && key.id == Shortcuts.sendID }
 
         /// The toolbar's saved keys, as the catalog defines them; nil (no Full Access) is the
         /// default. None saved yet: seeded once, and saved, from a customised terminal bar's

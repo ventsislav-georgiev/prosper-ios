@@ -81,7 +81,7 @@ struct ShortcutEditor: View {
             Section {
                 ForEach(keys) { k in
                     Text(k.label).font(.body.monospaced())
-                        .deleteDisabled(bar.sendMandatory && k.id == Shortcuts.sendID)
+                        .deleteDisabled(bar.locks(k))
                 }
                     .onMove { keys.move(fromOffsets: $0, toOffset: $1); persist() }
                     .onDelete { keys.remove(atOffsets: $0); persist() }

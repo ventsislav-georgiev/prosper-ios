@@ -170,7 +170,8 @@ enum TerminalMath {
             var out: [UInt8]
             switch b {
             case 0x09 where mods.contains(.shift): out = [0x1b, 0x5b, 0x5a]
-            case 0x0d where mods.contains(.shift): out = TerminalKeyboard.newlineBytes
+            // #952: already meta-enter, so alt adds no second ESC (xterm's alt+Return is ESC CR).
+            case 0x0d where mods.contains(.shift): return TerminalKeyboard.newlineBytes
             default:
                 var c = mods.contains(.shift) && b >= 0x61 && b <= 0x7a ? b - 0x20 : b
                 if mods.contains(.ctrl) { c = controlByte(c) }

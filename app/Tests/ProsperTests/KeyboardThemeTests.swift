@@ -262,6 +262,32 @@ final class KeyboardThemeTests: XCTestCase {
         }
     }
 
+    /// #952: a lit or locked modifier's glyph and lock bar (onAccent) hold WCAG's 3:1 for UI
+    /// components against both ends of the accent's fill, in every theme and accent.
+    func testOnAccentHoldsThreeToOneOnTheAccentEverywhere() {
+        func rgb(_ c: UIColor, over bg: UIColor) -> [CGFloat] {
+            var (r, g, b, a, R, G, B, A) = (CGFloat(0), CGFloat(0), CGFloat(0), CGFloat(0), CGFloat(0), CGFloat(0), CGFloat(0), CGFloat(0))
+            c.getRed(&r, green: &g, blue: &b, alpha: &a)
+            bg.getRed(&R, green: &G, blue: &B, alpha: &A)
+            return [(r, R), (g, G), (b, B)].map { $0.0 * a + $0.1 * (1 - a) }
+        }
+        func luminance(_ c: [CGFloat]) -> CGFloat {
+            let lin = { (c: CGFloat) in c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+            return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+        }
+        for theme in Theme.allCases {
+            for lit in KeyboardSettings.Accent.allCases {
+                let p = Style.Palette(theme, accent: lit)
+                let on = luminance(rgb(p.onAccent, over: p.surface))
+                for fill in [p.accent, p.accentEnd] {
+                    let f = luminance(rgb(fill, over: p.surface))
+                    let ratio = (max(on, f) + 0.05) / (min(on, f) + 0.05)
+                    XCTAssertGreaterThanOrEqual(ratio, 3, "\(theme) \(lit)")
+                }
+            }
+        }
+    }
+
     func testNeonKeysDrawTheBorderAndGlow() throws {
         let kb = laidOut()
         let dark = try cap(kb, "q")

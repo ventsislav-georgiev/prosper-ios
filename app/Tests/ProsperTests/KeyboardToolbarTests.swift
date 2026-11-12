@@ -625,6 +625,10 @@ final class KeyboardToolbarTests: XCTestCase {
         Shortcuts.save(try ["esc", "tab"].map(key), to: store)
         XCTAssertEqual(Shortcuts.Bar.terminal.load(store).map(\.id), ["esc", "tab", "enter"])
         XCTAssertTrue(Shortcuts.Bar.terminal.sendMandatory)
+        // #952: the editor's deleteDisabled — only the terminal's send can't be swiped off.
+        XCTAssertTrue(Shortcuts.Bar.terminal.locks(try key(Shortcuts.sendID)))
+        XCTAssertFalse(Shortcuts.Bar.terminal.locks(try key("esc")))
+        XCTAssertFalse(Shortcuts.Bar.toolbar.locks(try key(Shortcuts.sendID)), "the toolbar's send can go")
         XCTAssertEqual(Shortcuts.Bar.terminal.catalog.map(\.id), Shortcuts.catalog.map(\.id)
                        + Shortcuts.hostOnly.map(\.id) + ["clips", "snips", "qlinks", "mic", "menu"])
     }

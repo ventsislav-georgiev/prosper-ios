@@ -2044,6 +2044,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
                     return
                 }
                 (accent, accentEnd) = (UIColor(hex: ends.0), UIColor(hex: ends.1))
+                // #952: white is under 3:1 on these (pink 2.8, orange 2.0, green 1.9): Dark's backdrop ink.
+                if [.pink, .orange, .green].contains(lit) { onAccent = UIColor(hex: 0x101115) }
             }
         }
     }

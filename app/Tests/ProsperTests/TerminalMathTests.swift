@@ -451,6 +451,20 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(mod([0x61], [.shift, .alt]), [0x1b, 0x41])
     }
 
+    /// #952 (QA #277): alt+shift chords as xterm sends them, alt the ESC prefix. Shift+enter is
+    /// already meta-enter (ESC CR), so alt adds no second ESC: ESC ESC CR reads as Esc pressed first.
+    func testAltShiftChords() {
+        let altShift: M = [.alt, .shift]
+        XCTAssertEqual(mod([0x0d], altShift), TerminalKeyboard.newlineBytes, "alt+shift+enter is ESC CR, not ESC ESC CR")
+        XCTAssertEqual(mod([0x0d], [.alt, .shift, .ctrl]), TerminalKeyboard.newlineBytes)
+        XCTAssertEqual(mod([0x0d], altShift, bar: true), TerminalKeyboard.newlineBytes)
+        XCTAssertEqual(mod([0x0d], .alt), [0x1b, 0x0d], "alt+enter is meta-enter too")
+        XCTAssertEqual(mod([0x09], altShift), [0x1b, 0x1b, 0x5b, 0x5a], "meta back-tab: ESC then CSI Z")
+        XCTAssertEqual(mod([0x7a], altShift), [0x1b, 0x5a], "meta Z")
+        XCTAssertEqual(mod([0x31], altShift), [0x1b, 0x31], "shift leaves a digit alone; alt still prefixes")
+        XCTAssertEqual(mod([0x61], [.alt, .shift, .ctrl]), [0x1b, 0x01], "ESC ^A")
+    }
+
     /// The bar's single-byte keys follow the typed-byte rule.
     func testSingleByteBarKeyFollowsTheTypedRule() {
         XCTAssertEqual(mod([0x09], .shift, bar: true), [0x1b, 0x5b, 0x5a])
