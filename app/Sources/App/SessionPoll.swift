@@ -59,6 +59,39 @@ enum SessionPoll {
     static func failed(after wait: TimeInterval?) -> TimeInterval {
         max(wait ?? 0, failureBackoff)
     }
+
+    /// #964: the poll loop, until cancelled. `first` is the wait before the first list (nil: at
+    /// once); `shown` the list on screen, which the first poll compares against; `ready` false
+    /// skips a poll; `refused` gets a refusal's error; `listed` runs after each list is applied.
+    /// `sleep` is the wait itself, settable for tests.
+    @MainActor
+    static func run(_ t: SessionTransport, mode: UpdateMode, first: TimeInterval?, shown: () -> [DchSession],
+                    ready: () -> Bool, apply: ([DchSession]) -> Void, refused: (TransportError) -> Void,
+                    listed: () async -> Void = {},
+                    sleep: (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }) async {
+        var wait = first
+        var last: [DchSession]? = nil   // #774: read `shown` at the first poll, after refresh()
+        while !Task.isCancelled {
+            if let wait { await sleep(wait) }
+            guard !Task.isCancelled else { return }   // cancelled in the wait: no request
+            guard ready() else {
+                wait = next(after: wait, changed: false, mode: mode)
+                continue
+            }
+            let list: [DchSession]
+            do { list = try await t.listSessions() } catch {
+                // #827: refused: its message on the error line, which holds the poll until a refresh.
+                if let e = error as? TransportError, e.isRefusal, !Task.isCancelled { refused(e) }
+                wait = failed(after: wait)
+                continue
+            }
+            guard !Task.isCancelled else { return }   // cancelled mid-list: not applied
+            wait = next(after: wait, changed: changed(list, last: last, shown: shown()), mode: mode)
+            last = list
+            apply(list)
+            await listed()
+        }
+    }
 }
 
 /// #775: the list the Mac pushes over its 0x2e watch stream, instead of the poll, while it lists

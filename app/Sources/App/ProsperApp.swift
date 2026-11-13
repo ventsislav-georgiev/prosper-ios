@@ -734,28 +734,12 @@ struct SessionListView: View {
         // A first appearance has `.task { refresh() }` in flight, so it waits. Any restart
         // after that lists at once: the rows are as old as the time away. #963: not one a
         // list just answered, the launch's scene turning active after that refresh.
-        var wait: TimeInterval? = SessionPoll.first(connected: connected, listedAt: listedAt, mode: mode)
-        var last: [DchSession]? = nil   // #774: read `sessions` at the first poll, after refresh()
-        while !Task.isCancelled {
-            if let wait { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
-            guard !Task.isCancelled else { return }
-            guard unreachable == nil, error == nil, !loading else {
-                wait = SessionPoll.next(after: wait, changed: false, mode: mode)
-                continue
-            }
-            let list: [DchSession]
-            do { list = try await transport.listSessions() } catch {
-                // #827: refused: its message on the error line, which holds the poll until a refresh.
-                if let e = error as? TransportError, e.isRefusal, !Task.isCancelled { self.error = e.localizedDescription }
-                wait = SessionPoll.failed(after: wait)
-                continue
-            }
-            guard !Task.isCancelled else { return }
-            wait = SessionPoll.next(after: wait, changed: SessionPoll.changed(list, last: last, shown: sessions), mode: mode)
-            last = list
-            show(list)
+        await SessionPoll.run(transport, mode: mode,
+                              first: SessionPoll.first(connected: connected, listedAt: listedAt, mode: mode),
+                              shown: { sessions }, ready: { unreachable == nil && error == nil && !loading },
+                              apply: show, refused: { error = $0.localizedDescription }, listed: {
             if mode == .live, let due = watchRetry, Date() >= due { await recheckWatch() }
-        }
+        })
     }
 
     private func commitRename(_ alias: String) {

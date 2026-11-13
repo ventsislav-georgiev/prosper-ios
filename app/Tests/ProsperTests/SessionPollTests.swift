@@ -99,6 +99,121 @@ final class SessionPollTests: XCTestCase {
         XCTAssertTrue(SessionPoll.changed([1, 2], last: [1], shown: [1, 2]), "later polls compare against the previous poll")
         XCTAssertFalse(SessionPoll.changed([1], last: [1], shown: []))
     }
+
+    // MARK: #964: the loop
+
+    private let a = DchSession(name: "a", state: "idle"), b = DchSession(name: "b", state: "working")
+
+    /// What one run of the loop did: each wait asked for, each list applied, each refusal shown.
+    private struct Run { var waits: [TimeInterval] = []; var applied: [[DchSession]] = []; var refused: [String] = []; var listed = 0 }
+
+    /// Runs `SessionPoll.run` over `mac` with no real sleeping, cancelled at the `stop`th wait.
+    @MainActor
+    private func loop(_ mac: ScriptedMac, mode: UpdateMode = .live, first: TimeInterval?, shown: [DchSession] = [],
+                      ready: @escaping () -> Bool = { true }, stop: Int) async -> Run {
+        let run = Box(Run()), turns = Box(0)
+        await Task { @MainActor in
+            // A loop that never waits (a mutant) still ends: cancelled after 50 turns.
+            await SessionPoll.run(mac, mode: mode, first: first, shown: { shown }, ready: {
+                                      turns.v += 1
+                                      if turns.v > 50 { withUnsafeCurrentTask { $0?.cancel() } }
+                                      return ready()
+                                  },
+                                  apply: { run.v.applied.append($0) }, refused: { run.v.refused.append($0.localizedDescription) },
+                                  listed: { run.v.listed += 1 },
+                                  sleep: { wait in
+                                      run.v.waits.append(wait)
+                                      if run.v.waits.count >= stop { withUnsafeCurrentTask { $0?.cancel() } }
+                                  })
+        }.value
+        return run.v
+    }
+
+    /// A poll task started before the first refresh ends waits its first interval before
+    /// listing; one started after lists at once. Cancelled in the wait: no list goes out.
+    @MainActor
+    func testTheFirstWaitIsHonouredAndCancellingInItSendsNothing() async {
+        let waited = ScriptedMac([.success([a])])
+        let r = await loop(waited, first: 5, stop: 1)
+        XCTAssertEqual(r.waits, [5])
+        XCTAssertEqual(waited.lists, 0, "cancelled in the first wait: no request")
+        XCTAssertEqual(r.applied, [])
+
+        let atOnce = ScriptedMac([.success([a])])
+        let r2 = await loop(atOnce, first: nil, shown: [a], stop: 1)
+        XCTAssertEqual(atOnce.lists, 1, "listed before any wait")
+        XCTAssertEqual(r2.waits, [5], "then the fastest wait")
+    }
+
+    /// A still list doubles the wait to `slowest`; a change is `fastest` again. The first poll
+    /// compares against what is shown, later ones against the previous poll. Each list is applied.
+    @MainActor
+    func testAChangeSpeedsUpAndAStillListSlowsDownToSlowest() async {
+        let lists = [[a], [a], [a], [a], [a], [a, b], [a, b]]
+        let mac = ScriptedMac(lists.map { .success($0) })
+        let r = await loop(mac, first: nil, shown: [a], stop: lists.count)
+        XCTAssertEqual(r.waits, [5, 10, 20, 30, 30, 5, 10])
+        XCTAssertEqual(r.applied, lists, "apply gets each list")
+        XCTAssertEqual(r.listed, lists.count)
+        XCTAssertEqual(mac.lists, lists.count)
+
+        let saver = ScriptedMac([[a], [a], [a], [a], [b]].map { .success($0) })
+        let s = await loop(saver, mode: .saver, first: 15, shown: [a], stop: 6)
+        XCTAssertEqual(s.waits, [15, 30, 60, 120, 120, 15], "Battery saver: its own floor and cap")
+    }
+
+    /// A failed poll waits the failure backoff and is not applied; a refusal is shown, "busy"
+    /// and an unreachable Mac are not. Back, still: slow.
+    @MainActor
+    func testAFailureBacksOff() async {
+        let mac = ScriptedMac([.failure(TransportError.hostUnreachable("x")), .failure(TransportError.refused(code: "busy", message: "busy")),
+                               .failure(TransportError.refused(code: "denied", message: "turned away")), .success([a])])
+        let r = await loop(mac, first: nil, shown: [a], stop: 4)
+        XCTAssertEqual(r.waits, [20, 20, 20, 30])
+        XCTAssertEqual(r.refused, ["turned away"])
+        XCTAssertEqual(r.applied, [[a]])
+        XCTAssertEqual(mac.lists, 4)
+    }
+
+    /// While the screen is not ready (unreachable, in error, loading) no list goes out, and the
+    /// wait still grows.
+    @MainActor
+    func testNotReadySkipsThePoll() async {
+        let mac = ScriptedMac([.success([a])])
+        let r = await loop(mac, first: nil, ready: { false }, stop: 3)
+        XCTAssertEqual(r.waits, [5, 10, 20])
+        XCTAssertEqual(mac.lists, 0)
+    }
+
+    /// Cancelled while a list is in flight: it is not applied, and the loop ends with no wait
+    /// and no further request.
+    @MainActor
+    func testCancelledDuringAListAppliesNothing() async {
+        let mac = ScriptedMac([.success([a]), .success([b])])
+        mac.cancelAt = 2
+        let r = await loop(mac, first: nil, shown: [a], stop: 99)
+        XCTAssertEqual(mac.lists, 2)
+        XCTAssertEqual(r.applied, [[a]], "the list that landed after the cancel is dropped")
+        XCTAssertEqual(r.waits, [5])
+    }
+}
+
+/// #964: a Mac that answers each list from a script and counts them; it cancels the polling
+/// task during the `cancelAt`th list, and once the script runs out, so a runaway loop ends.
+private final class ScriptedMac: SessionTransport {
+    var lists = 0
+    var cancelAt = 0
+    private let script: [Result<[DchSession], Error>]
+    init(_ script: [Result<[DchSession], Error>]) { self.script = script }
+    func listSessions() async throws -> [DchSession] {
+        lists += 1
+        if lists == cancelAt || lists > script.count { withUnsafeCurrentTask { $0?.cancel() } }
+        return try script[min(lists, script.count) - 1].get()
+    }
+    func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream { throw TransportError.notConnected }
+    func create(name: String?, command: [String], cols: Int, rows: Int) async throws -> TerminalStream { throw TransportError.notConnected }
+    func kill(name: String) async throws {}
+    func rename(name: String, alias: String?) async throws {}
 }
 
 /// #963: a Mac that counts the session lists it is asked for.
