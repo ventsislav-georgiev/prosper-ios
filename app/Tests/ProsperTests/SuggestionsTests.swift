@@ -106,7 +106,7 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(k("tge", "the", en), 1, "h is g's neighbor")
         XCTAssertEqual(k("tge", "toe", en), 2, "o isn't")
         XCTAssertEqual(k("teh", "the", en), 1, "a swap is one edit")
-        let best = Suggestions.best
+        let best = { Suggestions.best($0, for: $1, rows: $2) }
         XCTAssertEqual(best(["toe", "tie", "the"], "tge", en), "the")
         XCTAssertEqual(best(["toe", "tie"], "tge", en), "toe", "a tie: the checker's order")
         XCTAssertEqual(best(["gee", "she", "the"], "ghe", en), "the", "the first letter: t is above g")
@@ -119,14 +119,14 @@ final class SuggestionsTests: XCTestCase {
     /// Only the checker's first 3 guesses re-rank: a rare word one slip away further down
     /// doesn't beat its right first guess (en_US's lists).
     func testOnlyTheFirstThreeGuessesRerank() {
-        let en = TerminalKeyboard.Layout.english.letterRows, best = Suggestions.best
+        let en = TerminalKeyboard.Layout.english.letterRows, best = { Suggestions.best($0, for: $1, rows: $2) }
         XCTAssertEqual(best(["here", "these", "hehe", "hose", "Hess", "heme", "hess"], "hese", en), "here")
         XCTAssertEqual(best(["grammar", "grimmer", "rammer", "gammer"], "grammer", en), "grammar")
     }
 
     /// A word typed lowercase takes a capitalized guess only when it's the first.
     func testALowercaseWordSkipsCapitalizedGuesses() {
-        let en = TerminalKeyboard.Layout.english.letterRows, best = Suggestions.best
+        let en = TerminalKeyboard.Layout.english.letterRows, best = { Suggestions.best($0, for: $1, rows: $2) }
         XCTAssertEqual(best(["ran", "Ron", "run"], "rkn", en), "run")
         XCTAssertEqual(best(["dab", "Dan", "day"], "daj", en), "day")
         XCTAssertEqual(best(["here", "Hess"], "hese", en), "here")
@@ -164,6 +164,50 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertTrue(kb4.shift.auto)
         withExtendedLifetime(bar4) { typing(kb4, "rkn ") }
         XCTAssertEqual(doc4.text, "Ron ")
+    }
+
+    /// #942: a learned pair ranks the confident top-3 guesses before the keys do; never a
+    /// guess past the third, nor one `isConfident` refuses.
+    func testLearnedPairsRankTheTopThreeGuesses() {
+        let en = TerminalKeyboard.Layout.english.letterRows
+        let n = ["game": 3, "gee": 1, "gyms": 5]
+        func best(_ g: [String], _ w: String) -> String? { Suggestions.best(g, for: w, rows: en) { n[$0] ?? 0 } }
+        XCTAssertEqual(best(["gem", "gym", "game"], "gme"), "game")
+        XCTAssertEqual(best(["gem", "gee", "game"], "gme"), "game", "the most often typed")
+        XCTAssertEqual(best(["gem", "gym", "gyms", "game"], "gme"), "gem", "past the third: nothing")
+        XCTAssertNil(best(["gym", "game"], "gme"), "still none unless the first is confident")
+        XCTAssertEqual(Suggestions.best(["gem", "gym", "game"], for: "gme", rows: en), "gem", "no pairs: as before")
+    }
+
+    /// #942 through the real checker: "gme" after "the" is "game" once the user typed
+    /// "the game", and still the checker's pick with no pair, another previous word, or at
+    /// a field's start.
+    func testGmeAfterALearnedPairIsGame() throws {
+        let guesses = Suggestions.guesses("gme", spaced: true).filter(Suggestions.isWord)
+        let rank = try XCTUnwrap(guesses.prefix(3).firstIndex(of: "game"), "game in the top 3: \(guesses)")
+        XCTAssertGreaterThan(rank, 0)
+        var (kb, bar, doc) = rig()
+        withExtendedLifetime(bar) { typing(kb, "the gme ") }
+        let plain = try XCTUnwrap(doc.text.split(separator: " ").last.map(String.init))
+        XCTAssertNotEqual(plain, "game", "no pair: the checker's pick")
+
+        (kb, bar, doc) = rig()
+        for _ in 0..<3 { bar.suggestions.memory.record("the", "game") }   // the first rig typed "the <plain>" once
+        withExtendedLifetime(bar) { typing(kb, "the gme a gme ") }
+        XCTAssertEqual(doc.text, "the game a \(plain) ", "only after the pair's word")
+        doc.text = ""
+        withExtendedLifetime(bar) { typing(kb, "gme ") }
+        XCTAssertEqual(doc.text, plain + " ", "no previous word")
+
+        // A pair for a word outside the top 3 changes nothing (en_US lists only 3 for "gme";
+        // a 4th guess is testLearnedPairsRankTheTopThreeGuesses's).
+        let far = "gum"
+        XCTAssertFalse(guesses.prefix(3).contains(far))
+        defaults.removeObject(forKey: TypingMemory.pairsKey)   // "the game" learned above goes
+        (kb, bar, doc) = rig()
+        for _ in 0..<9 { bar.suggestions.memory.record("the", far) }
+        withExtendedLifetime(bar) { typing(kb, "the gme ") }
+        XCTAssertEqual(doc.text, "the \(plain) ")
     }
 
     /// The real checker: "tge" comes out "the".

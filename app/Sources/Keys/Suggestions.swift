@@ -307,7 +307,11 @@ final class Suggestions {
         guard !knows(word) else { return nil }
         let guesses = Self.guesses(lower, language: language, spaced: true)
         if let two = Self.split(guesses, for: word) { return Self.matchCase(two, to: word) }
-        guard let guess = Self.best(guesses.filter(Self.isWord), for: ruled, rows: layout.letterRows) else { return nil }
+        // #942: a guess the user often types after the previous word wins ("gme" after "the" → "game").
+        let previous = Self.previousWord(prefix)
+        let pairs = previous.isEmpty ? [:] : memory.pairs
+        let count: (String) -> Int = { pairs[previous + " " + $0.lowercased()] ?? 0 }
+        guard let guess = Self.best(guesses.filter(Self.isWord), for: ruled, rows: layout.letterRows, count: count) else { return nil }
         return Self.matchCase(guess, to: word)
     }
 
@@ -373,13 +377,18 @@ final class Suggestions {
     /// not "Ron". A sentence start's auto-capital counts as lowercase (`correction` passes
     /// the word lowercased); a capital the user shifted doesn't: "Rkn" is "Ron".
     ///
+    /// #942: `count`, the times the user typed a guess after the previous word (`TypingMemory.pairs`),
+    /// ranks first among those same candidates; keys only break its ties. Never past the third.
+    ///
     /// ponytail: no frequency weighting; the checker's order is the only tie-break.
-    static func best(_ guesses: [String], for word: String, rows: [[Character]]) -> String? {
+    static func best(_ guesses: [String], for word: String, rows: [[Character]],
+                     count: (String) -> Int = { _ in 0 }) -> String? {
         guard let first = guesses.first, isConfident(word, guess: first, rows: rows) else { return nil }
         let lower = word.lowercased()
         let rest = guesses.prefix(3).dropFirst().filter { word != lower || $0.first?.isUppercase != true }
         return ([first] + rest).filter { isConfident(word, guess: $0, rows: rows) }
-            .min { keyDistance(lower, $0.lowercased(), rows: rows) < keyDistance(lower, $1.lowercased(), rows: rows) }
+            .map { ($0, -count($0), keyDistance(lower, $0.lowercased(), rows: rows)) }
+            .min { ($0.1, $0.2) < ($1.1, $1.2) }?.0
     }
 
     /// Edits from `a` to `b`: insert, delete, substitute, and swapping two neighbors
