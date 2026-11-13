@@ -121,6 +121,45 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertEqual(h.clips, [])
     }
 
+    /// #1062: a row that won't decode (an id not a UUID, a missing field) is skipped; the other
+    /// rows, pins and fields stay, and the skipped row's image file is left alone.
+    func testABadRowIsSkippedNotTheWholeHistory() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let image = dir.appendingPathComponent("bad.jpg")
+        try Data([1, 2, 3]).write(to: image)
+        try Data("""
+        {"change":7,"clips":[
+         {"id":"not-a-uuid","text":"bad","image":"bad.jpg","date":900,"pinned":true},
+         {"id":"\(UUID())","text":"pinned","date":900,"pinned":true},
+         {"id":"\(UUID())","text":"no date","pinned":false},
+         {"id":"\(UUID())","text":"plain","date":800,"pinned":false}]}
+        """.utf8).write(to: dir.appendingPathComponent("index.json"))
+        let h = ClipboardHistory(dir: dir)
+        h.now = { Date(timeIntervalSinceReferenceDate: 1000) }
+        XCTAssertEqual(h.clips.map(\.text), ["pinned", "plain"])
+        XCTAssertEqual(h.clips.map(\.pinned), [true, false])
+        h.pin(try XCTUnwrap(h.clips.last).id, true)
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("index.json"))) as? [String: Any]
+        XCTAssertEqual(saved?["change"] as? Int, 7, "the other fields stay")
+        paste("new", into: h)
+        XCTAssertEqual(h.clips.map(\.text), ["new", "pinned", "plain"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: image.path), "a skipped row's file is left alone")
+    }
+
+    /// #1062: an index that won't parse at all (a truncated write) is moved aside, bytes intact,
+    /// never overwritten empty; the history starts again beside it.
+    func testUnreadableIndexIsKeptAsideNotOverwritten() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let bytes = Data(#"{"clips":[{"id":"\#(UUID())","text":"kept","#.utf8)
+        try bytes.write(to: dir.appendingPathComponent("index.json"))
+        let h = ClipboardHistory(dir: dir)
+        paste("new", into: h)
+        XCTAssertEqual(h.clips.map(\.text), ["new"])
+        let aside = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix("index-unreadable-") }
+        XCTAssertEqual(aside.count, 1)
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent(try XCTUnwrap(aside.first))), bytes)
+    }
+
     /// An image goes in downsampled to `imageSide`, the same one once, its thumbnail smaller
     /// still; its file goes with its clip.
     func testImagesAreDownsampledKeptOnceAndTheirFilesGo() throws {

@@ -38,6 +38,21 @@ final class ClipboardHistory {
         /// The `changeCount` whose unasked read came back empty, Allow Paste's Don't Allow
         /// (`save`): never read unasked again, by either keyboard on any open (#699).
         var refused: Int?
+
+        init() {}
+
+        /// #1062: row by row, so one bad row (an id not a UUID, a missing field) is skipped, not every clip.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            clips = try c.decodeIfPresent([Row].self, forKey: .clips)?.compactMap(\.clip) ?? []
+            change = try? c.decodeIfPresent(Int.self, forKey: .change)
+            refused = try? c.decodeIfPresent(Int.self, forKey: .refused)
+        }
+
+        private struct Row: Decodable {
+            let clip: Clip?
+            init(from decoder: Decoder) { clip = try? Clip(from: decoder) }
+        }
     }
 
     /// Types password managers and the like mark a clip with: never kept.
@@ -260,7 +275,14 @@ final class ClipboardHistory {
     /// write back if anything changed.
     @discardableResult
     private func update(_ change: (inout Index) -> Void = { _ in }) -> Index {
-        let old = (try? Data(contentsOf: indexURL)).flatMap { try? JSONDecoder().decode(Index.self, from: $0) } ?? Index()
+        var old = Index()
+        if let data = try? Data(contentsOf: indexURL) {
+            if let i = try? JSONDecoder().decode(Index.self, from: data) { old = i }
+            // #1062: a file that won't parse at all goes aside, kept, never overwritten empty.
+            else if (try? FileManager.default.moveItem(at: indexURL, to: url("index-unreadable-\(UUID()).json"))) == nil {
+                return old
+            }
+        }
         var index = old
         change(&index)
         let cutoff = now().addingTimeInterval(-maxAge)
