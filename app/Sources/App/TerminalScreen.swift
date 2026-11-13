@@ -257,7 +257,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let b = bar.bounds
         let mic = bar.capByID[Shortcuts.dictate.id].map { $0.convert($0.bounds, to: bar) }
         var (start, end) = (b.minX, b.maxX)
-        if let mic, b.contains(mic) {
+        if let mic, b.intersects(mic) {   // #971: a cap the bar's edge cuts too
             if b.maxX - mic.maxX > mic.minX - b.minX { start = mic.maxX + 6 } else { end = mic.minX - 6 }
         }
         if stripLeading.constant != start - b.minX { stripLeading.constant = start - b.minX }

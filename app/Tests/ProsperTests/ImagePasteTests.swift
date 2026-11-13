@@ -894,13 +894,31 @@ final class ImagePasteTests: XCTestCase {
                              "wide enough for its controls")
         XCTAssertNil(strip.hitTest(vc.view.convert(CGPoint(x: leadFrame.midX, y: leadFrame.midY), to: strip), with: nil))
         XCTAssertEqual(strip.label.text, "Starting the mic…")
+        // #971: a long bar scrolled so the mic cap is cut by the bar's trailing edge. What
+        // shows of it stays clear of the strip, and its tap below is Done.
+        let rest = Shortcuts.Bar.terminal.catalog.filter { $0.id != Shortcuts.dictate.id }
+        Shortcuts.save(Array(rest.prefix(rest.count / 2)) + [Shortcuts.dictate] + rest.dropFirst(rest.count / 2))
+        bar.reload()
+        vc.view.setNeedsLayout()
+        vc.view.layoutIfNeeded()
+        let cut = try XCTUnwrap(bar.capByID[Shortcuts.dictate.id] as? UIControl)
+        let scroll = try XCTUnwrap(cut.superview?.superview?.superview as? UIScrollView)
+        scroll.contentOffset.x = cut.convert(cut.bounds, to: scroll).midX - scroll.bounds.width + 1
+        vc.view.setNeedsLayout()
+        vc.view.layoutIfNeeded()
+        let cutFrame = cut.convert(cut.bounds, to: vc.view)
+        let shown = cutFrame.intersection(bar.frame)
+        XCTAssertLessThan(bar.frame.maxX, cutFrame.maxX, "the cap runs past the bar's end")
+        XCTAssertGreaterThan(shown.width, 10, "half of it shows")
+        XCTAssertEqual(strip.frame.maxX, cutFrame.minX - 6, accuracy: 0.5, "up to the cut cap, still tappable")
+        XCTAssertNil(strip.hitTest(vc.view.convert(CGPoint(x: shown.midX, y: shown.midY), to: strip), with: nil))
         app(id, .listening, ["Hello there."], tail: "how")
         c.sync()
         XCTAssertEqual(strip.label.text, "how")
         app(id, .listening, ["Hello there.", "How are you?\nls", "Fine."], tail: "bye")
         c.sync()
         XCTAssertEqual(spy.sent, [paste("Hello there."), paste(" How are you? ls Fine.")])
-        bar.onKey?(key)
+        cut.sendActions(for: .touchUpInside)   // #971: the cut cap's own tap
         XCTAssertEqual(pings, [.stop], "the key again: Done")
         XCTAssertEqual(strip.label.text, "bye…")
         app(id, .ready, ["Hello there.", "How are you?\nls", "Fine.", "Bye."])
