@@ -184,6 +184,11 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// Where Copy puts the selection. Tests swap in a private named one: reading the
     /// general one back can raise the paste-permission prompt.
     var pasteboard = UIPasteboard.general
+    /// Every width the terminal had (#1016): rows a TUI drew before a rotation keep that
+    /// width, and the One line copies need it to tell a split token from a word break.
+    private var drawnWidths: Set<Int> = []
+    /// …on the main screen only: a full-screen app (alternate screen) redraws at the new width.
+    private var wrapWidths: Set<Int> { tv.getTerminal().isCurrentBufferAlternate ? [] : drawnWidths }
     /// The keyboards' clipboard history (#597), for the bar's clipboard key (#603). Tests swap
     /// in a throwaway one.
     lazy var history = ClipboardHistory.shared()
@@ -380,6 +385,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         tv.onResize = { [weak self] cols, rows in
             MainActor.assumeIsolated {
                 self?.clearSelection()   // a reflow moves the text under it
+                self?.drawnWidths.insert(cols)
                 self?.conn.resize(cols: cols, rows: rows)
             }
         }
@@ -1020,7 +1026,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // ponytail: in vim/less, whose `~` rows and status line are never blank, a hold
         // joins the whole paragraph under the finger; detect those apps if that bites.
         let block = TerminalMath.commandBlock(rows, at: line)
-        let text = TerminalMath.oneLine(block.joined(separator: "\n"), cols: term.cols)
+        let text = TerminalMath.oneLine(block.joined(separator: "\n"), cols: term.cols, widths: wrapWidths)
         guard !text.isEmpty else { return }
         pasteboard.string = text
         UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -1288,7 +1294,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         let term = tv.getTerminal()
         let all = term.getText(start: Position(col: 0, row: 0),
                                end: Position(col: term.cols, row: Int.max))
-        let vc = CopyTextVC(text: TerminalMath.trimTrailingBlankLines(all), cols: term.cols)
+        let vc = CopyTextVC(text: TerminalMath.trimTrailingBlankLines(all), cols: term.cols, widths: wrapWidths)
         present(UINavigationController(rootViewController: vc), animated: true)
     }
 

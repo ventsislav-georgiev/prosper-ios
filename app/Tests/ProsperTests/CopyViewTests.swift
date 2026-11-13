@@ -55,6 +55,27 @@ final class CopyViewTests: XCTestCase {
         XCTAssertFalse(UserDefaults.standard.bool(forKey: CopyTextVC.oneLineKey))
     }
 
+    /// #1016: copy mode joins with the widths the terminal had, not just the current one:
+    /// a URL split at 48 columns, selected at 92, lands whole.
+    @MainActor
+    func testOneLineUsesTheEarlierWidths() throws {
+        let saved = UserDefaults.standard.object(forKey: CopyTextVC.oneLineKey)
+        defer { UserDefaults.standard.set(saved, forKey: CopyTextVC.oneLineKey) }
+        UserDefaults.standard.set(true, forKey: CopyTextVC.oneLineKey)
+
+        let raw = "  - Open https://github.com/example/prosper-ios/\n    actions/runs/39821438259 to see it."
+        let vc = CopyTextVC(text: raw, cols: 92, widths: [48, 92])
+        let win = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 700))
+        win.rootViewController = UINavigationController(rootViewController: vc)
+        win.isHidden = false
+        win.layoutIfNeeded()
+        let views = vc.view.subviews.compactMap { $0 as? UITextView }
+        let (source, editor) = (views[0], views[1])
+        source.selectedRange = NSRange(location: 0, length: raw.utf16.count)
+        vc.textViewDidChangeSelection(source)
+        XCTAssertEqual(editor.text, "- Open https://github.com/example/prosper-ios/actions/runs/39821438259 to see it.")
+    }
+
     /// #459: never toggled, One line starts on, so a selected wrapped command lands in
     /// the editor (the clipboard) already joined.
     @MainActor

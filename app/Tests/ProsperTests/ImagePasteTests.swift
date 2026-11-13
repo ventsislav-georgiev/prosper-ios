@@ -1219,6 +1219,60 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertEqual(toast, "Copied as one line\ngit commit -m \"fix the wrapped thing\"")
     }
 
+    /// #1016: a URL split where the row ended at one width, held after rotating to the
+    /// other, portrait to landscape and back. A TUI's rows are hard newlines that keep the
+    /// width they were drawn at (reflow only re-wraps them narrower), so the hold must
+    /// know the widths the terminal had: the URL comes out whole.
+    func testLongPressAfterRotatingGluesATokenSplitAtTheOldWidth() async throws {
+        let portrait = CGSize(width: 390, height: 700), landscape = CGSize(width: 700, height: 390)
+        for (drawn, held) in [(portrait, landscape), (landscape, portrait)] {
+            let (vc, _) = try await makeVC()
+            let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+            defer { UIPasteboard.remove(withName: pb.name) }
+            vc.pasteboard = pb
+            vc.view.frame = CGRect(origin: .zero, size: drawn)
+            vc.view.layoutIfNeeded()
+            let (_, tv) = try barAndTerminal(vc)
+            let term = tv.getTerminal()
+            let cols = term.cols
+            // Ink splits a token longer than its box (cols - 2) where the row ends.
+            let lead = "  curl -o /tmp/o.html https://example.com/"
+            let url = (0..<(cols - lead.count + 30)).map { String(UnicodeScalar(UInt8(97 + $0 % 26))) }.joined()
+            let first = lead + url.prefix(cols - lead.count)
+            tv.feed(text: "\u{1b}[2J\u{1b}[H\r\n" + first + "\r\n  " + url.dropFirst(cols - lead.count) + "\r\n")
+
+            vc.view.frame = CGRect(origin: .zero, size: held)
+            vc.view.layoutIfNeeded()
+            XCTAssertNotEqual(term.cols, cols, "precondition: the rotation changed the width")
+            let row = try XCTUnwrap((0..<term.rows).first {
+                term.getLine(row: $0)?.translateToString(trimRight: true).hasPrefix("  curl") == true
+            })
+            vc.copyLine(at: rowPoint(tv, row))
+            XCTAssertEqual(pb.string, "curl -o /tmp/o.html https://example.com/" + url, "drawn at \(cols), held at \(term.cols)")
+        }
+    }
+
+    /// …but a full-screen app (Claude Code fullscreen, vim) redraws at the new width, so
+    /// on the alternate screen only the current width counts: two long tokens, the first
+    /// ending exactly at the portrait width, keep their space when held in landscape.
+    func testLongPressOnTheAlternateScreenIgnoresEarlierWidths() async throws {
+        let (vc, _) = try await makeVC()
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        defer { UIPasteboard.remove(withName: pb.name) }
+        vc.pasteboard = pb
+        let (_, tv) = try barAndTerminal(vc)
+        let term = tv.getTerminal()
+        let portrait = term.cols
+        vc.view.frame = CGRect(x: 0, y: 0, width: 700, height: 390)
+        vc.view.layoutIfNeeded()
+        XCTAssertGreaterThan(term.cols, portrait, "precondition: landscape is wider")
+        let a = String(repeating: "a", count: portrait - 5), b = String(repeating: "b", count: portrait - 2)
+        tv.feed(text: "\u{1b}[?1049h\u{1b}[2J\u{1b}[H\r\n  cp \(a)\r\n  \(b)\r\n")
+
+        vc.copyLine(at: rowPoint(tv, 1))
+        XCTAssertEqual(pb.string, "cp \(a) \(b)")
+    }
+
     /// A blank row copies nothing: the clipboard keeps what it had, no toast.
     func testLongPressOnABlankRowLeavesTheClipboardAlone() async throws {
         let (vc, _) = try await makeVC()

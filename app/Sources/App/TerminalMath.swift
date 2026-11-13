@@ -45,15 +45,22 @@ enum TerminalMath {
     /// "": Ink word-wraps, and splits a token only when it is longer than the line —
     /// a URL, a path. A trailing " \" (shell continuation) drops the backslash and
     /// joins with " ".
-    static func oneLine(_ text: String, cols: Int) -> String {
+    ///
+    /// `widths`: every width the terminal had (#1016). A TUI's rows are hard newlines that
+    /// keep the width they were drawn at, so rows drawn before a rotation fill that width,
+    /// not cols. Ink never draws past its width, so only a width no row exceeds counts.
+    static func oneLine(_ text: String, cols: Int, widths: Set<Int> = []) -> String {
         var out = ""
         var glue = ""
         // The previous line filled its row: its last token's length and the wrap box
-        // (cols less its indent). The glue is decided once the next line's head is seen.
+        // (the width it filled less its indent). The glue is decided once the next line's
+        // head is seen.
         var full: (tail: Int, box: Int)?
-        for raw in text.split(whereSeparator: \.isNewline) {
-            // Display width counts the indent: the row is full, indent and all.
-            let right = String(raw.reversed().drop(while: \.isWhitespace).reversed())
+        // Display width counts the indent: the row is full, indent and all.
+        let rows = text.split(whereSeparator: \.isNewline).map { String($0.reversed().drop(while: \.isWhitespace).reversed()) }
+        let widest = rows.map(\.count).max() ?? 0
+        let drawn = widths.filter { $0 >= widest }
+        for right in rows {
             guard !right.isEmpty else { continue }
             let line = right.drop(while: \.isWhitespace)
             if let f = full {
@@ -75,9 +82,14 @@ enum TerminalMath {
             // length exceeds the box get glued — rare, it takes a token nearly a row long.
             // Wide CJK/emoji count as one column (SwiftTerm's UnicodeUtil.columnWidth is
             // internal); use cell widths if that bites.
-            if cols > 0, right.count % cols == 0 {
+            // ponytail (#1016): rows drawn at cols that all fit an earlier width, one filling
+            // it exactly, read as drawn there (its smaller box glues two long tokens); a width
+            // the terminal never had (another client's, Claude Code's maxProseWidth) is
+            // unknown, and a token split there gets a space.
+            let fill = max(cols > 0 && right.count % cols == 0 ? cols : 0, drawn.contains(right.count) ? right.count : 0)
+            if fill > 0 {
                 let tail = right.reversed().prefix(while: { !$0.isWhitespace }).count
-                full = (tail, cols - (right.count - line.count))
+                full = (tail, fill - (right.count - line.count))
             }
         }
         return out

@@ -13,6 +13,7 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
 
     private let text: String
     private let cols: Int
+    private let widths: Set<Int>
     private let source = UITextView()
     private let editor = UITextView()
     private let caption = UILabel()
@@ -27,9 +28,10 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
         return b
     }()
 
-    init(text: String, cols: Int) {
+    init(text: String, cols: Int, widths: Set<Int> = []) {
         self.text = text
         self.cols = cols
+        self.widths = widths
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -123,7 +125,7 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
     /// the raw selection, so toggling off restores it.
     private func fillEditor() {
         guard let selection else { return }
-        editor.text = oneLine ? TerminalMath.oneLine(selection, cols: cols) : selection
+        editor.text = oneLine ? TerminalMath.oneLine(selection, cols: cols, widths: widths) : selection
         sync()
     }
 

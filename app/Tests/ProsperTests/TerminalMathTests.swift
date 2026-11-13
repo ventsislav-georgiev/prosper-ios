@@ -343,6 +343,64 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(TerminalMath.oneLine("abcdefgh  \nij", cols: 10), "abcdefgh ij")
         XCTAssertEqual(TerminalMath.oneLine("中文中文\n中文", cols: 8), "中文中文 中文")
         XCTAssertEqual(TerminalMath.oneLine("中文中文\n中文", cols: 4), "中文中文中文")
+        // #1016: rows drawn at 92 that all fit an earlier 48, the first filling it exactly,
+        // read as drawn at 48: two long tokens glue. And a width the terminal never had
+        // (Claude Code's opt-in maxProseWidth, 60 here) is unknown: its split gets a space.
+        XCTAssertEqual(TerminalMath.oneLine("⏺ scp build/out/release-2026-11-13/app-arm64.tgz\n"
+                                            + "  ci-runner-europe-west1-b-primary-7781:/srv/rel", cols: 92, widths: [48, 92]),
+                       "⏺ scp build/out/release-2026-11-13/app-arm64.tgzci-runner-europe-west1-b-primary-7781:/srv/rel")
+        XCTAssertEqual(TerminalMath.oneLine("  - Open https://github.com/example/prosper-ios/actions/runs\n"
+                                            + "    /39821438259/job/1234567 to see the failing run, then\n    rerun it.",
+                                            cols: 92, widths: [48, 92]),
+                       "- Open https://github.com/example/prosper-ios/actions/runs /39821438259/job/1234567 to see the failing run, then rerun it.")
+    }
+
+    /// #1016: Claude Code (Ink) output as wrapped at one width and copied at another
+    /// (rotation): the rows keep the width they were drawn at. Ink rows are hard newlines,
+    /// so SwiftTerm's reflow leaves narrower rows alone and soft-wraps wider ones, which
+    /// getText joins back. Fixtures from a port of wrap-ansi (hard, trim: false).
+    private let cmd48 = [
+        "⏺ Bash(curl -fsS https://console.cloud.example.c",
+        "  om/kubernetes/deployment/europe-west1-b/ci-pri",
+        "  mary/web/overview?project=example-ci -o",
+        "  /tmp/overview.html)",
+    ]
+    private let cmd92 = [
+        "⏺ Bash(curl -fsS https://console.cloud.example.com/kubernetes/deployment/europe-west1-b/ci-p",
+        "  rimary/web/overview?project=example-ci -o /tmp/overview.html)",
+    ]
+    private let cmd = "⏺ Bash(curl -fsS https://console.cloud.example.com/kubernetes/deployment/europe-west1-b/ci-primary/web/overview?project=example-ci -o /tmp/overview.html)"
+    private let item48 = [
+        "  - Open https://github.com/example/prosper-ios/",
+        "    actions/runs/39821438259/job/1234567 to see",
+        "    the failing run, then rerun it.",
+    ]
+    private let item = "- Open https://github.com/example/prosper-ios/actions/runs/39821438259/job/1234567 to see the failing run, then rerun it."
+
+    /// Drawn in portrait (48), copied in landscape (92) and the reverse: a token split at
+    /// the earlier width glues once that width is passed; at its own width it always did.
+    func testOneLineGluesATokenSplitAtAnEarlierWidth() {
+        let joined = { (rows: [String], cols: Int) in
+            TerminalMath.oneLine(rows.joined(separator: "\n"), cols: cols, widths: [48, 92])
+        }
+        XCTAssertEqual(joined(cmd48, 92), cmd)
+        XCTAssertEqual(joined(item48, 92), item)
+        XCTAssertEqual(joined(cmd92, 48), cmd)
+        XCTAssertEqual(TerminalMath.oneLine(cmd48.joined(separator: "\n"), cols: 48), cmd)
+        XCTAssertEqual(TerminalMath.oneLine(cmd92.joined(separator: "\n"), cols: 92), cmd)
+    }
+
+    /// An earlier width a row exceeds is not the one these rows were drawn at: drawn at 92
+    /// and copied there, the 48-wide first row keeps its word break though the terminal
+    /// was 48 once and its two long tokens are too long for a 48 box.
+    func testOneLineIgnoresAnEarlierWidthARowExceeds() {
+        let cmd92 = [
+            "⏺ scp build/out/release-2026-11-13/app-arm64.tgz",
+            "  ci-runner-europe-west1-b-primary-7781:/srv/rel && ssh",
+            "  ci-runner-europe-west1-b-primary-7781 systemctl restart app",
+        ]
+        XCTAssertEqual(TerminalMath.oneLine(cmd92.joined(separator: "\n"), cols: 92, widths: [48, 92]),
+                       "⏺ scp build/out/release-2026-11-13/app-arm64.tgz ci-runner-europe-west1-b-primary-7781:/srv/rel && ssh ci-runner-europe-west1-b-primary-7781 systemctl restart app")
     }
 
     // MARK: commandBlock — the long-press copy's block (#458)
