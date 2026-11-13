@@ -263,7 +263,7 @@ final class SessionConnection: ObservableObject {
     private func requeue(_ out: Outbound, from g: Int, mayHaveArrived: Bool) {
         guard !isOver else { return }
         if mayHaveArrived, case .bytes(let b) = out, Self.runsLine(b) { show(Self.mayHaveRun, sticky: true); return }
-        if mayHaveArrived, case .bytes(let b) = out, [[0x0d], [0x0a], [0x1b, 0x0d], [0x1b, 0x0a]].contains(b) {
+        if mayHaveArrived, case .bytes(let b) = out, Self.isLoneEnter(b) {
             let end = min(requeueAt, outbox.count), from = max(0, end - maybeRun)
             outboxBytes -= outbox[from..<end].reduce(0) { $0 + Self.size($1) }
             outbox.removeSubrange(from..<end)
@@ -309,6 +309,19 @@ final class SessionConnection: ObservableObject {
     /// alt+Enter is one key.
     static func runsLine(_ b: [UInt8]) -> Bool {
         !(b.count == 1 || (b.count == 2 && b[0] == 0x1b)) && b.contains { $0 == 0x0d || $0 == 0x0a }
+    }
+    /// #1039: Enter or alt+Enter on its own. #1046: or SwiftTerm's kitty Enter (report-all-keys):
+    /// ESC[13u, ESC[13;<mods>u, ESC[13;<mods>:<1 press|2 repeat>u. A release runs nothing, and
+    /// shift/ctrl/super+Enter insert a newline in some apps, so only caps/num lock (64|128) may be set.
+    static func isLoneEnter(_ b: [UInt8]) -> Bool {
+        if [[0x0d], [0x0a], [0x1b, 0x0d], [0x1b, 0x0a]].contains(b) { return true }
+        guard b.count > 4, b.starts(with: [0x1b, 0x5b, 0x31, 0x33]), b.last == 0x75 else { return false }
+        let f = String(decoding: b.dropFirst(4).dropLast(), as: UTF8.self)
+        if f.isEmpty { return true }
+        guard f.first == ";" else { return false }
+        let p = f.dropFirst().split(separator: ":", omittingEmptySubsequences: false)
+        guard let m = Int(p[0]), m >= 1, (m - 1) & ~0xc0 == 0 else { return false }
+        return p.count == 1 || (p.count == 2 && (p[1] == "1" || p[1] == "2"))
     }
     static let typedLost = "Typed text lost in reconnect, type it again"
 

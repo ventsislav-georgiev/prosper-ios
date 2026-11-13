@@ -812,6 +812,35 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertEqual(conn.notice, SessionConnection.mayHaveRun)
     }
 
+    /// #1046: a kitty-encoded Enter (report-all-keys) drops its failsafe batch like a CR does.
+    func testAKittyEnterDropsItsFailsafeBatch() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        s1.accepting = false
+        for b in [Array("ls".utf8), Array("\u{1b}[13u".utf8)] { s1.onUnsent?(.bytes(b), true) }
+        t.hold = true
+        s1.drop()
+        try await waitUntil("stalled") { t.parked }
+        let s2 = try await reattachLive(conn, t, index: 1)
+        conn.send(Array("k".utf8)[...])
+        try await waitUntil("flush") { conn.queuedByteCount == 0 }
+        XCTAssertEqual(s2.text, "k")
+        XCTAssertEqual(conn.notice, SessionConnection.mayHaveRun)
+    }
+
+    /// #1046: CR, LF, alt+Enter and a kitty Enter press or repeat with at most a lock on.
+    func testIsLoneEnter() {
+        for s in ["\r", "\n", "\u{1b}\r", "\u{1b}\n", "\u{1b}[13u", "\u{1b}[13;1u", "\u{1b}[13;65u",
+                  "\u{1b}[13;129u", "\u{1b}[13;193u", "\u{1b}[13;1:1u", "\u{1b}[13;1:2u", "\u{1b}[13;65:2u"] {
+            XCTAssertTrue(SessionConnection.isLoneEnter(Array(s.utf8)), s.debugDescription)
+        }
+        for s in ["\u{1b}[13;1:3u", "\u{1b}[13;2u", "\u{1b}[13;3u", "\u{1b}[13;5u", "\u{1b}[13;9u", "\u{1b}[13;66u",
+                  "\u{1b}[13;2:1u", "\u{1b}[13;0u", "\u{1b}[13;u", "\u{1b}[13;1:u", "\u{1b}[13;1:1:1u", "\u{1b}[27u",
+                  "\u{1b}[13~", "\u{1b}[133u", "\u{1b}[13:13u", "\u{1b}[9u", "ls\r", "\r\r", "", "\u{1b}"] {
+            XCTAssertFalse(SessionConnection.isLoneEnter(Array(s.utf8)), s.debugDescription)
+        }
+    }
+
     /// Sends `frames` (conn.send calls) while no send completion can report, drops the link so only close()'s
     /// failsafe hands them back, then types "k" on the next stream: what that stream got.
     private func failsafeResend(_ frames: [[UInt8]]) async throws -> ([Outbound], String?) {
