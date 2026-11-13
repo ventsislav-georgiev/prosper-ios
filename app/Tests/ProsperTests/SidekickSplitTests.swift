@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import Prosper
 
 /// The sessions list's Sessions / Sidekicks split, by the name or alias matching a pattern.
@@ -78,6 +79,26 @@ final class SidekickSplitTests: XCTestCase {
         let both = DchSession.split([s("a"), s("a-qa")], pattern: "-qa")
         XCTAssertTrue(DchSession.choosable(both, tab: false))
         XCTAssertTrue(DchSession.choosable(both, tab: true))
+    }
+
+    // #1054: the empty segment is disabled on the control itself, so it draws dimmed and reads dimmed.
+
+    @MainActor func testEmptySegmentDisabledOnControl() {
+        let all = DchSession.split([s("a-qa")], pattern: "-qa")
+        let picker = SegmentPicker(titles: ["Sessions (0)", "Sidekicks (1)"],
+                                   enabled: [false, true].map { DchSession.choosable(all, tab: $0) },
+                                   selection: .constant(1))
+        let c = UISegmentedControl()
+        picker.update(c)
+        XCTAssertEqual(c.numberOfSegments, 2)
+        XCTAssertFalse(c.isEnabledForSegment(at: 0))
+        XCTAssertTrue(c.isEnabledForSegment(at: 1))
+        XCTAssertEqual(c.selectedSegmentIndex, 1)
+        // Both choosable again: re-enabled in place.
+        let both = SegmentPicker(titles: ["Sessions (1)", "Sidekicks (1)"], enabled: [true, true], selection: .constant(0))
+        both.update(c)
+        XCTAssertTrue(c.isEnabledForSegment(at: 0))
+        XCTAssertEqual(c.selectedSegmentIndex, 0)
     }
 
     // #967: the chosen tab is kept per Mac, in the one scene-storage string.

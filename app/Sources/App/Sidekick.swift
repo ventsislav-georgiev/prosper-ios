@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import UIKit
 import os
 
@@ -226,5 +227,52 @@ enum SidekickSync {
             } while again
             running = false
         }
+    }
+}
+
+// MARK: - Segments (#1054)
+
+/// #1054: the Sessions / Sidekicks switch as a UISegmentedControl. SwiftUI's segmented Picker
+/// ignores `.disabled` on a segment; `setEnabled(_:forSegmentAt:)` dims it and VoiceOver reads it dimmed.
+struct SegmentPicker: UIViewRepresentable {
+    let titles: [String]
+    let enabled: [Bool]
+    @Binding var selection: Int
+
+    final class Coordinator { var selection: Binding<Int>?; init() {} }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UISegmentedControl {
+        let c = UISegmentedControl()
+        let coordinator = context.coordinator
+        c.addAction(UIAction { [weak c] _ in
+            guard let c else { return }
+            coordinator.selection?.wrappedValue = c.selectedSegmentIndex
+        }, for: .valueChanged)
+        return c
+    }
+
+    func updateUIView(_ c: UISegmentedControl, context: Context) {
+        context.coordinator.selection = $selection
+        update(c)
+    }
+
+    /// Titles, enabled flags and the selected index onto `c`; apart from the context so a test can call it.
+    func update(_ c: UISegmentedControl) {
+        if c.numberOfSegments != titles.count {
+            c.removeAllSegments()
+            for (i, t) in titles.enumerated() { c.insertSegment(withTitle: t, at: i, animated: false) }
+        }
+        for (i, t) in titles.enumerated() {
+            c.setTitle(t, forSegmentAt: i)
+            c.setEnabled(enabled[i], forSegmentAt: i)
+        }
+        c.selectedSegmentIndex = selection
+    }
+
+    /// The full width offered, as the Picker it replaces.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UISegmentedControl, context: Context) -> CGSize? {
+        let size = uiView.intrinsicContentSize
+        return CGSize(width: proposal.width ?? size.width, height: size.height)
     }
 }
