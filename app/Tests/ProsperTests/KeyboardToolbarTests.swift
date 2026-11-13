@@ -2810,6 +2810,48 @@ final class KeyboardToolbarTests: XCTestCase {
         }
     }
 
+    /// dd on a run of one Character past the host's window alone on its line, cut line on one
+    /// between two lines, the press at its end (QA's), middle and start: the line and its
+    /// break go, cut's clip the run, or nothing does, the caret where the press found it and
+    /// the clip kept (#961 QA: from a 300-run's end the caret moved and nothing went). A walk
+    /// back over a run reads the same each leg; on a busy host, a leg taking a window whole
+    /// reads UIKit's guess, none after, before the line's end the walk measured.
+    /// BLOCK from the line's start is left out: its first walk takes that guess for the line's
+    /// end on any line past the window, a run or not (reported apart).
+    func testDdAndCutLineOnARunPastTheWindowTakeItOrLeaveTheCaret() throws {
+        let hosts: [(String, (Proxy) -> Void)] = [
+            ("Safari", Self.safari), ("plain, 300", { $0.window = 300 }),
+            ("kit, 300", { Self.qaHosts()[0].1($0); $0.window = 300 }),
+            ("BLOCK, 300", { Self.qaHosts()[1].1($0); $0.window = 300 }),
+            ("STALL at 14, 300", { Self.qaHosts()[4].1($0); $0.window = 300 }),
+        ]
+        // Where it must go: the walks measure the line, and the walk over it again waits past
+        // UIKit's guess at the window's end.
+        let goes: Set<String> = ["plain, 300 320", "BLOCK, 300 320", "STALL at 14, 300 320"]
+        for (name, host) in hosts {
+            for (len, ks) in [(320, [320, 160, 0]), (1_000, [1_000])] {
+                let run = String(repeating: "a", count: len)
+                for (id, pre, post) in [("delLine", "", ""), ("cutLine", "top\n", "\nend")] {
+                    for k in ks where !(name.hasPrefix("BLOCK") && k == 0) {
+                        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                        addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                        pb.string = "old"
+                        let text = pre + run.prefix(k), after = String(run.dropFirst(k)) + post
+                        let (kb, bar, doc) = rig(text, after: after)
+                        host(doc)
+                        bar.suggestions.pasteboard = { pb }
+                        try edit(id, kb, bar, doc)
+                        let what = "\(id), \(name), \(len) from \(k)"
+                        let went = Self.at(doc) == (pre.isEmpty ? "|" : "top\n|end")
+                        if goes.contains("\(name) \(len)") { XCTAssertTrue(went, what) }
+                        XCTAssertEqual(Self.at(doc), went ? Self.at(doc) : text + "|" + after, "nothing or the line: \(what)")
+                        XCTAssertEqual(pb.string, went && id == "cutLine" ? run : "old", "the clip: \(what)")
+                    }
+                }
+            }
+        }
+    }
+
     /// Cut line on an empty line, mid-text and last, takes it and a break and keeps the clip:
     /// no empty line takes its place (QA's M1053).
     func testCutLineOnAnEmptyLineKeepsTheClip() throws {

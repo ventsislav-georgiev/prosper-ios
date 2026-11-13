@@ -1631,10 +1631,12 @@ final class SuggestionBar: UIView {
     }
 
     /// The caret `n` Characters on, back where negative, within its line, through `walk`: a
-    /// keyboard move that long stops at a busy host's window.
+    /// keyboard move that long stops at a busy host's window. On through a run of one
+    /// Character (`runs`): a walk crossed them (#961: dd from a long run's end left the caret
+    /// 300 back).
     private func caret(within n: Int) {
-        if n > 0 { walk(1, limit: n, { Self.toLineEnd($1) }) { _ in } }
-        if n < 0 { walk(-1, limit: -n, { b, _ in Self.toLineStart(Self.unspaced(b)) }) { _ in } }
+        if n > 0 { walk(1, limit: n, runs: true, { Self.toLineEnd($1) }) { _ in } }
+        if n < 0 { walk(-1, limit: -n, runs: true, { b, _ in Self.toLineStart(Self.unspaced(b)) }) { _ in } }
     }
 
     /// The deletes of a `line` measured whole, the caret `walked` on from the press, at its
@@ -1735,17 +1737,20 @@ final class SuggestionBar: UIView {
     /// A leg back taking a before-context that opens on a space whole stops short of it: the
     /// space may be Safari's after a break, not in the text, and the next leg reads on.
     /// ponytail: 1,000 legs at most; a long run of one character in Safari's windows reads
-    /// the same after a leg and stops there: a second press goes on.
-    private func walk(_ dir: Int, legs: Int = 1_000, limit: Int = .max, crossed: String = "", seen: (String, String)? = nil,
-                      _ count: @escaping (String, String) -> Int, done: @escaping (String) -> Void) {
+    /// the same after a leg and stops there, but for one `runs`: a second press goes on.
+    private func walk(_ dir: Int, legs: Int = 1_000, limit: Int = .max, runs: Bool = false, crossed: String = "",
+                      seen: (String, String)? = nil, _ count: @escaping (String, String) -> Int, done: @escaping (String) -> Void) {
         guard let keyboard, let doc = keyboard.target as? UITextDocumentProxy else { return }
         let b = doc.documentContextBeforeInput ?? "", a = doc.documentContextAfterInput ?? ""
         let n = min(count(b, a) - (dir < 0 && b.first == " " && count(b, a) == b.count ? 1 : 0), limit - crossed.count)
-        guard n > 0, legs > 0, seen.map({ $0 != (b, a) }) ?? true else { return done(crossed) }
+        // #961: one `runs` goes on where the context is a run of one Character, whose window
+        // reads the same after a leg inside it: `limit` bounds it.
+        let same = seen.map { $0 == (b, a) } ?? false
+        guard n > 0, legs > 0, !same || runs && Set(b + a).count == 1 else { return done(crossed) }
         let leg = String(dir < 0 ? b.suffix(n) : a.prefix(n))
         keyboard.caret(dir * n) { [weak self] in
             let on: () -> Void = {
-                self?.walk(dir, legs: legs - 1, limit: limit, crossed: dir < 0 ? leg + crossed : crossed + leg, seen: (b, a),
+                self?.walk(dir, legs: legs - 1, limit: limit, runs: runs, crossed: dir < 0 ? leg + crossed : crossed + leg, seen: (b, a),
                            count, done: done)
             }
             // A leg back landing on text after the caret that isn't the leg's is a late answer
@@ -1772,8 +1777,11 @@ final class SuggestionBar: UIView {
             // (#553 QA: a blocking host's ctrl-k took a sentence, dd stepped over its next's first).
             // So too a step blind over a break, whose guess is the context as it was: no text's
             // end till the host's answer is that too (#553 QA: STALL delete all stopped a line on).
+            // So too one short of a `limit` measured, a window's end (#961: on a busy host the
+            // walk over a 320-run read its guess at 300 for the line's end).
             // ponytail: a line ending in a space, and the text's end, wait that long.
-            guard dir > 0, a.isEmpty || n == a.count && leg.last?.isWhitespace == true,
+            let cut = n == a.count && (leg.last?.isWhitespace == true || limit < .max && crossed.count + n < limit)
+            guard dir > 0, a.isEmpty || cut,
                   let doc = self?.keyboard?.target as? UITextDocumentProxy, doc.documentContextAfterInput ?? "" == "" else { return on() }
             guard let kb = self?.keyboard else { return }
             let guess = (doc.documentContextBeforeInput, doc.documentContextAfterInput), from = kb.ticks
