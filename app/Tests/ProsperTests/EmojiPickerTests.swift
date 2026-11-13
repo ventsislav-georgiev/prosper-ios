@@ -277,6 +277,10 @@ final class EmojiPickerTests: XCTestCase {
         return Double(info.phys_footprint) / 1_048_576
     }
 
+    /// #1037: the live heap in MB. A footprint reuses the dirty pages an earlier test freed,
+    /// so only the first budget test to run saw a grown glyph cache; the heap sees it in all.
+    static func heap() -> Double { Double(mstats().bytes_used) / 1_048_576 }
+
     /// #1027: up to three tries of `measure` till one keeps `within`, the last returned: the
     /// test host's other suites share the process, and a burst of theirs can land in one
     /// (16.3 MB for a 9 MB grid, 5.06 for a 0.5 MB search). A try's picker lives on, so
@@ -292,7 +296,7 @@ final class EmojiPickerTests: XCTestCase {
     /// older iPhones, over the ~27 MB the letters take. One font for them all took 96.
     func testEveryGroupDrawsWithinTheMemoryBudget() throws {
         var seen = Set<String>()
-        let peak = Self.tries({ () -> Double in
+        let (peak, heap) = Self.tries({ () -> (Double, Double) in
             let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight))
             let window = UIWindow(frame: picker.frame)
             window.addSubview(picker)
@@ -309,19 +313,21 @@ final class EmojiPickerTests: XCTestCase {
                 }
             }
             drawPage()
-            let before = Self.footprint()
-            var peak = 0.0
+            let before = Self.footprint(), heapBefore = Self.heap()
+            var peak = 0.0, heap = 0.0
             for x in stride(from: 0, to: picker.grid.contentSize.width, by: picker.grid.bounds.width / 2) {
                 picker.grid.contentOffset.x = x
                 autoreleasepool { drawPage() }
                 peak = max(peak, Self.footprint() - before)
+                heap = max(heap, Self.heap() - heapBefore)
             }
-            print("#664 groups: peak \(peak) MB")
-            return peak
-        }, within: { $0 < 15 })
+            print("#664 groups: peak \(peak) MB, heap \(heap) MB")
+            return (peak, heap)
+        }, within: { $0.0 < 15 && $0.1 < 15 })
         XCTAssertEqual(seen.subtracting(EmojiPicker.groups.joined()), [], "only emoji")
         XCTAssertEqual(Set(EmojiPicker.groups.joined()).subtracting(seen), [], "every group drawn")
         XCTAssertLessThan(peak, 15)
+        XCTAssertLessThan(heap, 15, "#1037: the live heap")
     }
 
     /// Every emoji's image holds all its ink, not only its advance's width: 🫡 inks past
@@ -564,7 +570,7 @@ final class EmojiPickerTests: XCTestCase {
         withExtendedLifetime(both) {}
         XCTAssertLessThan(words, 1)
 
-        let (opened, peak) = try Self.tries({ () throws -> (Double, Double) in
+        let (opened, peak, live) = try Self.tries({ () throws -> (Double, Double, Double) in
             let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight))
             picker.layout = .bulgarian
             let window = UIWindow(frame: picker.frame)
@@ -595,19 +601,21 @@ final class EmojiPickerTests: XCTestCase {
                 }
             }
             drawPage()
-            let shown = Self.footprint()   // as the grid's budget: past the first page
-            var peak = 0.0
+            let shown = Self.footprint(), heapShown = Self.heap()   // as the grid's budget: past the first page
+            var peak = 0.0, heap = 0.0
             for x in stride(from: 0, to: results.contentSize.width, by: results.bounds.width / 2) {
                 results.contentOffset.x = x
                 autoreleasepool { drawPage() }
                 peak = max(peak, Self.footprint() - shown)
+                heap = max(heap, Self.heap() - heapShown)
             }
-            print("#666 results: \(seen.count) drawn, peak \(peak) MB")
+            print("#666 results: \(seen.count) drawn, peak \(peak) MB, heap \(heap) MB")
             XCTAssertEqual(seen.count, filter.matches.count, "every result drawn")
-            return (opened, peak)
-        }, within: { $0.0 < 3 && $0.1 < 15 })
+            return (opened, peak, heap)
+        }, within: { $0.0 < 3 && $0.1 < 15 && $0.2 < 15 })
         XCTAssertLessThan(opened, 3)
         XCTAssertLessThan(peak, 15)
+        XCTAssertLessThan(live, 15, "#1037: the live heap")
     }
 
     // MARK: Skin tones (#667)
@@ -792,32 +800,37 @@ final class EmojiPickerTests: XCTestCase {
     /// Every tone strip shown in turn, drawn at 3x, keeps the grid's budget (#664): drawn in
     /// the cells' font, under the same cap.
     func testEveryToneStripDrawsWithinTheMemoryBudget() throws {
-        let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight))
-        let window = UIWindow(frame: picker.frame)
-        window.addSubview(picker)
-        window.isHidden = false
-        addTeardownBlock { window.isHidden = true }
-        picker.layoutIfNeeded()
-        picker.grid.layoutIfNeeded()
-        let attributes = try XCTUnwrap(picker.grid.layoutAttributesForItem(at: IndexPath(item: 0, section: 1)))
-        let cell = picker.grid.convert(attributes.frame, to: picker)
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 3
-        let before = Self.footprint()
-        var peak = 0.0
-        for base in EmojiPicker.toneable.values.sorted() {
-            autoreleasepool {
-                picker.showTones(base, over: cell)
-                if let strip = picker.toneStrip {
-                    _ = UIGraphicsImageRenderer(size: strip.bounds.size, format: format).image { strip.layer.render(in: $0.cgContext) }
+        let (peak, heap) = try Self.tries({ () throws -> (Double, Double) in
+            let picker = EmojiPicker(frame: CGRect(x: 0, y: 0, width: 402, height: TerminalKeyboard.keysHeight))
+            let window = UIWindow(frame: picker.frame)
+            window.addSubview(picker)
+            window.isHidden = false
+            addTeardownBlock { window.isHidden = true }
+            picker.layoutIfNeeded()
+            picker.grid.layoutIfNeeded()
+            let attributes = try XCTUnwrap(picker.grid.layoutAttributesForItem(at: IndexPath(item: 0, section: 1)))
+            let cell = picker.grid.convert(attributes.frame, to: picker)
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 3
+            let before = Self.footprint(), heapBefore = Self.heap()
+            var peak = 0.0, heap = 0.0
+            for base in EmojiPicker.toneable.values.sorted() {
+                autoreleasepool {
+                    picker.showTones(base, over: cell)
+                    if let strip = picker.toneStrip {
+                        _ = UIGraphicsImageRenderer(size: strip.bounds.size, format: format).image { strip.layer.render(in: $0.cgContext) }
+                    }
                 }
+                RunLoop.main.run(until: Date())   // a hold apiece: the closed strip's layers go as the transaction commits
+                peak = max(peak, Self.footprint() - before)
+                heap = max(heap, Self.heap() - heapBefore)
             }
-            RunLoop.main.run(until: Date())   // a hold apiece: the closed strip's layers go as the transaction commits
-            peak = max(peak, Self.footprint() - before)
-        }
-        picker.closeTones()
-        print("#667 tone strips: \(EmojiPicker.toneable.count), peak \(peak) MB")
+            picker.closeTones()
+            print("#667 tone strips: \(EmojiPicker.toneable.count), peak \(peak) MB, heap \(heap) MB")
+            return (peak, heap)
+        }, within: { $0.0 < 15 && $0.1 < 15 })
         XCTAssertLessThan(peak, 15)
+        XCTAssertLessThan(heap, 15, "#1037: the live heap")
     }
 
     /// A held cell's tones draw at its glyph's size (#687): the grid's 56 pt landscape cells,
