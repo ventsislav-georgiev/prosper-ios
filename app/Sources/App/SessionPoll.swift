@@ -43,6 +43,18 @@ enum SessionPoll {
         return min(max(wait * 2, fastest(mode)), slowest(mode))
     }
 
+    /// #963: a list under this old already answers a poll (re)started now.
+    static let fresh: TimeInterval = 2
+
+    /// #963: the wait before a poll task's first list. Before the screen's first refresh and
+    /// handshake end, that refresh is the list. After, a restart lists at once, unless a list
+    /// landed under `fresh` ago: at launch the scene turns active just after the first refresh.
+    static func first(connected: Bool, listedAt: Date?, mode: UpdateMode, now: Date = Date()) -> TimeInterval? {
+        guard connected else { return fastest(mode) }
+        if let at = listedAt, now.timeIntervalSince(at) < fresh { return fastest(mode) }
+        return nil
+    }
+
     /// The wait after a failed poll: never faster than the backoff, never faster than before.
     static func failed(after wait: TimeInterval?) -> TimeInterval {
         max(wait ?? 0, failureBackoff)

@@ -359,6 +359,7 @@ struct SessionListView: View {
     @State private var open: DchSession?          // programmatic push target
     @State private var connected = false           // the full refresh and its handshake ran here
     @State private var pollRound = 0               // bumped to list at once and poll fast again
+    @State private var listedAt: Date?             // #963: the last list landed; nil forces the next poll at once
     @State private var watchRetry: Date?           // #775: refused; a fresh 0x08 may offer it again from then
     @State private var busyWait: TimeInterval?     // #827: refresh turned away "busy": the wait before it tries again
     @AppStorage(UpdateMode.key) private var updateMode = UpdateMode.live   // #764: Settings › Updates
@@ -685,7 +686,7 @@ struct SessionListView: View {
     private func relist() async {
         guard error == nil, unreachable == nil else { return await refresh() }
         notice = nil
-        guard watching else { pollRound += 1; return }
+        guard watching else { listedAt = nil; pollRound += 1; return }
         if let list = try? await transport.listSessions() { show(list) }
     }
 
@@ -693,6 +694,7 @@ struct SessionListView: View {
     /// array still marks the state dirty and redraws every row.
     private func show(_ list: [DchSession]) {
         remember(list)
+        listedAt = Date()
         if !loading, list != sessions { sessions = list }
     }
 
@@ -730,8 +732,9 @@ struct SessionListView: View {
         guard polling else { return }
         if SessionWatch.wanted(ops, mode) { return await watchStates() }
         // A first appearance has `.task { refresh() }` in flight, so it waits. Any restart
-        // after that lists at once: the rows are as old as the time away.
-        var wait: TimeInterval? = connected ? nil : SessionPoll.fastest(mode)
+        // after that lists at once: the rows are as old as the time away. #963: not one a
+        // list just answered, the launch's scene turning active after that refresh.
+        var wait: TimeInterval? = SessionPoll.first(connected: connected, listedAt: listedAt, mode: mode)
         var last: [DchSession]? = nil   // #774: read `sessions` at the first poll, after refresh()
         while !Task.isCancelled {
             if let wait { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
@@ -851,6 +854,7 @@ struct SessionListView: View {
         defer { trying = nil }
         do {
             sessions = try await listWalkingAddresses()
+            listedAt = Date()
             remember(sessions)
             error = nil
             notice = nil

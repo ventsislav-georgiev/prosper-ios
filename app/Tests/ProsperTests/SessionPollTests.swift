@@ -65,10 +65,48 @@ final class SessionPollTests: XCTestCase {
         XCTAssertNil(SessionStateStyle(""))
     }
 
+    /// #963: launch lists once. The first refresh lists, its handshake ends (`connected`), then
+    /// the scene turns active 0.2 s later and restarts the poll: that list answers it. A
+    /// foreground return later, a verb's relist (`listedAt` cleared) and the poll's own tick
+    /// still list.
+    func testLaunchListsOnceAndLaterTriggersStillList() async throws {
+        let mac = CountingMac()
+        var listedAt: Date?
+        let t0 = Date()
+        // What a poll task does when it starts: its first list at once, or only after a wait.
+        func pollStarts(connected: Bool, at now: Date) async throws {
+            guard SessionPoll.first(connected: connected, listedAt: listedAt, mode: .live, now: now) == nil else { return }
+            _ = try await mac.listSessions()
+            listedAt = now
+        }
+        try await pollStarts(connected: false, at: t0)          // first appear: refresh in flight, waits
+        _ = try await mac.listSessions(); listedAt = t0          // the refresh
+        try await pollStarts(connected: true, at: t0 + 0.2)      // scene active just after it
+        XCTAssertEqual(mac.lists, 1, "launch: one list")
+
+        try await pollStarts(connected: true, at: t0 + 10)       // back from the background
+        XCTAssertEqual(mac.lists, 2, "a return still lists")
+        listedAt = nil                                           // a verb's relist
+        try await pollStarts(connected: true, at: t0 + 10.5)
+        XCTAssertEqual(mac.lists, 3, "a relist still lists at once")
+        XCTAssertEqual(SessionPoll.first(connected: true, listedAt: t0, mode: .live, now: t0 + 0.2), SessionPoll.fastest(.live),
+                       "the answered start waits the usual interval, no longer")
+    }
+
     func testFirstPollComparesAgainstShownList() {
         XCTAssertFalse(SessionPoll.changed([1, 2], last: nil, shown: [1, 2]), "#774: refresh filled the list after the task started")
         XCTAssertTrue(SessionPoll.changed([1, 2], last: nil, shown: [1]))
         XCTAssertTrue(SessionPoll.changed([1, 2], last: [1], shown: [1, 2]), "later polls compare against the previous poll")
         XCTAssertFalse(SessionPoll.changed([1], last: [1], shown: []))
     }
+}
+
+/// #963: a Mac that counts the session lists it is asked for.
+private final class CountingMac: SessionTransport {
+    var lists = 0
+    func listSessions() async throws -> [DchSession] { lists += 1; return [] }
+    func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream { throw TransportError.notConnected }
+    func create(name: String?, command: [String], cols: Int, rows: Int) async throws -> TerminalStream { throw TransportError.notConnected }
+    func kill(name: String) async throws {}
+    func rename(name: String, alias: String?) async throws {}
 }
