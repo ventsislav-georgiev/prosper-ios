@@ -311,6 +311,27 @@ final class BulgarianKeyboardTests: XCTestCase {
         XCTAssertTrue(spells(true, true, ["кърша"]))
     }
 
+    /// #957: the real probe's wiring — listed, the typo flagged and guessed for, all asked in Bulgarian.
+    func testProbeAsksTheCheckerInBulgarian() {
+        final class Fake: UITextChecker {
+            var flags = true, guesses: [String]? = ["кърша"]
+            override func rangeOfMisspelledWord(in s: String, range: NSRange, startingAt: Int, wrap: Bool,
+                                                language: String) -> NSRange {
+                flags && language == "bg_BG" ? range : NSRange(location: NSNotFound, length: 0)
+            }
+            override func guesses(forWordRange range: NSRange, in s: String, language: String) -> [String]? {
+                language == "bg_BG" ? guesses : nil
+            }
+        }
+        let fake = Fake()
+        XCTAssertTrue(TerminalKeyboard.probeBulgarian(availableLanguages: ["bg_BG"], checker: fake))
+        XCTAssertFalse(TerminalKeyboard.probeBulgarian(availableLanguages: ["en_US"], checker: fake), "not listed")
+        fake.flags = false
+        XCTAssertFalse(TerminalKeyboard.probeBulgarian(availableLanguages: ["bg_BG"], checker: fake), "nothing flagged")
+        fake.flags = true; fake.guesses = nil
+        XCTAssertFalse(TerminalKeyboard.probeBulgarian(availableLanguages: ["bg_BG"], checker: fake), "nothing guessed")
+    }
+
     /// With a Bulgarian dictionary the checker is asked in Bulgarian; English keeps its own.
     func testWithADictionaryBulgarianIsUsed() {
         TerminalKeyboard.bulgarianSpells = true

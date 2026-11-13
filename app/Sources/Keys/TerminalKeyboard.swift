@@ -2617,14 +2617,18 @@ extension TerminalKeyboard {
     /// Whether the checker really spells Bulgarian. Listed isn't enough: the simulator
     /// lists bg_BG with no lexicon behind it, where every word passes and nothing is
     /// guessed. So a typo it neither flags nor fixes means none. Settable for tests.
-    static var bulgarianSpells: Bool = {
+    static var bulgarianSpells: Bool = probeBulgarian()
+
+    /// #957: the probe, with its languages and checker injectable for tests.
+    static func probeBulgarian(availableLanguages: [String] = UITextChecker.availableLanguages,
+                               checker: UITextChecker = checker) -> Bool {
         let typo = "къша", range = NSRange(location: 0, length: 4)
         return spells(
-            listed: UITextChecker.availableLanguages.contains("bg_BG"),
+            listed: availableLanguages.contains("bg_BG"),
             flags: { checker.rangeOfMisspelledWord(in: typo, range: range, startingAt: 0, wrap: false,
                                                    language: "bg_BG").location != NSNotFound },
             guesses: { checker.guesses(forWordRange: range, in: typo, language: "bg_BG") ?? [] })
-    }()
+    }
 
     /// The probe's verdict from the checker's answers on a typo: listed, the typo flagged,
     /// and something guessed for it. The checker is asked only as far as it has to be.
