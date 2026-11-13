@@ -600,6 +600,41 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertTrue(slots(bar).allSatisfy { $0?.highlighted != true })
     }
 
+    /// #956: the bar re-reads the field at the trackpad's caret move itself, not only at the
+    /// lift's re-read 0.1 s later (QA's M125).
+    func testTheBarFollowsATrackpadMoveAtOnce() throws {
+        let (kb, bar, doc) = rig()
+        typing(kb, "thin")
+        let typed = bar.state
+        XCTAssertEqual(slots(bar)[0], Slot(word: "thin", quoted: true), "precondition")
+        try drag(kb, [-4.5])
+        XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "|thin")
+        let moved = bar.state
+        XCTAssertNotEqual(moved, typed, "not the word before the move")
+        bar.refresh()
+        XCTAssertEqual(bar.state, moved, "already what the field shows")
+    }
+
+    /// #956: a host can still show the old caret's text right after the move, so the lift
+    /// re-reads it 0.1 s on: shift follows the host's answer and the bar hears of it
+    /// through `didPress` (QA's M116).
+    func testTheTrackpadsLiftReReadsTheField() throws {
+        let (kb, _, doc) = rig { $0.autocapitalizationType = .sentences }
+        doc.text = "ab. cd"
+        kb.autoCapitalize()
+        var pressed = 0
+        let press = kb.didPress
+        kb.didPress = { pressed += 1; press?() }
+        try drag(kb, [-2.5])
+        XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "ab. |cd")
+        XCTAssertTrue(kb.shift.auto, "precondition: read at the move")
+        doc.text = "ab. c"   // the host's late answer: one step, not two
+        XCTAssertEqual(pressed, 0, "precondition: nothing yet")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        XCTAssertFalse(kb.shift.auto, "read again")
+        XCTAssertEqual(pressed, 1)
+    }
+
     /// Quick taps on the space bar type a space each; no hold timer is left to fire.
     func testSpaceTapsAreUnchanged() throws {
         let (kb, _, doc) = rig()

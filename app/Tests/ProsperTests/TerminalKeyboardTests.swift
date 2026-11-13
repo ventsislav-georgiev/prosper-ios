@@ -698,6 +698,13 @@ final class TerminalKeyboardTests: XCTestCase {
 
         XCTAssertEqual(t.began(5, .space), [])
         XCTAssertEqual(t.ended(5), [.press(.space)], "a tap is space")
+
+        // #956: the half step left over from 1.5 is carried, so 2.0 is the next step (QA's M104).
+        _ = t.began(6, .space, at: o)
+        XCTAssertTrue(t.startTrackpad(6, at: o))
+        XCTAssertEqual(t.moved(6, .space, at: CGPoint(x: 200 + 1.5 * step, y: y)), [.caret(1)])
+        XCTAssertEqual(t.moved(6, .space, at: CGPoint(x: 200 + 2.0 * step, y: y)), [.caret(1)], "the remainder carried")
+        XCTAssertEqual(t.ended(6), [])
         XCTAssertFalse(t.startTrackpad(5, at: .zero), "a hold after the lift does nothing")
         _ = t.began(6, .char("s"))
         XCTAssertFalse(t.startTrackpad(6, at: .zero), "only space")
@@ -763,6 +770,22 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(spy.calls, [], "no space, and the second finger typed nothing")
         XCTAssertEqual(caps.mapValues(shown), before, "every label back, shift's included")
         XCTAssertEqual(kb.shift.mode, .once)
+    }
+
+    /// #956: dismissed mid-trackpad, the keyboard leaves its window with the caps blank;
+    /// it comes back with every label showing (QA's M117).
+    func testADismissMidTrackpadBringsTheLabelsBack() throws {
+        let (kb, caps) = laidOut()
+        let before = caps.mapValues(shown)
+        let window = UIWindow(frame: kb.frame)
+        window.addSubview(kb)
+        let space = try XCTUnwrap(caps["space"]).frame, p = CGPoint(x: space.midX, y: space.midY)
+        kb.track(.began, id: 1, at: p)
+        kb.fireHold()
+        XCTAssertEqual(shown(try XCTUnwrap(caps["q"])), [], "precondition: blank")
+        kb.removeFromSuperview()
+        window.addSubview(kb)
+        XCTAssertEqual(caps.mapValues(shown), before, "every label back")
     }
 
     /// The extension's pad is no home strip: under space a hold is the trackpad and a tap,
