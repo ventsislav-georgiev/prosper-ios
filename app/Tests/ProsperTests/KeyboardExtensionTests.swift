@@ -74,6 +74,9 @@ final class KeyboardExtensionTests: XCTestCase {
         /// UIKit's guess (`guesses`) shows the after-context on past the line's end where the
         /// host's own answer stops (`stopsAtLineEnd`), as QA's UITextView's did.
         var guessesPastLineEnd = false
+        /// The next insert ending in a space loses that space, as a maxlength field's or a
+        /// script's that strips it (#959).
+        var dropsSpace = false
         /// Selected text, not in `text`: an insert types over it, as a host's (#613).
         var selectedText: String?
         var documentInputMode: UITextInputMode? { nil }
@@ -178,6 +181,9 @@ final class KeyboardExtensionTests: XCTestCase {
         private var held: (before: String, after: String)?
         private var late: [(at: Int, before: String, after: String)] = []
         func insertText(_ s: String) {
+            // #959: a host that drops the next space typed (maxlength, a script stripping it).
+            var s = s
+            if dropsSpace, s.last == " " { s.removeLast(); dropsSpace = false }
             selectedText = nil
             if lagsEdits || behind { unshown.append((text, after, rest)) }
             text += s

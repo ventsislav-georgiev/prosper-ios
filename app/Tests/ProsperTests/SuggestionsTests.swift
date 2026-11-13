@@ -341,6 +341,27 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertEqual(doc.text, "teh ", "a learned word")
     }
 
+    /// #959: a host that drops the space after a word (maxlength, a script stripping it) loses
+    /// no letter: the next key types on after what it shows, nothing corrects across the missing
+    /// space, two spaces stay spaces (no period deleting back over it), and backspace deletes
+    /// what it shows, not an undo sized for a space a lagging host may yet show. A field that
+    /// keeps its spaces types the same keys as before.
+    func testAHostDroppingASpaceLosesNoLetter() {
+        for (pre, rest, dropped, kept) in [("teh", "x", "thex", "the x"), ("hello", "world ", "helloworld ", "hello world "),
+                                           ("o", " ", "o ", "o  "), ("teh", "⌫", "th", "teh"),
+                                           ("helloworld", "⌫", "hello worl", "helloworld")] {
+            for drops in [true, false] {
+                let (kb, bar, doc) = rig()
+                withExtendedLifetime(bar) {
+                    typing(kb, pre)
+                    doc.dropsSpace = drops
+                    typing(kb, " " + rest)
+                }
+                XCTAssertEqual(doc.text, drops ? dropped : kept, "\(pre) \(rest), space dropped: \(drops)")
+            }
+        }
+    }
+
     /// A quick space after backspace undid an autocorrect is a plain space.
     func testASpaceRightAfterAnUndoneAutocorrectIsASpace() {
         let (kb, bar, doc) = rig()
