@@ -399,12 +399,12 @@ struct SessionListView: View {
 
     /// #967: an empty segment is dimmed and can't be chosen, so it never writes the tab.
     /// #1054: UIKit's, since the segmented Picker draws a `.disabled` segment enabled.
-    private func tabPicker(_ split: (primary: [DchSession], sidekicks: [DchSession]), shows: Bool) -> SegmentPicker {
+    private func tabPicker(_ split: (primary: [DchSession], sidekicks: [DchSession]), shows: Bool) -> some View {
         SegmentPicker(titles: ["Sessions (\(split.primary.count))", "Sidekicks (\(split.sidekicks.count))"],
                       enabled: [DchSession.choosable(split, tab: false), DchSession.choosable(split, tab: true)],
                       selection: Binding(get: { shows ? 1 : 0 }, set: { i in
             if DchSession.choosable(split, tab: i == 1) { sidekickTab = i == 1 }
-        }))
+        })).header
     }
 
     private var liveMachine: Machine? {

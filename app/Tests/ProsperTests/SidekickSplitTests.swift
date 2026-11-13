@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import SwiftUI
 @testable import Prosper
 
 /// The sessions list's Sessions / Sidekicks split, by the name or alias matching a pattern.
@@ -99,6 +100,40 @@ final class SidekickSplitTests: XCTestCase {
         both.update(c)
         XCTAssertTrue(c.isEnabledForSegment(at: 0))
         XCTAssertEqual(c.selectedSegmentIndex, 0)
+    }
+
+    // #1054: as the section header, the control spans the rows' x range, on the list SessionListView
+    // uses (no style, in a NavigationStack), at an iPhone width with 16 pt and one with 20 pt insets.
+
+    @MainActor func testHeaderSpansTheRows() {
+        func all(_ v: UIView) -> [UIView] { [v] + v.subviews.flatMap(all) }
+        let picker = SegmentPicker(titles: ["Sessions (1)", "Sidekicks (1)"], enabled: [true, true], selection: .constant(0))
+        for width in [402.0, 440] {
+            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: width, height: 800))
+            window.rootViewController = UIHostingController(rootView: NavigationStack {
+                List {
+                    Text("Mac card")
+                    Section { Text("row 1"); Text("row 2") } header: { picker.header }
+                }
+                .navigationTitle("Sessions")
+            })
+            window.makeKeyAndVisible()
+            defer { window.isHidden = true }
+            for _ in 0..<5 { window.layoutIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+            let views = all(window)
+            guard let seg = views.first(where: { $0 is UISegmentedControl }).map({ $0.convert($0.bounds, to: window) })
+            else { return XCTFail("\(width): no segmented control") }
+            let cells = views.filter { $0 is UICollectionViewCell }.map { $0.convert($0.bounds, to: window) }
+            guard let card = cells.filter({ $0.maxY <= seg.minY }).min(by: { $0.minY < $1.minY }),
+                  let row = cells.filter({ $0.minY >= seg.maxY }).min(by: { $0.minY < $1.minY })
+            else { return XCTFail("\(width): no card or row around the control, \(cells)") }
+            XCTAssertGreaterThan(row.minX, 0, "\(width): an inset list")
+            for edge in [card, row] {
+                XCTAssertEqual(seg.minX, edge.minX, accuracy: 0.5, "\(width): left edge")
+                XCTAssertEqual(seg.maxX, edge.maxX, accuracy: 0.5, "\(width): right edge")
+            }
+            XCTAssertGreaterThanOrEqual(row.minY - seg.maxY, 8, "\(width): clear of the first row")
+        }
     }
 
     // #967: the chosen tab is kept per Mac, in the one scene-storage string.

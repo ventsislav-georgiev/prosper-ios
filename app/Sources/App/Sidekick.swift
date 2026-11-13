@@ -270,6 +270,10 @@ struct SegmentPicker: UIViewRepresentable {
         c.selectedSegmentIndex = selection
     }
 
+    /// #1054: as a section header, edge to edge with the rows, not inset by the header's own margins
+    /// (as the Picker was); the header's 10 pt above and below kept.
+    var header: some View { listRowInsets(EdgeInsets(top: 10, leading: 0, bottom: 10, trailing: 0)) }
+
     /// The full width offered, as the Picker it replaces.
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UISegmentedControl, context: Context) -> CGSize? {
         let size = uiView.intrinsicContentSize
