@@ -355,6 +355,26 @@ final class TerminalMathTests: XCTestCase {
                        "- Open https://github.com/example/prosper-ios/actions/runs /39821438259/job/1234567 to see the failing run, then rerun it.")
     }
 
+    /// #1023: a selection starting mid-row measures its first row whole (`lead`, the row's
+    /// unselected start), so a token split at that row's end glues; from column 0, or from
+    /// the row's newline, nothing changes.
+    func testOneLineMeasuresAMidRowSelectionsFirstRowWhole() {
+        let rows = "  curl -o out https://example.com/abcdef\n  ghijklmnop/q.tgz && ls"
+        let at = { (col: Int) in String(rows.dropFirst(col)) }
+        let lead = { (col: Int) in String(rows.prefix(col)) }
+        XCTAssertEqual(TerminalMath.oneLine(at(10), cols: 40, lead: lead(10)),
+                       "out https://example.com/abcdefghijklmnop/q.tgz && ls")
+        XCTAssertEqual(TerminalMath.oneLine(at(22), cols: 40, lead: lead(22)),
+                       "example.com/abcdefghijklmnop/q.tgz && ls")
+        XCTAssertEqual(TerminalMath.oneLine(rows, cols: 40, lead: ""), TerminalMath.oneLine(rows, cols: 40))
+        XCTAssertEqual(TerminalMath.oneLine(rows, cols: 40), "curl -o out https://example.com/abcdefghijklmnop/q.tgz && ls")
+        XCTAssertEqual(TerminalMath.oneLine(at(40), cols: 40, lead: lead(40)), "ghijklmnop/q.tgz && ls")
+        // The box is the row's own (40 less its 2-column indent), not shrunk by the lead:
+        // two short words at the row break keep their space.
+        XCTAssertEqual(TerminalMath.oneLine("abc defghi\n  jklmn && ls", cols: 40, lead: "  echo one two three four fiv "),
+                       "abc defghi jklmn && ls")
+    }
+
     /// #1016: Claude Code (Ink) output as wrapped at one width and copied at another
     /// (rotation): the rows keep the width they were drawn at. Ink rows are hard newlines,
     /// so SwiftTerm's reflow leaves narrower rows alone and soft-wraps wider ones, which

@@ -49,7 +49,10 @@ enum TerminalMath {
     /// `widths`: every width the terminal had (#1016). A TUI's rows are hard newlines that
     /// keep the width they were drawn at, so rows drawn before a rotation fill that width,
     /// not cols. Ink never draws past its width, so only a width no row exceeds counts.
-    static func oneLine(_ text: String, cols: Int, widths: Set<Int> = []) -> String {
+    ///
+    /// `lead`: the first row's unselected start, when a selection begins mid-row (#1023).
+    /// The row is measured whole (fill, indent, last token) but only the selection is output.
+    static func oneLine(_ text: String, cols: Int, widths: Set<Int> = [], lead: String = "") -> String {
         var out = ""
         var glue = ""
         // The previous line filled its row: its last token's length and the wrap box
@@ -57,12 +60,15 @@ enum TerminalMath {
         // head is seen.
         var full: (tail: Int, box: Int)?
         // Display width counts the indent: the row is full, indent and all.
-        let rows = text.split(whereSeparator: \.isNewline).map { String($0.reversed().drop(while: \.isWhitespace).reversed()) }
+        var rows = text.split(whereSeparator: \.isNewline).map { String($0.reversed().drop(while: \.isWhitespace).reversed()) }
+        // #1023: a selection starting at a newline has no first-row piece; the lead is a row it left out.
+        let cut = text.first?.isNewline == false && !rows.isEmpty ? lead.count : 0
+        if cut > 0 { rows[0] = lead + rows[0] }
         let widest = rows.map(\.count).max() ?? 0
         let drawn = widths.filter { $0 >= widest }
-        for right in rows {
-            guard !right.isEmpty else { continue }
-            let line = right.drop(while: \.isWhitespace)
+        for (i, right) in rows.enumerated() {
+            let line = right.dropFirst(i == 0 ? cut : 0).drop(while: \.isWhitespace)
+            guard !line.isEmpty else { continue }
             if let f = full {
                 let head = line.prefix(while: { !$0.isWhitespace }).count
                 glue = f.tail + head > f.box ? "" : " "
@@ -89,7 +95,7 @@ enum TerminalMath {
             let fill = max(cols > 0 && right.count % cols == 0 ? cols : 0, drawn.contains(right.count) ? right.count : 0)
             if fill > 0 {
                 let tail = right.reversed().prefix(while: { !$0.isWhitespace }).count
-                full = (tail, fill - (right.count - line.count))
+                full = (tail, fill - (right.count - right.drop(while: \.isWhitespace).count))
             }
         }
         return out

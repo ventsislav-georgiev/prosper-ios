@@ -20,6 +20,8 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
     private var scrolled = false
     /// The last selection as selected, so the toggle can recompute or restore it.
     private var selection: String?
+    /// #1023: the selection's first row up to where the selection starts.
+    private var lead = ""
     private var oneLine = UserDefaults.standard.object(forKey: CopyTextVC.oneLineKey) as? Bool ?? true
     private lazy var oneLineItem: UIBarButtonItem = {
         let b = UIBarButtonItem(image: UIImage(systemName: "arrow.right.to.line"), style: .plain,
@@ -118,6 +120,9 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
         guard tv === source, tv.selectedRange.length > 0,
               let r = tv.selectedTextRange, let s = tv.text(in: r) else { return }
         selection = s
+        let ns = tv.text as NSString
+        let at = tv.selectedRange.location, row = ns.lineRange(for: NSRange(location: at, length: 0)).location
+        lead = ns.substring(with: NSRange(location: row, length: at - row))
         fillEditor()
     }
 
@@ -125,7 +130,7 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
     /// the raw selection, so toggling off restores it.
     private func fillEditor() {
         guard let selection else { return }
-        editor.text = oneLine ? TerminalMath.oneLine(selection, cols: cols, widths: widths) : selection
+        editor.text = oneLine ? TerminalMath.oneLine(selection, cols: cols, widths: widths, lead: lead) : selection
         sync()
     }
 
