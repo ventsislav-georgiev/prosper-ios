@@ -69,6 +69,32 @@ final class SidekickSplitTests: XCTestCase {
         XCTAssertFalse(DchSession.showsSidekicks(DchSession.split([], pattern: "-qa"), tab: true))
     }
 
+    // #967: an empty segment can't be chosen, so tapping "Sessions (0)" never writes the tab.
+
+    func testEmptySegmentNotChoosable() {
+        let all = DchSession.split([s("a-qa"), s("b-qa")], pattern: "-qa")
+        XCTAssertFalse(DchSession.choosable(all, tab: false))
+        XCTAssertTrue(DchSession.choosable(all, tab: true))
+        let both = DchSession.split([s("a"), s("a-qa")], pattern: "-qa")
+        XCTAssertTrue(DchSession.choosable(both, tab: false))
+        XCTAssertTrue(DchSession.choosable(both, tab: true))
+    }
+
+    // #967: the chosen tab is kept per Mac, in the one scene-storage string.
+
+    func testTabPerMachine() {
+        var stored = ""
+        stored = DchSession.sidekickTab(stored, machine: "A", set: true)
+        XCTAssertTrue(DchSession.sidekickTab(stored, machine: "A"))
+        XCTAssertFalse(DchSession.sidekickTab(stored, machine: "B"))
+        stored = DchSession.sidekickTab(stored, machine: "B", set: true)
+        stored = DchSession.sidekickTab(stored, machine: "A", set: false)
+        XCTAssertFalse(DchSession.sidekickTab(stored, machine: "A"))
+        XCTAssertTrue(DchSession.sidekickTab(stored, machine: "B"))
+        XCTAssertEqual(DchSession.sidekickTab(stored, machine: "B", set: true), stored)   // no duplicate
+        XCTAssertEqual(DchSession.sidekickTab(stored, machine: "B", set: false), "")
+    }
+
     // #761: the pattern is a case-insensitive ICU regex, searched, in the name and the alias.
 
     func testRegexAlternation() {

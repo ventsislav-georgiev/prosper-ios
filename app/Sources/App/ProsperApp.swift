@@ -382,14 +382,21 @@ struct SessionListView: View {
     @State private var showingChat = false         // #646: the ⋯ menu's Chat sheet
     @State private var showingCommands = false     // #615: the ⋯ menu's Commands sheet
     // The Sidekicks segment is chosen. Scene storage, so the list an alert or Live Activity
-    // rebuilds (a new `.id`) comes back on the same tab.
-    @SceneStorage("sessions.sidekickTab") private var sidekickTab = false
+    // rebuilds (a new `.id`) comes back on the same tab. #967: per Mac, as the ids on Sidekicks.
+    @SceneStorage("sessions.sidekickTabs") private var sidekickTabs = ""
     @AppStorage(DchSession.sidekickKey) private var sidekickPattern = DchSession.sidekickDefault
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var typeSize
 
     // Live store snapshot so the badge tracks cachedWake after handshake (the `machine`
     // prop is a stale value-type copy captured at navigation time).
+    /// #967: this Mac's chosen tab; the demo list keys as "demo".
+    private var tabKey: String { machine?.id.uuidString ?? "demo" }
+    private var sidekickTab: Bool {
+        get { DchSession.sidekickTab(sidekickTabs, machine: tabKey) }
+        nonmutating set { sidekickTabs = DchSession.sidekickTab(sidekickTabs, machine: tabKey, set: newValue) }
+    }
+
     private var liveMachine: Machine? {
         guard let id = machine?.id else { return nil }
         return store.machines.first { $0.id == id }
@@ -452,8 +459,12 @@ struct SessionListView: View {
                 Section {
                     ForEach(shows ? split.sidekicks : split.primary) { s in row(s) }
                 } header: {
-                    Picker("Sessions", selection: Binding(get: { shows }, set: { sidekickTab = $0 })) {
+                    // #967: an empty segment is dimmed and can't be chosen, so it never writes the tab.
+                    Picker("Sessions", selection: Binding(get: { shows }, set: {
+                        if DchSession.choosable(split, tab: $0) { sidekickTab = $0 }
+                    })) {
                         Text("Sessions (\(split.primary.count))").tag(false)
+                            .disabled(!DchSession.choosable(split, tab: false))
                         Text("Sidekicks (\(split.sidekicks.count))").tag(true)
                     }
                     .pickerStyle(.segmented)
@@ -980,6 +991,22 @@ extension DchSession {
     /// there is (an empty Sessions tab reads as a Mac with no sessions), else the chosen tab.
     static func showsSidekicks(_ split: (primary: [DchSession], sidekicks: [DchSession]), tab: Bool) -> Bool {
         !split.sidekicks.isEmpty && (tab || split.primary.isEmpty)
+    }
+
+    /// #967: a segment with no sessions can't be chosen.
+    static func choosable(_ split: (primary: [DchSession], sidekicks: [DchSession]), tab: Bool) -> Bool {
+        !(tab ? split.sidekicks : split.primary).isEmpty
+    }
+
+    /// #967: the Sidekicks tab is chosen per Mac; `stored` is the comma-separated ids on it.
+    static func sidekickTab(_ stored: String, machine: String) -> Bool {
+        stored.split(separator: ",").contains { $0 == machine }
+    }
+
+    static func sidekickTab(_ stored: String, machine: String, set on: Bool) -> String {
+        var ids = stored.split(separator: ",").map(String.init).filter { $0 != machine }
+        if on { ids.append(machine) }
+        return ids.joined(separator: ",")
     }
 }
 
