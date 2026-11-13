@@ -173,7 +173,7 @@ final class CopyViewTests: XCTestCase {
         check(on: true)
         XCTAssertEqual(done.style, .done)
         // #1018: white checkmark on the system blue fill, in both contrast modes.
-        XCTAssertEqual(done.tintColor, .systemBlue)
+        XCTAssertEqual(done.tintColor, CopyTextVC.doneFill)
         XCTAssertEqual(done.image?.renderingMode, .alwaysOriginal)
         XCTAssertEqual(done.accessibilityLabel, "Done")
         XCTAssertNotEqual(item.style, done.style)
@@ -181,5 +181,27 @@ final class CopyViewTests: XCTestCase {
         check(on: false)
         tap()
         check(on: true)
+    }
+
+    /// #1018: white on Done's fill passes WCAG in light and dark, normal (3:1, large
+    /// glyph) and Increase Contrast (4.5:1), where dark systemBlue turns light.
+    @MainActor
+    func testDoneFillKeepsWhiteReadable() {
+        func lum(_ c: UIColor) -> CGFloat {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            c.getRed(&r, green: &g, blue: &b, alpha: &a)
+            let f = { (v: CGFloat) in v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+            return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+        }
+        for style in [UIUserInterfaceStyle.light, .dark] {
+            for contrast in [UIAccessibilityContrast.normal, .high] {
+                let t = UITraitCollection(traitsFrom: [UITraitCollection(userInterfaceStyle: style),
+                                                         UITraitCollection(accessibilityContrast: contrast)])
+                let fill = CopyTextVC.doneFill.resolvedColor(with: t)
+                let ratio = 1.05 / (lum(fill) + 0.05)
+                print("#1018 style=\(style.rawValue) contrast=\(contrast.rawValue) fill=\(fill) ratio=\(ratio)")
+                XCTAssertGreaterThanOrEqual(ratio, contrast == .high ? 4.5 : 3, "\(style.rawValue)/\(contrast.rawValue)")
+            }
+        }
     }
 }

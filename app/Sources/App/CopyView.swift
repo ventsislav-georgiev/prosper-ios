@@ -34,10 +34,16 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
 
     // #1018: the system Done glyph read light cyan on blue (black under Increase
     // Contrast); pin a white checkmark on the system blue fill.
+    // #1018: dark-mode high-contrast systemBlue is light; use the light-mode one there.
+    static let doneFill = UIColor { t in
+        guard t.accessibilityContrast == .high else { return .systemBlue.resolvedColor(with: t) }
+        return .systemBlue.resolvedColor(with: UITraitCollection(traitsFrom: [t, UITraitCollection(userInterfaceStyle: .light)]))
+    }
+
     private lazy var doneItem: UIBarButtonItem = {
         let glyph = UIImage(systemName: "checkmark")?.withTintColor(.white, renderingMode: .alwaysOriginal)
         let b = UIBarButtonItem(image: glyph, style: .done, target: self, action: #selector(done))
-        b.tintColor = .systemBlue
+        b.tintColor = CopyTextVC.doneFill
         b.accessibilityLabel = "Done"
         return b
     }()
