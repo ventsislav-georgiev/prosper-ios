@@ -2123,6 +2123,16 @@ final class SuggestionBar: UIView {
         refresh()
     }
 
+    /// The app's Keyboard settings for the bar and its attached keyboard, as the extension's
+    /// controller reads them (#958). Without Full Access the group is out of reach: the defaults.
+    @discardableResult
+    func loadSettings(fullAccess: Bool) -> KeyboardSettings {
+        let settings = KeyboardSettings.current(fullAccess: fullAccess)
+        keyboard?.settings = settings
+        suggestions.settings = settings
+        return settings
+    }
+
     /// Suggest for `keyboard`'s target: its keys go through `Suggestions.willPress` and
     /// refresh the bar, as its trackpad's caret moves do (`caretMoved`); learned words and
     /// names join its touch correction.

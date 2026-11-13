@@ -60,7 +60,7 @@ final class KeyboardViewController: UIInputViewController {
         bar.quicklinks = QuicklinkStore.shared()
         bar.commandStore = CommandStore.shared()   // #735
         // The stored settings before attach's first refresh: Save Copies is on by default (#601).
-        bar.suggestions.settings = KeyboardSettings.current(fullAccess: hasFullAccess)
+        bar.loadSettings(fullAccess: hasFullAccess)   // not attached yet: the bar's alone
         // The memory's store before attach's first refresh too: the clips auto-save checks (#659).
         bar.suggestions.memory.reload(shared: bar.shared())
         // iOS 26's speech engines only; the app has no fallback below it.
@@ -90,10 +90,8 @@ final class KeyboardViewController: UIInputViewController {
     /// the keyboard shows. Without Full Access the group is out of reach: the defaults.
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        let settings = KeyboardSettings.current(fullAccess: hasFullAccess)
-        keyboard.settings = settings
+        let settings = bar.loadSettings(fullAccess: hasFullAccess)   // the keys' and the bar's (#958)
         keyboard.fullAccess = hasFullAccess   // the emoji recents' store (#629)
-        bar.suggestions.settings = settings
         let languages = KeyboardSettings.languages(fixed: Self.fixed, main: Self.main, settings: settings,
                                                    fullAccess: hasFullAccess)
         keyboard.languages = languages.all

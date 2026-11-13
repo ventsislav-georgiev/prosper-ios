@@ -667,6 +667,33 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertEqual(KeyboardSettings.current(), KeyboardSettings(), "no suite")
     }
 
+    /// The controller's load (#958): with Full Access what the app wrote, into the bar and,
+    /// once attached, its keys; without it the defaults in both, whatever the group holds.
+    func testLoadSettingsGivesTheKeysAndTheBarTheGatedSettings() throws {
+        let saved = KeyboardSettings.store
+        let suite = "KeyboardSettings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        KeyboardSettings.store = { defaults }
+        defer { KeyboardSettings.store = saved; defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: KeyboardSettings.Key.saveCopies)
+        defaults.set("large", forKey: KeyboardSettings.Key.keySize)
+        let stored = KeyboardSettings(defaults)
+        XCTAssertNotEqual(stored, KeyboardSettings())
+        let kb = TerminalKeyboard()
+        let bar = SuggestionBar(suggestions: Suggestions(memory: TypingMemory(defaults: defaults), layout: .english))
+
+        XCTAssertEqual(bar.loadSettings(fullAccess: true), stored)
+        XCTAssertEqual(bar.suggestions.settings, stored, "viewDidLoad's: the bar's before attach")
+        bar.attach(kb)
+        XCTAssertEqual(bar.loadSettings(fullAccess: true), stored)
+        XCTAssertEqual(kb.settings, stored, "viewWillAppear's: the keys'")
+        XCTAssertEqual(bar.suggestions.settings, stored)
+
+        XCTAssertEqual(bar.loadSettings(fullAccess: false), KeyboardSettings(), "no Full Access: the defaults")
+        XCTAssertEqual(kb.settings, KeyboardSettings())
+        XCTAssertEqual(bar.suggestions.settings, KeyboardSettings())
+    }
+
     // MARK: Keys beside space
 
     /// Settings' order and hidden keys make the bottom row: every key once, unknown ones
