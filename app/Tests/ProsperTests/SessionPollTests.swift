@@ -196,6 +196,32 @@ final class SessionPollTests: XCTestCase {
         XCTAssertEqual(r.applied, [[a]], "the list that landed after the cancel is dropped")
         XCTAssertEqual(r.waits, [5])
     }
+
+    /// #1028: a refresh 3.8 s into a 5 s wait lists; the poll then waits until 5 s after that
+    /// list, not 1.2 s later. A list from before the wait (the poll's own) re-arms nothing.
+    @MainActor
+    func testAListInTheWaitPushesTheNextPollAFullWaitLater() async {
+        let mac = ScriptedMac([.success([a]), .success([a]), .success([a])])
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        let clock = Box(t0), listedAt = Box<Date?>(nil), waits = Box([TimeInterval]()), polledAt = Box([TimeInterval]())
+        await Task { @MainActor in
+            await SessionPoll.run(mac, mode: .live, first: nil, shown: { [a] }, ready: { true },
+                                  apply: { _ in listedAt.v = clock.v; polledAt.v.append(clock.v.timeIntervalSince(t0)) },
+                                  refused: { _ in }, listedAt: { listedAt.v }, now: { clock.v },
+                                  sleep: { wait in
+                                      waits.v.append(wait)
+                                      if waits.v.count == 1 { listedAt.v = clock.v + 3.8 }   // the refresh
+                                      clock.v += wait
+                                      if waits.v.count >= 4 { withUnsafeCurrentTask { $0?.cancel() } }
+                                  })
+        }.value
+        XCTAssertEqual(waits.v.count, 4)
+        XCTAssertEqual(waits.v[0], 5)
+        XCTAssertEqual(waits.v[1], 3.8, accuracy: 0.001, "the rest of a full wait from the refresh")
+        XCTAssertEqual(polledAt.v.count, 3)
+        XCTAssertEqual(polledAt.v[1], 8.8, accuracy: 0.001, "the next list 5 s after the refresh's, not 1.2 s")
+        XCTAssertEqual(Array(waits.v[2...]), [10, 20], "the backoff goes on as before")
+    }
 }
 
 /// #964: a Mac that answers each list from a script and counts them; it cancels the polling

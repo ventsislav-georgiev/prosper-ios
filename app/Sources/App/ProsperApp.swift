@@ -739,7 +739,7 @@ struct SessionListView: View {
                               shown: { sessions }, ready: { unreachable == nil && error == nil && !loading },
                               apply: show, refused: { error = $0.localizedDescription }, listed: {
             if mode == .live, let due = watchRetry, Date() >= due { await recheckWatch() }
-        })
+        }, listedAt: { listedAt })
     }
 
     private func commitRename(_ alias: String) {

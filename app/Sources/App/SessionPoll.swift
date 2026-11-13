@@ -63,16 +63,27 @@ enum SessionPoll {
     /// #964: the poll loop, until cancelled. `first` is the wait before the first list (nil: at
     /// once); `shown` the list on screen, which the first poll compares against; `ready` false
     /// skips a poll; `refused` gets a refusal's error; `listed` runs after each list is applied.
-    /// `sleep` is the wait itself, settable for tests.
+    /// `sleep` is the wait itself, settable for tests. #1028: `listedAt` the screen's last list,
+    /// by `now`: one that lands in a wait (a refresh) pushes the next poll a full wait after it.
     @MainActor
     static func run(_ t: SessionTransport, mode: UpdateMode, first: TimeInterval?, shown: () -> [DchSession],
                     ready: () -> Bool, apply: ([DchSession]) -> Void, refused: (TransportError) -> Void,
-                    listed: () async -> Void = {},
+                    listed: () async -> Void = {}, listedAt: () -> Date? = { nil }, now: () -> Date = Date.init,
                     sleep: (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }) async {
         var wait = first
         var last: [DchSession]? = nil   // #774: read `shown` at the first poll, after refresh()
         while !Task.isCancelled {
-            if let wait { await sleep(wait) }
+            if let wait {
+                var from = now()
+                await sleep(wait)
+                // #1028: a list landed in the wait: the rest of a full wait from that list.
+                while !Task.isCancelled, let at = listedAt(), at > from {
+                    from = now()
+                    let rest = wait - from.timeIntervalSince(at)
+                    guard rest > 0 else { break }
+                    await sleep(rest)
+                }
+            }
             guard !Task.isCancelled else { return }   // cancelled in the wait: no request
             guard ready() else {
                 wait = next(after: wait, changed: false, mode: mode)
