@@ -52,7 +52,9 @@ enum TerminalMath {
     ///
     /// `lead`: the first row's unselected start, when a selection begins mid-row (#1023).
     /// The row is measured whole (fill, indent, last token) but only the selection is output.
-    static func oneLine(_ text: String, cols: Int, widths: Set<Int> = [], lead: String = "") -> String {
+    /// `trail`: the last row's unselected rest, when a selection ends mid-row (#1053); its
+    /// head token is measured whole against the row above.
+    static func oneLine(_ text: String, cols: Int, widths: Set<Int> = [], lead: String = "", trail: String = "") -> String {
         var out = ""
         var glue = ""
         // The previous line filled its row: its last token's length and the wrap box
@@ -60,17 +62,22 @@ enum TerminalMath {
         // head is seen.
         var full: (tail: Int, box: Int)?
         // Display width counts the indent: the row is full, indent and all.
-        var rows = text.split(whereSeparator: \.isNewline).map { String($0.reversed().drop(while: \.isWhitespace).reversed()) }
+        let trim = { (s: Substring) in String(s.reversed().drop(while: \.isWhitespace).reversed()) }
+        let split = text.split(whereSeparator: \.isNewline)
+        var rows = split.map(trim)
         // #1023: a selection starting at a newline has no first-row piece; the lead is a row it left out.
         let cut = text.first?.isNewline == false && !rows.isEmpty ? lead.count : 0
         if cut > 0 { rows[0] = lead + rows[0] }
-        let widest = rows.map(\.count).max() ?? 0
+        // #1053: likewise at the end: the last row whole, for its head and the widest row.
+        let whole = text.last?.isNewline == false && !trail.isEmpty
+            ? split.last.map { trim(Substring((rows.count == 1 && cut > 0 ? lead : "") + $0 + trail)) } : nil
+        let widest = max(rows.map(\.count).max() ?? 0, whole?.count ?? 0)
         let drawn = widths.filter { $0 >= widest }
         for (i, right) in rows.enumerated() {
             let line = right.dropFirst(i == 0 ? cut : 0).drop(while: \.isWhitespace)
             guard !line.isEmpty else { continue }
             if let f = full {
-                let head = line.prefix(while: { !$0.isWhitespace }).count
+                let head = (i == rows.count - 1 ? whole?.drop(while: \.isWhitespace) ?? line : line).prefix(while: { !$0.isWhitespace }).count
                 glue = f.tail + head > f.box ? "" : " "
             }
             out += glue + line

@@ -375,6 +375,32 @@ final class TerminalMathTests: XCTestCase {
                        "abc defghi jklmn && ls")
     }
 
+    /// #1053: a selection ending mid-row measures its last row's head whole (`trail`, the
+    /// row's unselected rest), so a token split at the row above glues; a real space at the
+    /// wrap stays, and a selection ending at a newline or on its first row is unchanged.
+    func testOneLineMeasuresAMidRowSelectionsLastRowWhole() {
+        let rows = "  curl -o out https://example.com/abcdef\n  ghijklmnop/q.tgz && ls"
+        let upTo = { (n: Int) in String(rows.prefix(n)) }
+        let trail = { (n: Int) in String(rows.dropFirst(n)) }
+        let kn = 41 + 7   // just after "ghijk"
+        XCTAssertEqual(TerminalMath.oneLine(upTo(kn), cols: 40, trail: trail(kn)),
+                       "curl -o out https://example.com/abcdefghijk")
+        XCTAssertEqual(TerminalMath.oneLine(upTo(kn + 12), cols: 40, trail: trail(kn + 12)),
+                       "curl -o out https://example.com/abcdefghijklmnop/q.tgz")
+        // Lead and trail together.
+        XCTAssertEqual(TerminalMath.oneLine(String(upTo(kn).dropFirst(10)), cols: 40, lead: upTo(10), trail: trail(kn)),
+                       "out https://example.com/abcdefghijk")
+        // Ending at the row's newline: the trail is a row the selection left out.
+        XCTAssertEqual(TerminalMath.oneLine(upTo(41), cols: 40, trail: "  ghijklmnop/q.tgz && ls"),
+                       "curl -o out https://example.com/abcdef")
+        // A single row: only the selection comes out.
+        XCTAssertEqual(TerminalMath.oneLine("example.com/ab", cols: 40, lead: upTo(22), trail: "cdef"), "example.com/ab")
+        XCTAssertEqual(TerminalMath.oneLine("  curl -o", cols: 40, trail: " out https://example.com/abcdef"), "curl -o")
+        // A real space at the wrap is kept when the selection ends mid-word.
+        XCTAssertEqual(TerminalMath.oneLine("abc defghi\n  jkl", cols: 40, lead: "  echo one two three four fiv ", trail: "mn && ls"),
+                       "abc defghi jkl")
+    }
+
     /// #1016: Claude Code (Ink) output as wrapped at one width and copied at another
     /// (rotation): the rows keep the width they were drawn at. Ink rows are hard newlines,
     /// so SwiftTerm's reflow leaves narrower rows alone and soft-wraps wider ones, which

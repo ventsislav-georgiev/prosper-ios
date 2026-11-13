@@ -98,6 +98,27 @@ final class CopyViewTests: XCTestCase {
         XCTAssertEqual(editor.text, "out https://example.com/abcdefghijklmnop/q.tgz && ls")
     }
 
+    /// #1053: a selection ending mid-row hands oneLine the row's unselected rest, so a URL
+    /// split at the row above stays whole up to where the selection ends.
+    @MainActor
+    func testOneLineMeasuresASelectionEndingMidRowByItsRow() throws {
+        let saved = UserDefaults.standard.object(forKey: CopyTextVC.oneLineKey)
+        defer { UserDefaults.standard.set(saved, forKey: CopyTextVC.oneLineKey) }
+        UserDefaults.standard.set(true, forKey: CopyTextVC.oneLineKey)
+
+        let raw = "$ ls\n  curl -o out https://example.com/abcdef\n  ghijklmnop/q.tgz && ls\n$ "
+        let vc = CopyTextVC(text: raw, cols: 40)
+        let win = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 700))
+        win.rootViewController = UINavigationController(rootViewController: vc)
+        win.isHidden = false
+        win.layoutIfNeeded()
+        let views = vc.view.subviews.compactMap { $0 as? UITextView }
+        let (source, editor) = (views[0], views[1])
+        source.selectedRange = NSRange(location: 5, length: 41 + 7)
+        vc.textViewDidChangeSelection(source)
+        XCTAssertEqual(editor.text, "curl -o out https://example.com/abcdefghijk")
+    }
+
     /// #459: never toggled, One line starts on, so a selected wrapped command lands in
     /// the editor (the clipboard) already joined.
     @MainActor
