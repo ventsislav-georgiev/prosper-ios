@@ -354,7 +354,7 @@ final class ShortcutBar: UIView {
     private let keys: () -> [ShortcutKey]
     private let oneRow: Bool
     /// `oneRow` in two rows (Numbers: Key, #625): the keys split where the longer row is
-    /// shortest (`balancedSplit`), each row filled to the bar's width (#636).
+    /// shortest (`balancedSplit`), both rows on one grid filled to the bar's width (#636, #962).
     var twoRows = false { didSet { if twoRows != oldValue { arrangedWidth = -1; setNeedsLayout() } } }
     private var arrangedWidth: CGFloat = -1     // width the caps were last split for
     /// The bar's height IS its row count, so the owner never needs a number: flipping
@@ -416,16 +416,41 @@ final class ShortcutBar: UIView {
                                                  spacing: Self.spacing) : items.count
             for (i, item) in items.enumerated() { rows[i < k ? 0 : 1].addArrangedSubview(item) }
             rows[1].isHidden = k == items.count
-            for row in rows {
-                let caps = row.arrangedSubviews.compactMap { $0 as? KeyCapButton }
-                let natural = caps.map(\.naturalWidth)
-                let fixed = CGFloat(row.arrangedSubviews.count - caps.count)   // the Paste caps
-                let available = bounds.width - 16 - fixed * (44 + Self.spacing)
-                let span = natural.reduce(0, +) + Self.spacing * CGFloat(max(0, caps.count - 1))
-                let cols = span <= available && !twoRows ? natural : Self.filled(natural, spacing: Self.spacing,
-                    available: available, minScale: narrow ? min(Self.minRowScale, Self.paddingFloor(natural)) : Self.minRowScale,
-                    pixel: 1 / max(1, traitCollection.displayScale))
-                for (cap, w) in zip(caps, cols) { cap.columnWidth = w }
+            let pixel = 1 / max(1, traitCollection.displayScale)
+            if twoRows, k < items.count {
+                // #962: one grid for both rows (`columnWidths`, as the terminal bar's), so the seams
+                // line up; each row filled on its own put them apart. A Paste column keeps its width.
+                let split = [Array(items[..<k]), Array(items[k...])]
+                let natural = split.map { $0.map { ($0 as? KeyCapButton)?.naturalWidth ?? 44 } }
+                let grid = Self.columnWidths(top: natural[0], bottom: natural[1])
+                let fixed = Set(split.flatMap { row in row.indices.filter { !(row[$0] is KeyCapButton) } })
+                let free = grid.indices.filter { !fixed.contains($0) }.map { grid[$0] }
+                let available = bounds.width - 16 - fixed.map { grid[$0] + Self.spacing }.reduce(0, +)
+                var scaled = Self.filled(free, spacing: Self.spacing, available: available,
+                    minScale: narrow ? min(Self.minRowScale, Self.paddingFloor(free)) : Self.minRowScale, pixel: pixel)[...]
+                let cols = grid.indices.map { fixed.contains($0) ? grid[$0] : scaled.popFirst()! }
+                for (r, row) in split.enumerated() {
+                    for (i, item) in row.enumerated() {
+                        // The shorter row's last cap spans the longer row's remaining columns: every
+                        // seam lines up with one above or below, and both rows span the bar.
+                        let w = i == row.count - 1 ? cols[i...].reduce(0, +) + Self.spacing * CGFloat(cols.count - 1 - i) : cols[i]
+                        if let cap = item as? KeyCapButton { cap.columnWidth = w }
+                        else { rows[r].setCustomSpacing(Self.spacing + cols[i] - 44, after: item) }   // the Paste cap's gap
+                    }
+                }
+            } else {
+                for row in rows {
+                    let caps = row.arrangedSubviews.compactMap { $0 as? KeyCapButton }
+                    let natural = caps.map(\.naturalWidth)
+                    let fixed = CGFloat(row.arrangedSubviews.count - caps.count)   // the Paste caps
+                    let available = bounds.width - 16 - fixed * (44 + Self.spacing)
+                    let span = natural.reduce(0, +) + Self.spacing * CGFloat(max(0, caps.count - 1))
+                    let cols = span <= available && !twoRows ? natural : Self.filled(natural, spacing: Self.spacing,
+                        available: available, minScale: narrow ? min(Self.minRowScale, Self.paddingFloor(natural)) : Self.minRowScale,
+                        pixel: 1 / max(1, traitCollection.displayScale))
+                    for (cap, w) in zip(caps, cols) { cap.columnWidth = w }
+                }
+                for item in items where !(item is KeyCapButton) { rows[0].setCustomSpacing(Self.spacing, after: item) }
             }
         }
         if bounds.width != arrangedWidth, !oneRow {

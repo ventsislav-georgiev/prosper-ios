@@ -600,6 +600,56 @@ final class ShortcutCapTests: XCTestCase {
         for c in Self.caps(long) { XCTAssertEqual(c.frame.width, c.naturalWidth, accuracy: 0.01, "width change re-fits") }
     }
 
+    /// #962: a two-row toolbar or terminal bar is one grid: every seam between two caps (a cap's
+    /// left edge, and the row's right end) lines up with one in the other row, within a pixel.
+    /// The toolbar's rows were filled each on its own, their seams apart. 320 pt still fits (#953).
+    @MainActor
+    func testTwoRowSeamsLineUp() throws {
+        let bars: [(String, [ShortcutKey], Bool)] = [("toolbar", Shortcuts.Bar.toolbar.defaults, true),
+                                                    ("toolbar+paste", Shortcuts.Bar.arrowsToolbar, true), ("toolbar 7", Array(Shortcuts.Bar.toolbar.defaults.prefix(7)), true),
+                                                    ("terminal", Shortcuts.defaults, false)]
+        for (name, keys, toolbar) in bars {
+            for width: CGFloat in [320, 375, 402] {
+                let label = "\(name) \(width)"
+                let bar = ShortcutBar(keys: { keys }, oneRow: toolbar)
+                bar.frame = CGRect(x: 0, y: 0, width: toolbar ? width - 43 : width, height: 86)   // right of the toggle
+                let window = UIWindow(frame: CGRect(x: 0, y: 0, width: width, height: 200))
+                window.addSubview(bar)
+                window.isHidden = false
+                defer { window.isHidden = true }
+                if toolbar { bar.twoRows = true }
+                bar.layoutIfNeeded()
+                let pixel = 1 / max(1, bar.traitCollection.displayScale)
+                let rows = Set(Self.caps(bar).compactMap { $0.superview as? UIStackView }).sorted { $0.frame.minY < $1.frame.minY }
+                XCTAssertEqual(rows.count, 2, label)
+                guard rows.count == 2 else { continue }
+                let frames = rows.map { $0.arrangedSubviews.map { $0.convert($0.bounds, to: bar) } }
+                func seams(_ f: [CGRect]) -> [CGFloat] { f.dropFirst().map(\.minX) + [f.last?.maxX ?? 0] }
+                let (top, bottom) = (seams(frames[0]), seams(frames[1]))
+                let line = "\(label): top \(frames[0].map { "\($0.minX)+\($0.width)" }) bottom \(frames[1].map { "\($0.minX)+\($0.width)" })"
+                print("962-seams", line)
+                let (short, long) = top.count <= bottom.count ? (top, bottom) : (bottom, top)
+                for (i, x) in short.enumerated() {
+                    if top.count == bottom.count { XCTAssertEqual(x, long[i], accuracy: pixel + 0.001, "seam \(i), \(line)") }
+                    XCTAssertTrue(long.contains { abs($0 - x) <= pixel + 0.001 }, "seam \(i) has no partner, \(line)")
+                }
+                let sv = try XCTUnwrap(rows[0].superview?.superview as? UIScrollView)
+                XCTAssertLessThanOrEqual(sv.contentSize.width, sv.bounds.width + 0.01, "\(label): scrolls")
+                for c in Self.caps(bar) {
+                    if let t = c.titleLabel, !(t.text ?? "").isEmpty {
+                        XCTAssertLessThanOrEqual(t.intrinsicContentSize.width, t.bounds.width + 0.5, "\(label): \(t.text ?? "") truncates")
+                    }
+                }
+                if let dir = ProcessInfo.processInfo.environment["RENDER_962"], width == 375 {
+                    let format = UIGraphicsImageRendererFormat()
+                    format.scale = 3
+                    let shot = UIGraphicsImageRenderer(bounds: bar.bounds, format: format).image { bar.layer.render(in: $0.cgContext) }
+                    try shot.pngData()?.write(to: URL(fileURLWithPath: dir).appendingPathComponent("seams-\(name)-375.png"))
+                }
+            }
+        }
+    }
+
     func testPasteImageGlyphIsPortrait() throws {
         let name = try XCTUnwrap(try key("pasteImg").systemImage)
         let cfg = UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
