@@ -86,6 +86,77 @@ final class PromptCopyTests: XCTestCase {
         XCTAssertNil(vc.shellPrompt)
     }
 
+    /// The screen row `r` shows, one cell in.
+    private func rowPoint(_ tv: TerminalView, _ r: Int) -> CGPoint {
+        CGPoint(x: 1.5 * tv.caretFrame.width, y: tv.contentOffset.y + (CGFloat(r) + 0.5) * tv.caretFrame.height)
+    }
+
+    /// The screen row whose text starts with `prefix`.
+    private func row(_ tv: TerminalView, _ prefix: String) throws -> Int {
+        let term = tv.getTerminal()
+        return try XCTUnwrap((0..<term.rows).first { term.getLine(row: $0)?.translateToString(trimRight: true).hasPrefix(prefix) == true }, prefix)
+    }
+
+    /// #977: a hold on a zsh prompt row took the whole non-blank run: the command, its output and
+    /// the next prompt, one line. Now the command alone, its soft wrap glued, the prompts out;
+    /// output and the prompt rows next to it each copy on their own.
+    func testLongPressOnAPromptRowCopiesItsCommandOnly() async throws {
+        let (vc, tv, pb) = try await makeVC()
+        let cols = tv.getTerminal().cols
+        prompt(tv)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        vc.send(source: tv, data: [0x63])   // learns the left prompt
+        tv.feed(text: "\u{1b}[Kcd /tmp\r\n")   // no output: the next prompt is right under it
+        prompt(tv)
+        // soft-wraps mid-word: "…xxlo" | "ng-tail"
+        let long = "echo " + String(repeating: "x", count: cols - 21) + "long-tail"
+        tv.feed(text: "\u{1b}[K" + long + "\r\nfile-one  file-two\r\nfile-three\r\n")
+        prompt(tv)
+        tv.feed(text: "\u{1b}[Kls")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let echo = try row(tv, "user@host ~ % echo")
+        XCTAssertEqual(tv.getTerminal().getLine(row: echo + 1)?.isWrapped, true, "precondition: the command soft-wraps")
+
+        for (r, want) in [(echo, long), (echo + 1, long), (try row(tv, "user@host ~ % cd"), "cd /tmp"),
+                          (try row(tv, "user@host ~ % ls"), "ls"), (echo + 2, "file-one  file-two file-three"),
+                          (echo + 3, "file-one  file-two file-three")] {
+            pb.string = "none"
+            vc.copyLine(at: rowPoint(tv, r))
+            XCTAssertEqual(pb.string, want, "hold on row \(r)")
+        }
+    }
+
+    /// A learned prompt can be a TUI's (Claude Code's "> "): a row indented under it is that TUI's
+    /// wrapped message, and the hold still joins it, as before #977.
+    func testALearnedPromptWithAnIndentedRowUnderItStaysJoined() async throws {
+        let (vc, tv, pb) = try await makeVC()
+        tv.feed(text: "> ")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        vc.send(source: tv, data: [0x61])
+        XCTAssertEqual(vc.shellPrompt, "> ")
+        tv.feed(text: "\r\n\r\n> fix the wrapped\r\n  message please\r\n\r\n> one row\r\nout\r\n")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        for (r, want) in [(try row(tv, "> fix"), "> fix the wrapped message please"), (try row(tv, "> one"), "one row")] {
+            pb.string = "none"
+            vc.copyLine(at: rowPoint(tv, r))
+            XCTAssertEqual(pb.string, want, "hold on row \(r)")
+        }
+    }
+
+    /// The same with OSC 133 marks and no learned prompt.
+    func testLongPressOnAnOSC133PromptRowCopiesItsCommandOnly() async throws {
+        let (vc, tv, pb) = try await makeVC()
+        let p = "\u{1b}]133;A\u{7}$ \u{1b}]133;B\u{7}"
+        tv.feed(text: p + "make\r\n\u{1b}]133;C\u{7}built\r\n" + p + "true\r\n" + p)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let make = try row(tv, "$ make")
+        for (r, want) in [(make, "make"), (make + 1, "built"), (make + 2, "true")] {
+            pb.string = "none"
+            vc.copyLine(at: rowPoint(tv, r))
+            XCTAssertEqual(pb.string, want, "hold on row \(r)")
+        }
+    }
+
     /// A shell that marks its prompts (OSC 133 A, B) gets them dropped by both copies, the
     /// long press on the prompt row too.
     func testOSC133PromptCellsStayOutOfBothCopies() async throws {

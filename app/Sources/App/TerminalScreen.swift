@@ -800,7 +800,18 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// went. #976: the shell's prompts stay out (`TerminalMath.promptCommand`, `shellPrompt`).
     func copyCaretLine(cut: Bool = false) {
         let term = tv.getTerminal()
-        var i = cell(at: CGPoint(x: 0, y: tv.caretFrame.midY), term).line + term.buffer.totalLinesTrimmed
+        let text = shellLine(cell(at: CGPoint(x: 0, y: tv.caretFrame.midY), term).line + term.buffer.totalLinesTrimmed)
+        guard !text.isEmpty else { return }
+        pasteboard.string = text
+        history?.record(text, from: pasteboard)
+        ClipboardSync.kick()   // #621
+        showToast((cut ? "Cut line\n" : "Copied line\n") + (text.count > 60 ? String(text.prefix(60)) + "…" : text))
+    }
+
+    /// The shell line through scroll-invariant row `row`: its soft wraps joined, its prompts out.
+    private func shellLine(_ row: Int) -> String {
+        let term = tv.getTerminal()
+        var i = row
         while term.getScrollInvariantLine(row: i)?.isWrapped == true { i -= 1 }
         let start = i
         var text = ""
@@ -810,12 +821,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         } while term.getScrollInvariantLine(row: i)?.isWrapped == true
         // #976: zsh shows no right prompt on a wrapped line, so only a lone row can carry one.
         let edge = i - start == 1 && (term.getScrollInvariantLine(row: start)?.getTrimmedLength() ?? 0) >= term.cols - 1
-        text = TerminalMath.promptCommand(text, prompt: shellPrompt, atEdge: edge)
-        guard !text.isEmpty else { return }
-        pasteboard.string = text
-        history?.record(text, from: pasteboard)
-        ClipboardSync.kick()   // #621
-        showToast((cut ? "Cut line\n" : "Copied line\n") + (text.count > 60 ? String(text.prefix(60)) + "…" : text))
+        return TerminalMath.promptCommand(text, prompt: shellPrompt, atEdge: edge)
     }
 
     /// #976: the shell's left prompt, as the text left of the caret when a typed key first goes
@@ -1042,19 +1048,31 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // glue: that wrap falls at any column, mid-word too, so oneLine's word-wrap rule
         // must never see it as a row break (QA #287).
         var rows: [String] = []
+        // #977: a shell's prompt rows (OSC 133 marks them, or they start with the learned prompt).
+        var marked: Set<Int> = [], learned: Set<Int> = []
+        let shell = !term.isCurrentBufferAlternate
         let touched = cell(at: p, term).line
         var line = touched
         var i = term.buffer.totalLinesTrimmed
         while let l = term.getScrollInvariantLine(row: i) {
             let s = Self.rowText(l)   // a wrap right after a typed space keeps it
-            if l.isWrapped, !rows.isEmpty { rows[rows.count - 1] += s } else { rows.append(s) }
+            if l.isWrapped, !rows.isEmpty { rows[rows.count - 1] += s } else {
+                if shell, l.count > 0, case .prompt = l[0].semanticContent { marked.insert(rows.count) }
+                if shell, let pr = shellPrompt, s.hasPrefix(pr) { learned.insert(rows.count) }
+                rows.append(s)
+            }
             if i - term.buffer.totalLinesTrimmed == touched { line = rows.count - 1 }
             i += 1
         }
+        // #977: a prompt row is a block alone, its command only. A learned prompt is a guess: a
+        // row indented under it is a TUI's wrapped message (Claude Code's "> "), so it stays joined.
+        let indented = { (r: Int) in rows.indices.contains(r) && rows[r].first == " " && !rows[r].allSatisfy(\.isWhitespace) }
+        let stops = marked.union(learned.filter { !indented($0 + 1) })
         // ponytail: in vim/less, whose `~` rows and status line are never blank, a hold
         // joins the whole paragraph under the finger; detect those apps if that bites.
-        let block = TerminalMath.commandBlock(rows, at: line)
-        let text = TerminalMath.oneLine(block.joined(separator: "\n"), cols: term.cols, widths: wrapWidths)
+        let block = TerminalMath.commandBlock(rows, at: line, stops: stops)
+        let text = stops.contains(line) ? shellLine(touched + term.buffer.totalLinesTrimmed)
+            : TerminalMath.oneLine(block.joined(separator: "\n"), cols: term.cols, widths: wrapWidths)
         guard !text.isEmpty else { return }
         pasteboard.string = text
         UINotificationFeedbackGenerator().notificationOccurred(.success)

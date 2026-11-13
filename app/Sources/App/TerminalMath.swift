@@ -106,14 +106,15 @@ enum TerminalMath {
     /// macOS; ⎿ │ ╭ ╰ first) above is the block's head and ends it; one below starts the
     /// next block and stays out. The head's ⏺/●/⎿/│ and its space turn into spaces rather
     /// than vanish: `oneLine` trims them anyway, and the row keeps its width, so a full
-    /// head row still counts as full there.
-    static func commandBlock(_ rows: [String], at row: Int) -> [String] {
+    /// head row still counts as full there. A block never takes a row in `stops` (#977: a
+    /// shell's prompt rows) unless it is that row.
+    static func commandBlock(_ rows: [String], at row: Int, stops: Set<Int> = []) -> [String] {
         func blank(_ i: Int) -> Bool { rows[i].allSatisfy(\.isWhitespace) }
         func marker(_ i: Int) -> Bool { rows[i].first { !$0.isWhitespace }.map { "⏺●⎿│╭╰".contains($0) } ?? false }
         guard rows.indices.contains(row), !blank(row) else { return [] }
         var top = row, bottom = row
-        while !marker(top), top > 0, !blank(top - 1) { top -= 1 }
-        while bottom + 1 < rows.count, !blank(bottom + 1), !marker(bottom + 1) { bottom += 1 }
+        while !marker(top), !stops.contains(top), top > 0, !blank(top - 1), !stops.contains(top - 1) { top -= 1 }
+        while !stops.contains(bottom), bottom + 1 < rows.count, !blank(bottom + 1), !marker(bottom + 1), !stops.contains(bottom + 1) { bottom += 1 }
         var block = Array(rows[top...bottom])
         let head = block[0]
         if let i = head.firstIndex(where: { !$0.isWhitespace }), "⏺●⎿│".contains(head[i]) {
