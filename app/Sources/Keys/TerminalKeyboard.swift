@@ -353,8 +353,9 @@ struct KeyboardSettings: Equatable {
 struct KeyTouchTracker {
     typealias Key = TerminalKeyboard.Key
     /// `caret`: trackpad steps, negative left. `line`: trackpad lines, negative up; one move
-    /// yields its `caret` before its `line`.
-    enum Effect: Equatable { case press(Key), startRepeat, stopRepeat, caret(Int), line(Int) }
+    /// yields its `caret` before its `line`. `lineRepeat`: a trackpad finger went under `floor`
+    /// (true), or back over it or lifted (false).
+    enum Effect: Equatable { case press(Key), startRepeat, stopRepeat, caret(Int), line(Int), lineRepeat(Bool) }
 
     /// How far a finger may travel and still count as a tap if it's cancelled.
     static let tapSlop: CGFloat = 10
@@ -369,11 +370,14 @@ struct KeyTouchTracker {
     /// `caretStep`, so a sideways drag's wobble, under a row, never changes line and a drag goes
     /// a line per row it crosses.
     ///
-    /// ponytail: the space bar sits about 100 pt over the screen's bottom (874 pt tall), so a
-    /// hold goes at most 2 lines down; a second hold goes on. Kept a row, not shorter, since
-    /// shorter steps read as jumps. A Normal row at every Key size (#583): it measures the
-    /// finger's travel, not the keys, so a taller row doesn't slow the drag.
+    /// The space bar sits about 100 pt over the screen's bottom (874 pt tall), so a drag has
+    /// room for 2 lines down: under `floor` it goes on (`lineRepeat`, #965). Kept a row, not
+    /// shorter, since shorter steps read as jumps. A Normal row at every Key size (#583): it
+    /// measures the finger's travel, not the keys, so a taller row doesn't slow the drag.
     static let lineStep: CGFloat = TerminalKeyboard.rowHeight
+    /// #965: a trackpad finger under this (the view sets it a `lineStep` under its bottom, in
+    /// iOS's strip near the screen's edge) goes on down while it stays there.
+    var floor: CGFloat = .infinity
 
     private struct Touch {
         let id: Int; var key: Key; var done: Bool
@@ -383,6 +387,8 @@ struct KeyTouchTracker {
         var symbol: String?
         /// Set by a space hold: trackpad mode, the point its caret and line steps count from.
         var anchor: CGPoint?
+        /// A trackpad touch under `floor`.
+        var deep = false
         var output: Key { symbol.map(Key.char) ?? key }
         mutating func reach(_ p: CGPoint) { travel = max(travel, hypot(p.x - start.x, p.y - start.y)) }
     }
@@ -431,7 +437,9 @@ struct KeyTouchTracker {
             let lines = Int((point.y - anchor.y) / Self.lineStep)
             touches[i].anchor = CGPoint(x: anchor.x + CGFloat(steps) * Self.caretStep,
                                         y: anchor.y + CGFloat(lines) * Self.lineStep)
-            return (steps == 0 ? [] : [.caret(steps)]) + (lines == 0 ? [] : [.line(lines)])
+            let deep = point.y > floor, was = touches[i].deep
+            touches[i].deep = deep
+            return (steps == 0 ? [] : [.caret(steps)]) + (lines == 0 ? [] : [.line(lines)]) + (deep == was ? [] : [.lineRepeat(deep)])
         }
         guard !touches[i].done, touches[i].symbol == nil, !Self.actsOnDown(key) else { return [] }
         // A thumb's lift rolls a few points off where it landed: a tap keeps the key it
@@ -473,6 +481,7 @@ struct KeyTouchTracker {
     private mutating func finish(_ id: Int, cancelled: Bool) -> [Effect] {
         guard let i = touches.firstIndex(where: { $0.id == id }) else { return [] }
         let t = touches.remove(at: i)
+        if t.deep { return [.lineRepeat(false)] }
         if t.key == .backspace { return held.contains(.backspace) ? [] : [.stopRepeat] }
         if t.done { return [] }
         if cancelled, t.travel > Self.tapSlop || t.belowKeys { return [] }
@@ -551,9 +560,9 @@ struct CaretWalk {
     /// goes. Kept past a touch (`drop`) and an idle walk too, as iOS keeps it from arrow to
     /// arrow, while the context still reads as where the walk left the caret (`kept`, `kin`):
     /// any other (typing, an edit, a tap in the host field) means the caret moved without it.
+    /// A key's edit drops it too (`edited`), even where the text reads as before (#965).
     ///
-    /// ponytail: a letter typed and deleted again reads as where the walk left it, and keeps the
-    /// goal; so does typing a run's own Character where the context showed only that run.
+    /// ponytail: a toolbar edit undone again reads as where the walk left it, and keeps the goal.
     private var goal: Int?
     private var kept: (String, String)?
     /// The line move under way: the Characters it walked on the line it started on, nil
@@ -715,6 +724,10 @@ struct CaretWalk {
         age += ticks
         if quiet > max(15, lag) { timedOut() }
     }
+
+    /// #965: the keys typed or deleted: the next line move sets a new goal column, as a text
+    /// editor's does, even after a letter typed and deleted again.
+    mutating func edited() { goal = nil }
 
     /// Forget the move in flight, the steps behind it and what the field showed: a touch
     /// starts afresh, looking for context again. The goal column stays, as long as the
@@ -1432,6 +1445,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         defer { didPress?() }
         settle()
         landed = nil
+        if ![.shift, .globe, .emoji, .numbers, .language].contains(key) { walk.edited() }   // #965
         // The numpad types as it is (#625): only backspace asks, to undo an autocorrect.
         if !showsNumpad || key == .backspace, willPress?(key) == true {
             // ponytail: the text is no longer what the keys typed (an undone autocorrect),
@@ -2267,6 +2281,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             case .stopRepeat: stopRepeat()
             case .caret(let n): caret(n)
             case .line(let n): line(n)
+            case .lineRepeat(let on): if on { startLineRepeat() } else { stopRepeat() }
             }
         }
     }
@@ -2392,17 +2407,21 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     private func stopRepeat() { repeater.stop() }
 
+    /// #965: a trackpad finger under the tracker's `floor` goes on down, a line once the last
+    /// has landed, to the text's end, till it lifts or comes back up.
+    private func startLineRepeat() { repeater.start(clicks: false) { [weak self] in if self?.walk.idle == true { self?.line(1) } } }
+
     /// A held delete's repeat, these keys' and the panels' filter's (#665): `tick` after
-    /// 0.4 s, then every 0.08 s with a click, until `stop`.
+    /// 0.4 s, then every 0.08 s with a click (none for the trackpad's lines, which mostly wait), until `stop`.
     final class Repeat {
         private var timer: Timer?
 
-        func start(_ tick: @escaping () -> Void) {
+        func start(clicks: Bool = true, _ tick: @escaping () -> Void) {
             stop()
             let delay = Timer(timeInterval: 0.4, repeats: false) { [weak self] _ in
                 guard let self else { return }
                 let each = Timer(timeInterval: 0.08, repeats: true) { _ in
-                    UIDevice.current.playInputClick()
+                    if clicks { UIDevice.current.playInputClick() }
                     tick()
                 }
                 RunLoop.main.add(each, forMode: .common)
@@ -2434,6 +2453,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         super.layoutSubviews()
         let area = keysArea.layoutFrame.insetBy(dx: Self.sideMargin, dy: 0)
         let m = Self.metrics(compact: compact, size: settings.keySize)
+        tracker.floor = bounds.maxY + KeyTouchTracker.lineStep   // #965: past a drag's second line down
         emojiPicker?.frame = area
         if showsNumpad { return layoutNumpad(in: area, m) }
         for (r, row) in caps.enumerated() {

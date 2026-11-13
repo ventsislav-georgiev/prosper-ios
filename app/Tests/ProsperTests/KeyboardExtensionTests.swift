@@ -1744,6 +1744,33 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertNil(kb.walkTimer)
     }
 
+    /// #965 (QA's #411): a drag has room for 2 lines down before the screen's edge; a finger
+    /// held under the tracker's `floor` goes on a line at a time to the text's end, and stops
+    /// once it lifts.
+    func testATrackpadHeldAtTheBottomGoesOnToTheTextsEnd() throws {
+        let text = (1...6).map { "line \($0)" }.joined(separator: "\n")
+        for kit in [true, false] {
+            let kb = TerminalKeyboard(), doc = host(kit: kit, "li", String(text.dropFirst(2)))
+            kb.target = doc
+            let space = try XCTUnwrap(laidOut(kb)["space"]).frame
+            func run(_ s: TimeInterval, until done: () -> Bool = { false }) {
+                let end = Date() + s
+                while Date() < end, !done() { RunLoop.main.run(until: Date() + 0.02); doc.catchUp(); kb.pollCaret() }
+            }
+            let p = CGPoint(x: space.midX, y: space.midY), low = CGPoint(x: p.x, y: kb.bounds.maxY + 2 * KeyTouchTracker.lineStep)
+            kb.track(.began, id: 1, at: p)
+            kb.fireHold()
+            kb.track(.moved, id: 1, at: low)
+            run(4) { doc.after == "" }
+            XCTAssertEqual(doc.text, text, "kit \(kit): held, down to the end, moves \(doc.moves)")
+            kb.track(.ended, id: 1, at: low)
+            run(0.5)
+            let moves = doc.moves.count
+            run(0.6)
+            XCTAssertEqual(doc.moves.count, moves, "kit \(kit): lifted, nothing more")
+        }
+    }
+
     /// The operator's repro (build 100): one paragraph a chat composer wraps to three rows,
     /// no break, the toolbar's ↓ from its first row through a host that lags. The walk went
     /// back to the text's start to count the column, on to its end (its only line's), probed
@@ -1993,6 +2020,25 @@ final class KeyboardExtensionTests: XCTestCase {
                 for _ in 0..<100 { doc.catchUp(); kb.pollCaret() }
                 XCTAssertEqual(doc.after?.first, "h", "kit \(kit) \(first): column 1, moves \(doc.moves)")
             }
+        }
+    }
+
+    /// #965 (QA's #411): a letter typed and deleted again leaves the text as the ↓ left it, but
+    /// the keys edited: the next ↓ goes from the caret's column ("mid|", 3), not the old goal.
+    func testALetterTypedAndDeletedDropsTheGoalColumn() {
+        for kit in [true, false] {
+            let kb = TerminalKeyboard()
+            let doc = host(kit: kit, "the long line", " one\nmid\nthe long line two")
+            kb.target = doc
+            kb.line(1)
+            for _ in 0..<100 { doc.catchUp(); kb.pollCaret() }
+            XCTAssertEqual(doc.text, "the long line one\nmid", "kit \(kit)")
+            kb.press(.char("q"))
+            kb.press(.backspace)
+            kb.line(1)
+            for _ in 0..<100 { doc.catchUp(); kb.pollCaret() }
+            XCTAssertEqual(doc.text + "|" + (doc.after ?? ""), "the long line one\nmid\nthe| long line two",
+                           "kit \(kit): moves \(doc.moves)")
         }
     }
 
