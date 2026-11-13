@@ -775,8 +775,46 @@ final class SessionConnectionDeliveryTests: XCTestCase {
     /// by the real stream but unreported, and close() reaches its 1 s failsafe. The paste
     /// is one frame, so it goes back whole, never a lone ESC[201~ that zsh, past
     /// KEYTIMEOUT, turns into a bell and "~". Both frames go back in send order, ahead of
-    /// the next key, and the late ECANCELED completions send nothing twice.
+    /// the next key, and the late ECANCELED completions send nothing twice. #1039: with
+    /// no Enter among them; a lone key still goes again.
     func testFramesPendingAtTheCloseFailsafeAreResentWholeAndInOrder() async throws {
+        let open = SessionConnection.pasteOpen, body = Array("echo $((40+2))".utf8), close = SessionConnection.pasteClose
+        let (sent, notice) = try await failsafeResend([open, body, close, Array("y".utf8)])
+        XCTAssertEqual(sent, [.bytes(open + body + close), .bytes(Array("y".utf8)), .bytes(Array("k".utf8))])
+        XCTAssertNil(notice)
+    }
+
+    /// #1039: a line-free paste and a lone Enter, both unreported at the failsafe: either may
+    /// have reached the host, so resent the command could run twice. Neither goes again and
+    /// `mayHaveRun` asks the user to check; a key after the Enter in that batch is still resent.
+    func testALoneEnterAtTheCloseFailsafeResendsNothingBeforeIt() async throws {
+        let open = SessionConnection.pasteOpen, body = Array("echo $((40+2))".utf8), close = SessionConnection.pasteClose
+        let (sent, notice) = try await failsafeResend([open, body, close, [0x0d], Array("x".utf8)])
+        XCTAssertEqual(sent, [.bytes(Array("x".utf8)), .bytes(Array("k".utf8))])
+        XCTAssertEqual(notice, SessionConnection.mayHaveRun)
+    }
+
+    /// #1039: only the failsafe's own batch goes with its lone Enter: a definite hand-back
+    /// ahead of it and a key typed after the link dropped are still sent.
+    func testALoneEnterDropsOnlyItsFailsafeBatch() async throws {
+        let (conn, t) = make()
+        let s1 = try await startLive(conn, t)
+        s1.accepting = false
+        s1.bounce(.bytes(Array("a".utf8)))   // failed before the kernel
+        for b in [Array("ls".utf8), [0x1b, 0x0d], Array("x".utf8)] { s1.onUnsent?(.bytes(b), true) }   // the failsafe's batch
+        conn.send(Array("b".utf8)[...])      // refused by the dead stream → queued
+        t.hold = true
+        s1.drop()
+        try await waitUntil("stalled") { t.parked }
+        let s2 = try await reattachLive(conn, t, index: 1)
+        try await waitUntil("flush") { conn.queuedByteCount == 0 }
+        XCTAssertEqual(s2.text, "axb")
+        XCTAssertEqual(conn.notice, SessionConnection.mayHaveRun)
+    }
+
+    /// Sends `frames` (conn.send calls) while no send completion can report, drops the link so only close()'s
+    /// failsafe hands them back, then types "k" on the next stream: what that stream got.
+    private func failsafeResend(_ frames: [[UInt8]]) async throws -> ([Outbound], String?) {
         let q = DispatchQueue(label: "t.conn")
         let (s1, host, listener) = try await loopbackStream(on: q)
         defer { listener.cancel() }
@@ -792,20 +830,17 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         try await waitUntil("live: a on the wire") { host.input == [Array("a".utf8)] }
 
         q.suspend(); suspended = true         // a send completion can't report
-        let open = SessionConnection.pasteOpen, body = Array("echo $((40+2))".utf8), close = SessionConnection.pasteClose
-        for f in [open, body, close] { conn.send(f[...]) }
-        conn.send([0x0d][...])                // Enter: a second accepted frame
+        for f in frames { conn.send(f[...]) }
         s1.close()                            // the link drops: only the failsafe ends it
         try await waitUntil("reattach") { t.streams.count == 1 }
         let s2 = t.streams[0]
         s2.emit("$ ")
-        try await waitUntil("pending frames resent") { s2.sent.count == 2 }
+        try await waitUntil("hand-backs flushed") { conn.queuedByteCount == 0 }
         conn.send(Array("k".utf8)[...])
         q.resume(); suspended = false         // the late ECANCELED completions
         try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertEqual(s2.sent, [.bytes(open + body + close), .bytes([0x0d]), .bytes(Array("k".utf8))])
         XCTAssertEqual(conn.queuedByteCount, 0)
-        XCTAssertNil(conn.notice)
+        return (s2.sent, conn.notice)
     }
 
     /// #1007 QA #79 S2: a paste sent with Enter (`thenEnter`) reaches the host, but its

@@ -47,6 +47,9 @@ final class SessionConnection: ObservableObject {
     /// Where the next `onUnsent` hand-back goes: ahead of everything queued after the
     /// stream that accepted it stopped taking input.
     private var requeueAt = 0
+    /// #1039: how many of the hand-backs just before `requeueAt` may have arrived (the
+    /// close failsafe's batch so far).
+    private var maybeRun = 0
     /// Counts attached streams; `sentGen` is the newest one that took any input. A
     /// hand-back from an older stream than that is too late to keep its place (#230).
     private var gen = 0
@@ -233,7 +236,7 @@ final class SessionConnection: ObservableObject {
         if outbox.isEmpty { lossy = false }   // the gap is behind us: input may queue again
         // Everything still queued came after what this stream just took, so its
         // hand-backs go to the front, not behind hand-backs it never reached.
-        if sent > 0 { requeueAt = 0 }
+        if sent > 0 { requeueAt = 0; maybeRun = 0 }
     }
 
     /// A frame the transport took but couldn't put on the wire: back in line, ahead of
@@ -255,9 +258,20 @@ final class SessionConnection: ObservableObject {
     /// a frame runs twice. #1007: one that `runsLine` (a paste sent with Enter: zsh, bash
     /// and node ran the command twice) is not resent; `mayHaveRun` asks the user to check.
     /// Single keys and line-free text still go again: a doubled one is seen before it runs.
+    /// #1039: except a lone Enter, which may have run what that batch handed back before it
+    /// (a line-free paste): neither goes again. What the batch hands back after it still does.
     private func requeue(_ out: Outbound, from g: Int, mayHaveArrived: Bool) {
         guard !isOver else { return }
         if mayHaveArrived, case .bytes(let b) = out, Self.runsLine(b) { show(Self.mayHaveRun, sticky: true); return }
+        if mayHaveArrived, case .bytes(let b) = out, [[0x0d], [0x0a], [0x1b, 0x0d], [0x1b, 0x0a]].contains(b) {
+            let end = min(requeueAt, outbox.count), from = max(0, end - maybeRun)
+            outboxBytes -= outbox[from..<end].reduce(0) { $0 + Self.size($1) }
+            outbox.removeSubrange(from..<end)
+            requeueAt = from
+            maybeRun = 0
+            show(Self.mayHaveRun, sticky: true)
+            return
+        }
         // A paste is one frame (`send`), so it is dropped whole. CSI/SS3-led frames (ESC[ / ESC O:
         // arrows, scroll bursts, SGR mouse reports) stay silent, as does a lone ESC[201~ (only after
         // `pasteWaitMax`): zsh already ended paste mode on KEYTIMEOUT, and a stray closer
@@ -271,6 +285,7 @@ final class SessionConnection: ObservableObject {
         let at = min(requeueAt, outbox.count)
         outbox.insert(out, at: at)
         requeueAt += 1
+        maybeRun = mayHaveArrived ? maybeRun + 1 : 0
         outboxBytes += Self.size(out)
         var lost: [Outbound] = []
         while outboxBytes > Self.outboxCap, outbox.count > at + 1 {
@@ -346,6 +361,7 @@ final class SessionConnection: ObservableObject {
         outbox.removeAll()
         outboxBytes = 0
         requeueAt = 0
+        maybeRun = 0
         lossy = false
     }
 
