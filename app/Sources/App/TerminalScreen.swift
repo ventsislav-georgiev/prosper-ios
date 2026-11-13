@@ -797,22 +797,44 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// keyboard's copy line (`SuggestionBar.keep`), with a note as the long press's. An empty
     /// line leaves the clip be. Claude Code hard-wraps its input, so there it is the caret's
     /// visual row only: what cut line and delete all delete (its ^U), so a cut's clip is what
-    /// went. ponytail: the prompt comes with it; the screen can't tell it from the input.
+    /// went. #976: the shell's prompts stay out (`TerminalMath.promptCommand`, `shellPrompt`).
     func copyCaretLine(cut: Bool = false) {
         let term = tv.getTerminal()
         var i = cell(at: CGPoint(x: 0, y: tv.caretFrame.midY), term).line + term.buffer.totalLinesTrimmed
         while term.getScrollInvariantLine(row: i)?.isWrapped == true { i -= 1 }
+        let start = i
         var text = ""
         repeat {
             text += term.getScrollInvariantLine(row: i).map(Self.rowText) ?? ""
             i += 1
         } while term.getScrollInvariantLine(row: i)?.isWrapped == true
-        text = text.trimmingCharacters(in: .whitespaces)
+        // #976: zsh shows no right prompt on a wrapped line, so only a lone row can carry one.
+        let edge = i - start == 1 && (term.getScrollInvariantLine(row: start)?.getTrimmedLength() ?? 0) >= term.cols - 1
+        text = TerminalMath.promptCommand(text, prompt: shellPrompt, atEdge: edge)
         guard !text.isEmpty else { return }
         pasteboard.string = text
         history?.record(text, from: pasteboard)
         ClipboardSync.kick()   // #621
         showToast((cut ? "Cut line\n" : "Copied line\n") + (text.count > 60 ? String(text.prefix(60)) + "…" : text))
+    }
+
+    /// #976: the shell's left prompt, as the text left of the caret when a typed key first goes
+    /// out on a row with nothing right of the caret but blanks or a right prompt, ending in a
+    /// blank as zsh's `% ` and bash's `$ ` do. Copy line takes it off a row that starts with it.
+    private(set) var shellPrompt: String?
+    private weak var promptRow: BufferLine?
+    private func notePrompt() {
+        let term = tv.getTerminal()
+        guard !term.isCurrentBufferAlternate,
+              let l = term.getScrollInvariantLine(row: cell(at: CGPoint(x: 0, y: tv.caretFrame.midY), term).line + term.buffer.totalLinesTrimmed),
+              l !== promptRow else { return }
+        promptRow = l
+        let x = term.buffer.x
+        let left = l.translateToString(endCol: x, skipNullCellsFollowingWide: true).replacingOccurrences(of: "\0", with: " ")
+        let right = l.translateToString(trimRight: true, startCol: x, skipNullCellsFollowingWide: true).replacingOccurrences(of: "\0", with: " ")
+        guard left.last == " ", !left.allSatisfy(\.isWhitespace),
+              TerminalMath.promptCommand("." + right, prompt: nil, atEdge: l.getTrimmedLength() >= term.cols - 1) == "." else { return }
+        shellPrompt = left
     }
 
     private var fedHostBytes = false
@@ -1042,9 +1064,12 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// A row's text for a copy. trimRight drops only never-written cells at the end, never a
     /// typed space, and the cell a wide char left empty at the edge goes. Never-written cells
     /// inside it (a TUI's cursor-move gaps: Claude Code's input box) are blanks, not NULs
-    /// (#603 QA: its words came out glued).
+    /// (#603 QA: its words came out glued). Cells a shell marked as its prompt (OSC 133) are
+    /// blanks too, so a copy takes the command only (#976).
     static func rowText(_ l: BufferLine) -> String {
-        l.translateToString(trimRight: true, skipNullCellsFollowingWide: true).replacingOccurrences(of: "\0", with: " ")
+        l.translateToString(trimRight: true, skipNullCellsFollowingWide: true) {
+            if case .prompt = $0.semanticContent { return " " } else { return $0.getCharacter() }
+        }.replacingOccurrences(of: "\0", with: " ")
     }
 
     /// A pill under the nav bar that fades out by itself.
@@ -1545,6 +1570,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         MainActor.assumeIsolated {
+            notePrompt()
             if coalescing != nil {
                 coalescing?.append(contentsOf: data)   // scroll burst — one write, see emitScroll
             } else if data.count == 1 || SessionConnection.isKittyKey(Array(data)) {

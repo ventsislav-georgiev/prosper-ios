@@ -124,6 +124,16 @@ enum TerminalMath {
         return block
     }
 
+    /// #976: the command on a shell's prompt row: `prompt` (its left prompt, when known) off its
+    /// start, and with `atEdge` (the row reaches the right edge; zsh leaves the last column
+    /// free) the right prompt off its end, the last run after 2+ blanks. Blanks trimmed.
+    static func promptCommand(_ row: String, prompt: String?, atEdge: Bool) -> String {
+        var s = Substring(row)
+        if atEdge, let gap = s.range(of: "  ", options: .backwards) { s = s[..<gap.lowerBound] }
+        if let prompt, s.hasPrefix(prompt) { s = s.dropFirst(prompt.count) }
+        return s.trimmingCharacters(in: .whitespaces)
+    }
+
     /// C1 control scalars, U+0080..U+009F: 8-bit forms of ESC sequences (U+009B is CSI).
     static let c1Controls: ClosedRange<UInt32> = 0x80...0x9F
 
