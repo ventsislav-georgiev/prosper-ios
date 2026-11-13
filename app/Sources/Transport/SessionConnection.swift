@@ -249,14 +249,15 @@ final class SessionConnection: ObservableObject {
     /// cut one: a cut paste loses its ESC[200~ opener and every line runs as a command),
     /// and the queue goes `lossy`. Earlier hand-backs ahead of it stay too.
     ///
-    /// Known duplicate window (#251/#253): the close failsafe hands back every frame
-    /// whose completion had not reported after 1 s, and some of those did reach the
-    /// host (a completion that was stuck, or raced the failsafe). Resent here, such a
-    /// frame runs twice — and since a paste is one frame, that is a WHOLE paste: zsh,
-    /// bash and node run the command twice when the paste ends with CR. Without an
-    /// app-level ack from the server there is no telling which frames arrived; accepted.
-    private func requeue(_ out: Outbound, from g: Int) {
+    /// Duplicate window (#251/#253): the close failsafe hands back every frame whose
+    /// completion had not reported after 1 s (`mayHaveArrived`), and some of those did
+    /// reach the host (a completion that was stuck, or raced the failsafe). Resent, such
+    /// a frame runs twice. #1007: one that `runsLine` (a paste sent with Enter: zsh, bash
+    /// and node ran the command twice) is not resent; `mayHaveRun` asks the user to check.
+    /// Single keys and line-free text still go again: a doubled one is seen before it runs.
+    private func requeue(_ out: Outbound, from g: Int, mayHaveArrived: Bool) {
         guard !isOver else { return }
+        if mayHaveArrived, case .bytes(let b) = out, Self.runsLine(b) { show(Self.mayHaveRun, sticky: true); return }
         // A paste is one frame (`send`), so it is dropped whole. CSI/SS3-led frames (ESC[ / ESC O:
         // arrows, scroll bursts, SGR mouse reports) stay silent, as does a lone ESC[201~ (only after
         // `pasteWaitMax`): zsh already ended paste mode on KEYTIMEOUT, and a stray closer
@@ -286,6 +287,14 @@ final class SessionConnection: ObservableObject {
     /// (keys, CSI, a scroll burst of arrows or SGR mouse reports), is harmless to redo
     /// and stays silent.
     static let pasteLost = "Paste lost in reconnect, paste again"
+    static let mayHaveRun = "Link dropped while sending, check whether it ran"
+
+    /// #1007: more than one key, and a CR or LF in it, inside a paste too (node runs a
+    /// pasted line at its LF): sent twice, the host runs a line twice. A lone Enter or
+    /// alt+Enter is one key.
+    static func runsLine(_ b: [UInt8]) -> Bool {
+        !(b.count == 1 || (b.count == 2 && b[0] == 0x1b)) && b.contains { $0 == 0x0d || $0 == 0x0a }
+    }
     static let typedLost = "Typed text lost in reconnect, type it again"
 
     /// A typed key: not ESC-led, a lone Esc, or alt+key (ESC + char; optionAsMetaKey makes alt+é
@@ -485,8 +494,8 @@ final class SessionConnection: ObservableObject {
                 // made, and before the stream-end the loop sees next.
                 gen += 1
                 let g = gen
-                s.onUnsent = { [weak self] out in
-                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.requeue(out, from: g) } }
+                s.onUnsent = { [weak self] out, maybe in
+                    DispatchQueue.main.async { MainActor.assumeIsolated { self?.requeue(out, from: g, mayHaveArrived: maybe) } }
                 }
                 stream = s
                 live = false

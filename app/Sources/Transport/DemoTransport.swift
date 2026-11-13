@@ -183,7 +183,7 @@ final class DemoStream: TerminalStream {
     var onScreen: ((ArraySlice<UInt8>) -> Void)?
     func requestSnapshot() {}   // the demo screen is already whatever we scripted
     func putClipboard(_ image: Data) -> Bool { true }
-    var onUnsent: ((Outbound) -> Void)?   // nothing leaves the phone, nothing comes back
+    var onUnsent: ((Outbound, Bool) -> Void)?   // nothing leaves the phone, nothing comes back
     func close() { cont.finish() }
 }
 

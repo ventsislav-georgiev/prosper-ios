@@ -54,8 +54,9 @@ protocol TerminalStream: AnyObject {
     @discardableResult func putClipboard(_ image: Data) -> Bool
     /// Frames the transport accepted but could not hand to the socket (the send
     /// failed before reaching the kernel), in send order. Called before `output`
-    /// finishes, on any thread.
-    var onUnsent: ((Outbound) -> Void)? { get set }
+    /// finishes, on any thread. `mayHaveArrived` (#1007): the send never reported either
+    /// way, so the host may already have it.
+    var onUnsent: ((Outbound, _ mayHaveArrived: Bool) -> Void)? { get set }
     /// Sink for `requestSnapshot` replies — a full screen in ANSI, ready to feed.
     var onScreen: ((ArraySlice<UInt8>) -> Void)? { get set }
     /// Detach this client (session keeps running).

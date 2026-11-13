@@ -272,7 +272,7 @@ final class SpyStream: TerminalStream {
         AsyncStream { self.cont = $0 }
     }()
 
-    var onUnsent: ((Outbound) -> Void)?
+    var onUnsent: ((Outbound, Bool) -> Void)?
     func send(_ bytes: ArraySlice<UInt8>) -> Bool { sent.append(Array(bytes)); return true }
     func resize(cols: Int, rows: Int) { resizes.append((cols, rows)) }
     func requestRedraw() { redraws += 1 }

@@ -808,6 +808,53 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertNil(conn.notice)
     }
 
+    /// #1007 QA #79 S2: a paste sent with Enter (`thenEnter`) reaches the host, but its
+    /// completion can't report before close()'s 1 s failsafe, which can't tell it arrived.
+    /// Resent, zsh, bash and node run the command twice: it reaches the pty once.
+    func testAPasteThatRunsALineReachesThePtyOnceAcrossTheCloseFailsafe() async throws {
+        let q = DispatchQueue(label: "t.conn")
+        let (s1, host, listener) = try await loopbackStream(on: q)
+        defer { listener.cancel() }
+        var suspended = false
+        defer { if suspended { q.resume() } }
+
+        let (conn, t) = make()
+        t.prepared = [s1]
+        conn.start(cols: 80, rows: 24)
+        try await waitUntil("live on the prompt") { conn.state == .connected }
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        q.suspend(); suspended = true         // its send completion can't report
+        let paste = TerminalMath.pasteBytes("echo hi", thenEnter: true)
+        conn.send(paste[...])
+        try await waitUntil("the paste reached the host") { host.input == [paste] }
+        s1.close()                            // the link drops: only the failsafe ends it
+        try await waitUntil("reattach") { t.streams.count == 1 }
+        let s2 = t.streams[0]
+        s2.emit("$ ")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        conn.send(Array("k".utf8)[...])
+        q.resume(); suspended = false         // the late completion
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(host.input + s2.sent.map { if case .bytes(let b) = $0 { b } else { [] } },
+                       [paste, Array("k".utf8)], "the paste ran twice")
+        XCTAssertEqual(conn.notice, SessionConnection.mayHaveRun)
+    }
+
+    /// #1007: what the failsafe may not resend. One key (Enter, alt+Enter) and text with
+    /// no line in it still go again (#251/#253, pinned on the wire above).
+    func testRunsLineIsALineNotAKey() {
+        for b in [TerminalMath.pasteBytes("echo hi", thenEnter: true),
+                  TerminalMath.pasteBytes("echo hi", thenEnter: true, bracketed: false),
+                  TerminalMath.pasteBytes("echo a\necho b"), Array("ls\n".utf8)] {
+            XCTAssertTrue(SessionConnection.runsLine(b), String(decoding: b, as: UTF8.self))
+        }
+        for b in [[0x0d], [0x0a], [0x1b, 0x0d], TerminalMath.pasteBytes("echo hi"), Array("ls".utf8),
+                  Array("\u{1b}[13u".utf8), Array("\u{1b}[<64;10;10M".utf8)] {
+            XCTAssertFalse(SessionConnection.runsLine(b), String(decoding: b, as: UTF8.self))
+        }
+    }
+
     /// #251 M4: the failsafe's hand-backs reach main before the stream's end does, so
     /// SessionConnection requeues them at the old stream's generation, not as late ones.
     func testFailsafeHandsBackBeforeTheStreamEnds() async throws {
@@ -815,7 +862,7 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         let (s, _, listener) = try await loopbackStream(on: q)
         defer { listener.cancel() }
         let log = Box<[String]>([])
-        s.onUnsent = { out in   // as SessionConnection does: main queue, in order
+        s.onUnsent = { out, _ in   // as SessionConnection does: main queue, in order
             DispatchQueue.main.async { if case .bytes(let b) = out { log.v.append(String(decoding: b, as: UTF8.self)) } }
         }
         let reader = Task { @MainActor in
@@ -1377,7 +1424,7 @@ final class DeliveryStream: TerminalStream {
     var acceptLimit = Int.max
     private(set) var sent: [Outbound] = []
     var onScreen: ((ArraySlice<UInt8>) -> Void)?
-    var onUnsent: ((Outbound) -> Void)?
+    var onUnsent: ((Outbound, Bool) -> Void)?
 
     init() {
         var c: AsyncStream<ArraySlice<UInt8>>.Continuation!
@@ -1400,7 +1447,7 @@ final class DeliveryStream: TerminalStream {
     func emit(_ text: String) { cont.yield(ArraySlice(Array(text.utf8))) }
     func drop() { accepting = false; cont.finish() }
     func exit() { exited = true; drop() }
-    func bounce(_ out: Outbound) { onUnsent?(out) }
+    func bounce(_ out: Outbound) { onUnsent?(out, false) }
 
     var bytes: [UInt8] {
         sent.flatMap { if case .bytes(let b) = $0 { return b } else { return [] } }

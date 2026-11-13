@@ -738,7 +738,7 @@ final class ProsperStream: TerminalStream {
 
     /// Set by the terminal view; called on the network queue's callback thread.
     var onScreen: ((ArraySlice<UInt8>) -> Void)?
-    var onUnsent: ((Outbound) -> Void)?
+    var onUnsent: ((Outbound, Bool) -> Void)?
 
     private enum F {
         static let resize: UInt8 = 0x05, redraw: UInt8 = 0x07, snapshot: UInt8 = 0x09
@@ -826,7 +826,7 @@ final class ProsperStream: TerminalStream {
         let out = pending.removeValue(forKey: id)
         let done = closed && pending.isEmpty
         lock.unlock()
-        if unsent, let out { onUnsent?(out) }
+        if unsent, let out { onUnsent?(out, false) }
         if done { finish() }
     }
 
@@ -863,13 +863,14 @@ final class ProsperStream: TerminalStream {
         // What it still holds never reported reaching the stack, so it goes back first,
         // in order, before output ends: handed back after the next stream took input it
         // would be dropped as late (#230), and a lost paste closer wedges bash/vim (#251).
-        // ponytail: a success completion racing this exact moment gets its frame resent.
+        // #1007: these may have arrived (a stuck completion, or a success racing this
+        // moment), so they go back marked; SessionConnection won't resend one that runs a line.
         DispatchQueue.global().asyncAfter(deadline: .now() + 1) { [self] in
             lock.lock()
             let unsent = pending.sorted { $0.key < $1.key }.map(\.value)
             pending.removeAll()
             lock.unlock()
-            unsent.forEach { onUnsent?($0) }
+            unsent.forEach { onUnsent?($0, true) }
             finish()
         }
     }
