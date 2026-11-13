@@ -97,11 +97,11 @@ final class TouchCorrectionTests: XCTestCase {
                        .char("g"), "kig is known: g stays")
     }
 
-    /// Both continue a word: a touch on r's left edge after "th" is e, "the" far likelier
-    /// than "three". Equally likely, or a centered r, it stays r.
+    /// Both continue a word: a touch in the gap just left of r after "th" is e, "the" far
+    /// likelier than "three". Equally likely, or a centered r, it stays r.
     func testALikelierNeighborWinsWhereBothContinueAWord() {
         let (_, f) = laidOut()
-        let r = f["r"]!, edge = CGPoint(x: r.minX + 0.5, y: r.midY)
+        let r = f["r"]!, edge = CGPoint(x: r.minX - 0.5, y: r.midY)
         let likely: (String) -> Double = { ["the": 2, "thr": 0.05][$0] ?? 0 }
         XCTAssertEqual(K.corrected(.char("r"), at: edge, keys: keys(f), prefix: "th", known: { _ in true }, likely: likely),
                        .char("e"))
@@ -115,8 +115,23 @@ final class TouchCorrectionTests: XCTestCase {
                        .char("r"), "just off the center: e is too far for its odds")
     }
 
-    /// The same in Bulgarian, whose checker the simulator lacks: "т" and a touch on р's
-    /// left edge is е when "те" is the likelier.
+    /// #969: a touch on the cap is that key, however much likelier the neighbor: 0.48 of a
+    /// key from r's center, or 0.5 pt inside its edge, "th" stays "thr"; 0.5 pt out, in the
+    /// gap, it's e. A dead end on the cap still moves (`testTesAndATouchTowardTTypesT`).
+    func testADeliberateTapOnTheCapKeepsItsKey() {
+        let (_, f) = laidOut()
+        let r = f["r"]!
+        let likely: (String) -> Double = { ["the": 2, "thr": 0.05][$0] ?? 0 }
+        func typed(_ x: CGFloat) -> K.Key {
+            K.corrected(.char("r"), at: CGPoint(x: x, y: r.midY), keys: keys(f), prefix: "th", known: { _ in true }, likely: likely)
+        }
+        XCTAssertEqual(typed(r.midX - 0.48 * r.width), .char("r"), "0.48 of a key off center")
+        XCTAssertEqual(typed(r.minX + 0.5), .char("r"), "just inside the edge")
+        XCTAssertEqual(typed(r.minX - 0.5), .char("e"), "just outside, in the gap")
+    }
+
+    /// The same in Bulgarian, whose checker the simulator lacks: "т" and a touch just left
+    /// of р is е when "те" is the likelier.
     func testALikelierNeighborInBulgarian() {
         let kb = K(layout: .bulgarian)
         kb.frame = CGRect(x: 0, y: 0, width: 402, height: K.height)
@@ -124,7 +139,7 @@ final class TouchCorrectionTests: XCTestCase {
         var f: [String: CGRect] = [:]
         for case let b as UIButton in kb.subviews { if let t = b.title(for: .normal) { f[t.lowercased()] = b.frame } }
         let r = f["р"]!
-        XCTAssertEqual(K.corrected(.char("р"), at: CGPoint(x: r.minX + 0.5, y: r.midY), keys: keys(f), prefix: "т",
+        XCTAssertEqual(K.corrected(.char("р"), at: CGPoint(x: r.minX - 0.5, y: r.midY), keys: keys(f), prefix: "т",
                                    known: { _ in true }, likely: { ["те": 3, "тр": 0.05][$0] ?? 0 }), .char("е"))
     }
 
@@ -190,14 +205,20 @@ final class TouchCorrectionTests: XCTestCase {
 
     // MARK: Through the real keyboard
 
-    /// The real dictionary's odds: "th" and a touch on r's left edge types e.
+    /// The real dictionary's odds: "th" and a touch in the gap just left of r types e; one
+    /// 0.48 of a key off r's center, on its cap, types r (#969), as "c" and one off i's
+    /// right side types i.
     func testRealDictionaryOddsTypeTheOverThr() {
         let (kb, f) = laidOut()
-        let r = f["r"]!
+        let r = f["r"]!, i = f["i"]!
         XCTAssertTrue(K.dictionaryKnows("thr"), "precondition: both continue a word")
-        XCTAssertEqual(type("th", thenTap: CGPoint(x: r.minX + 0.5, y: r.midY), on: kb), "e")
+        XCTAssertEqual(type("th", thenTap: CGPoint(x: r.minX - 0.5, y: r.midY), on: kb), "e")
         let (kb2, _) = laidOut()
         XCTAssertEqual(type("th", thenTap: CGPoint(x: r.midX, y: r.midY), on: kb2), "r", "a centered r is typed")
+        let (kb3, _) = laidOut()
+        XCTAssertEqual(type("th", thenTap: CGPoint(x: r.midX - 0.48 * r.width, y: r.midY), on: kb3), "r", "three")
+        let (kb4, _) = laidOut()
+        XCTAssertEqual(type("c", thenTap: CGPoint(x: i.midX + 0.48 * i.width, y: i.midY), on: kb4), "i", "city")
     }
 
     /// Thumbs land low: a touch 8 pt under t, nearer g, types t, even as a word's first

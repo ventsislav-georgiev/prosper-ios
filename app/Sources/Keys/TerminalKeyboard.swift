@@ -2527,10 +2527,11 @@ extension TerminalKeyboard {
     /// What a touch types once the word typed so far is taken into account. With a
     /// `prefix`, a touch off the center of a letter that starts no `known` word after it
     /// goes to the closest letter within half a key width that does: "tes" and a touch
-    /// on r's right edge types t. One that does start a word still goes to a neighbor in
-    /// reach the word is that much likelier to go on with (`likely`, its weight against
-    /// the touch's distance from each key's center): after "th", a touch on r's left edge
-    /// types e, "the" far likelier than "three". A centered hit, an empty prefix or no
+    /// on r's right edge types t. One that does start a word, landing in the gap beside
+    /// its key, still goes to a neighbor in reach the word is that much likelier to go on
+    /// with (`likely`, its weight against the touch's distance from each key's center):
+    /// after "th", a touch just left of r types e, "the" far likelier than "three". On r's
+    /// cap it stays r (#969). A centered hit, an empty prefix or no
     /// neighbor known or likely enough keeps `nearest`, so only an already ambiguous touch
     /// ever moves. A digit, symbol, space or return moves only at its edge, mid-word
     /// (`edged`). A hold isn't corrected at all (`fireHold`). Lowercase in and out; `press`
@@ -2557,6 +2558,8 @@ extension TerminalKeyboard {
             .filter { $0.0 != nearest && letter($0.0) != nil && distance(point, $0.1) <= reach }
             .sorted { distance(point, $0.1) < distance(point, $1.1) }
         guard known(prefix + c) else { return candidates.first { known(prefix + letter($0.0)!) }?.0 ?? nearest }
+        // #969: odds move only a touch in the gap; one on the cap, however near its edge, is that key.
+        if frame.contains(point) { return nearest }
         let sigma = frame.width / 4
         func score(_ k: (Key, CGRect)) -> Double {
             let d = hypot(point.x - k.1.midX, point.y - k.1.midY)
