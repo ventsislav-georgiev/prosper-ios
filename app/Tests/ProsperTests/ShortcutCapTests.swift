@@ -425,6 +425,28 @@ final class ShortcutCapTests: XCTestCase {
         }
     }
 
+    /// #953: a 320 pt screen (Display Zoom on a small phone) squeezes the default grid to
+    /// the bar instead of scrolling it, with no label or glyph cut; 402 keeps its fit.
+    @MainActor
+    func testDefaultBarFitsA320ptScreen() throws {
+        for width: CGFloat in [320, 402] {
+            let bar = try makeBar(Shortcuts.defaults.map(\.id), width: width)
+            XCTAssertEqual(bar.rowCount, 2, "\(width)")
+            let caps = Self.caps(bar)
+            let sv = try XCTUnwrap(caps[0].superview?.superview?.superview as? UIScrollView)
+            XCTAssertLessThanOrEqual(sv.contentSize.width, sv.bounds.width + 0.01, "\(width): scrolls")
+            for c in caps {
+                if let t = c.titleLabel, !(t.text ?? "").isEmpty {
+                    XCTAssertLessThanOrEqual(t.intrinsicContentSize.width, t.bounds.width + 0.5, "\(width): \(t.text ?? "") truncates")
+                }
+                if let v = c.imageView, let img = v.image {
+                    XCTAssertLessThanOrEqual(img.size.width, v.bounds.width + 0.5, "\(width): \(c.accessibilityLabel ?? "") glyph clipped")
+                }
+            }
+            print("953-widths \(width): \(caps.map { "\($0.accessibilityLabel ?? "?")=\($0.frame.width)/\($0.naturalWidth)" })")
+        }
+    }
+
     /// QA #279: one bar re-laid out across squeezed widths (Split View, Stage Manager)
     /// keeps every cap's natural width — the squeeze's shrunken insets never feed back.
     @MainActor
@@ -486,7 +508,7 @@ final class ShortcutCapTests: XCTestCase {
     }
 
     /// #561: the default toolbar (#690, eight keys), and the one before it with Paste, fit
-    /// portrait phones at Large text: the end cap sits inside the strip, nothing scrolls or
+    /// portrait phones (and 320 pt Display Zoom, #953) at Large text: the end cap sits inside the strip, nothing scrolls or
     /// truncates, Paste stays 44, and a row that already fits keeps its natural widths.
     @MainActor
     func testDefaultToolbarFitsPortraitPhones() throws {
@@ -494,7 +516,7 @@ final class ShortcutCapTests: XCTestCase {
         for paste in [true, false] {
             let keys = paste ? Shortcuts.Bar.arrowsToolbar : Shortcuts.Bar.toolbar.defaults
             XCTAssertEqual(keys.first?.id == "paste", paste)
-            for width: CGFloat in [375, 393, 402, 440] {
+            for width: CGFloat in [320, 375, 393, 402, 440] {   // 320: Display Zoom (#953)
                 let (bar, row, sv) = try makeToolbar(keys, width: width)
                 let caps = Self.caps(bar)
                 XCTAssertEqual(row.arrangedSubviews.count, keys.count)

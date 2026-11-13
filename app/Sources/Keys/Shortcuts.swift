@@ -400,6 +400,7 @@ final class ShortcutBar: UIView {
     override func layoutSubviews() {
         if bounds.width != arrangedWidth, oneRow {
             arrangedWidth = bounds.width
+            let narrow = bounds.width + 43 < Self.narrowScreen   // the toolbar starts right of the 43 pt toggle
             let items = rows.flatMap(\.arrangedSubviews)
             let k = twoRows ? Self.balancedSplit(items.map { ($0 as? KeyCapButton)?.naturalWidth ?? 44 },
                                                  spacing: Self.spacing) : items.count
@@ -412,7 +413,8 @@ final class ShortcutBar: UIView {
                 let available = bounds.width - 16 - fixed * (44 + Self.spacing)
                 let span = natural.reduce(0, +) + Self.spacing * CGFloat(max(0, caps.count - 1))
                 let cols = span <= available && !twoRows ? natural : Self.filled(natural, spacing: Self.spacing,
-                    available: available, minScale: Self.minRowScale, pixel: 1 / max(1, traitCollection.displayScale))
+                    available: available, minScale: narrow ? min(Self.minRowScale, Self.paddingFloor(natural)) : Self.minRowScale,
+                    pixel: 1 / max(1, traitCollection.displayScale))
                 for (cap, w) in zip(caps, cols) { cap.columnWidth = w }
             }
         }
@@ -420,9 +422,10 @@ final class ShortcutBar: UIView {
             arrangedWidth = bounds.width
             let natural = caps.map(\.naturalWidth)
             let k = Self.rowSplit(widths: natural, spacing: Self.spacing, available: bounds.width - 16)
-            let cols = Self.filled(k == caps.count ? natural
-                : Self.columnWidths(top: Array(natural[..<k]), bottom: Array(natural[k...])),
-                spacing: Self.spacing, available: bounds.width - 16,
+            let grid = k == caps.count ? natural
+                : Self.columnWidths(top: Array(natural[..<k]), bottom: Array(natural[k...]))
+            let cols = Self.filled(grid, spacing: Self.spacing, available: bounds.width - 16,
+                minScale: bounds.width < Self.narrowScreen ? min(Self.minFillScale, Self.paddingFloor(grid)) : Self.minFillScale,
                 pixel: 1 / max(1, traitCollection.displayScale))
             // addArrangedSubview re-parents: a cap leaves whichever row held it.
             for (i, cap) in caps.enumerated() {
@@ -449,6 +452,13 @@ final class ShortcutBar: UIView {
     /// `oneRow`'s: the default toolbar with Paste needs 0.873 on a 375 pt phone (an arrow cap
     /// 31.4 pt). A cap keeps 86% of its glyph plus 16 pt, so a glyph under 98 pt never truncates.
     static let minRowScale: CGFloat = 0.86
+    /// #953: the narrowest phone without Display Zoom. Under it (320 pt with Display Zoom,
+    /// Slide Over) a bar squeezes as far as `paddingFloor` before it scrolls.
+    static let narrowScreen: CGFloat = 375
+    /// The scale at which the widest of `widths` keeps 1 pt of side padding, so no label truncates.
+    static func paddingFloor(_ widths: [CGFloat]) -> CGFloat {
+        widths.map { 1 - (2 * KeyCapButton.padding - 2) / $0 }.max() ?? 1
+    }
 
     /// Fits (`sum + spacing` < available), or would at `minScale` → scale every width
     /// by one factor so the span equals `available`, edges floored to the `pixel` grid so
