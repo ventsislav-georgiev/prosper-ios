@@ -180,6 +180,12 @@ enum Shortcuts {
     }
 
     static func save(_ keys: [ShortcutKey], to store: UserDefaults = shared(), key: String = storageKey) {
+        // #960: the toolbar's default stays implicit (no key), so a later default reaches it.
+        if key == Bar.toolbar.storageKey, keys.map(\.id) == Bar.toolbar.defaults.map(\.id) {
+            store.removeObject(forKey: key)
+            store.set(true, forKey: Bar.seededKey)
+            return
+        }
         guard let data = try? JSONEncoder().encode(keys),
               let s = String(data: data, encoding: .utf8) else { return }
         store.set(s, forKey: key)
@@ -196,6 +202,9 @@ enum Shortcuts {
         case terminal, toolbar
 
         var storageKey: String { self == .terminal ? Shortcuts.storageKey : "toolbarKeys" }
+        /// #960: the toolbar's seed ran (or it was reset) and left the default implicit: a later
+        /// terminal edit doesn't seed it.
+        static let seededKey = "toolbarKeysSeeded"
         /// What the editor offers: on the terminal, every toolbar key (#604), all the edits
         /// (nothing to hold back) and its actions; on the toolbar, the keys a text field can
         /// use (`hostKey`).
@@ -218,7 +227,7 @@ enum Shortcuts {
 
         /// The toolbar's saved keys, as the catalog defines them; nil (no Full Access) is the
         /// default. None saved yet: seeded once, and saved, from a customised terminal bar's
-        /// keys in the toolbar's catalog, plus paste; else the default.
+        /// keys in the toolbar's catalog, plus paste; else the default, left unsaved (#960).
         func load(_ store: UserDefaults? = shared()) -> [ShortcutKey] {
             guard self == .toolbar else { return Shortcuts.load(store) }
             guard let store else { return defaults }
@@ -226,6 +235,7 @@ enum Shortcuts {
                 if previousToolbarIDs.contains(keys.map(\.id)) { return defaults }
                 return keys.compactMap { saved in catalog.first { $0.id == saved.id } }
             }
+            if store.bool(forKey: Self.seededKey) { return defaults }
             let bar = Shortcuts.load(store)
             var seeded = defaults
             if bar.map(\.id) != Shortcuts.defaults.map(\.id) {

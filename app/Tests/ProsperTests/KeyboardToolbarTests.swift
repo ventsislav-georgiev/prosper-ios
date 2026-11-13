@@ -552,7 +552,7 @@ final class KeyboardToolbarTests: XCTestCase {
     }
 
     /// Nothing saved, terminal bar untouched: the toolbar's own default (#690), the mic only
-    /// on iOS 26; saved, so the terminal bar no longer feeds it. No group (no Full Access):
+    /// on iOS 26; not saved (#960), yet the terminal bar no longer feeds it. No group (no Full Access):
     /// the same default.
     func testToolbarListDefaultsToItsOwnList() throws {
         let store = try suiteStore(".default")
@@ -560,11 +560,31 @@ final class KeyboardToolbarTests: XCTestCase {
         if #unavailable(iOS 26) { want.removeAll { $0 == "mic" } }
         XCTAssertEqual(Shortcuts.Bar.toolbar.defaults.map(\.id), want)
         XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), want)
-        XCTAssertNotNil(store.string(forKey: Shortcuts.Bar.toolbar.storageKey), "seeded once")
+        XCTAssertNil(store.object(forKey: Shortcuts.Bar.toolbar.storageKey), "#960: the default stays implicit")
         Shortcuts.save(try ["pipe", "enter"].map(key), to: store)
         XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), want, "a later terminal edit doesn't reach it")
         XCTAssertEqual(Shortcuts.Bar.toolbar.load(nil).map(\.id), want)
         XCTAssertNotEqual(Shortcuts.Bar.toolbar.storageKey, Shortcuts.storageKey)
+    }
+
+    /// #960: the editor opened and closed unchanged (its `onAppear` load) leaves no toolbar key;
+    /// a customisation is saved; one set back to exactly the default (or Reset) removes the key,
+    /// and a terminal edit after that doesn't seed it. The terminal's bar is saved as before.
+    func testToolbarDefaultIsNeverSaved() throws {
+        let store = try suiteStore(".implicit"), k = Shortcuts.Bar.toolbar.storageKey
+        let defaults = Shortcuts.Bar.toolbar.defaults
+        _ = Shortcuts.Bar.toolbar.load(store)
+        XCTAssertNil(store.object(forKey: k), "opened, unchanged")
+        let custom = Array(defaults.dropLast())
+        Shortcuts.save(custom, to: store, key: k)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), custom.map(\.id), "customised: saved")
+        Shortcuts.save(custom + [defaults.last!], to: store, key: k)
+        XCTAssertNil(store.object(forKey: k), "back to the default: removed")
+        Shortcuts.save(try ["esc", "left", "enter"].map(key), to: store)
+        XCTAssertEqual(Shortcuts.Bar.toolbar.load(store).map(\.id), defaults.map(\.id), "no reseed")
+        XCTAssertNil(store.object(forKey: k))
+        Shortcuts.save(Shortcuts.defaults, to: store)
+        XCTAssertNotNil(store.string(forKey: Shortcuts.storageKey), "the terminal's unchanged")
     }
 
     /// #690: a saved bar or toolbar that is exactly a past default (the toolbar's, the old bar's
