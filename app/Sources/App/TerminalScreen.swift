@@ -809,7 +809,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     }
 
     /// The shell line through scroll-invariant row `row`: its soft wraps joined, its prompts out.
-    private func shellLine(_ row: Int) -> String {
+    private func shellLine(_ row: Int, prompt: String? = nil) -> String {
         let term = tv.getTerminal()
         var i = row
         while term.getScrollInvariantLine(row: i)?.isWrapped == true { i -= 1 }
@@ -821,13 +821,15 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         } while term.getScrollInvariantLine(row: i)?.isWrapped == true
         // #976: zsh shows no right prompt on a wrapped line, so only a lone row can carry one.
         let edge = i - start == 1 && (term.getScrollInvariantLine(row: start)?.getTrimmedLength() ?? 0) >= term.cols - 1
-        return TerminalMath.promptCommand(text, prompt: shellPrompt, atEdge: edge)
+        return TerminalMath.promptCommand(text, prompt: prompt ?? shellPrompt, atEdge: edge)
     }
 
     /// #976: the shell's left prompt, as the text left of the caret when a typed key first goes
     /// out on a row with nothing right of the caret but blanks or a right prompt, ending in a
     /// blank as zsh's `% ` and bash's `$ ` do. Copy line takes it off a row that starts with it.
     private(set) var shellPrompt: String?
+    /// #1059: the last few prompts learned, newest last (zsh's "% " before Claude Code's "> ").
+    private(set) var shellPrompts: [String] = []
     private weak var promptRow: BufferLine?
     private func notePrompt() {
         let term = tv.getTerminal()
@@ -841,6 +843,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         guard left.last == " ", !left.allSatisfy(\.isWhitespace),
               TerminalMath.promptCommand("." + right, prompt: nil, atEdge: l.getTrimmedLength() >= term.cols - 1) == "." else { return }
         shellPrompt = left
+        shellPrompts = Array((shellPrompts.filter { $0 != left } + [left]).suffix(4))
     }
 
     private var fedHostBytes = false
@@ -1049,7 +1052,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // must never see it as a row break (QA #287).
         var rows: [String] = []
         // #977: a shell's prompt rows (OSC 133 marks them, or they start with the learned prompt).
-        var marked: Set<Int> = [], learned: Set<Int> = []
+        var marked: Set<Int> = [], learned: [Int: String] = [:]
         let shell = !term.isCurrentBufferAlternate
         let touched = cell(at: p, term).line
         var line = touched
@@ -1058,7 +1061,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             let s = Self.rowText(l)   // a wrap right after a typed space keeps it
             if l.isWrapped, !rows.isEmpty { rows[rows.count - 1] += s } else {
                 if shell, l.count > 0, case .prompt = l[0].semanticContent { marked.insert(rows.count) }
-                if shell, let pr = shellPrompt, s.hasPrefix(pr) { learned.insert(rows.count) }
+                if shell, let pr = shellPrompts.filter(s.hasPrefix).max(by: { $0.count < $1.count }) { learned[rows.count] = pr }
                 rows.append(s)
             }
             if i - term.buffer.totalLinesTrimmed == touched { line = rows.count - 1 }
@@ -1067,11 +1070,14 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // #977: a prompt row is a block alone, its command only. A learned prompt is a guess: a
         // row indented under it is a TUI's wrapped message (Claude Code's "> "), so it stays joined.
         let indented = { (r: Int) in rows.indices.contains(r) && rows[r].first == " " && !rows[r].allSatisfy(\.isWhitespace) }
-        let stops = marked.union(learned.filter { !indented($0 + 1) })
+        // #1059: an older prompt's row stops only right above a row with the current prompt (or
+        // a marked one): a program started there, so output starting with "% " stays joined.
+        let stops = marked.union(learned.keys.filter { r in !indented(r + 1)
+            && (learned[r] == shellPrompt || learned[r + 1] == shellPrompt || marked.contains(r + 1)) })
         // ponytail: in vim/less, whose `~` rows and status line are never blank, a hold
         // joins the whole paragraph under the finger; detect those apps if that bites.
         let block = TerminalMath.commandBlock(rows, at: line, stops: stops)
-        let text = stops.contains(line) ? shellLine(touched + term.buffer.totalLinesTrimmed)
+        let text = stops.contains(line) ? shellLine(touched + term.buffer.totalLinesTrimmed, prompt: learned[line])
             : TerminalMath.oneLine(block.joined(separator: "\n"), cols: term.cols, widths: wrapWidths)
         guard !text.isEmpty else { return }
         pasteboard.string = text

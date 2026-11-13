@@ -143,6 +143,45 @@ final class PromptCopyTests: XCTestCase {
         }
     }
 
+    /// #1059 (QA): zsh's "% " row where Claude Code was started, a "> " message right under it.
+    /// Once "> " is learned the older prompt still stops the message's block.
+    func testAnOlderPromptRowRightAboveTheCurrentPromptStaysAStop() async throws {
+        let (vc, tv, pb) = try await learnPercentThenAngle()
+        tv.feed(text: "\r\n> please read the file\r\n  and fix it\r\n\r\n> ")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        for (r, want) in [(try row(tv, "> please"), "> please read the file and fix it"), (try row(tv, "% cc"), "cc")] {
+            pb.string = "none"
+            vc.copyLine(at: rowPoint(tv, r))
+            XCTAssertEqual(pb.string, want, "hold on row \(r)")
+        }
+    }
+
+    /// Output that only starts with the older prompt ("% " in a LaTeX file) stays one block.
+    func testOutputStartingWithAnOlderPromptStaysJoined() async throws {
+        let (vc, tv, pb) = try await learnPercentThenAngle()
+        tv.feed(text: "\r\n\r\n% a comment\r\nnext row\r\n\r\n> ")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        for r in [try row(tv, "% a"), try row(tv, "next")] {
+            pb.string = "none"
+            vc.copyLine(at: rowPoint(tv, r))
+            XCTAssertEqual(pb.string, "% a comment next row", "hold on row \(r)")
+        }
+    }
+
+    /// zsh with PROMPT='% ' and RPROMPT, "cc" typed there, then Claude Code's "> " learned.
+    private func learnPercentThenAngle() async throws -> (TerminalHostVC, TerminalView, UIPasteboard) {
+        let (vc, tv, pb) = try await makeVC()
+        tv.feed(text: "\r% \u{1b}7\u{1b}[\(tv.getTerminal().cols - 7)G6:38:42\u{1b}8")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        vc.send(source: tv, data: [0x63])
+        tv.feed(text: "cc\r\n> ")
+        try await Task.sleep(nanoseconds: 100_000_000)
+        vc.send(source: tv, data: [0x70])
+        XCTAssertEqual(vc.shellPrompts, ["% ", "> "])
+        tv.feed(text: "\r\u{1b}[K\u{1b}[A")   // back onto the "% cc" row's end of line
+        return (vc, tv, pb)
+    }
+
     /// The same with OSC 133 marks and no learned prompt.
     func testLongPressOnAnOSC133PromptRowCopiesItsCommandOnly() async throws {
         let (vc, tv, pb) = try await makeVC()
