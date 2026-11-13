@@ -711,11 +711,16 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // brings it back as above, Done at once): no key reaches the terminal mid-filter.
         let overList = new.bottomAnchor.constraint(equalTo: bar.topAnchor)   // rides the keyboard with the bar
         let overBar = new.bottomAnchor.constraint(equalTo: bar.bottomAnchor)
+        // #972: filter mode two rows tall above the keys, as the extension's, not the screen's height.
+        let full = new.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        let twoRows = new.heightAnchor.constraint(equalToConstant: PanelFilter.twoRowsHeight)
+        twoRows.priority = .required - 1   // over the list's hug; less room (landscape): the safe area's top wins
+        let filtering = [overBar, twoRows, new.topAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.topAnchor)]
         var lowered = false
         new.overBar = { [weak self] on in
             guard let self else { return }
-            NSLayoutConstraint.deactivate([on ? overList : overBar])
-            NSLayoutConstraint.activate([on ? overBar : overList])
+            NSLayoutConstraint.deactivate(on ? [overList, full] : filtering)
+            NSLayoutConstraint.activate(on ? filtering : [overList, full])
             if on, self.tv.isFirstResponder {
                 lowered = self.tv.resignFirstResponder()
                 self.panelLoweredKeyboard = self.panelLoweredKeyboard || lowered
@@ -727,7 +732,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             self.view.layoutIfNeeded()
         }
         NSLayoutConstraint.activate([
-            new.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            full,
             new.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             new.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             overList,

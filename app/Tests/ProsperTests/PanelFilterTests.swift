@@ -379,6 +379,35 @@ final class PanelFilterTests: XCTestCase {
         XCTAssertNotEqual(vc.view.hitTest(mid, with: nil)?.isDescendant(of: panel), true)
     }
 
+    /// #972: the app's filter mode is two rows tall above the keys, as the extension's (QA
+    /// #665, build 136: a tall list); the list itself still reaches the safe area's top.
+    func testTheAppsFilterShowsTwoRows() throws {
+        let store = SnippetStore(url: dir.appendingPathComponent("Snippets/snippets.json"))
+        XCTAssertTrue(store.save(.init(snippets: (1...6).map { .init(name: "Snippet \($0)", text: "text \($0)") })))
+        let vc = TerminalHostVC(conn: SessionConnection(transport: SpyTransport(), session: DchSession(name: "t", alias: nil)),
+                                handle: TermHandle())
+        vc.pasteboard = pb
+        vc.snippets = store
+        vc.view.frame = CGRect(x: 0, y: 0, width: 390, height: 700)
+        vc.view.layoutIfNeeded()
+        let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar })
+        vc.showSnippets(true)
+        let panel = try XCTUnwrap(vc.snippetsPanel)
+        vc.view.layoutIfNeeded()
+        let listTop = panel.frame.minY
+        let filter = try open(panel)
+        filter.layoutIfNeeded()
+        XCTAssertEqual(filter.shown, 2)
+        XCTAssertEqual(filter.results.frame.height, 2 * PanelFilter.rowHeight, accuracy: 0.5, "two rows, not a tall list")
+        XCTAssertEqual(panel.frame.height, PanelFilter.twoRowsHeight, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.maxY, bar.frame.maxY, accuracy: 0.5, "over the bar")
+        XCTAssertEqual(filter.go.frame.height, PanelFilter.keyRow.upperBound, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(filter.contentSize.height, filter.bounds.height + 0.5, "no scroll")
+        filter.done.sendActions(for: .touchUpInside)
+        XCTAssertEqual(panel.frame.minY, listTop, accuracy: 0.5, "Done gives the list its height back")
+        XCTAssertEqual(panel.frame.maxY, bar.frame.minY, accuracy: 0.5)
+    }
+
     /// The search row shows only over rows it can match: an empty list, or one of images,
     /// has none; a clip captured while the panel is open brings it.
     func testSearchRowOnlyOverRowsItCanMatch() throws {

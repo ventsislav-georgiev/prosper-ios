@@ -20,6 +20,9 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
     static let cellSide: CGFloat = 34
     static let keyRow: ClosedRange<CGFloat> = 26...40
     static let gap: CGFloat = 5
+    /// #972: the field, two result rows and the keys at their cap, as `layoutSubviews` lays them:
+    /// the app's panel in filter mode is this tall, as the extension's is the keys' height.
+    static let twoRowsHeight = 3 + fieldHeight + gap + 2 * rowHeight + gap + 4 * keyRow.upperBound + 3 * gap + 4
 
     var cell: (Int) -> UITableViewCell = { _ in UITableViewCell() }
     var pickable: (Int) -> Bool = { _ in true }
