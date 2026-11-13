@@ -180,7 +180,10 @@ enum TerminalMath {
     }
 
     /// Map a byte to its control-char form (a–z/A–Z → ^A–^Z, others via `& 0x1f`).
+    /// #1047: xterm digits and `?`: 2 → NUL, 3–7 → ESC…US, 8 and ? → DEL.
     static func controlByte(_ b: UInt8) -> UInt8 {
+        if b == 0x38 || b == 0x3f { return 0x7f }
+        if b >= 0x32 && b <= 0x37 { return b == 0x32 ? 0x00 : b - 0x18 }
         let upper = (b >= 0x61 && b <= 0x7a) ? b - 0x20 : b
         return upper & 0x1f
     }

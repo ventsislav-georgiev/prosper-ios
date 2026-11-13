@@ -518,8 +518,14 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(mod([0x7e], .ctrl), [0x1e])                          // ctrl+~
         XCTAssertEqual(mod([0x1b], .ctrl), [0x1b], "a lone Esc with ctrl goes out unchanged")
         XCTAssertEqual(mod([0x20], .ctrl), [0x00], "#1009: ctrl+space is NUL")
-        XCTAssertEqual(mod([0x32], .ctrl), [0x12])   // #1009: looks wrong, see report (xterm sends NUL)
-        XCTAssertEqual(mod([0x3f], .ctrl), [0x1f])   // #1009: looks wrong, see report (xterm sends DEL)
+        XCTAssertEqual(mod([0x32], .ctrl), [0x00], "#1047: ctrl+2 is NUL")
+        XCTAssertEqual(mod([0x33], .ctrl), [0x1b], "#1047: ctrl+3 is ESC")
+        XCTAssertEqual(mod([0x34], .ctrl), [0x1c], "#1047: ctrl+4 is FS")
+        XCTAssertEqual(mod([0x35], .ctrl), [0x1d], "#1047: ctrl+5 is GS")
+        XCTAssertEqual(mod([0x36], .ctrl), [0x1e], "#1047: ctrl+6 is RS")
+        XCTAssertEqual(mod([0x37], .ctrl), [0x1f], "#1047: ctrl+7 is US")
+        XCTAssertEqual(mod([0x38], .ctrl), [0x7f], "#1047: ctrl+8 is DEL")
+        XCTAssertEqual(mod([0x3f], .ctrl), [0x7f], "#1047: ctrl+? is DEL")
         XCTAssertEqual(mod([0x0d], .ctrl), [0x0d], "#1009: ctrl+enter is CR")
         XCTAssertEqual(mod([0x09], .ctrl), [0x09], "#1009: ctrl+tab is TAB")
         XCTAssertEqual(mod([0x62], .alt), [0x1b, 0x62])                     // meta-b

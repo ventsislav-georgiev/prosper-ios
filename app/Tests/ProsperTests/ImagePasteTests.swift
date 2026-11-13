@@ -273,8 +273,14 @@ final class ImagePasteTests: XCTestCase {
         }
         let typed: [(UInt8, [UInt8], String)] = [
             (0x20, [0x00], "ctrl+space is NUL"),
-            (0x32, [0x12], "ctrl+2"),     // #1009: looks wrong, see report (xterm sends NUL)
-            (0x3f, [0x1f], "ctrl+?"),     // #1009: looks wrong, see report (xterm sends DEL)
+            (0x32, [0x00], "#1047: ctrl+2 is NUL"),
+            (0x33, [0x1b], "#1047: ctrl+3 is ESC"),
+            (0x34, [0x1c], "#1047: ctrl+4 is FS"),
+            (0x35, [0x1d], "#1047: ctrl+5 is GS"),
+            (0x36, [0x1e], "#1047: ctrl+6 is RS"),
+            (0x37, [0x1f], "#1047: ctrl+7 is US"),
+            (0x38, [0x7f], "#1047: ctrl+8 is DEL"),
+            (0x3f, [0x7f], "#1047: ctrl+? is DEL"),
             (0x0d, [0x0d], "ctrl+enter is CR"),
             (0x09, [0x09], "ctrl+tab is TAB"),
             (0x1b, [0x1b], "a lone Esc goes out unchanged"),
