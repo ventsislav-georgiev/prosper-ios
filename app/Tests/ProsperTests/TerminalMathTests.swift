@@ -517,6 +517,11 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertEqual(mod([0x44], .ctrl), [0x04])                          // ctrl+D (upper)
         XCTAssertEqual(mod([0x7e], .ctrl), [0x1e])                          // ctrl+~
         XCTAssertEqual(mod([0x1b], .ctrl), [0x1b], "a lone Esc with ctrl goes out unchanged")
+        XCTAssertEqual(mod([0x20], .ctrl), [0x00], "#1009: ctrl+space is NUL")
+        XCTAssertEqual(mod([0x32], .ctrl), [0x12])   // #1009: looks wrong, see report (xterm sends NUL)
+        XCTAssertEqual(mod([0x3f], .ctrl), [0x1f])   // #1009: looks wrong, see report (xterm sends DEL)
+        XCTAssertEqual(mod([0x0d], .ctrl), [0x0d], "#1009: ctrl+enter is CR")
+        XCTAssertEqual(mod([0x09], .ctrl), [0x09], "#1009: ctrl+tab is TAB")
         XCTAssertEqual(mod([0x62], .alt), [0x1b, 0x62])                     // meta-b
         XCTAssertEqual(mod([0x61], .shift), [0x41])
         XCTAssertEqual(mod([0x7a], .shift), [0x5a])
@@ -566,6 +571,8 @@ final class TerminalMathTests: XCTestCase {
         XCTAssertNil(mod([0x1b, 0x5b, 0x5a], all, bar: true), "the back-tab key passes unchanged")
         XCTAssertNil(mod([0x1b, 0x0d], all, bar: true), "the newline key passes unchanged")
         XCTAssertNil(mod([0x1b, 0x5b, 0x33, 0x7e], .ctrl, bar: true), "only 5~ and 6~ take a parameter")
+        XCTAssertNil(mod([0x1b, 0x62], .ctrl, bar: true), "#1009: the word-back key bypasses ctrl")
+        XCTAssertNil(mod([0x05, 0x15], .ctrl, bar: true), "#1009: the delete-line key bypasses ctrl")
         XCTAssertNil(mod([0x1b, 0x5b, 0x41], [], bar: true))
     }
 

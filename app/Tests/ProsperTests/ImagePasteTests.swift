@@ -196,8 +196,7 @@ final class ImagePasteTests: XCTestCase {
     }
 
     /// #320 QA #126: only a single typed ASCII byte takes the armed ctrl. Multi-byte text
-    /// (é was sent as 0x03 = ^C) passes through whole and keeps the arm; a lone Esc goes
-    /// out unchanged and disarms.
+    /// (é was sent as 0x03 = ^C) passes through whole and keeps the arm.
     func testCtrlArmedAppliesOnlyToSingleAsciiByte() async throws {
         let (vc, spy) = try await makeVC()
         let bar = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? ShortcutBar }.first)
@@ -227,12 +226,7 @@ final class ImagePasteTests: XCTestCase {
         vc.send(source: tv, data: [0x7e][...])
         XCTAssertEqual(spy.sent.last, [0x1e], "ctrl+~ (0x7e, top of the chord range) must send 0x1e")
         XCTAssertFalse(bar.ctrlArmed, "ctrl+~ must disarm ctrl")
-        bar.onKey?(ShortcutKey(id: "ctrl", label: "ctrl", kind: .ctrl))
-        XCTAssertTrue(bar.ctrlArmed, "precondition: ctrl re-armed")
-
-        vc.send(source: tv, data: [0x1b][...])
-        XCTAssertEqual(spy.sent.last, [0x1b], "a lone Esc must go out unchanged")
-        XCTAssertFalse(bar.ctrlArmed, "a lone Esc must disarm ctrl")
+        // #1009: the lone-Esc row is in testCtrlArmedRowsSpendTheArm, on a shared arm.
 
         bar.onKey?(ShortcutKey(id: "ctrl", label: "ctrl", kind: .ctrl))
         XCTAssertTrue(bar.ctrlArmed, "precondition: ctrl re-armed")
@@ -264,6 +258,50 @@ final class ImagePasteTests: XCTestCase {
         vc.send(source: tv, data: Array("\u{1b}[98;2u".utf8)[...])
         XCTAssertEqual(spy.sent.last, Array("\u{1b}[98;4u".utf8), "alt+shift+b")
         XCTAssertEqual(bar.modes[.alt], .off, "the kitty key must spend a once alt")
+    }
+
+    /// #1009 (QA #138): every armed-ctrl row, typed or a bar key, as the code sends it today.
+    /// An Esc, enter or tab sent unarmed looks the same on the wire, so each row arms through
+    /// the one `arm` that also checks it: dropping the arm fails every row, not just one.
+    func testCtrlArmedRowsSpendTheArm() async throws {
+        let (vc, spy) = try await makeVC()
+        let (bar, tv) = try barAndTerminal(vc)
+        let ctrl = try catalogKey("ctrl")
+        func arm(_ row: String) {
+            bar.onKey?(ctrl)
+            XCTAssertEqual(bar.modes[.ctrl], .once, "precondition for \(row): ctrl armed once")
+        }
+        let typed: [(UInt8, [UInt8], String)] = [
+            (0x20, [0x00], "ctrl+space is NUL"),
+            (0x32, [0x12], "ctrl+2"),     // #1009: looks wrong, see report (xterm sends NUL)
+            (0x3f, [0x1f], "ctrl+?"),     // #1009: looks wrong, see report (xterm sends DEL)
+            (0x0d, [0x0d], "ctrl+enter is CR"),
+            (0x09, [0x09], "ctrl+tab is TAB"),
+            (0x1b, [0x1b], "a lone Esc goes out unchanged"),
+        ]
+        for (key, out, row) in typed {
+            arm(row)
+            vc.send(source: tv, data: [key][...])
+            XCTAssertEqual(spy.sent.last, out, row)
+            XCTAssertEqual(bar.modes[.ctrl], .off, "\(row): the key must spend the arm")
+        }
+        // Single-byte bar keys take ctrl like a typed byte and spend it.
+        for (id, out) in [("esc", [0x1b]), ("enter", [0x0d]), ("tab", [0x09]), ("ctlc", [0x03])] as [(String, [UInt8])] {
+            arm("bar \(id)")
+            bar.onKey?(try catalogKey(id))
+            XCTAssertEqual(spy.sent.last, out, "bar \(id)")
+            XCTAssertEqual(bar.modes[.ctrl], .off, "bar \(id) must spend the arm")
+        }
+        // Multi-byte bar keys that aren't a CSI cursor key bypass ctrl: unchanged, arm kept.
+        arm("the bar bypass")
+        for id in ["wordBack", "stab", "snl", "delLine"] {
+            let key = try XCTUnwrap((Shortcuts.catalog + Shortcuts.hostOnly).first { $0.id == id }, id)
+            bar.onKey?(key)
+            XCTAssertEqual(spy.sent.last, key.bytes, "bar \(id) must go out unchanged")
+            XCTAssertEqual(bar.modes[.ctrl], .once, "bar \(id) spent the arm")
+        }
+        vc.send(source: tv, data: [0x61][...])
+        XCTAssertEqual(spy.sent.last, [0x01], "ctrl no longer applies after the bypassed bar keys")
     }
 
     // MARK: sticky ctrl / alt / shift (#450)
