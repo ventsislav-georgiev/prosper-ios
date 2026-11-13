@@ -274,6 +274,8 @@ final class ShortcutCapTests: XCTestCase {
         XCTAssertNotEqual(ctrl.configuration?.background.strokeColor, alt.configuration?.background.strokeColor, "once has no ring")
         XCTAssertEqual(ctrl.configuration?.background.strokeColor, shift.configuration?.background.strokeColor, "once keeps the hairline")
         XCTAssertEqual(ctrl.configuration?.background.strokeWidth, 1)
+        XCTAssertEqual(alt.configuration?.background.strokeOutset, -2.5, "inset over the fill, off the backdrop's edge")
+        XCTAssertEqual(ctrl.configuration?.background.strokeOutset, 0)
 
         // The bar: short, centered under the label, inside the cap.
         let led = altLED.frame
@@ -293,6 +295,64 @@ final class ShortcutCapTests: XCTestCase {
         bar.modes = [.alt: .locked]
         bar.layoutIfNeeded()
         XCTAssertEqual(altLED.frame, led, "the bar keeps its place through mode changes")
+    }
+
+    /// #955: the locked ring is drawn inside the fill, so it reads on every accent: the cap's outer
+    /// edge stays the fill, a few points in is the ink. Rendered, not read off the configuration.
+    @MainActor
+    func testLockedRingIsInsetOverTheFill() throws {
+        let saved = TerminalKeyboard.Style.bar
+        addTeardownBlock { TerminalKeyboard.Style.bar = saved }
+        let lits: [(String, KeyboardSettings.Theme, KeyboardSettings.Accent)] =
+            [("violet", .dark, .violet), ("green", .dark, .green), ("pink", .dark, .pink), ("none", .dark, .none), ("neon", .neon, .violet)]
+        for (name, theme, lit) in lits {
+            let p = TerminalKeyboard.Style.Palette(theme, accent: lit)
+            TerminalKeyboard.Style.bar = p
+            let bar = try makeBar(["esc", "ctrl", "alt", "shift", "enter"])
+            bar.frame.size.height = bar.intrinsicContentSize.height
+            let window = UIWindow(frame: bar.frame)
+            window.overrideUserInterfaceStyle = p.style
+            window.backgroundColor = p.backdrop
+            window.addSubview(bar)
+            window.isHidden = false
+            bar.modes = [.ctrl: .once, .alt: .locked]
+            bar.layoutIfNeeded()
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.6))   // past the configuration's transition
+            let alt = try XCTUnwrap(Self.caps(bar).first { $0.accessibilityLabel == "alt" })
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 3
+            format.preferredRange = .standard
+            let image = UIGraphicsImageRenderer(bounds: alt.bounds, format: format).image {
+                alt.layer.render(in: $0.cgContext)
+            }
+            if let dir = ProcessInfo.processInfo.environment["RENDER_955"] {
+                let shot = UIGraphicsImageRenderer(bounds: bar.bounds, format: format).image {
+                    bar.layer.render(in: $0.cgContext)
+                }
+                try shot.pngData()?.write(to: URL(fileURLWithPath: dir).appendingPathComponent("locked-\(name).png"))
+            }
+            // Redrawn as RGBA bytes: the renderer's own layout is BGRA.
+            let src = try XCTUnwrap(image.cgImage)
+            var data = [UInt8](repeating: 0, count: src.width * src.height * 4)
+            let ctx = try XCTUnwrap(CGContext(data: &data, width: src.width, height: src.height, bitsPerComponent: 8,
+                                              bytesPerRow: src.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            ctx.draw(src, in: CGRect(x: 0, y: 0, width: src.width, height: src.height))
+            let y = src.height / 2
+            let px = { (x: CGFloat) -> [CGFloat] in (0..<3).map { CGFloat(data[y * src.width * 4 + Int(x * 3) * 4 + $0]) / 255 } }
+            let rgb = { (c: UIColor) -> [CGFloat] in
+                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+                c.resolvedColor(with: UITraitCollection(userInterfaceStyle: p.style)).getRed(&r, green: &g, blue: &b, alpha: &a)
+                return [r, g, b]
+            }
+            let near = { (a: [CGFloat], b: [CGFloat]) in zip(a, b).allSatisfy { abs($0 - $1) < 0.12 } }
+            XCTAssertFalse(near(px(0.5), rgb(p.onAccent)), "\(name): no ink on the cap's outer edge")
+            XCTAssertTrue(near(px(0.5), rgb(p.accent)) || near(px(0.5), rgb(p.accentEnd)) || near(px(0.5), rgb(p.border)),
+                          "\(name): the outer edge is the fill or the hairline, got \(px(0.5))")
+            XCTAssertTrue([2.0, 2.4, 2.7, 3.0, 3.4].contains { near(px($0), rgb(p.onAccent)) },
+                          "\(name): the ring, a few points in")
+            withExtendedLifetime(window) {}
+        }
     }
 
     /// The send key: Slack's paper plane, labelled "send", filled with the accent (#626).
