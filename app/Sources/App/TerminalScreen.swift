@@ -397,6 +397,11 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         }
         tv.onPaste = { [weak self] s in self?.sendText(s) }
         tv.pasteBracketed = { [weak self] in self?.pasteBracketed ?? true }
+        tv.collect = { [weak self] body in
+            guard let self else { body(); return [] }
+            return self.collect(body)
+        }
+        tv.sendWhole = { [weak self] in if !$0.isEmpty { self?.conn.send(ArraySlice($0)) } }
         stateSub = conn.$state.sink { [weak self] in self?.applyInputState($0) }
         #if !targetEnvironment(macCatalyst)
         if #available(iOS 26, *), let store = Dictation.Store.shared() {
@@ -855,6 +860,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// not stale after a reconnect; before a fresh view has fed any host byte the re-arm
     /// can't have landed yet, so it is wrapped regardless. Sanitized either way.
     private func sendText(_ s: String, thenEnter: Bool = false) {
+        tv.flushHeld()
         (keyboardInputView as? TerminalKeyboard)?.resetWord()   // a paste ends the typed word
         conn.send(ArraySlice(TerminalMath.pasteBytes(s, thenEnter: thenEnter, bracketed: pasteBracketed)))
     }
@@ -899,6 +905,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// that takes them spends every once modifier; locked ones stay. One that doesn't
     /// goes out as it is and leaves them all lit.
     private func sendModified(_ bytes: [UInt8], fromBar: Bool) {
+        tv.flushHeld()
         var lit: TerminalMath.Modifiers = []
         for (kind, flag) in [(ShortcutKey.Kind.shift, TerminalMath.Modifiers.shift), (.alt, .alt), (.ctrl, .ctrl)]
         where (modifiers[kind]?.mode ?? .off) != .off { lit.insert(flag) }
@@ -911,6 +918,16 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         if !lit.isDisjoint(with: [.ctrl, .alt]) { (keyboardInputView as? TerminalKeyboard)?.resetWord() }
         shortcutBar?.modes = modifiers.mapValues(\.mode)
         conn.send(ArraySlice(out))
+    }
+
+    /// What `body` sends through the delegate, caught instead of sent: a scroll burst, a
+    /// terminal edit (#1058). Nests.
+    private func collect(_ body: () -> Void) -> [UInt8] {
+        let outer = coalescing
+        coalescing = []
+        defer { coalescing = outer }
+        body()
+        return coalescing ?? []
     }
 
     // MARK: - Scroll by swipe → terminal input
@@ -1365,10 +1382,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             // (Claude Code) answers EVERY one with a full repaint. That's what the
             // batching was supposed to prevent, and this was the path it missed.
             // Catching them turns the burst into the single write the far end wants.
-            coalescing = []
-            for _ in 0..<count { term.sendEvent(buttonFlags: flags, x: 1, y: 1) }
-            let burst = coalescing ?? []
-            coalescing = nil
+            let burst = collect { for _ in 0..<count { term.sendEvent(buttonFlags: flags, x: 1, y: 1) } }
             if !burst.isEmpty { conn.send(ArraySlice(burst)) }
         } else if term.isCurrentBufferAlternate {
             let seq: [UInt8] = up
@@ -1597,7 +1611,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             notePrompt()
             if coalescing != nil {
                 coalescing?.append(contentsOf: data)   // scroll burst — one write, see emitScroll
-            } else if data.count == 1 || SessionConnection.isKittyKey(Array(data)) {
+                return
+            }
+            tv.flushHeld()   // a held edit goes first (#1058)
+            if data.count == 1 || SessionConnection.isKittyKey(Array(data)) {
                 // Only a single typed ASCII key takes the bar's modifiers: an ESC-led frame
                 // is a terminal reply (OSC/DCS/APC, kitty flags) or a key sequence (arrows,
                 // alt+key, return's ESC CR), multi-byte text (é, emoji) is not a chord, and
@@ -1809,6 +1826,10 @@ private final class DchTerminalView: TerminalView {
     var onPaste: (String) -> Void = { _ in }
     /// Whether `onPaste` wraps the text as a bracketed paste (#1008).
     var pasteBracketed: () -> Bool = { true }
+    /// What the closure sends, caught instead of sent; and bytes sent as one write with no
+    /// bar modifiers (#1058).
+    var collect: (() -> Void) -> [UInt8] = { $0(); return [] }
+    var sendWhole: ([UInt8]) -> Void = { _ in }
     /// SwiftTerm's own copy and select-all (Cmd-C, Cmd-A) end the double-tap selection.
     var onSelectionEnded: () -> Void = {}
     /// Cmd-C on the double-tap selection: true when it copied it as the menu's Copy does.
@@ -1838,8 +1859,54 @@ private final class DchTerminalView: TerminalView {
     /// is two UTF-8 bytes, so it never takes the one-key exemption (#293). Pasted text
     /// replaces a pending mark the way the typed path does: the mark (never sent) is dropped.
     override func insertText(_ text: String) {
-        guard text.utf8.count != 1, Self.isPaste(text) else { return super.insertText(text) }
+        guard text.utf8.count != 1, Self.isPaste(text) else { return typeText(text) }
         sendPaste(text)
+    }
+
+    /// #1058: an edit held back for the rest of this event, as what it does to the host's line:
+    /// `gone` deleted from its end, then `typed`. UIKit runs a keyboard extension's deletes
+    /// as select-two, deleteBackward, insertText(first) (`deleteBackwardAndNotifyAtEnd:
+    /// deletionCount:reinsertTextInLoop:`), then inserts the word: SwiftTerm sent DEL DEL and
+    /// the letter for each (QA: 8 DELs, 3 letters retyped for "delt" → "delta's "). Held,
+    /// the retyped start cancels against what was deleted, and the rest is one write.
+    private var held: (gone: String, typed: String)?
+
+    /// Sends the held edit. Every other send goes after it: the host's own sends call this.
+    func flushHeld() {
+        guard let h = held else { return }
+        held = nil
+        sendWhole([UInt8](repeating: 0x7f, count: h.gone.count) + Array(h.typed.utf8))
+    }
+
+    private func hold(_ edit: (gone: String, typed: String)) {
+        if held == nil { DispatchQueue.main.async { [weak self] in self?.flushHeld() } }
+        held = edit
+    }
+
+    /// A selection deleted is held (DELs only: no kitty keys, no ^H); a caret's backspace isn't.
+    override func deleteBackward() {
+        guard markedTextRange == nil, let sel = selectedTextRange, !sel.isEmpty, let gone = text(in: sel),
+              getTerminal().keyboardEnhancementFlags.isEmpty, !backspaceSendsControlH else {
+            flushHeld()
+            return super.deleteBackward()
+        }
+        if held?.typed.isEmpty == false { flushHeld() }
+        let before = held?.gone ?? ""
+        let out = collect { super.deleteBackward() }
+        guard out == [UInt8](repeating: 0x7f, count: gone.count) else { flushHeld(); return sendWhole(out) }
+        hold((gone + before, ""))
+    }
+
+    /// Typed text after a held delete joins it, less what it retypes of the deleted start.
+    private func typeText(_ text: String) {
+        guard let h = held, !Self.isPaste(text) else {
+            flushHeld()
+            return super.insertText(text)
+        }
+        let out = collect { super.insertText(text) }
+        guard out == Array(text.utf8) else { flushHeld(); return sendWhole(out) }   // auto-period, a modifier
+        let kept = h.typed.isEmpty ? zip(h.gone, text).prefix { $0 == $1 }.count : 0
+        hold((String(h.gone.dropFirst(kept)), h.typed + text.dropFirst(kept)))
     }
 
     /// #1008: what a paste delivered goes into SwiftTerm's input buffer, unsent, as typed
@@ -1883,8 +1950,13 @@ private final class DchTerminalView: TerminalView {
         }
         let base = unsafeBitCast(imp, to: Fn.self)
         let route: @convention(block) (DchTerminalView, UITextRange, NSString) -> Void = { tv, range, text in
-            guard tv.markedTextRange == nil, isPaste(text as String) else { return base(tv, sel, range, text) }
-            base(tv, sel, range, "")
+            tv.flushHeld()
+            guard tv.markedTextRange == nil else { return base(tv, sel, range, text) }
+            guard isPaste(text as String) else {
+                let (r, t) = tv.keepingSharedPrefix(range, text as String)
+                return tv.sendWhole(tv.collect { base(tv, sel, r, t as NSString) })
+            }
+            tv.sendWhole(tv.collect { base(tv, sel, range, "") })
             // base leaves the caret past the range, not at its start, when the caret was beyond it
             tv.selectedTextRange = tv.textRange(from: range.start, to: range.start)
             tv.sendPaste(text as String)
@@ -1892,6 +1964,22 @@ private final class DchTerminalView: TerminalView {
         let types = method_getTypeEncoding(method)
         class_addMethod(DchTerminalView.self, sel, imp_implementationWithBlock(route), types)
     }()
+
+    /// #1058: a replace (predictive text) keeps what its text shares with the replaced text's
+    /// start, so only the rest is deleted and typed, in one write. Not when the caret is inside
+    /// the range (base moves it differently), nor for an auto-period ("." or ". "), which base
+    /// rewrites against the replaced text.
+    private func keepingSharedPrefix(_ range: UITextRange, _ text: String) -> (UITextRange, String) {
+        let period = [".", ". "]
+        guard let old = self.text(in: range), let caret = selectedTextRange?.start,
+              compare(caret, to: range.end) != .orderedAscending, !period.contains(text) else { return (range, text) }
+        let kept = zip(old, text).prefix { $0 == $1 }.count
+        let tail = String(text.dropFirst(kept))
+        guard kept > 0, !period.contains(tail),
+              let start = position(from: range.start, offset: String(old.prefix(kept)).utf16.count),
+              let r = textRange(from: start, to: range.end) else { return (range, text) }
+        return (r, tail)
+    }
 
     /// Text carrying a C0 or C1 control (nvim takes U+009B as ESC, #293). `insertText`
     /// exempts a single byte (one key) itself.

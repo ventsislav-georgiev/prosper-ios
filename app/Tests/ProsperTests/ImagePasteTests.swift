@@ -1111,8 +1111,8 @@ final class ImagePasteTests: XCTestCase {
         tv.insertText("helo")
         var mark = spy.sent.count
         _ = (tv as NSObject).perform(replace, with: try lastWord(), with: "hello ")
-        XCTAssertEqual(Array(spy.sent[mark...].joined()), del + Array("hello ".utf8),
-                       "plain replaced text must go out typed, after deleting the old word")
+        XCTAssertEqual(Array(spy.sent[mark...]), [[0x7f] + Array("lo ".utf8)],
+                       "plain replaced text must go out typed, deleting only what differs (#1058)")
 
         tv.insertText("helo")
         mark = spy.sent.count
@@ -1176,7 +1176,7 @@ final class ImagePasteTests: XCTestCase {
         let mark = spy.sent.count
         let all = try XCTUnwrap(tv.textRange(from: tv.beginningOfDocument, to: tv.endOfDocument))
         _ = (tv as NSObject).perform(replace, with: all, with: "echo")
-        XCTAssertEqual(Array(spy.sent[mark...].joined()), [0x7f, 0x7f] + Array("echo".utf8),
+        XCTAssertEqual(Array(spy.sent[mark...].joined()), Array("ho".utf8),
                        "a replace deleted into the next prompt, past the paste's last line")
     }
 
@@ -1578,5 +1578,126 @@ final class ImagePasteTests: XCTestCase {
         let toasts = vc.view.subviews.flatMap(\.subviews).compactMap { ($0 as? UILabel)?.text }
             .filter { $0.hasPrefix("Copied as one line") }
         XCTAssertEqual(toasts, ["Copied as one line\n[main abc123] fix"])
+    }
+
+    /// #1058 QA: "alpha beta\ngamma delt" pasted into cat (no bracketed paste), then the
+    /// keyboard extension's "delta's": its output is 4 deletes and the word. UIKit runs each
+    /// delete as select-two, deleteBackward, insertText(first) (SwiftTerm's trace of
+    /// `deleteBackwardAndNotifyAtEnd:deletionCount:reinsertTextInLoop:`), and SwiftTerm sent
+    /// DEL DEL and the letter each time: 13 writes, 8 DELs. Now the retyped letters cancel
+    /// and the word's shared start stays: one write, "a's ".
+    func testExtensionWordPickOverAPasteSendsOneMinimalWrite() async throws {
+        let (vc, spy) = try await makeVC()   // fed host bytes, never 2004h: cat
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = vc
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let focused = tv.becomeFirstResponder()   // for UIKit's own loop, at the end
+        try await Task.sleep(nanoseconds: 300_000_000)
+        func all() throws -> String? {
+            tv.text(in: try XCTUnwrap(tv.textRange(from: tv.beginningOfDocument, to: tv.endOfDocument)))
+        }
+        func selectLast(_ n: Int) throws {
+            let start = try XCTUnwrap(tv.position(from: tv.endOfDocument, offset: -n))
+            tv.selectedTextRange = tv.textRange(from: start, to: tv.endOfDocument)
+        }
+        tv.insertText("alpha beta\ngamma delt")
+        XCTAssertEqual(try all(), "gamma delt", "precondition: the paste's unrun line is in the buffer")
+
+        var mark = spy.sent.count
+        for _ in 0..<4 {
+            let first = try XCTUnwrap(tv.text(in: try XCTUnwrap(tv.textRange(
+                from: try XCTUnwrap(tv.position(from: tv.endOfDocument, offset: -2)),
+                to: try XCTUnwrap(tv.position(from: tv.endOfDocument, offset: -1))))))
+            try selectLast(2)
+            tv.deleteBackward()
+            tv.insertText(first)
+        }
+        tv.insertText("delta's ")
+        try await Task.sleep(nanoseconds: 50_000_000)   // the event ends
+        XCTAssertEqual(Array(spy.sent[mark...]), [Array("a's ".utf8)], "not one minimal write")
+        XCTAssertEqual(try all(), "gamma delta's ")
+
+        // An extension backspace alone (select one, deleteBackward): one DEL.
+        mark = spy.sent.count
+        try selectLast(1)
+        tv.deleteBackward()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(Array(spy.sent[mark...]), [[0x7f]])
+
+        // A held delete goes out before anything sent after it in the same event.
+        mark = spy.sent.count
+        try selectLast(1)
+        tv.deleteBackward()
+        tv.insertText("x\ny")
+        XCTAssertEqual(Array(spy.sent[mark...]), [[0x7f], Array("x\ny".utf8)], "the paste overtook the delete")
+        mark = spy.sent.count
+        try selectLast(1)
+        tv.deleteBackward()
+        vc.send(source: tv, data: Array("ab".utf8)[...])   // a key, a terminal reply
+        XCTAssertEqual(Array(spy.sent[mark...]), [[0x7f], Array("ab".utf8)], "a key overtook the delete")
+
+        // UIKit's own loop, where this iOS has it, as a keyboard output with text runs it.
+        let impl = (NSClassFromString("UIKeyboardImpl") as AnyObject?)?
+            .perform(NSSelectorFromString("activeInstance"))?.takeUnretainedValue() as? NSObject
+        let loop = NSSelectorFromString("deleteBackwardAndNotifyAtEnd:deletionCount:reinsertTextInLoop:")
+        guard focused, let impl, impl.responds(to: loop) else { return }
+        tv.insertText("\n")   // Return: a fresh line
+        tv.insertText("teh")
+        typealias Loop = @convention(c) (AnyObject, Selector, Bool, Int, Bool) -> Void
+        mark = spy.sent.count
+        unsafeBitCast(impl.method(for: loop), to: Loop.self)(impl, loop, false, 2, true)
+        tv.insertText("he ")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(Array(spy.sent[mark...]), [[0x7f, 0x7f] + Array("he ".utf8)], "UIKit's delete loop retyped letters")
+        XCTAssertEqual(try all(), "the ")
+    }
+
+    /// #1058: a replace sends one edit, in one write: DELs for what differs from the old
+    /// text, then the new text's rest. The shared start stays; an auto-period and a caret
+    /// inside the range keep SwiftTerm's own handling.
+    func testReplaceSendsOnlyWhatDiffersInOneWrite() async throws {
+        let (vc, spy) = try await makeVC()
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        let replace = #selector(UITextInput.replace(_:withText:))
+        func last(_ n: Int) throws -> UITextRange {
+            let start = try XCTUnwrap(tv.position(from: tv.endOfDocument, offset: -n))
+            return try XCTUnwrap(tv.textRange(from: start, to: tv.endOfDocument))
+        }
+        func all() throws -> String? {
+            tv.text(in: try XCTUnwrap(tv.textRange(from: tv.beginningOfDocument, to: tv.endOfDocument)))
+        }
+
+        tv.insertText("teh")
+        var mark = spy.sent.count
+        _ = (tv as NSObject).perform(replace, with: try last(3), with: "the ")
+        XCTAssertEqual(Array(spy.sent[mark...]), [[0x7f, 0x7f] + Array("he ".utf8)], "not one minimal write")
+        XCTAssertEqual(try all(), "the ")
+
+        mark = spy.sent.count
+        _ = (tv as NSObject).perform(replace, with: try last(4), with: "the ")
+        XCTAssertEqual(spy.sent.count, mark, "an unchanged replace sent something")
+
+        // No shared start: the whole word goes, still in one write.
+        mark = spy.sent.count
+        _ = (tv as NSObject).perform(replace, with: try last(4), with: "a ")
+        XCTAssertEqual(Array(spy.sent[mark...]), [[UInt8](repeating: 0x7f, count: 4) + Array("a ".utf8)])
+
+        // A tail of "." alone would hit SwiftTerm's auto-period rewrite, which drops it here.
+        tv.insertText("b")
+        mark = spy.sent.count
+        _ = (tv as NSObject).perform(replace, with: try last(1), with: "b.")
+        XCTAssertEqual(Array(spy.sent[mark...]), [[0x7f] + Array("b.".utf8)], "the period was lost")
+        XCTAssertEqual(try all(), "a b.")
+
+        // Caret inside the range: untouched, the old text's start is not kept.
+        tv.insertText("xyz")
+        let b = try XCTUnwrap(tv.position(from: tv.endOfDocument, offset: -2))
+        tv.selectedTextRange = tv.textRange(from: b, to: b)
+        mark = spy.sent.count
+        _ = (tv as NSObject).perform(replace, with: try last(3), with: "xyw")
+        XCTAssertEqual(Array(spy.sent[mark...].joined()), [0x7f, 0x7f, 0x7f] + Array("xyw".utf8))
     }
 }
