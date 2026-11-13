@@ -110,7 +110,8 @@ final class SessionPollTests: XCTestCase {
     /// Runs `SessionPoll.run` over `mac` with no real sleeping, cancelled at the `stop`th wait.
     @MainActor
     private func loop(_ mac: ScriptedMac, mode: UpdateMode = .live, first: TimeInterval?, shown: [DchSession] = [],
-                      ready: @escaping () -> Bool = { true }, stop: Int) async -> Run {
+                      ready: @escaping () -> Bool = { true }, down: @escaping () -> Bool = { false },
+                      redial: @escaping () async -> Void = {}, stop: Int) async -> Run {
         let run = Box(Run()), turns = Box(0)
         await Task { @MainActor in
             // A loop that never waits (a mutant) still ends: cancelled after 50 turns.
@@ -120,7 +121,7 @@ final class SessionPollTests: XCTestCase {
                                       return ready()
                                   },
                                   apply: { run.v.applied.append($0) }, refused: { run.v.refused.append($0.localizedDescription) },
-                                  listed: { run.v.listed += 1 },
+                                  down: down, redial: redial, listed: { run.v.listed += 1 },
                                   sleep: { wait in
                                       run.v.waits.append(wait)
                                       if run.v.waits.count >= stop { withUnsafeCurrentTask { $0?.cancel() } }
@@ -175,7 +176,7 @@ final class SessionPollTests: XCTestCase {
         XCTAssertEqual(mac.lists, 4)
     }
 
-    /// While the screen is not ready (unreachable, in error, loading) no list goes out, and the
+    /// While the screen is not ready (in error, loading) no list goes out, and the
     /// wait still grows.
     @MainActor
     func testNotReadySkipsThePoll() async {
@@ -183,6 +184,48 @@ final class SessionPollTests: XCTestCase {
         let r = await loop(mac, first: nil, ready: { false }, stop: 3)
         XCTAssertEqual(r.waits, [5, 10, 20])
         XCTAssertEqual(mac.lists, 0)
+    }
+
+    /// #1034: a Mac that accepts and never answers (Can't reach) is dialled again, the
+    /// backoff after the last try and never sooner, not skipped until a manual refresh.
+    @MainActor
+    func testAnUnreachableMacIsRedialledOnTheBackoff() async {
+        let mac = ScriptedMac([.failure(TransportError.hostUnreachable("timed out"))])
+        let redials = Box(0)
+        let r = await loop(mac, first: 5, down: { true }, redial: { redials.v += 1 }, stop: 4)
+        XCTAssertEqual(r.waits, [5, 20, 20, 20], "5 s is under the backoff: 20 s more before the dial")
+        XCTAssertEqual(redials.v, 2, "redialled after each 20 s wait")
+        XCTAssertEqual(mac.lists, 0, "the redial dials, not the poll's own list")
+        XCTAssertEqual(r.applied, [])
+    }
+
+    /// #1034: a redial that lists (the refresh) clears Can't reach; the poll then lists at its
+    /// fastest and slows down as before.
+    @MainActor
+    func testARedialThatListsClearsUnreachableAndThePollGoesOn() async {
+        let mac = ScriptedMac([.failure(TransportError.hostUnreachable("timed out")), .success([a]), .success([a])])
+        let down = Box(true)
+        let r = await loop(mac, first: nil, shown: [a], down: { down.v }, redial: {
+            if (try? await mac.listSessions()) != nil { down.v = false }   // refresh() clears `unreachable`
+        }, stop: 4)
+        XCTAssertFalse(down.v)
+        XCTAssertEqual(r.waits, [20, 20, 5, 10])
+        XCTAssertEqual(mac.lists, 3, "two redials, then the poll's list")
+        XCTAssertEqual(r.applied, [[a]])
+    }
+
+    /// #1034 with #827: a redial turned away puts the screen in error, which holds the poll:
+    /// nothing more is sent until a manual refresh.
+    @MainActor
+    func testARefusedRedialHolds() async {
+        let mac = ScriptedMac([.failure(TransportError.refused(code: "denied", message: "turned away")), .success([a])])
+        let down = Box(true), held = Box(false)
+        let r = await loop(mac, first: nil, ready: { !held.v }, down: { down.v }, redial: {
+            do { _ = try await mac.listSessions() } catch { down.v = false; held.v = true }   // refresh(): error set, unreachable cleared
+        }, stop: 5)
+        XCTAssertEqual(mac.lists, 1, "held after the refusal")
+        XCTAssertEqual(r.waits.count, 5)
+        XCTAssertEqual(r.applied, [])
     }
 
     /// Cancelled while a list is in flight: it is not applied, and the loop ends with no wait

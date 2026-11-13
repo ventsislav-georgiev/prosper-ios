@@ -736,8 +736,9 @@ struct SessionListView: View {
         // list just answered, the launch's scene turning active after that refresh.
         await SessionPoll.run(transport, mode: mode,
                               first: SessionPoll.first(connected: connected, listedAt: listedAt, mode: mode),
-                              shown: { sessions }, ready: { unreachable == nil && error == nil && !loading },
-                              apply: show, refused: { error = $0.localizedDescription }, listed: {
+                              shown: { sessions }, ready: { error == nil && !loading },
+                              apply: show, refused: { error = $0.localizedDescription },
+                              down: { unreachable != nil }, redial: { await refresh() }, listed: {
             if mode == .live, let due = watchRetry, Date() >= due { await recheckWatch() }
         }, listedAt: { listedAt })
     }

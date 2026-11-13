@@ -65,9 +65,11 @@ enum SessionPoll {
     /// skips a poll; `refused` gets a refusal's error; `listed` runs after each list is applied.
     /// `sleep` is the wait itself, settable for tests. #1028: `listedAt` the screen's last list,
     /// by `now`: one that lands in a wait (a refresh) pushes the next poll a full wait after it.
+    /// #1034: while `down` (Can't reach) a poll is `redial` instead, at most once a failure backoff.
     @MainActor
     static func run(_ t: SessionTransport, mode: UpdateMode, first: TimeInterval?, shown: () -> [DchSession],
                     ready: () -> Bool, apply: ([DchSession]) -> Void, refused: (TransportError) -> Void,
+                    down: () -> Bool = { false }, redial: () async -> Void = {},
                     listed: () async -> Void = {}, listedAt: () -> Date? = { nil }, now: () -> Date = Date.init,
                     sleep: (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }) async {
         var wait = first
@@ -87,6 +89,13 @@ enum SessionPoll {
             guard !Task.isCancelled else { return }   // cancelled in the wait: no request
             guard ready() else {
                 wait = next(after: wait, changed: false, mode: mode)
+                continue
+            }
+            if down() {
+                // #1034: an unreachable Mac is dialled again, never sooner than the backoff.
+                guard let w = wait, w >= failureBackoff else { wait = failed(after: wait); continue }
+                await redial()
+                wait = down() ? failed(after: w) : fastest(mode)
                 continue
             }
             let list: [DchSession]
