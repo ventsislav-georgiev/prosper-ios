@@ -31,7 +31,9 @@ final class SessionVerbTests: XCTestCase {
             if Date() > end { throw XCTSkip("loopback listener never came up") }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        return (ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue), got, listener)
+        let mac = ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue)
+        mac.replyDeadline = 30   // #1017: a lost reply fails the test instead of stalling the run
+        return (mac, got, listener)
     }
 
     private func sent(_ got: Box<(UInt8, Data)?>) -> (UInt8, NSDictionary?) {
@@ -130,6 +132,19 @@ final class SessionVerbTests: XCTestCase {
         let names = try await mac.restart(names: ["api-main-2"])
         XCTAssertEqual(names, ["api-main-2"])
         XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(start), 7.5)
+    }
+
+    /// #1017: a Mac that takes the request and never answers ends at the reply deadline.
+    func testASilentMacEndsAtTheReplyDeadline() async throws {
+        let (mac, got, l) = try await fakeMac(0x14, #"{"names":["docs"]}"#, delay: 60)
+        defer { l.cancel() }
+        mac.replyDeadline = 0.5
+        let start = Date()
+        do { _ = try await mac.stop(names: ["docs"]); XCTFail("no reply must not succeed") } catch {
+            XCTAssertEqual(error.localizedDescription, TransportError.hostUnreachable("timed out").localizedDescription)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5)
+        XCTAssertEqual(sent(got).0, 0x0e, "the request went out")
     }
 
     /// No `ops` (an older Mac) means no controls; a subset means only those.

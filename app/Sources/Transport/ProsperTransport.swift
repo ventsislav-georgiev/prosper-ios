@@ -17,6 +17,9 @@ final class ProsperTransport: SessionTransport {
     /// #775: how long the watch stream may say nothing before it is dead; the Mac sends at least
     /// a heartbeat every 25 s. Settable for tests.
     var watchSilence: TimeInterval = 60
+    /// #1017: a deadline on every one-shot reply that has none of its own; none in the app (a
+    /// restart may take 15 min). Settable for tests, so a reply that never comes fails, not hangs.
+    var replyDeadline: TimeInterval?
 
     init(host: String, port: UInt16 = 8771) {
         self.host = host
@@ -619,7 +622,7 @@ final class ProsperTransport: SessionTransport {
         // accepts and never answers instead of waiting on it.
         let read = { try await withTaskCancellationHandler { try await FrameCodec.readOne(from: conn) } onCancel: { conn.cancel() } }
         do {
-            guard let deadline else { return try await read() }
+            guard let deadline = deadline ?? replyDeadline else { return try await read() }
             return try await withDeadline(seconds: deadline, read)
         } catch where Self.droppedBeforeReply(error) {
             // #801: a host refusing this peer accepts, then closes with no frame — on the wire
