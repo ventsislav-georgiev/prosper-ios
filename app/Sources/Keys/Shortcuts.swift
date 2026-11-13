@@ -419,23 +419,19 @@ final class ShortcutBar: UIView {
             let pixel = 1 / max(1, traitCollection.displayScale)
             if twoRows, k < items.count {
                 // #962: one grid for both rows (`columnWidths`, as the terminal bar's), so the seams
-                // line up; each row filled on its own put them apart. A Paste column keeps its width.
+                // line up; each row filled on its own put them apart. Paste is a 44 pt column, scaled with the rest.
                 let split = [Array(items[..<k]), Array(items[k...])]
                 let natural = split.map { $0.map { ($0 as? KeyCapButton)?.naturalWidth ?? 44 } }
                 let grid = Self.columnWidths(top: natural[0], bottom: natural[1])
-                let fixed = Set(split.flatMap { row in row.indices.filter { !(row[$0] is KeyCapButton) } })
-                let free = grid.indices.filter { !fixed.contains($0) }.map { grid[$0] }
-                let available = bounds.width - 16 - fixed.map { grid[$0] + Self.spacing }.reduce(0, +)
-                var scaled = Self.filled(free, spacing: Self.spacing, available: available,
-                    minScale: narrow ? min(Self.minRowScale, Self.paddingFloor(free)) : Self.minRowScale, pixel: pixel)[...]
-                let cols = grid.indices.map { fixed.contains($0) ? grid[$0] : scaled.popFirst()! }
+                let cols = Self.filled(grid, spacing: Self.spacing, available: bounds.width - 16,
+                    minScale: narrow ? min(Self.minRowScale, Self.paddingFloor(grid)) : Self.minRowScale, pixel: pixel)
                 for (r, row) in split.enumerated() {
                     for (i, item) in row.enumerated() {
-                        // The shorter row's last cap spans the longer row's remaining columns: every
+                        // The shorter row's last cap (Paste too) spans the longer row's remaining columns: every
                         // seam lines up with one above or below, and both rows span the bar.
                         let w = i == row.count - 1 ? cols[i...].reduce(0, +) + Self.spacing * CGFloat(cols.count - 1 - i) : cols[i]
                         if let cap = item as? KeyCapButton { cap.columnWidth = w }
-                        else { rows[r].setCustomSpacing(Self.spacing + cols[i] - 44, after: item) }   // the Paste cap's gap
+                        else { (item as? PasteCap)?.width.constant = w }
                     }
                 }
             } else {
@@ -450,7 +446,7 @@ final class ShortcutBar: UIView {
                         pixel: 1 / max(1, traitCollection.displayScale))
                     for (cap, w) in zip(caps, cols) { cap.columnWidth = w }
                 }
-                for item in items where !(item is KeyCapButton) { rows[0].setCustomSpacing(Self.spacing, after: item) }
+                for item in items { (item as? PasteCap)?.width.constant = 44 }
             }
         }
         if bounds.width != arrangedWidth, !oneRow {
@@ -718,9 +714,10 @@ final class ShortcutBar: UIView {
     /// 1 pt in at the sides and as near 1 pt as its own height allows above and below, so
     /// the border shows. Nothing goes over the control: the secure control refuses taps
     /// when covered. Its intrinsic height (34.3 pt at Large) is required — under its
-    /// content the control draws blank. 44 pt wide.
+    /// content the control draws blank. 44 pt wide (`PasteCap.width`).
     private func pasteCap(around control: UIView) -> UIView {
         let cap = PasteCap()
+        cap.width = cap.widthAnchor.constraint(equalToConstant: 44)
         cap.backgroundColor = bar.surface
         cap.layer.cornerRadius = Style.radius
         cap.layer.borderWidth = 1
@@ -732,7 +729,7 @@ final class ShortcutBar: UIView {
         let inset = control.topAnchor.constraint(equalTo: cap.topAnchor, constant: 1)
         inset.priority = .defaultHigh       // gives way to the control's height
         NSLayoutConstraint.activate([
-            cap.widthAnchor.constraint(equalToConstant: 44),
+            cap.width,
             control.leadingAnchor.constraint(equalTo: cap.leadingAnchor, constant: 1),
             control.trailingAnchor.constraint(equalTo: cap.trailingAnchor, constant: -1),
             control.centerYAnchor.constraint(equalTo: cap.centerYAnchor),
@@ -848,6 +845,8 @@ final class KeyCapButton: UIButton {
 
 /// Paste's cap (`ShortcutBar.pasteCap`), its glow traced as a `KeyCapButton`'s (#642).
 private final class PasteCap: UIView {
+    /// 44, but in `twoRows` its grid column's width, spanning the rest at the shorter row's end (#962).
+    var width: NSLayoutConstraint!
     override func layoutSubviews() {
         super.layoutSubviews()
         ShortcutBar.trace(self)

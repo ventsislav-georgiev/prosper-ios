@@ -601,12 +601,14 @@ final class ShortcutCapTests: XCTestCase {
     }
 
     /// #962: a two-row toolbar or terminal bar is one grid: every seam between two caps (a cap's
-    /// left edge, and the row's right end) lines up with one in the other row, within a pixel.
+    /// left edge, and the row's right end) lines up with one in the other row, within a pixel,
+    /// and both rows end at one edge, whichever item (Paste too) ends the shorter row.
     /// The toolbar's rows were filled each on its own, their seams apart. 320 pt still fits (#953).
     @MainActor
     func testTwoRowSeamsLineUp() throws {
         let bars: [(String, [ShortcutKey], Bool)] = [("toolbar", Shortcuts.Bar.toolbar.defaults, true),
                                                     ("toolbar+paste", Shortcuts.Bar.arrowsToolbar, true), ("toolbar 7", Array(Shortcuts.Bar.toolbar.defaults.prefix(7)), true),
+                                                    ("toolbar paste last", Shortcuts.Bar.toolbar.defaults + Shortcuts.Bar.toolbar.catalog.filter { $0.id == "paste" }, true),
                                                     ("terminal", Shortcuts.defaults, false)]
         for (name, keys, toolbar) in bars {
             for width: CGFloat in [320, 375, 402] {
@@ -632,6 +634,17 @@ final class ShortcutCapTests: XCTestCase {
                 for (i, x) in short.enumerated() {
                     if top.count == bottom.count { XCTAssertEqual(x, long[i], accuracy: pixel + 0.001, "seam \(i), \(line)") }
                     XCTAssertTrue(long.contains { abs($0 - x) <= pixel + 0.001 }, "seam \(i) has no partner, \(line)")
+                }
+                XCTAssertEqual(frames[0].last?.maxX ?? 0, frames[1].last?.maxX ?? 0, accuracy: pixel + 0.001, "both rows end at one edge, \(line)")   // #962: Paste last
+                if toolbar {   // #962: Paste a column like the rest, never under 44; no cap under 44 above 320 (#953 squeezes there)
+                    for (v, f) in zip(rows.flatMap(\.arrangedSubviews), frames.joined()) where width > 320 || !(v is KeyCapButton) {
+                        XCTAssertGreaterThanOrEqual(f.width, 44 - 0.001, "under 44, \(line)")
+                    }
+                    for (r, row) in rows.enumerated() {
+                        if let p = row.arrangedSubviews.firstIndex(where: { !($0 is KeyCapButton) }), p < frames[1 - r].count, width == 402 {
+                            XCTAssertGreaterThan(frames[1 - r][p].width, 44 + 1, "the Paste column grows, \(line)")
+                        }
+                    }
                 }
                 let sv = try XCTUnwrap(rows[0].superview?.superview as? UIScrollView)
                 XCTAssertLessThanOrEqual(sv.contentSize.width, sv.bounds.width + 0.01, "\(label): scrolls")
