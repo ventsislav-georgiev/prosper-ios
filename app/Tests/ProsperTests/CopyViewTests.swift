@@ -151,6 +151,10 @@ final class CopyViewTests: XCTestCase {
         }
         check(on: true)
         XCTAssertEqual(done.style, .done)
+        // #1018: white checkmark on the system blue fill, in both contrast modes.
+        XCTAssertEqual(done.tintColor, .systemBlue)
+        XCTAssertEqual(done.image?.renderingMode, .alwaysOriginal)
+        XCTAssertEqual(done.accessibilityLabel, "Done")
         XCTAssertNotEqual(item.style, done.style)
         tap()
         check(on: false)

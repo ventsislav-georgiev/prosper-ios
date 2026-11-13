@@ -30,6 +30,16 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
         return b
     }()
 
+    // #1018: the system Done glyph read light cyan on blue (black under Increase
+    // Contrast); pin a white checkmark on the system blue fill.
+    private lazy var doneItem: UIBarButtonItem = {
+        let glyph = UIImage(systemName: "checkmark")?.withTintColor(.white, renderingMode: .alwaysOriginal)
+        let b = UIBarButtonItem(image: glyph, style: .done, target: self, action: #selector(done))
+        b.tintColor = .systemBlue
+        b.accessibilityLabel = "Done"
+        return b
+    }()
+
     init(text: String, cols: Int, widths: Set<Int> = []) {
         self.text = text
         self.cols = cols
@@ -45,7 +55,7 @@ final class CopyTextVC: UIViewController, UITextViewDelegate {
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             title: "Select All", style: .plain, target: self, action: #selector(selectAllText))
         navigationItem.rightBarButtonItems = [
-            UIBarButtonItem(barButtonSystemItem: .done, target: self, action: #selector(done)),
+            doneItem,
             oneLineItem,
         ]
         styleOneLineItem()
