@@ -64,6 +64,8 @@ struct SettingsView: View {
     @State private var busy = false
     @State private var notificationsOff = false
     @State private var error: String?
+    /// #973: without Full Access iOS gives the keyboard no App Group, so none of these reach it.
+    static let keyboardFullAccessNote = "In other apps, the Prosper keyboard uses these only with Full Access."
     // Keyboard, in the App Group the keyboards read (`KeyboardSettings`).
     @AppStorage(KeyboardSettings.Key.autoCapitalization, store: KeyboardSettings.store())
     private var autoCapitalization = KeyboardSettings().autoCapitalization
@@ -225,6 +227,7 @@ struct SettingsView: View {
                     .id(previewID)
                     .listRowInsets(EdgeInsets())
                     .accessibilityHidden(true)
+                Text(Self.keyboardFullAccessNote).font(.footnote).foregroundStyle(.secondary)
                 // A page each, with swatches a menu would tint away (#642).
                 Picker("Keys Theme", selection: $theme) {
                     ForEach(KeyboardSettings.Theme.allCases, id: \.self) { ThemeLabel(theme: $0, accent: accent) }
@@ -267,7 +270,7 @@ struct SettingsView: View {
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The Prosper keyboard follows these in other apps once it has Full Access; without it, Auto-Capitalization is off, Key Size is Normal and the rest on. The terminal's keyboard follows them too, from the next time it shows, but Auto-Capitalization, Auto-Correction and Predictive Text, which would change what you type into the shell. Key Size makes the rows taller in portrait. Numbers: Key swaps the digit row for a 123 key that opens a numpad; in other apps the toolbar gets a second row in its place, or with Toolbar Rows: One the keyboard is a row shorter, as it always is in the terminal, whose Shortcut Keys keep their own rows; with Row, hold the toolbar toggle and pick Numbers for the numpad. The themes and Accent apply to both keyboards: the Toolbar Theme to the toolbar's keys, the Keys Theme to the rest. The accent lights return, send and the toolbar's held keys in Dark, Light and True Black.")
+                Text("Without Full Access, Auto-Capitalization is off, Key Size is Normal and the rest on. The terminal's keyboard follows them too, from the next time it shows, but Auto-Capitalization, Auto-Correction and Predictive Text, which would change what you type into the shell. Key Size makes the rows taller in portrait. Numbers: Key swaps the digit row for a 123 key that opens a numpad; in other apps the toolbar gets a second row in its place, or with Toolbar Rows: One the keyboard is a row shorter, as it always is in the terminal, whose Shortcut Keys keep their own rows; with Row, hold the toolbar toggle and pick Numbers for the numpad. The themes and Accent apply to both keyboards: the Toolbar Theme to the toolbar's keys, the Keys Theme to the rest. The accent lights return, send and the toolbar's held keys in Dark, Light and True Black.")
             }
 
             // The Prosper keyboard's languages (#624), the terminal's too (#692).

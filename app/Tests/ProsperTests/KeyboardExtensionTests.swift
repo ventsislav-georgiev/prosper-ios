@@ -669,6 +669,10 @@ final class KeyboardExtensionTests: XCTestCase {
         XCTAssertTrue(KeyboardSettings.current().autoCapitalization, "the app's value")
         XCTAssertTrue(KeyboardSettings.current(fullAccess: true).autoCapitalization)
         XCTAssertEqual(KeyboardSettings.current(fullAccess: false), KeyboardSettings(), "no Full Access")
+        defaults.set(false, forKey: KeyboardSettings.Key.predictiveText)   // #973: the app's toggle, unread
+        XCTAssertTrue(KeyboardSettings.current(fullAccess: false).predictiveText, "no Full Access")
+        XCTAssertEqual(SettingsView.keyboardFullAccessNote,
+                       "In other apps, the Prosper keyboard uses these only with Full Access.", "#973: said in Settings")
         KeyboardSettings.store = { nil }
         XCTAssertEqual(KeyboardSettings.current(), KeyboardSettings(), "no suite")
     }
