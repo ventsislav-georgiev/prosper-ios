@@ -147,12 +147,16 @@ enum TerminalMath {
     /// what follows as commands (#293). DEL (0x7F) is kept: inside a bracketed paste the
     /// host takes it as a literal byte, not as an erase key.
     static func pasteBytes(_ s: String, thenEnter: Bool = false, bracketed: Bool = true) -> [UInt8] {
-        let kept = s.unicodeScalars.filter {
-            ($0.value >= 0x20 && !c1Controls.contains($0.value)) || $0 == "\t" || $0 == "\n" || $0 == "\r"
-        }
-        let text = Array(String(String.UnicodeScalarView(kept)).utf8)
+        let text = Array(pasteText(s).utf8)
         guard bracketed else { return text + (thenEnter ? [0x0d] : []) }
         return Array("\u{1b}[200~".utf8) + text + Array("\u{1b}[201~".utf8) + (thenEnter ? [0x0d] : [])
+    }
+
+    /// The text a paste of `s` delivers: controls dropped but tab, LF and CR.
+    static func pasteText(_ s: String) -> String {
+        String(String.UnicodeScalarView(s.unicodeScalars.filter {
+            ($0.value >= 0x20 && !c1Controls.contains($0.value)) || $0 == "\t" || $0 == "\n" || $0 == "\r"
+        }))
     }
 
     /// The shortcut bar's sticky modifiers that are lit (once or locked). The raw value is

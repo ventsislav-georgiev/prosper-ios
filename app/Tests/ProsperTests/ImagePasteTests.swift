@@ -1077,6 +1077,65 @@ final class ImagePasteTests: XCTestCase {
                        "the replaced word was not deleted before the paste")
     }
 
+    /// #1008 QA #87 finding 7: pasted text never reached SwiftTerm's input buffer, so a later
+    /// replace over it (the next dictation hypothesis, predictive text) deleted nothing and
+    /// sent the text again. The buffer now holds what went out, sanitized, and the replace
+    /// deletes it first.
+    func testReplaceOverPastedTextDeletesItInsteadOfSendingItTwice() async throws {
+        let (vc, spy) = try await makeVC()
+        spy.emit("\u{1b}[?2004h")
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        let replace = #selector(UITextInput.replace(_:withText:))
+        func last(_ n: Int) throws -> UITextRange {
+            let start = try XCTUnwrap(tv.position(from: tv.endOfDocument, offset: -n))
+            return try XCTUnwrap(tv.textRange(from: start, to: tv.endOfDocument))
+        }
+        func paste(_ s: String) -> [UInt8] { Array("\u{1b}[200~\(s)\u{1b}[201~".utf8) }
+
+        _ = (tv as NSObject).perform(replace, with: try last(0), with: "a\u{1b}\nb")
+        var mark = spy.sent.count
+        _ = (tv as NSObject).perform(replace, with: try last(3), with: "a\nbc")
+        XCTAssertEqual(Array(spy.sent[mark...].joined()), [UInt8](repeating: 0x7f, count: 3) + paste("a\nbc"),
+                       "a replace over pasted text sent it again instead of deleting it")
+
+        tv.insertText("d\u{9b}\ne")   // through insertText too; the C1 never reached the host
+        XCTAssertEqual(tv.text(in: try last(3)), "d\ne", "the buffer holds more than the host got")
+        mark = spy.sent.count
+        _ = (tv as NSObject).perform(replace, with: try last(3), with: "d\nef")
+        XCTAssertEqual(Array(spy.sent[mark...].joined()), [UInt8](repeating: 0x7f, count: 3) + paste("d\nef"),
+                       "a replace over an inserted paste sent it again instead of deleting it")
+
+        // A replace short of the caret: SwiftTerm leaves the caret past the gap, the paste
+        // still takes the replaced range's place.
+        tv.insertText("\n")   // Return: a fresh, empty buffer
+        tv.insertText("abcdef")
+        let b = try XCTUnwrap(tv.position(from: tv.beginningOfDocument, offset: 1))
+        let c = try XCTUnwrap(tv.position(from: tv.beginningOfDocument, offset: 3))
+        _ = (tv as NSObject).perform(replace, with: try XCTUnwrap(tv.textRange(from: b, to: c)), with: "X\nY")
+        let all = try XCTUnwrap(tv.textRange(from: tv.beginningOfDocument, to: tv.endOfDocument))
+        XCTAssertEqual(tv.text(in: all), "aX\nYdef", "the paste landed off the replaced range")
+    }
+
+    /// #1008: a host without bracketed paste ran every line of a paste, as it does a typed
+    /// Return, so the buffer keeps only the unrun tail and a later replace can't delete
+    /// into the next prompt.
+    func testUnbracketedPasteKeepsOnlyItsUnrunTailInTheBuffer() async throws {
+        let (vc, spy) = try await makeVC()   // fed host bytes, never 2004h
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        let replace = #selector(UITextInput.replace(_:withText:))
+        tv.insertText("x")
+        _ = (tv as NSObject).perform(replace, with: try XCTUnwrap(tv.textRange(from: tv.endOfDocument, to: tv.endOfDocument)),
+                                     with: "ls\nec")
+        XCTAssertEqual(spy.sent.last, Array("ls\nec".utf8), "precondition: an unbracketed paste")
+
+        let mark = spy.sent.count
+        let all = try XCTUnwrap(tv.textRange(from: tv.beginningOfDocument, to: tv.endOfDocument))
+        _ = (tv as NSObject).perform(replace, with: all, with: "echo")
+        XCTAssertEqual(Array(spy.sent[mark...].joined()), [0x7f, 0x7f] + Array("echo".utf8),
+                       "a replace deleted into the next prompt, past the paste's last line")
+    }
+
     /// #293 QA #99: nvim takes a C1 control (U+009B CSI, U+0080) like ESC and runs what
     /// follows — " \u{9b}ggdGZZ" wiped the buffer and wrote the file. Through insertText
     /// and through replace it goes out as a paste with the C1 stripped, never raw.

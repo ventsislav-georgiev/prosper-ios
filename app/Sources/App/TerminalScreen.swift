@@ -396,6 +396,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
             return true
         }
         tv.onPaste = { [weak self] s in self?.sendText(s) }
+        tv.pasteBracketed = { [weak self] in self?.pasteBracketed ?? true }
         stateSub = conn.$state.sink { [weak self] in self?.applyInputState($0) }
         #if !targetEnvironment(macCatalyst)
         if #available(iOS 26, *), let store = Dictation.Store.shared() {
@@ -824,9 +825,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// can't have landed yet, so it is wrapped regardless. Sanitized either way.
     private func sendText(_ s: String, thenEnter: Bool = false) {
         (keyboardInputView as? TerminalKeyboard)?.resetWord()   // a paste ends the typed word
-        conn.send(ArraySlice(TerminalMath.pasteBytes(s, thenEnter: thenEnter,
-                                                     bracketed: fedHostBytes ? tv.getTerminal().bracketedPasteMode : true)))
+        conn.send(ArraySlice(TerminalMath.pasteBytes(s, thenEnter: thenEnter, bracketed: pasteBracketed)))
     }
+    private var pasteBracketed: Bool { fedHostBytes ? tv.getTerminal().bracketedPasteMode : true }
 
     /// Push the copied image to the remote machine's clipboard, then send the paste
     /// keystroke (ctrl-V) that makes the TUI read it. Claude Code's image paste looks
@@ -1756,6 +1757,8 @@ private final class DchTerminalView: TerminalView {
     var onResize: ((Int, Int) -> Void)?
     /// The clipboard text of a `paste:` (Cmd-V, edit menu).
     var onPaste: (String) -> Void = { _ in }
+    /// Whether `onPaste` wraps the text as a bracketed paste (#1008).
+    var pasteBracketed: () -> Bool = { true }
     /// SwiftTerm's own copy and select-all (Cmd-C, Cmd-A) end the double-tap selection.
     var onSelectionEnded: () -> Void = {}
     /// Cmd-C on the double-tap selection: true when it copied it as the menu's Copy does.
@@ -1786,7 +1789,25 @@ private final class DchTerminalView: TerminalView {
     /// replaces a pending mark the way the typed path does: the mark (never sent) is dropped.
     override func insertText(_ text: String) {
         guard text.utf8.count != 1, Self.isPaste(text) else { return super.insertText(text) }
-        if markedTextRange != nil { setMarkedText(nil, selectedRange: NSRange()) }
+        sendPaste(text)
+    }
+
+    /// #1008: what a paste delivered goes into SwiftTerm's input buffer, unsent, as typed
+    /// text does, so a later replace over it (the next dictation hypothesis, predictive text)
+    /// deletes it instead of sending it again (QA #87 finding 7). It is written as a mark
+    /// over the pending mark or the caret, and the mark is dropped at once: it never commits.
+    /// Unbracketed, the host ran each line as a typed Return: only the last line's tail stays.
+    private func sendPaste(_ text: String) {
+        var sent = TerminalMath.pasteText(text)
+        if !pasteBracketed(), let nl = sent.lastIndex(where: { $0 == "\n" || $0 == "\r" || $0 == "\r\n" }) {
+            sent = String(sent[sent.index(after: nl)...])
+            markedTextRange = nil   // a pending mark goes with the rest
+            selectedTextRange = textRange(from: beginningOfDocument, to: endOfDocument)   // all of it ran
+        }
+        setMarkedText(sent, selectedRange: NSRange(location: sent.utf16.count, length: 0))
+        markedTextRange = nil
+        inputDelegate?.textWillChange(self)   // the keyboard re-reads the text, with no mark
+        inputDelegate?.textDidChange(self)
         onPaste(text)
     }
 
@@ -1800,10 +1821,7 @@ private final class DchTerminalView: TerminalView {
     /// way, then goes out as a paste. A SwiftTerm bump that drops the method logs and
     /// leaves replace raw rather than crashing.
     ///
-    /// The pasted text is not written into SwiftTerm's input buffer (the replaced range is
-    /// only deleted from it), so a later replace over that text deletes only what the
-    /// buffer holds (QA #87 finding 7). `setMarkedText` can write the buffer without sending
-    /// (QA #99 probe F), but that leaves a mark that later commits and sends; not used.
+    /// The pasted text then takes the replaced range's place in SwiftTerm's input buffer (#1008).
     static let routeReplace: Void = {
         let sel = #selector(UITextInput.replace(_:withText:))
         typealias Fn = @convention(c) (AnyObject, Selector, UITextRange, NSString) -> Void
@@ -1817,7 +1835,9 @@ private final class DchTerminalView: TerminalView {
         let route: @convention(block) (DchTerminalView, UITextRange, NSString) -> Void = { tv, range, text in
             guard tv.markedTextRange == nil, isPaste(text as String) else { return base(tv, sel, range, text) }
             base(tv, sel, range, "")
-            tv.onPaste(text as String)
+            // base leaves the caret past the range, not at its start, when the caret was beyond it
+            tv.selectedTextRange = tv.textRange(from: range.start, to: range.start)
+            tv.sendPaste(text as String)
         }
         let types = method_getTypeEncoding(method)
         class_addMethod(DchTerminalView.self, sel, imp_implementationWithBlock(route), types)
