@@ -392,6 +392,33 @@ final class SuggestionsTests: XCTestCase {
         XCTAssertNil(Suggestions.split(["up-to-date", "up to date"], for: "uptodate"), "two hyphens")
     }
 
+    /// #970: joined slang that starts with a contraction missing its apostrophe stays as typed;
+    /// a plain run-on still splits.
+    func testAJoinedWordMissingItsApostropheStaysAsTyped() {
+        let (kb, bar, doc) = rig()
+        withExtendedLifetime(bar) { typing(kb, "whatsup letsgo thatsit thecat ") }
+        XCTAssertEqual(doc.text, "whatsup letsgo thatsit the cat ")
+        XCTAssertTrue(Suggestions.apostropheDropped("whatsup"))
+        XCTAssertFalse(Suggestions.apostropheDropped("helloworld"))
+        XCTAssertFalse(Suggestions.apostropheDropped("thecat"))
+        // "we'll"/"we're" are the checker's first guesses, but "well"/"were" rank first as typed.
+        XCTAssertFalse(Suggestions.apostropheDropped("wellbig"))
+        XCTAssertFalse(Suggestions.apostropheDropped("wereminute"))
+        let (kb2, bar2, doc2) = rig()
+        withExtendedLifetime(bar2) { typing(kb2, "wellbig wereminute ") }
+        XCTAssertEqual(doc2.text, "well big were minute ")
+    }
+
+    /// #970: backspace after a split keeps the run-on for good: the next session leaves it too.
+    func testAnUndoneSplitIsLearned() {
+        let (kb, bar, doc) = rig()
+        withExtendedLifetime(bar) { typing(kb, "helloworld ⌫") }
+        XCTAssertEqual(doc.text, "helloworld")
+        let (kb2, bar2, doc2) = rig()
+        withExtendedLifetime(bar2) { typing(kb2, "helloworld seeyou ") }
+        XCTAssertEqual(doc2.text, "helloworld see you ", "learned, while another run-on still splits")
+    }
+
     /// A first guess split doesn't take ("ire-a") is no one-word guess either: "irea" is "idea".
     func testARejectedSplitIsNoGuess() {
         XCTAssertEqual(Suggestions.guesses("irea", spaced: true).first, "ire-a")

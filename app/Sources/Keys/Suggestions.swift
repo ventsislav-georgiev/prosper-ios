@@ -266,6 +266,9 @@ final class Suggestions {
         doc.insertText(u.typed + u.kept)
         typed = String(typed.dropLast(u.inserted.count)) + (u.typed + u.kept).lowercased()
         rejected.insert(u.typed.lowercased())
+        // #970: an undone split is a word joined on purpose: learned, so it stays after this session too.
+        if u.inserted.dropLast().contains(" "), u.inserted.filter(\.isLetter).lowercased() == u.typed.filter(\.isLetter).lowercased(),
+           Self.autocorrects(doc) { memory.learn(u.typed) }
         return true
     }
 
@@ -306,7 +309,9 @@ final class Suggestions {
         let ruled = autoCapital && word.dropFirst() == lower.dropFirst() ? lower : word
         guard !knows(word) else { return nil }
         let guesses = Self.guesses(lower, language: language, spaced: true)
-        if let two = Self.split(guesses, for: word) { return Self.matchCase(two, to: word) }
+        if let two = Self.split(guesses, for: word) {
+            return Self.apostropheDropped(lower, language: language) ? nil : Self.matchCase(two, to: word)
+        }
         // #942: a guess the user often types after the previous word wins ("gme" after "the" → "game").
         let previous = Self.previousWord(prefix)
         let pairs = previous.isEmpty ? [:] : memory.pairs
@@ -327,6 +332,22 @@ final class Suggestions {
         let spaced = first.replacingOccurrences(of: "-", with: " ")
         return first.replacingOccurrences(of: "-", with: "") == word.lowercased()
             && guesses.contains { $0.lowercased() == spaced } ? spaced : nil
+    }
+
+    /// #970: a run-on that starts with a contraction missing its apostrophe ("whatsup",
+    /// "letsgo"): slang typed joined on purpose, and no split puts the apostrophe back
+    /// ("what sup", "lets go"). The start's first guess is itself with an apostrophe, and the
+    /// dictionary completes that before the start as typed: "well" is "we'll" to the checker,
+    /// but far likelier as typed.
+    static func apostropheDropped(_ word: String, language: String? = TerminalKeyboard.language) -> Bool {
+        (2...max(2, word.count - 2)).contains { n in
+            let head = String(word.prefix(n)), rest = String(word.dropFirst(n))
+            guard rest.count >= 2, spelled(rest, language: language),
+                  let g = guesses(head, language: language).first?.lowercased(),
+                  g != head, g.filter({ $0 != "'" && $0 != "’" }) == head else { return false }
+            return completions(String(head.dropLast()), language: language).map { $0.lowercased() }
+                .first { $0 == g || $0 == head } == g
+        }
     }
 
     /// The confidence rule, kept conservative: at least 2 letters, letters and apostrophes
