@@ -693,4 +693,19 @@ final class MacNamesTests: XCTestCase {
         XCTAssertEqual(MacNames.name(macId: "dev-2", fallback: "host.local"), "host.local")
         XCTAssertEqual(MacNames.name(macId: "dev-9", fallback: "host.local"), "host.local")
     }
+
+    /// #1078: a rename redraws the running cards; an unchanged list (any machines publish) doesn't.
+    @MainActor
+    func testRenameRedrawsTheCards() {
+        let ls = LiveStatus(defaults: UserDefaults(suiteName: suite)!, client: { nil })
+        var redraws = 0
+        ls.redrawCards = { redraws += 1 }
+        ls.saveNames([("dev-1", "primary")])
+        XCTAssertEqual(redraws, 1)
+        ls.saveNames([("dev-1", "primary")])
+        XCTAssertEqual(redraws, 1)
+        ls.saveNames([("dev-1", "Studio")])
+        XCTAssertEqual(redraws, 2)
+        XCTAssertEqual(MacNames.name(macId: "dev-1", fallback: "host.local"), "Studio")
+    }
 }

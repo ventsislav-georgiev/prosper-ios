@@ -267,6 +267,15 @@ final class LiveStatus: ObservableObject {
     /// Settable for tests.
     var modeNow: () -> UpdateMode = { .effective }
     var modeDebounce: Duration = .seconds(2)
+    /// #1078: re-apply each running card's own content (stale date kept), so it redraws and
+    /// reads the new Mac name; nothing server-facing changes. Settable for tests.
+    var redrawCards: () -> Void = {
+        #if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
+        if #available(iOS 16.2, *) {
+            for a in Activity<ProsperSessionsAttributes>.activities { Task { await a.update(a.content) } }
+        }
+        #endif
+    }
     /// Token tries on the wire. forget() waits them out before its DELETE (#577): the
     /// server may still apply a cancelled one, and a row it commits after the DELETE
     /// outlives the switch.
@@ -461,6 +470,11 @@ final class LiveStatus: ObservableObject {
         })
     }
     #endif
+
+    /// The Macs' names for the card (#628); a rename redraws the running cards (#1078).
+    func saveNames(_ macs: [(id: String?, name: String)]) {
+        if MacNames.save(macs) { redrawCards() }
+    }
 
     /// An ended card's token: no more reposts, and the Worker drops it.
     func ended(_ id: String) async {

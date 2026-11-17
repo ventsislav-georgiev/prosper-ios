@@ -201,9 +201,13 @@ enum MacNames {
     static var defaults: () -> UserDefaults? = { UserDefaults(suiteName: SessionsSnapshot.group) }
 
     /// Macs without a `serverDeviceId` are skipped; a repeated id keeps the first Mac.
-    static func save(_ macs: [(id: String?, name: String)]) {
+    /// True when the saved names changed (#1078).
+    @discardableResult
+    static func save(_ macs: [(id: String?, name: String)]) -> Bool {
         let map = Dictionary(macs.compactMap { m in m.id.map { ($0, m.name) } }, uniquingKeysWith: { a, _ in a })
+        guard defaults()?.dictionary(forKey: key) as? [String: String] != map else { return false }
         defaults()?.set(map, forKey: key)
+        return true
     }
 
     /// The saved name for that Mac, else the push's `fallback`.
