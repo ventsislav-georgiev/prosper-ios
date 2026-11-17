@@ -198,6 +198,72 @@ final class LinkTapTests: XCTestCase {
         XCTAssertNil(span([Array(head), Array("Next step here")], row: 1, col: 1), "the word is no link")
     }
 
+    /// #1079: the cases table for a URL a program broke across two rows with a real newline,
+    /// 40 columns. `up(indent, gap, end)` is the upper row: its URL ends `gap` columns short
+    /// of the edge, on `end`. "join" opens the URL whole from either row; "keep" opens the
+    /// upper half and the lower row's word is no link. "undecidable" rows can't be told
+    /// from the screen alone; they pin the side chosen.
+    func testSplitURLCasesTable() {
+        func up(_ indent: Int, _ gap: Int, _ end: String = "") -> String {
+            let s = String(repeating: " ", count: indent) + "https://example.com/"
+            return (s + String(repeating: "h", count: 40 - gap - s.count - end.count) + end)
+                .padding(toLength: 40, withPad: " ", startingAt: 0)
+        }
+        func url(_ u: String) -> String {
+            String(u[u.range(of: "https")!.lowerBound...]).trimmingCharacters(in: .whitespaces)
+        }
+        let bullet = "⏺" + up(2, 0).dropFirst()
+        let cases: [(name: String, upper: String, lower: String, tail: String?)] = [
+            ("join: edge, path tail", up(2, 0), "  /installations/new", "/installations/new"),
+            ("join: one short, path tail", up(2, 1), "  /installations/new", "/installations/new"),
+            ("join: edge, hyphen, prose after", up(2, 0), "  my-page then more", "my-page"),
+            ("join: edge, underscore, prose after", up(2, 0), "  file_name then more", "file_name"),
+            ("join: edge, lone digit and a period", up(2, 0), "  2.", "2"),
+            ("join: edge, lone lowercase id", up(2, 0), "  abc123", "abc123"),
+            ("join: 3 short, lone path tail", up(2, 3), "  allations/new", "allations/new"),
+            ("join: 4 short, starts with /, prose after", up(2, 4), "  /new?x=1 to finish", "/new?x=1"),
+            ("join: 3 short, cut after =, plain tail", up(2, 3, "?state="), "  abc123 to continue", "abc123"),
+            ("join: edge, cut after -, plain tail", up(2, 0, "-"), "  page for details", "page"),
+            ("join: bullet row, tail under the text", bullet, "  /new", "/new"),
+            ("join: edge, outdented, strong tail", up(4, 0), "/new?x=1", "/new?x=1"),
+            ("undecidable, join: edge, a path word", up(2, 0), "  src/a.swift is next", "src/a.swift"),
+            ("undecidable, join: edge, lone lowercase word", up(2, 0), "  thanks", "thanks"),
+            ("keep: edge, capitalised lone word", up(2, 0), "  Thanks", nil),
+            ("keep: edge, e.g.", up(2, 0), "  e.g. the docs", nil),
+            ("keep: edge, a list item", up(2, 0), "  - next item", nil),
+            ("keep: edge, a bullet glyph", up(2, 0), "⏺ Done", nil),
+            ("keep: edge, a box rule", up(2, 0), "│ boxed", nil),
+            ("keep: 3 short, path word, prose after", up(2, 3), "  src/a.swift is next", nil),
+            ("keep: 3 short, lone plain word", up(2, 3), "  abc123", nil),
+            ("keep: 5 short, path tail", up(2, 5), "  /new?x=1", nil),
+            ("keep: edge, outdented lone word", up(4, 0), "  abc123", nil),
+            ("keep: 3 short, outdented path", up(4, 3), "a/b", nil),
+            ("keep: edge, cut after =, outdented word", up(4, 0, "?a="), "abc123", nil),
+            ("undecidable, keep: edge, plain piece, prose after", up(2, 0, "1"), "  2 for details", nil),
+            ("undecidable, keep: edge, lone word and a period", up(2, 0), "  today.", nil),
+        ]
+        for k in cases {
+            let rows = [Array(k.upper), Array(k.lower)].map { $0.map(Optional.some) }
+            let want = url(k.upper) + (k.tail ?? "")
+            let a = k.lower.firstIndex(where: { $0 != " " }).map { k.lower.distance(from: k.lower.startIndex, to: $0) } ?? 0
+            XCTAssertEqual(span(rows, row: 0, col: 6)?.url, want, k.name)
+            XCTAssertEqual(span(rows, row: 1, col: a)?.url, k.tail == nil ? nil : want, k.name)
+        }
+    }
+
+    /// #1079 live: a program wrapping 3 columns short of the edge, Claude Code's indent.
+    func testAHardWrapAFewColumnsShortJoinsAURLTail() async throws {
+        let (vc, tv, _, _) = try await makeVC()
+        let cols = tv.getTerminal().cols
+        let head = "https://example.com/apps/" + String(repeating: "h", count: cols - 30)   // ends at cols − 4
+        tv.feed(text: "\u{1b}[2J\u{1b}[H  " + head + "\r\n  allations/new\r\n  Next step here\r\n")
+        XCTAssertFalse(tv.getTerminal().getLine(row: 1)?.isWrapped ?? true, "precondition: a hard wrap")
+
+        XCTAssertEqual(vc.link(at: point(tv, row: 0, col: 4))?.absoluteString, head + "allations/new")
+        XCTAssertEqual(vc.link(at: point(tv, row: 1, col: 4))?.absoluteString, head + "allations/new")
+        XCTAssertNil(vc.link(at: point(tv, row: 2, col: 3)), "the prose below is not the link")
+    }
+
     func testAnOSC8HyperlinkOpensItsTarget() async throws {
         let (vc, tv, _, _) = try await makeVC()
         tv.feed(text: "\u{1b}[2J\u{1b}[H\u{1b}]8;;https://example.com/osc\u{1b}\\click here\u{1b}]8;;\u{1b}\\ "

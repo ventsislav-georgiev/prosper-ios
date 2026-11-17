@@ -415,12 +415,10 @@ enum TerminalMath {
 
     /// The plain-text http(s) URL through cell `col` of row `row`, if any. `line(i)` is row
     /// i's cells (nil for a wide char's second half) and whether it soft-wraps from row
-    /// i − 1; nil past the buffer. A soft wrap always joins. A row break joins only when
-    /// the upper row's ink reaches the last two columns, a hard wrap at the edge the way
-    /// Claude Code breaks a long URL, and the next row's first run, past its indent, looks
-    /// like a URL tail: it carries one of / ? = & # % or a "." before its end, or it is all
-    /// the row's ink. Claude Code word-wraps prose too, so a URL ending a line often lands
-    /// at the edge with "Next step" below it. The indent is dropped. SwiftTerm's own
+    /// i − 1; nil past the buffer. A soft wrap always joins. A row break (Claude Code breaks
+    /// a long URL with a real newline, under the same indent) joins on evidence the URL goes
+    /// on, weighed in `joins`; the indent is dropped. Claude Code word-wraps prose too, so a
+    /// URL ending a line often lands at the edge with "Next step" below it. SwiftTerm's own
     /// guess joins from cols − cols/5, gluing the prose under a URL onto it (#510).
     static func webLink(row: Int, col: Int, cols: Int,
                         line: (Int) -> (cells: [Character?], wrapped: Bool)?) -> String? {
@@ -432,19 +430,37 @@ enum TerminalMath {
                             line: (Int) -> (cells: [Character?], wrapped: Bool)?)
         -> (url: String, start: (row: Int, col: Int), end: (row: Int, col: Int))? {
         func ink(_ c: Character?) -> Bool { c.map { $0 != " " && $0 != "\0" } ?? false }
+        // #1079: the evidence a row break is inside a URL. The upper row ends at the edge
+        // (last two columns) or near it (up to 4 short: a program wrapping a little narrow);
+        // t is the lower row's first run past its indent. Joins when:
+        //   - the upper row ends where a URL can't: ? = & # % - _ (cut mid-token);
+        //   - at the edge, t carries / ? = & # % (strong), - _ or a "." with two word chars
+        //     after it (not "e.g."), or is all the row's ink (a trailing "." only after a
+        //     digit, "2."), unless it is a capitalised word ("Thanks");
+        //   - near the edge, only a strong t that is all the row's ink or starts with / ? = & # %.
+        // Never a t without a letter or digit ("- item") or starting with a non-URL character
+        // ("⏺", "│"); a row outdented from the one above (a new block) takes a strong t only.
+        // ponytail: undecidable from the screen alone (the table in LinkTapTests): a URL ending
+        // at the edge over a URL-like word ("src/a.swift", "/login") still joins; a URL's last
+        // piece with none of the above and prose after it ("2 for details") doesn't.
         func joins(_ lower: Int) -> Bool {
             guard let lo = line(lower), let up = line(lower - 1) else { return false }
-            return lo.wrapped || ((up.cells.lastIndex(where: ink) ?? -1) >= cols - 2 && tail(lo.cells))
-        }
-        func tail(_ cells: [Character?]) -> Bool {
-            guard let a = cells.firstIndex(where: ink) else { return false }
-            let b = cells[a...].firstIndex(where: { $0 == " " || $0 == "\0" }) ?? cells.count
-            let run = cells[a..<b].compactMap { $0 }
-            let body = run.last.map { ".,".contains($0) } == true ? run.dropLast() : run[...]
-            // ponytail: a lone word ending a row still joins, a URL's last piece or not; and a
-            // URL's last piece without any of them, prose after it on its row, doesn't.
-            return body.contains(where: "/?=&#%.".contains)
-                || (body.count == run.count && !cells[b...].contains(where: ink))
+            if lo.wrapped { return true }
+            guard let e = up.cells.lastIndex(where: ink), e >= cols - 5,
+                  let a = lo.cells.firstIndex(where: ink) else { return false }
+            let b = lo.cells[a...].firstIndex(where: { $0 == " " || $0 == "\0" }) ?? lo.cells.count
+            let t = lo.cells[a..<b].compactMap { $0 }
+            let body = String(t.last.map { ".,".contains($0) } == true ? t.dropLast() : t[...])
+            guard let f = t.first, f.isLetter || f.isNumber || "/?=&#%-_.~".contains(f),
+                  body.contains(where: { $0.isLetter || $0.isNumber }) else { return false }
+            let strong = body.contains(where: "/?=&#%".contains)
+            if a < up.cells.firstIndex(where: ink) ?? 0 { return strong && e >= cols - 2 }
+            if let c = up.cells[e], "?=&#%-_".contains(c) { return true }
+            let lone = !lo.cells[b...].contains(where: ink) && (body.count == t.count || body.contains(where: \.isNumber))
+            guard e >= cols - 2 else { return strong && (lone || "/?=&#%".contains(f)) }
+            return strong || body.contains(where: "-_".contains)
+                || body.range(of: #"\.\w\w"#, options: .regularExpression) != nil
+                || (lone && body.range(of: "^[A-Z][a-z]+$", options: .regularExpression) == nil)
         }
         var top = row, bottom = row
         while joins(top) { top -= 1 }
