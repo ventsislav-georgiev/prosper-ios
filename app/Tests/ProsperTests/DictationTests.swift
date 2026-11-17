@@ -290,6 +290,41 @@ final class DictationTests: XCTestCase {
         XCTAssertEqual(hints.count, 2)
     }
 
+    /// #1080: which ends ask the bar to clean up: Done and the app's own stop on silence, once
+    /// each; ✕, leaving and the mic stopping (a call, an error) never.
+    func testWhichEndsCleanUp() throws {
+        var cleans = 0
+        let c = client()
+        c.clean = { cleans += 1; return nil }
+        func listen() throws -> UUID {
+            app(nil, .ready)
+            c.appear()
+            c.tap()
+            let id = try XCTUnwrap(store.request?.id)
+            app(id, .listening, ["One."])
+            c.sync()
+            return id
+        }
+        var id = try listen()
+        app(id, .ready, ["One."])
+        c.sync()
+        c.sync()
+        XCTAssertEqual(cleans, 1, "silence")
+        id = try listen()
+        c.done()
+        app(id, .ready, ["One."])
+        c.sync()
+        XCTAssertEqual(cleans, 2, "Done")
+        id = try listen()
+        c.cancel()
+        _ = try listen()
+        c.disappear()
+        id = try listen()
+        app(id, .off, ["One."], note: "x")
+        c.sync()
+        XCTAssertEqual(cleans, 2, "✕, leaving, the mic off")
+    }
+
     // MARK: The toolbar key
 
     private func rig(_ text: String, dictation: DictationClient?, fullAccess: Bool = true)

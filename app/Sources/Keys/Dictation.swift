@@ -136,7 +136,8 @@ final class DarwinPings {
 /// The keyboard's side of dictation (#598): the mic key, the listening strip, and each finished
 /// phrase typed once. The app's heartbeat says whether a start can go straight to it or has to
 /// hop. Done waits for the last phrase (`finishLimit`, then the tail as shown goes in), then
-/// the bar may clean up what was typed (`clean`, #612); ✕ types the finished phrases and drops
+/// the bar may clean up what was typed (`clean`, #612), as at the app's own stop on silence
+/// (#1080); ✕ types the finished phrases and drops
 /// the tail, or while cleaning keeps them as spoken. Leaving mid-dictation (another app, the
 /// keyboard down) is ✕, but not the hop to Prosper: back from it, the dictation goes on.
 final class DictationClient {
@@ -156,7 +157,7 @@ final class DictationClient {
     var insert: (String) -> Void = { _ in }
     var onStrip: (Strip) -> Void = { _ in }
     var hint: (String) -> Void = { _ in }
-    /// At Done's end (#612): the bar's cleanup under way (`SuggestionBar.cleanUp`), nil with none.
+    /// At Done's end (#612) or the app's on silence (#1080): the bar's cleanup under way (`SuggestionBar.cleanUp`), nil with none.
     var clean: () -> Task<Void, Never>? = { nil }
     /// That cleanup, till it's back (`cleaned`), ✕ or the keyboard going cancels it.
     private(set) var cleaning: Task<Void, Never>?
@@ -233,8 +234,7 @@ final class DictationClient {
                 hint(s.note ?? "The mic stopped — tap it to start again")
                 return end()
             }
-            if case .finishing = strip { return end(cleaning: clean()) }   // Done's
-            return end()
+            return end(cleaning: clean())   // #1080: Done's, or the app's own on silence (`quiet`): both clean up
         }
         switch strip {
         case .idle, .opening, .cleaning: break

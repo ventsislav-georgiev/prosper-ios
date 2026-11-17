@@ -304,6 +304,66 @@ final class DictationCleanupTests: XCTestCase {
         XCTAssertEqual(r.doc.text, "Note: um one")
     }
 
+    // MARK: - (d2) The app's own stop (#1080)
+
+    /// The app ending on silence (`quiet`: finishing, then ready, no Done): the same cleanup
+    /// as Done, once; the mic key or a late sync after it start no second one.
+    func testStopOnSilenceCleansUpOnce() async throws {
+        let model = Model()
+        model.reply = " One. Two."
+        model.holds = true
+        let r = try rig("Note:", model: model)
+        say(r, ["um one"])
+        app(r.id, .finishing, ["um one"], tail: "uh two")
+        r.client.sync()
+        app(r.id, .ready, ["um one", "uh two"])
+        r.client.sync()
+        let task = try XCTUnwrap(r.client.cleaning, "cleaning on its own stop")
+        XCTAssertEqual(r.client.strip, .cleaning)
+        r.client.tap()
+        r.client.sync()
+        while model.pending == nil { await Task.yield() }
+        model.pending?.resume(returning: model.reply)
+        await task.value
+        XCTAssertEqual(model.calls.map(\.1), [" um one uh two"], "once")
+        XCTAssertEqual(r.doc.text, "Note: One. Two.")
+        XCTAssertEqual(r.client.strip, .idle)
+    }
+
+    /// Done tapped just after the app stopped on silence, before the keyboard read it: one
+    /// cleanup. A key while it works keeps it as spoken, as after Done.
+    func testDoneRightAfterTheStopOnSilenceCleansUpOnce() async throws {
+        let model = Model()
+        model.holds = true
+        let r = try rig("Note:", model: model)
+        say(r, ["um one"])
+        app(r.id, .ready, ["um one", "uh two"])
+        let task = try XCTUnwrap(done(r, ["um one", "uh two"]))
+        r.client.sync()
+        while model.pending == nil { await Task.yield() }
+        r.kb.press(.char("x"))
+        let before = r.doc.calls.count
+        model.pending?.resume(returning: "One. Two.")
+        await task.value
+        XCTAssertEqual(model.calls.count, 1)
+        XCTAssertEqual(r.doc.calls.count, before, "nothing written over the edit")
+        XCTAssertEqual(r.doc.text, "Note: um one uh twox")
+        XCTAssertEqual(Self.hints(r.view), [SuggestionBar.keptAsSpoken])
+    }
+
+    /// The setting off: the app's stop on silence keeps it as spoken, no model call.
+    func testStopOnSilenceWithTheSettingOffKeepsItAsSpoken() throws {
+        let model = Model()
+        let r = try rig("Note:", model: model, cleans: false)
+        say(r, ["um one"])
+        app(r.id, .ready, ["um one", "uh two"])
+        r.client.sync()
+        XCTAssertNil(r.client.cleaning)
+        XCTAssertEqual(r.client.strip, .idle)
+        XCTAssertTrue(model.calls.isEmpty)
+        XCTAssertEqual(r.doc.text, "Note: um one uh two")
+    }
+
     // MARK: - (e) Gating
 
     /// The setting off, Bulgarian, no Full Access, no model, Apple Intelligence off or still
