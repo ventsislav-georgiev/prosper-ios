@@ -521,6 +521,12 @@ final class ProsperTransport: SessionTransport {
             ?? "The host refused the request."
     }
 
+    /// #1553: an exit frame's `"why":"detach"` (dch -d on the host). Only that exact value
+    /// counts; a missing, unknown or unreadable one is a plain exit.
+    static func isDetach(_ payload: Data) -> Bool {
+        (((try? JSONSerialization.jsonObject(with: payload)) as? [String: Any])?["why"] as? String) == "detach"
+    }
+
     static func decodeHistory(_ payload: Data) throws -> [DchHistoryRow] {
         guard let arr = (try? JSONSerialization.jsonObject(with: payload)) as? [[String: Any]] else {
             throw TransportError.protocolError("unreadable history")
@@ -727,6 +733,7 @@ final class ProsperStream: TerminalStream {
     private var buf = Data()
     private(set) var exited = false
     private(set) var refusal: String?
+    static let detachedLine = "Detached on the Mac."
     /// Pump state (connection queue only). A 0x13 before any server 0x10/0x19 answers the
     /// attach and is terminal; a later one answers a control frame and stays pending:
     /// the next 0x10/0x19 clears it, a FIN or error while it's pending makes it the refusal.
@@ -778,7 +785,10 @@ final class ProsperStream: TerminalStream {
                         self.live = true; self.heldError = nil
                         // Empty = the session's master has no VT mirror; nothing to paint.
                         if !payload.isEmpty { self.onScreen?(ArraySlice([UInt8](payload))) }
-                    case F.exit: self.exited = true; self.close(); return
+                    case F.exit:
+                        // #1553: a detach on the host leaves the session running: the `.failed` line, whose tap reattaches.
+                        if ProsperTransport.isDetach(payload) { self.refusal = Self.detachedLine } else { self.exited = true }
+                        self.close(); return
                     case F.error where !self.live:
                         self.refusal = ProsperTransport.decodeMessage(payload); self.close(); return
                     case F.error: self.heldError = ProsperTransport.decodeMessage(payload)

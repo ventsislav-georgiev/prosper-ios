@@ -1398,6 +1398,45 @@ final class SessionConnectionDeliveryTests: XCTestCase {
         XCTAssertNil(stream.refusal)
     }
 
+    /// #1553: only `"why":"detach"` is a detach; no why, another why, or junk is a plain exit.
+    func testExitFrameDecodesDetachOnlyFromTheField() {
+        XCTAssertTrue(ProsperTransport.isDetach(Data(#"{"code":0,"why":"detach"}"#.utf8)))
+        XCTAssertFalse(ProsperTransport.isDetach(Data(#"{"code":0}"#.utf8)))
+        XCTAssertFalse(ProsperTransport.isDetach(Data(#"{"code":0,"why":"kicked"}"#.utf8)))
+        XCTAssertFalse(ProsperTransport.isDetach(Data(#"{"code":0,"why":1}"#.utf8)))
+        XCTAssertFalse(ProsperTransport.isDetach(Data("not json".utf8)))
+        XCTAssertFalse(ProsperTransport.isDetach(Data()))
+    }
+
+    /// #1553: a detach frame (then the FIN) leaves the screen on the `.failed` line, not
+    /// `.ended`; its retry attaches again. A plain exit with a payload still ends.
+    func testDetachFrameOffersReattachAndPlainExitEnds() async throws {
+        let accepted = Box(0)
+        let listener = try loopbackServer { c in
+            accepted.v += 1
+            let why = accepted.v == 1 ? #","why":"detach""# : ""
+            var d = FrameCodec.encode(0x10, Data("$ ".utf8))
+            d.append(FrameCodec.encode(0x12, Data(#"{"code":0\#(why)}"#.utf8)))
+            c.send(content: d, completion: .contentProcessed { _ in c.cancel() })
+        }
+        defer { listener.cancel() }
+        try await waitUntil("listener") { (listener.port?.rawValue ?? 0) != 0 }
+
+        let conn = SessionConnection(transport: ProsperTransport(host: "127.0.0.1", port: listener.port!.rawValue),
+                                     session: DchSession(name: "t", alias: nil))
+        conn.onBytes = { _ in }
+        conn.start(cols: 80, rows: 24)
+        try await waitUntil("detached") { conn.state == .failed(ProsperStream.detachedLine) }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(conn.state, .failed(ProsperStream.detachedLine))
+        XCTAssertEqual(accepted.v, 1, "a detach doesn't reattach on its own")
+
+        conn.retry()
+        try await waitUntil("ended") { conn.state == .ended }
+        XCTAssertEqual(accepted.v, 2)
+        conn.close()
+    }
+
     /// A real ProsperStream to a loopback host that says "$ " and records what it reads.
     /// `q` is the stream's callback queue: suspended, no send completion can report.
     private func loopbackStream(on q: DispatchQueue) async throws -> (ProsperStream, Wire, NWListener) {

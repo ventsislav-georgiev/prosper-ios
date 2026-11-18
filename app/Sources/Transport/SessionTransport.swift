@@ -45,7 +45,8 @@ protocol TerminalStream: AnyObject {
     /// reconnect loop tell a clean `exit` apart from a dropped link.
     var exited: Bool { get }
     /// The server's own words when it refused the attach (error 0x13, e.g. dch serve's
-    /// "no session named …"). Set before `output` finishes; the session is over, no retry.
+    /// "no session named …"), or #1553's detach line. Set before `output` finishes; no
+    /// automatic retry, only the user's.
     var refusal: String? { get }
     /// Send keystrokes / pasted bytes to the pty. Returns false when the stream is
     /// already closed and did NOT take the bytes — the caller still owns them. True
