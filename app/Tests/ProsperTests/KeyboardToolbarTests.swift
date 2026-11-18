@@ -2891,6 +2891,44 @@ final class KeyboardToolbarTests: XCTestCase {
         XCTAssertEqual(Self.at(doc), "top\n|")
     }
 
+    /// dd and cut line pressed at the start of a line past the host's window, between two
+    /// lines, the field's first edit, on a host answering each move 150 ms late: the line and
+    /// its break go, cut's clip the line, or nothing does, the caret where the press found it
+    /// and the clip kept (#1061: the walk to the end took UIKit's guess at the window's end
+    /// for the line's, and the step over the break the late answer to the walk back for its
+    /// own: 301 deletes left "top\n|bcdefghij…"). A next line the same as the line still goes.
+    func testDdAndCutLineFromTheStartOfALinePastTheWindowOnABlockingHostTakeItOrNothing() throws {
+        let block = { (d: Proxy) in Self.qaHosts()[1].1(d); d.window = 300 }
+        let text = String(repeating: "abcdefghij", count: 32), digits = (1...400).map(String.init).joined()
+        let lines = [text, String(digits.prefix(320)), String(digits.prefix(1_000)), String(repeating: "a", count: 320)]
+        for line in lines {
+            for id in ["delLine", "cutLine"] {
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                pb.string = "old"
+                let (kb, bar, doc) = rig("top\n", after: line + "\nend")
+                block(doc)
+                bar.suggestions.pasteboard = { pb }
+                try edit(id, kb, bar, doc)
+                let what = "\(id) on \(line.prefix(12))… (\(line.count))"
+                let went = Self.at(doc) == "top\n|end"
+                XCTAssertEqual(Self.at(doc), went ? Self.at(doc) : "top\n|" + line + "\nend", "nothing or the line: \(what)")
+                XCTAssertEqual(pb.string, went && id == "cutLine" ? line : "old", "the clip: \(what)")
+            }
+        }
+        for (name, host) in [("on time", { (_: Proxy) in }), ("text view", Self.textView), Self.qaHosts()[0], ("BLOCK, 300", block)] {
+            for id in ["delLine", "cutLine"] {
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                addTeardownBlock { UIPasteboard.remove(withName: pb.name) }
+                let (kb, bar, doc) = rig("top\nfoo bar", after: "\nfoo bar\nend")
+                host(doc)
+                bar.suggestions.pasteboard = { pb }
+                try edit(id, kb, bar, doc)
+                XCTAssertEqual(Self.at(doc), "top\n|foo bar\nend", "the same line next: \(id) on \(name)")
+            }
+        }
+    }
+
     private func key(_ keys: [ShortcutKey], _ id: String) throws -> ShortcutKey {
         try XCTUnwrap(keys.first { $0.id == id }, id)
     }

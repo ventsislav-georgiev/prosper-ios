@@ -1667,10 +1667,18 @@ final class SuggestionBar: UIView {
         // waited for (#685: dd there held 2.2 s, `answerPolls` and the walk's 0.3 s of it).
         let ends = walked == 0 && seen.1.isEmpty && (breaks || !line.isEmpty)
         let sent = keyboard.ticks
+        // #1061: on a host not yet seen answering late the walk ran on UIKit's guesses, and a
+        // context showing the line again after a break, as far as its window, is the late answer
+        // to the walk back, no step's: waited past (BLOCK dd at a 320 line's start took 301 and
+        // left the rest).
+        let blind = keyboard.lateBy == 0, shown = line + "\n"
+        let again = { (n: (String, String)) in
+            blind && !line.isEmpty && !n.1.isEmpty && (n.1.hasPrefix(shown) || shown.hasPrefix(n.1))
+        }
         let landed = { [weak self] (go: @escaping () -> Void) in
             guard let doc = self?.keyboard?.target as? UITextDocumentProxy else { return }
             let now = { (Self.before(doc), doc.documentContextAfterInput ?? "") }
-            let past = { (n: (String, String)) in n != seen && n.0.last?.isNewline == true }
+            let past = { (n: (String, String)) in n != seen && n.0.last?.isNewline == true && !again(n) }
             guard !past(now()) else { return go() }
             guard let kb = self?.keyboard else { return }
             var quiet = Quiet(seen.0 + "\u{0}" + seen.1, at: kb.ticks)
@@ -1682,7 +1690,7 @@ final class SuggestionBar: UIView {
                 let n = now()
                 let ticks = kb?.ticks ?? .max
                 guard past(n) || quiet.over(n.0 + "\u{0}" + n.1, 15, at: ticks) && !behind(n)
-                        && (n != seen || ticks - sent > max(Self.answerPolls, kb?.lateBy ?? 0))
+                        && (n != seen && !again(n) || ticks - sent > max(Self.answerPolls, kb?.lateBy ?? 0))
                 else { return false }
                 go()
                 return true
