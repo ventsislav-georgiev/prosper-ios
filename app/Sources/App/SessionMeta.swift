@@ -191,7 +191,7 @@ extension DchSession {
 
 #if !KEYBOARD
 /// #1518: a session row as the Mac's sidebar draws it, for a narrow touch screen: the
-/// state mark, then line 1 the title and the "🤖 N" capsule, line 2 the state word, the
+/// state mark, then line 1 the title and the robot-glyph + N capsule (#1547), line 2 the state word, the
 /// merged and open counts and the PR chips, folding (`detailLines`) before the title or
 /// the state word lose room. Nothing animates and the chips are inert: a tap anywhere
 /// opens the session; actions live in the list's swipe and long-press menu.
@@ -235,7 +235,7 @@ struct SessionRow: View {
                     // Accessibility sizes: nothing shares a line with the title or the
                     // state word, and both may wrap, so both always show.
                     Text(session.title).fontWeight(.medium).lineLimit(2)
-                    if d.agents, session.agents > 0 { agentsCapsule(session.agents) }
+                    if d.agents, session.agents > 0 { Self.agentsCapsule(session.agents) }
                     // #1532: the badges' own line folds too: drawn whole, the fixed-size pills ran past the row.
                     if session.badgeFolds(d).first?.isEmpty == false {
                         ViewThatFits(in: .horizontal) {
@@ -248,7 +248,7 @@ struct SessionRow: View {
                         ForEach(session.badgeFolds(d), id: \.self) { b in
                             HStack(alignment: .firstTextBaseline, spacing: 6) {
                                 Self.title(session.title)
-                                if d.agents, session.agents > 0 { agentsCapsule(session.agents).layoutPriority(1) }
+                                if d.agents, session.agents > 0 { Self.agentsCapsule(session.agents).layoutPriority(1) }
                                 if !b.isEmpty { Self.badges(b).layoutPriority(1) }
                             }
                         }
@@ -349,8 +349,17 @@ struct SessionRow: View {
         }
     }
 
-    private func agentsCapsule(_ n: Int) -> some View {
-        Self.chip("\u{1F916} \(SessionMeta.count(n))")
+    static func agentsCapsule(_ n: Int) -> some View {
+        HStack(spacing: 3) {   // #1547: the drawn robot (not the emoji), centred with the count
+            RobotGlyph()
+            Text(verbatim: SessionMeta.count(n))
+        }
+        .font(.caption2.monospaced().weight(.medium))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1)
+        .background(Color.primary.opacity(0.1), in: Capsule())
     }
 }
 #endif

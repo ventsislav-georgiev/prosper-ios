@@ -450,4 +450,32 @@ final class SessionMetaTests: XCTestCase {
         store.set(false, forKey: RowDetails.Key.age)
         XCTAssertLessThan(size().height, all.height, "Age off: no line 2 left")
     }
+
+    /// #1547: the agents chip draws the robot, not the emoji: the geometry fills its box inside the stroke inset, the chip is
+    /// glyph + 3 + count + padding wide (the emoji chip is not), and no taller than the emoji chip was.
+    @MainActor func testAgentsChipDrawsRobotNotEmoji() {
+        let box = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let g = RobotGeometry.paths(in: box)
+        XCTAssertFalse(g.line.isEmpty); XCTAssertFalse(g.fill.isEmpty)
+        let inset = box.insetBy(dx: -box.width * RobotGeometry.strokeFraction / 2, dy: -box.height * RobotGeometry.strokeFraction / 2)
+        XCTAssertTrue(inset.contains(g.line.boundingRect) && inset.contains(g.fill.boundingRect), "inside the box, stroke included")
+        XCTAssertGreaterThan(g.line.boundingRect.width, 80)
+        func size<V: View>(_ v: V) -> CGSize { UIHostingController(rootView: v).sizeThatFits(in: CGSize(width: 1000, height: 100)) }
+        let font = Font.caption2.monospaced().weight(.medium)
+        let digit = size(Text(verbatim: "3").font(font)).width
+        let chip = size(SessionRow.agentsCapsule(3))
+        XCTAssertEqual(chip.width, size(RobotGlyph()).width + 3 + digit + 10, accuracy: 0.5)
+        let emoji = size(Text(verbatim: "\u{1F916} 3").font(font).padding(.horizontal, 5).padding(.vertical, 1))
+        XCTAssertNotEqual(chip.width, emoji.width, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(chip.height, emoji.height + 0.01, "the chip keeps the emoji chip's height")
+    }
+
+    /// #1547: the glyph's side follows Dynamic Type.
+    @MainActor func testRobotGlyphScalesWithDynamicType() {
+        func side(_ t: DynamicTypeSize) -> CGFloat {
+            UIHostingController(rootView: RobotGlyph().environment(\.dynamicTypeSize, t)).sizeThatFits(in: CGSize(width: 1000, height: 1000)).width
+        }
+        XCTAssertEqual(side(.large), 11 * RobotGeometry.sideFactor, accuracy: 0.5)
+        XCTAssertGreaterThan(side(.accessibility5), side(.large) * 1.5)
+    }
 }
