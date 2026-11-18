@@ -721,7 +721,8 @@ final class KeyboardThemeTests: XCTestCase {
         XCTAssertEqual(panel.numbers.map(\.accessibilityLabel), ["Row", "Key"])
         XCTAssertEqual(panel.numpad.map(\.accessibilityLabel), ["Off", "On"])
         XCTAssertEqual(selected(panel.sizes) + selected(panel.numbers) + selected(panel.numpad), ["Normal", "Row", "Off"])
-        XCTAssertTrue(panel.toolbarRows.isEmpty, "Toolbar Rows with Key only (#694)")
+        XCTAssertEqual(panel.toolbarRows.map(\.accessibilityLabel), ["One", "Two"], "Toolbar Rows with Row too (#1501)")
+        XCTAssertEqual(selected(panel.toolbarRows), ["One"], "One by default (#1501)")
         XCTAssertGreaterThan(panel.sizes[0].convert(panel.sizes[0].bounds, to: panel).minY,
                              panel.toolbar[0].convert(panel.toolbar[0].bounds, to: panel).maxY, "under the theme rows")
         XCTAssertEqual(panel.bottomInset, TerminalKeyboard.extensionBottomInset)
@@ -744,20 +745,20 @@ final class KeyboardThemeTests: XCTestCase {
         XCTAssertTrue(kb.numbersKey)
         XCTAssertEqual(kb.shownKeys.last?.first, .numbers, "123 on the keys")
         let m = TerminalKeyboard.metrics(compact: false, size: .large)
-        XCTAssertEqual(bar.frame.height, barHeight + m.row + m.gap, accuracy: 0.5, "the digit row's height to the bar")
+        XCTAssertEqual(bar.frame.height, barHeight, accuracy: 0.5, "One: Row's bar (#1501)")
         panel = try XCTUnwrap(bar.appearancePanel)
         XCTAssertEqual(selected(panel.numbers), ["Key"])
         XCTAssertEqual(panel.frame, kb.frame)
         XCTAssertEqual(panel.toolbarRows.map(\.accessibilityLabel), ["One", "Two"])
-        XCTAssertEqual(selected(panel.toolbarRows), ["Two"])
-
-        try tap(panel.toolbarRows, "One")   // #694
-        fit()
-        XCTAssertEqual(defaults.string(forKey: KeyboardSettings.Key.toolbarRows), "one")
-        XCTAssertEqual(KeyboardSettings.current().toolbarRows, .one, "the app's Settings follow")
-        XCTAssertEqual(bar.frame.height, barHeight, accuracy: 0.5, "one row, the digit row's height gone")
-        panel = try XCTUnwrap(bar.appearancePanel)
         XCTAssertEqual(selected(panel.toolbarRows), ["One"])
+
+        try tap(panel.toolbarRows, "Two")   // #694
+        fit()
+        XCTAssertEqual(defaults.string(forKey: KeyboardSettings.Key.toolbarRows), "two")
+        XCTAssertEqual(KeyboardSettings.current().toolbarRows, .two, "the app's Settings follow")
+        XCTAssertEqual(bar.frame.height, barHeight + m.row + m.gap, accuracy: 0.5, "the toolbar's second row")
+        panel = try XCTUnwrap(bar.appearancePanel)
+        XCTAssertEqual(selected(panel.toolbarRows), ["Two"])
         XCTAssertEqual(panel.frame, kb.frame)
 
         try tap(panel.numpad, "On")
@@ -838,36 +839,34 @@ final class KeyboardThemeTests: XCTestCase {
         for count in 6...12 {
             for (compact, width) in [(false, 375), (false, 402), (false, 440), (true, 750)] as [(Bool, CGFloat)] {
                 for size in KeyboardSettings.KeySize.allCases {
-                    for rows in [5, 4] {
-                        let note = "\(count) tiles, \(compact ? "landscape" : "portrait") \(width) \(size) \(rows) rows"
-                        let menu = ToggleMenu(items: all.suffix(count).map { .init(title: $0, symbol: "paintpalette") {} }) {}
-                        menu.frame = CGRect(x: 0, y: 0, width: width,
-                                            height: TerminalKeyboard.keysHeight(compact: compact, size: size, rows: rows)
-                                                + TerminalKeyboard.extensionBottomInset)
-                        menu.layoutIfNeeded()
-                        let frames = menu.tiles.map(\.frame)
-                        for (tile, frame) in zip(menu.tiles, frames) {
-                            XCTAssertTrue(menu.bounds.insetBy(dx: 7.9, dy: 7.9).contains(frame), note)   // 8 pt in, give or take rounding
-                            XCTAssertGreaterThanOrEqual(frame.minY, 46, "\(note): under the caption")
-                            let fits = tile.intrinsicContentSize
-                            XCTAssertLessThanOrEqual(fits.height, frame.height + 0.5, "\(note): \(tile.accessibilityLabel!)")
-                            XCTAssertLessThanOrEqual(fits.width, frame.width + 0.5, "\(note): \(tile.accessibilityLabel!) whole")
-                        }
-                        // Eleven or more in landscape's one short row (Numbers: Key) go under 10 pt; ten is
-                        // the most the keyboard offers today (#691).
-                        if count <= 10 || !compact { XCTAssertGreaterThanOrEqual(menu.titleSize, 10, "\(note): still legible") }
-                        if !compact {
-                            XCTAssertGreaterThanOrEqual(frames.filter { $0.minY == frames[0].minY }.count, 4, "\(note): four a row")
-                            if width > 375 { XCTAssertGreaterThanOrEqual(menu.titleSize, 12, "\(note): 12 to 13 pt") }
-                        }
-                        for (i, a) in frames.enumerated() { for b in frames[(i + 1)...] { XCTAssertFalse(a.intersects(b), note) } }
-                        let hide = menu.hideButton!.frame
-                        XCTAssertTrue(menu.bounds.contains(hide), note)
-                        XCTAssertGreaterThanOrEqual(min(hide.width, hide.height), 44, "\(note): a 44 pt target")
-                        XCTAssertFalse(frames.contains { $0.intersects(hide) }, "\(note): off the tiles")
-                        XCTAssertFalse(menu.title.convert(menu.title.bounds, to: menu).intersects(hide), "\(note): off the caption")
-                        XCTAssertEqual(hide.midY, menu.title.convert(menu.title.bounds, to: menu).midY, accuracy: 1, "\(note): on the caption's line")
+                    let note = "\(count) tiles, \(compact ? "landscape" : "portrait") \(width) \(size)"
+                    let menu = ToggleMenu(items: all.suffix(count).map { .init(title: $0, symbol: "paintpalette") {} }) {}
+                    menu.frame = CGRect(x: 0, y: 0, width: width,
+                                        height: TerminalKeyboard.keysHeight(compact: compact, size: size)
+                                            + TerminalKeyboard.extensionBottomInset)
+                    menu.layoutIfNeeded()
+                    let frames = menu.tiles.map(\.frame)
+                    for (tile, frame) in zip(menu.tiles, frames) {
+                        XCTAssertTrue(menu.bounds.insetBy(dx: 7.9, dy: 7.9).contains(frame), note)   // 8 pt in, give or take rounding
+                        XCTAssertGreaterThanOrEqual(frame.minY, 46, "\(note): under the caption")
+                        let fits = tile.intrinsicContentSize
+                        XCTAssertLessThanOrEqual(fits.height, frame.height + 0.5, "\(note): \(tile.accessibilityLabel!)")
+                        XCTAssertLessThanOrEqual(fits.width, frame.width + 0.5, "\(note): \(tile.accessibilityLabel!) whole")
                     }
+                    // Eleven or more in landscape's one short row (Numbers: Key) go under 10 pt; ten is
+                    // the most the keyboard offers today (#691).
+                    if count <= 10 || !compact { XCTAssertGreaterThanOrEqual(menu.titleSize, 10, "\(note): still legible") }
+                    if !compact {
+                        XCTAssertGreaterThanOrEqual(frames.filter { $0.minY == frames[0].minY }.count, 4, "\(note): four a row")
+                        if width > 375 { XCTAssertGreaterThanOrEqual(menu.titleSize, 12, "\(note): 12 to 13 pt") }
+                    }
+                    for (i, a) in frames.enumerated() { for b in frames[(i + 1)...] { XCTAssertFalse(a.intersects(b), note) } }
+                    let hide = menu.hideButton!.frame
+                    XCTAssertTrue(menu.bounds.contains(hide), note)
+                    XCTAssertGreaterThanOrEqual(min(hide.width, hide.height), 44, "\(note): a 44 pt target")
+                    XCTAssertFalse(frames.contains { $0.intersects(hide) }, "\(note): off the tiles")
+                    XCTAssertFalse(menu.title.convert(menu.title.bounds, to: menu).intersects(hide), "\(note): off the caption")
+                    XCTAssertEqual(hide.midY, menu.title.convert(menu.title.bounds, to: menu).midY, accuracy: 1, "\(note): on the caption's line")
                 }
             }
         }

@@ -2010,7 +2010,7 @@ private final class DchTerminalView: TerminalView {
         kb.sendBytes = { [weak self] in self?.send($0) }   // through the host's send, like any key
         kb.restyled = { [weak self] in self?.restyled?() }
         kb.rowsChanged = { [weak self] in self?.rowsChanged?() }
-        kb.allowsNumbersKey = true   // Numbers: Key here too (#692): a row shorter, the bar as it is
+        kb.allowsNumbersKey = true   // Numbers: Key here too (#692): four taller rows (#1501), the bar as it is
         kb.screenWords = { [weak self] in self.map { TerminalKeyboard.screenWords(in: $0.getTerminal()) } ?? [] }
         kb.moveCaret = { [weak self] in   // the space-bar trackpad: arrow keys, like the bar's
             guard let self else { return }

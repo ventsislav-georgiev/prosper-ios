@@ -167,7 +167,7 @@ final class PanelFilterTests: XCTestCase {
             for numbers in KeyboardSettings.Numbers.allCases {
                 let label = "\(size) \(numbers)"
                 let (kb, bar, view) = hostedRig(size: size, numbers: numbers)
-                XCTAssertEqual(bar.toolbar?.twoRows, numbers == .key, label)
+                XCTAssertEqual(bar.toolbar?.twoRows, true, "Toolbar Rows: Two with Row too (#1501), \(label)")
                 bar.snippets = store
                 bar.showSnippets(true)
                 let panel = try XCTUnwrap(bar.snippetsPanel)

@@ -99,13 +99,13 @@ struct KeyboardSettings: Equatable {
         return all.isEmpty ? [.english] : all
     }
     /// The Prosper keyboard's digits (#625): a row over the letters (`row`, as before), or a
-    /// 123 key at the bottom row's left that swaps the letters for a numpad (`key`), the
-    /// row's height going to the toolbar's second row. Same keyboard height either way.
+    /// 123 key at the bottom row's left that swaps the letters for a numpad (`key`), the four
+    /// rows taller in the five's height (#1501, `metrics(rows:)`). Same keys height either way.
     var numbers = Numbers.row
     enum Numbers: String, CaseIterable { case row, key }
-    /// With Numbers: Key, the toolbar's rows (#694): Two takes the digit row's height, One
-    /// leaves it out, a keyboard one row shorter (`TerminalKeyboard.numberRowHeight`).
-    var toolbarRows = ToolbarRows.two
+    /// The extension's toolbar rows (#694), with Row or Key alike since #1501: Two adds a bar row
+    /// (`TerminalKeyboard.toolbarRowHeight`), One doesn't. One by default since #1501; a stored Two stays.
+    var toolbarRows = ToolbarRows.one
     enum ToolbarRows: String, CaseIterable { case one, two }
     /// The numpad takes the bar's height too while it shows (#625): 123's, or the menu's (#650).
     var numpadHidesToolbar = false
@@ -1015,8 +1015,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// (32 pt bar + 149 + 6) was about the Apple keyboard's landscape height (QA measured
     /// the old 36 + 174 + 6 ~30 pt taller); `extensionBottomInset` has since added 10.
     /// The bar + the 3 pt top pad is the bubble's compact rise (`KeyPreview.rise(compact:)`).
-    static func metrics(compact: Bool, size: KeyboardSettings.KeySize = .normal) -> (row: CGFloat, gap: CGFloat, top: CGFloat) {
-        compact ? (26, 4, 3) : (size.row.height, size.row.gap, topPadding)
+    /// #1501: `rows` under five (Numbers: Key) fill the five's height, a dropped row and gap
+    /// 90% into the keys, 10% into the gaps: keys ~30% taller, gaps ~13% wider.
+    static func metrics(compact: Bool, size: KeyboardSettings.KeySize = .normal, rows: Int = 5) -> (row: CGFloat, gap: CGFloat, top: CGFloat) {
+        let m = compact ? (row: 26, gap: 4, top: 3) : (row: size.row.height, gap: size.row.gap, top: topPadding)
+        let extra = CGFloat(5 - rows) * (m.row + m.gap)
+        return (m.row + 0.9 * extra / CGFloat(rows), m.gap + 0.1 * extra / CGFloat(rows - 1), m.top)
     }
     /// The host window's system gesture gate holds a touch near the left or right edge
     /// until the lift, so an edge key shows no pressed look and its hold fails: let it
@@ -1024,10 +1028,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static func undelayEdges(_ window: UIWindow?) {
         window?.gestureRecognizers?.forEach { $0.delaysTouchesBegan = false }
     }
-    /// `rows` 4: no digit row (Numbers: Key, #625), its row and gap the bar's (`numberRowHeight`).
-    static func keysHeight(compact: Bool, size: KeyboardSettings.KeySize = .normal, rows: Int = 5) -> CGFloat {
+    /// Five rows' height, Numbers: Key's four too (#1501).
+    static func keysHeight(compact: Bool, size: KeyboardSettings.KeySize = .normal) -> CGFloat {
         let m = metrics(compact: compact, size: size)
-        return m.top + CGFloat(rows) * m.row + CGFloat(rows - 1) * m.gap
+        return m.top + 5 * m.row + 4 * m.gap
     }
     /// Under the bottom row, in place of the 34 pt home-indicator inset: enough to keep
     /// the space bar off the bottom edge, where the home gesture starts. (Deferring that
@@ -1227,16 +1231,16 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         }
     }
     /// Numbers: Key may apply (#625): the extension's controller sets it, and the terminal's
-    /// since #692, whose bar stays as it is: a keyboard a row shorter, as Toolbar Rows: One.
+    /// since #692, whose bar stays as it is; the keys keep their height (#1501).
     var allowsNumbersKey = false { didSet { if allowsNumbersKey != oldValue { numbersChanged() } } }
     /// No digit row, a 123 key instead (`build`).
     var numbersKey: Bool { allowsNumbersKey && settings.numbers == .key }
     /// The numpad shows in the keys' place (`showNumpad`).
     private(set) var showsNumpad = false
-    /// What the digit row's row and gap leave for the bar with `numbersKey` (`SuggestionBar.fitRows`),
-    /// so the keyboard's total height is the same either way; 0 with the row, or with Toolbar Rows: One (#694).
-    var numberRowHeight: CGFloat {
-        guard numbersKey, settings.toolbarRows == .two else { return 0 }
+    /// The toolbar's second row with Toolbar Rows: Two (`SuggestionBar.fitRows`, #694), a key row
+    /// and gap, 0 with One; Numbers doesn't count (#1501): the keys keep their five rows' height.
+    var toolbarRowHeight: CGFloat {
+        guard settings.toolbarRows == .two else { return 0 }
         let m = Self.metrics(compact: compact, size: settings.keySize)
         return m.row + m.gap
     }
@@ -1426,7 +1430,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     }
 
     private func fitHeight() {
-        keysHeightConstraint.constant = Self.keysHeight(compact: compact, size: settings.keySize, rows: numbersKey ? 4 : 5)
+        keysHeightConstraint.constant = Self.keysHeight(compact: compact, size: settings.keySize)
             + lentHeight
         let height = keysHeightConstraint.constant + bottomInset
         guard height != heightConstraint.constant else { return }
@@ -2452,7 +2456,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     override func layoutSubviews() {
         super.layoutSubviews()
         let area = keysArea.layoutFrame.insetBy(dx: Self.sideMargin, dy: 0)
-        let m = Self.metrics(compact: compact, size: settings.keySize)
+        let m = Self.metrics(compact: compact, size: settings.keySize, rows: numbersKey ? 4 : 5)   // #1501
         tracker.floor = bounds.maxY + KeyTouchTracker.lineStep   // #965: past a drag's second line down
         emojiPicker?.frame = area
         if showsNumpad { return layoutNumpad(in: area, m) }

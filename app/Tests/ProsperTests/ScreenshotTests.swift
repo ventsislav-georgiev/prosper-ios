@@ -342,7 +342,7 @@ final class ScreenshotTests: XCTestCase {
         var rig = Rig(kb: kb, bar: bar, doc: doc, view: view)
         kept += [kb, bar, doc, view, dictation]
         let height = try XCTUnwrap(kb.constraints.first { $0.firstItem === kb && $0.firstAttribute == .height })
-        try place(view, height: SuggestionBar.height + kb.numberRowHeight + height.constant)
+        try place(view, height: SuggestionBar.height + kb.toolbarRowHeight + height.constant)
         try then(rig)
         rig.image = try draw(view)
         return rig

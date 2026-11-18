@@ -353,7 +353,7 @@ final class ShortcutBar: UIView {
     private var rows: [UIStackView] = []        // [top, bottom]; `oneRow`'s bottom only with `twoRows`
     private let keys: () -> [ShortcutKey]
     private let oneRow: Bool
-    /// `oneRow` in two rows (Numbers: Key, #625): the keys split where the longer row is
+    /// `oneRow` in two rows (Toolbar Rows: Two, #694): the keys split where the longer row is
     /// shortest (`balancedSplit`), both rows on one grid filled to the bar's width (#636, #962).
     var twoRows = false { didSet { if twoRows != oldValue { arrangedWidth = -1; setNeedsLayout() } } }
     private var arrangedWidth: CGFloat = -1     // width the caps were last split for

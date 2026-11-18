@@ -710,7 +710,7 @@ final class SuggestionBar: UIView {
     /// The app's shortcut keys in the slots' place (`addToolbar`), and the toggle at the
     /// leading edge that picks them or the slots; both nil until then.
     private(set) var toolbar: ShortcutBar?
-    /// The toolbar's one row over the slots with Numbers: Key (`show`); 0 otherwise.
+    /// The toolbar's one row over the slots with Toolbar Rows: Two (`show`, #1501); 0 otherwise.
     private var toolbarBand: CGFloat = 0
     private(set) var toggle: UIButton?
     /// The clipboard history (#597), the controller's App Group store; nil in the app and
@@ -2219,13 +2219,13 @@ final class SuggestionBar: UIView {
         fitRows()
     }
 
-    /// Numbers: Key (#625): the bar takes the digit row's height (`numberRowHeight`), the
-    /// toolbar's second row; with Hide Toolbar on the Numpad the bar hides while the numpad
+    /// Toolbar Rows: Two (#694): the bar takes a row's height more (`toolbarRowHeight`), the
+    /// toolbar's second row, with Numbers: Row or Key (#1501); with Hide Toolbar on the Numpad the bar hides while the numpad
     /// shows and lends the keys its height, and so while the emoji search shows (#666), its
     /// keys acting on nothing and the search room for two rows. The two always add up to the same.
     func fitRows() {
         guard let keyboard else { return }
-        let full = Self.height(compact: traitCollection.verticalSizeClass == .compact) + keyboard.numberRowHeight
+        let full = Self.height(compact: traitCollection.verticalSizeClass == .compact) + keyboard.toolbarRowHeight
         let hides = keyboard.showsNumpad && keyboard.settings.numpadHidesToolbar || keyboard.searchesEmoji
         heightConstraint?.constant = hides ? 0 : full
         isHidden = hides
@@ -2358,11 +2358,11 @@ final class SuggestionBar: UIView {
         let tools = toolbar != nil && pick
         autofillButton.isHidden = new != .autofill || tools
         pasteControl.isHidden = new != .paste || tools
-        // Numbers: Key (#625): the toolbar in two rows, or one over the slots, never none.
-        let band = toolbar == nil || tools ? 0 : keyboard?.numberRowHeight ?? 0
+        // Toolbar Rows: Two (#694, #1501): the toolbar in two rows, or one over the slots, never none.
+        let band = toolbar == nil || tools ? 0 : keyboard?.toolbarRowHeight ?? 0
         toolbarBand = band
         toolbar?.isHidden = !tools && band == 0
-        toolbar?.twoRows = tools && (keyboard?.numberRowHeight ?? 0) > 0
+        toolbar?.twoRows = tools && (keyboard?.toolbarRowHeight ?? 0) > 0
         if let toggle {
             let back = new == .autofill ? (image: "key.fill", label: "Show AutoFill") : (image: "ellipsis.bubble", label: "Show suggestions")
             // No suggestions with Predictive Text off: the toggle opens the menu (#717).

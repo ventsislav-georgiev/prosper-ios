@@ -5,7 +5,7 @@ import UIKit
 /// every theme, and the accent while the keys or the toolbar are Dark, Light or True Black (a Mac
 /// theme lights in its own colour, #642; either, #655): each a strip that scrolls sideways, the current swatch ringed in
 /// the accent and in view. Under them a Layout group (#650): Key Size, Numbers, Toolbar Rows
-/// with Numbers: Key (#694) and Numpad Hides Toolbar, in text chips. A tap hands the settings with it to `onPick`; the bar applies and
+/// (#694, with Row or Key since #1501) and Numpad Hides Toolbar, in text chips. A tap hands the settings with it to `onPick`; the bar applies and
 /// stores them and draws this panel again. Without Full Access the rows are off, under a
 /// note: the keyboard can't reach the app's settings then.
 final class AppearancePanel: KeysPanel {
@@ -16,7 +16,7 @@ final class AppearancePanel: KeysPanel {
     private(set) var keys: [UIButton] = [], toolbar: [UIButton] = [], accents: [UIButton] = []
     /// The Layout group's chips (#650): Key Size, Numbers, Numpad Hides Toolbar.
     private(set) var sizes: [UIButton] = [], numbers: [UIButton] = [], numpad: [UIButton] = []
-    /// Toolbar Rows, with Numbers: Key only (#694).
+    /// Toolbar Rows (#694), with Row or Key since #1501.
     private(set) var toolbarRows: [UIButton] = []
     let note = UILabel()
     /// The panel's own scroll and the rows', by caption.
@@ -51,10 +51,8 @@ final class AppearancePanel: KeysPanel {
         numbers = KeyboardSettings.Numbers.allCases.map { n in
             swatch(n.rawValue.capitalized, nil, on: n == settings.numbers) { $0.numbers = n }
         }
-        if settings.numbers == .key {
-            toolbarRows = KeyboardSettings.ToolbarRows.allCases.map { n in
-                swatch(n.rawValue.capitalized, nil, on: n == settings.toolbarRows) { $0.toolbarRows = n }
-            }
+        toolbarRows = KeyboardSettings.ToolbarRows.allCases.map { n in   // Row too since #1501
+            swatch(n.rawValue.capitalized, nil, on: n == settings.toolbarRows) { $0.toolbarRows = n }
         }
         numpad = [false, true].map { on in
             swatch(on ? "On" : "Off", nil, on: on == settings.numpadHidesToolbar) { $0.numpadHidesToolbar = on }

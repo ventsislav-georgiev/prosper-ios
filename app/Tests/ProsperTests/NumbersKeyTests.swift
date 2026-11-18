@@ -93,7 +93,8 @@ final class NumbersKeyTests: XCTestCase {
         let fresh = KeyboardSettings()
         XCTAssertEqual(fresh.numbers, .row, "nobody's keys change unasked")
         XCTAssertFalse(fresh.numpadHidesToolbar)
-        XCTAssertEqual(fresh.toolbarRows, .two, "#694: today's two rows")
+        XCTAssertEqual(fresh.toolbarRows, .one, "#1501: One unless picked")
+        XCTAssertEqual(KeyboardSettings(defaults).toolbarRows, .one, "unset is One")
         XCTAssertEqual(KeyboardSettings(defaults).numbers, .row, "unset is Row")
         defaults.set("key", forKey: KeyboardSettings.Key.numbers)
         defaults.set(true, forKey: KeyboardSettings.Key.numpadHidesToolbar)
@@ -102,10 +103,12 @@ final class NumbersKeyTests: XCTestCase {
         XCTAssertEqual(set.numbers, .key)
         XCTAssertTrue(set.numpadHidesToolbar)
         XCTAssertEqual(set.toolbarRows, .one)
+        defaults.set("two", forKey: KeyboardSettings.Key.toolbarRows)
+        XCTAssertEqual(KeyboardSettings(defaults).toolbarRows, .two, "a picked Two stays Two (#1501)")
         defaults.set("pad", forKey: KeyboardSettings.Key.numbers)
         defaults.set("three", forKey: KeyboardSettings.Key.toolbarRows)
         XCTAssertEqual(KeyboardSettings(defaults).numbers, .row, "an unknown value is Row")
-        XCTAssertEqual(KeyboardSettings(defaults).toolbarRows, .two, "an unknown value is Two")
+        XCTAssertEqual(KeyboardSettings(defaults).toolbarRows, .one, "an unknown value is One")
         XCTAssertEqual(KeyboardSettings.current(fullAccess: false).numbers, .row, "no Full Access: defaults")
     }
 
@@ -115,9 +118,15 @@ final class NumbersKeyTests: XCTestCase {
         let (kb, bar, _, _) = rig(numbers: .row)
         XCTAssertEqual(kb.shownKeys.map(chars), ["1234567890", "qwertyuiop", "asdfghjkl", "|zxcvbnm|", ".,/|?|"])
         XCTAssertFalse(kb.shownKeys.joined().contains(.numbers))
-        XCTAssertEqual(kb.numberRowHeight, 0)
+        XCTAssertEqual(kb.toolbarRowHeight, 0, "One by default")
         bar.showsToolbar = true
         XCTAssertFalse(try XCTUnwrap(bar.toolbar).twoRows)
+        kb.settings.toolbarRows = .two
+        let m = TerminalKeyboard.metrics(compact: false)
+        XCTAssertEqual(kb.toolbarRowHeight, m.row + m.gap, "#1501: Toolbar Rows: Two with Row too")
+        bar.showsToolbar = false
+        bar.showsToolbar = true
+        XCTAssertTrue(try XCTUnwrap(bar.toolbar).twoRows)
 
         let app = TerminalKeyboard()   // `allowsNumbersKey` never set; the terminal's sets it (#692)
         app.settings.numbers = .key
@@ -125,15 +134,15 @@ final class NumbersKeyTests: XCTestCase {
         XCTAssertFalse(app.shownKeys.joined().contains(.numbers))
     }
 
-    func testKeyDropsTheDigitRowForA123KeyAndTheToolbarTakesItsHeight() throws {
+    func testKeyDropsTheDigitRowForA123KeyAndTheKeysKeepTheirHeight() throws {
         for size in KeyboardSettings.KeySize.allCases {
             let (kb, bar, _, view) = rig(numbers: .row)
             kb.settings.keySize = size
-            let rowTotal = fit(view), rowBar = bar.frame.height
+            let rowTotal = fit(view), rowBar = bar.frame.height, rowKeys = kb.frame.height
             kb.settings.numbers = .key
-            XCTAssertEqual(fit(view), rowTotal, accuracy: 1, "\(size): the same keyboard height")
-            let m = TerminalKeyboard.metrics(compact: false, size: size)
-            XCTAssertEqual(bar.frame.height, rowBar + m.row + m.gap, accuracy: 0.5, "\(size): the bar has the row's")
+            XCTAssertEqual(fit(view), rowTotal, accuracy: 1, "\(size): #1501 the same keyboard height")
+            XCTAssertEqual(bar.frame.height, rowBar, accuracy: 0.5, "\(size): #1501 the bar as with Row")
+            XCTAssertEqual(kb.frame.height, rowKeys, accuracy: 0.5, "\(size): #1501 the keys' height kept")
             XCTAssertEqual(kb.shownKeys.map(chars), ["qwertyuiop", "asdfghjkl", "|zxcvbnm|", "|.,/|?|"])
             XCTAssertEqual(kb.shownKeys.last?.first, .numbers, "123 leads the bottom row, as on iOS")
             XCTAssertEqual(try cap(kb, "123").frame.minY, try cap(kb, "space").frame.minY)
@@ -147,6 +156,7 @@ final class NumbersKeyTests: XCTestCase {
         kb.settings.bottomOrder = " .,/?"
         XCTAssertEqual(kb.shownKeys.last, [.numbers, .globe, .space, .char("."), .char(","), .ret])
 
+        kb.settings.toolbarRows = .two
         bar.showsToolbar = true
         fit(view)
         XCTAssertTrue(try XCTUnwrap(bar.toolbar).twoRows)
@@ -163,23 +173,85 @@ final class NumbersKeyTests: XCTestCase {
         XCTAssertEqual(ShortcutBar.balancedSplit([50, 50], spacing: 6), 1)
     }
 
-    /// Toolbar Rows (#694), live, at every Key Size and in landscape: Two gives the bar the digit
-    /// row's height, the keyboard Row's height; One gives it nothing, the keyboard that row shorter.
-    func testToolbarRowsOneMakesTheKeyboardARowShorterAndTwoKeepsItsHeight() throws {
+    /// Toolbar Rows (#694), live, at every Key Size and in landscape, with Row or Key alike (#1501):
+    /// One by default, Two adds a row and gap to the bar; the keys keep their five rows' height.
+    func testToolbarRowsSetTheBarAndNumbersNeverTheHeight() throws {
+        for compact in [false, true] {
+            for size in KeyboardSettings.KeySize.allCases {
+                for numbers in KeyboardSettings.Numbers.allCases {
+                    let label = "\(size) \(numbers) \(compact ? "landscape" : "portrait")"
+                    let (kb, bar, _, view) = rig(numbers: numbers, width: compact ? 874 : 402, compact: compact)
+                    kb.settings.keySize = size
+                    let m = TerminalKeyboard.metrics(compact: compact, size: size)
+                    let one = SuggestionBar.height(compact: compact) + TerminalKeyboard.keysHeight(compact: compact, size: size)
+                        + TerminalKeyboard.extensionBottomInset
+                    XCTAssertEqual(fit(view), one, accuracy: 1, "\(label): One by default")
+                    XCTAssertEqual(bar.frame.height, SuggestionBar.height(compact: compact), accuracy: 0.5, "\(label): one row's bar")
+                    kb.settings.toolbarRows = .two
+                    XCTAssertEqual(fit(view), one + m.row + m.gap, accuracy: 1, "\(label): Two, a bar row more")
+                    XCTAssertEqual(bar.frame.height, SuggestionBar.height(compact: compact) + m.row + m.gap, accuracy: 0.5, "\(label): Two's bar")
+                    kb.settings.toolbarRows = .one
+                    XCTAssertEqual(fit(view), one, accuracy: 1, "\(label): One again")
+                }
+            }
+        }
+    }
+
+    /// #1501 (OQ-171): Row and Key always the same total height, at One and at Two, at every Key
+    /// Size and in landscape; Two adds the same bar row to either.
+    func testRowAndKeyHaveTheSameHeightAtOneAndTwo() throws {
+        for compact in [false, true] {
+            for size in KeyboardSettings.KeySize.allCases {
+                for rows in KeyboardSettings.ToolbarRows.allCases {
+                    let label = "\(size) \(rows) \(compact ? "landscape" : "portrait")"
+                    let (kb, bar, _, view) = rig(numbers: .row, width: compact ? 874 : 402, compact: compact)
+                    kb.settings.keySize = size
+                    kb.settings.toolbarRows = rows
+                    let row = fit(view), rowBar = bar.frame.height, rowKeys = kb.frame.height
+                    kb.settings.numbers = .key
+                    XCTAssertEqual(fit(view), row, accuracy: 0.5, "\(label): Key as tall as Row")
+                    XCTAssertEqual(bar.frame.height, rowBar, accuracy: 0.5, "\(label): the same bar")
+                    XCTAssertEqual(kb.frame.height, rowKeys, accuracy: 0.5, "\(label): the same keys")
+                    let m = TerminalKeyboard.metrics(compact: compact, size: size)
+                    XCTAssertEqual(rowBar, SuggestionBar.height(compact: compact) + (rows == .two ? m.row + m.gap : 0), accuracy: 0.5, label)
+                }
+            }
+        }
+    }
+
+    /// #1501: Numbers: Key's four rows fill the five's height, mostly taller keys, the gaps a
+    /// little wider; the letters and the numpad span the same keys area, top to bottom.
+    func testKeysFourRowsFillTheFiveRowsHeight() throws {
+        XCTAssertTrue(TerminalKeyboard.metrics(compact: false) == (38, 13, 6), "Row's metrics unchanged")
         for compact in [false, true] {
             for size in KeyboardSettings.KeySize.allCases {
                 let label = "\(size) \(compact ? "landscape" : "portrait")"
-                let (kb, bar, _, view) = rig(width: compact ? 874 : 402, compact: compact)
+                let five = TerminalKeyboard.metrics(compact: compact, size: size)
+                let four = TerminalKeyboard.metrics(compact: compact, size: size, rows: 4)
+                XCTAssertEqual(4 * four.row + 3 * four.gap, 5 * five.row + 4 * five.gap, accuracy: 0.001, label)
+                XCTAssertEqual(four.top, five.top, label)
+                XCTAssertGreaterThan(four.gap, five.gap, "\(label): a wider gap")
+                XCTAssertLessThan(four.gap - five.gap, 0.25 * (four.row - five.row), "\(label): mostly into the keys")
+
+                let (kb, _, _, view) = rig(numbers: .row, width: compact ? 874 : 402, compact: compact)
                 kb.settings.keySize = size
-                let m = TerminalKeyboard.metrics(compact: compact, size: size)
-                let one = SuggestionBar.height(compact: compact) + TerminalKeyboard.keysHeight(compact: compact, size: size, rows: 4)
-                    + TerminalKeyboard.extensionBottomInset
-                XCTAssertEqual(fit(view), one + m.row + m.gap, accuracy: 1, "\(label): Two, Row's height")
-                kb.settings.toolbarRows = .one
-                XCTAssertEqual(fit(view), one, accuracy: 1, "\(label): One, a row shorter")
-                XCTAssertEqual(bar.frame.height, SuggestionBar.height(compact: compact), accuracy: 0.5, "\(label): one row's bar")
-                kb.settings.toolbarRows = .two
-                XCTAssertEqual(fit(view), one + m.row + m.gap, accuracy: 1, "\(label): Two again")
+                func span() -> (top: CGFloat, bottom: CGFloat, height: CGFloat) {
+                    fit(view)
+                    let caps = kb.subviews.compactMap { $0 as? UIButton }.filter { !$0.isHidden }
+                    return (caps.map(\.frame.minY).min() ?? 0, caps.map(\.frame.maxY).max() ?? 0, caps.map(\.frame.height).min() ?? 0)
+                }
+                let row = span()
+                XCTAssertEqual(row.height, five.row, accuracy: 0.01, label)
+                kb.settings.numbers = .key
+                let key = span()
+                XCTAssertEqual(key.top, row.top, accuracy: 0.01, "\(label): from the same top")
+                XCTAssertEqual(key.bottom, row.bottom, accuracy: 0.01, "\(label): to the same bottom")
+                XCTAssertEqual(key.height, four.row, accuracy: 0.01, "\(label): taller keys")
+                XCTAssertEqual(try cap(kb, "q").frame.maxY + four.gap, try cap(kb, "a").frame.minY, accuracy: 0.01, "\(label): the wider gap")
+                kb.press(.numbers)
+                let pad = span()
+                XCTAssertEqual(pad.top, row.top, accuracy: 0.01, "\(label): the numpad from the same top")
+                XCTAssertEqual(pad.bottom, row.bottom, accuracy: 0.01, "\(label): the numpad to the same bottom")
             }
         }
     }
@@ -218,7 +290,8 @@ final class NumbersKeyTests: XCTestCase {
         func caps(_ v: UIView) -> [KeyCapButton] { v.subviews.flatMap { ($0 as? KeyCapButton).map { [$0] } ?? caps($0) } }
         var sets: [[String]] = []
         for (width, compact) in [(402, false), (874, true), (874, false)] as [(CGFloat, Bool)] {
-            let (_, bar, _, view) = rig(width: width, compact: compact)
+            let (kb, bar, _, view) = rig(width: width, compact: compact)
+            kb.settings.toolbarRows = .two
             bar.showsToolbar = true
             fit(view)
             let toolbar = try XCTUnwrap(bar.toolbar)
@@ -274,27 +347,33 @@ final class NumbersKeyTests: XCTestCase {
         XCTAssertEqual(kb.shownKeys.first.map(chars), "1234567890")
     }
 
+    /// At Two, with Row or Key alike (#1501).
     func testHideToolbarGivesTheNumpadTheBarsHeightAndTakesItBack() throws {
-        let (kb, bar, _, view) = rig()
-        let total = fit(view), barHeight = bar.frame.height, keys = kb.frame.height
-        kb.press(.numbers)
-        XCTAssertEqual(fit(view), total, accuracy: 0.5)
-        XCTAssertEqual(bar.frame.height, barHeight, "off: the bar stays on the numpad")
-        XCTAssertFalse(bar.isHidden)
+        for numbers in KeyboardSettings.Numbers.allCases {
+            let (kb, bar, _, view) = rig(numbers: numbers)
+            kb.settings.toolbarRows = .two
+            let total = fit(view), barHeight = bar.frame.height, keys = kb.frame.height
+            kb.press(.numbers)
+            XCTAssertEqual(fit(view), total, accuracy: 0.5)
+            XCTAssertEqual(bar.frame.height, barHeight, "off: the bar stays on the numpad")
+            XCTAssertFalse(bar.isHidden)
 
-        kb.settings.numpadHidesToolbar = true
-        XCTAssertEqual(fit(view), total, accuracy: 1, "the same keyboard height")
-        XCTAssertTrue(bar.isHidden)
-        XCTAssertEqual(bar.frame.height, 0, accuracy: 0.5)
-        XCTAssertEqual(kb.frame.height, keys + barHeight, accuracy: 0.5, "the numpad has the bar's height")
-        let seven = try cap(kb, "7").frame.height
-        XCTAssertGreaterThan(seven, TerminalKeyboard.rowHeight + 10, "its keys grow into it")
+            kb.settings.numpadHidesToolbar = true
+            XCTAssertEqual(fit(view), total, accuracy: 1, "the same keyboard height")
+            XCTAssertTrue(bar.isHidden)
+            XCTAssertEqual(bar.frame.height, 0, accuracy: 0.5)
+            XCTAssertEqual(kb.frame.height, keys + barHeight, accuracy: 0.5, "the numpad has the bar's height")
+            let seven = try cap(kb, "7").frame.height
+            XCTAssertGreaterThan(seven, TerminalKeyboard.rowHeight + 10, "its keys grow into it")
 
-        kb.press(.numbers)
-        XCTAssertEqual(fit(view), total, accuracy: 0.5)
-        XCTAssertFalse(bar.isHidden, "the letters get the bar back")
-        XCTAssertEqual(bar.frame.height, barHeight, accuracy: 0.5)
-        XCTAssertEqual(kb.frame.height, keys, accuracy: 0.5)
+            kb.press(.numbers)
+            XCTAssertEqual(fit(view), total, accuracy: 0.5)
+            XCTAssertFalse(bar.isHidden, "the letters get the bar back")
+            XCTAssertEqual(bar.frame.height, barHeight, accuracy: 0.5)
+            XCTAssertEqual(kb.frame.height, keys, accuracy: 0.5)
+            let m = TerminalKeyboard.metrics(compact: false)
+            XCTAssertEqual(barHeight, SuggestionBar.height(compact: false) + m.row + m.gap, accuracy: 0.5, "\(numbers): Two's bar")
+        }
     }
 
     // MARK: Bulgarian
@@ -338,9 +417,11 @@ final class NumbersKeyTests: XCTestCase {
 
     func testBulgarianHasTheKeyTooAndTheSameNumpad() throws {
         let (kb, _, doc, view) = rig(.bulgarian, numbers: .row)
-        let total = fit(view)
+        _ = fit(view)
+        let keys = kb.frame.height
         kb.settings.numbers = .key
-        XCTAssertEqual(fit(view), total, accuracy: 1)
+        fit(view)
+        XCTAssertEqual(kb.frame.height, keys, accuracy: 0.5, "#1501: the keys' height kept")
         XCTAssertEqual(kb.shownKeys.map(chars), ["явертъуиопю", "асдфгхйклшщ", "|зьцжбнмч|", "|.,/|?|"])
         try tap(kb, "123")
         XCTAssertEqual(kb.shownKeys, TerminalKeyboard.numpadRows)
