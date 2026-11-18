@@ -540,6 +540,35 @@ final class LiveStatusTests: XCTestCase {
         XCTAssertEqual(gate.methods, ["POST", "DELETE"])
     }
 
+    /// #1503: the Worker retries an END, so one can arrive late or twice. A second `ended`
+    /// for the same card finds nothing to forget, sends at most one more DELETE (the Worker
+    /// answers 404, an answer and not an error) and leaves the other cards alone.
+    @MainActor
+    func testEndedTwiceIsHarmless() async {
+        let gate = Gate()
+        let ls = liveStatus(gate)
+        await ls.post(.laUpdate, token: tok, activityId: "act-1", macId: "mac-a")
+        await ls.post(.laUpdate, token: tok, activityId: "act-2", macId: "mac-a")
+        await ls.ended("act-1")
+        gate.status = 404
+        await ls.ended("act-1")
+        XCTAssertEqual(gate.methods, ["POST", "POST", "DELETE", "DELETE"])
+        XCTAssertEqual(ls.cache.entries.values.compactMap(\.activityId), ["act-2"])
+    }
+
+    /// #1503: an END for a card this app never tracked leaves the cache alone (one DELETE, which the Worker answers 404).
+    @MainActor
+    func testEndedForAnUnknownCardChangesNothing() async {
+        let gate = Gate()
+        let ls = liveStatus(gate)
+        await ls.post(.laUpdate, token: tok, activityId: "act-1", macId: "mac-a")
+        await ls.ended("never-seen")
+        XCTAssertEqual(gate.methods, ["POST", "DELETE"])
+        XCTAssertEqual(ls.cache.entries.count, 1)
+        await ls.ended("bad id!")
+        XCTAssertEqual(gate.methods, ["POST", "DELETE"], "an invalid id sends nothing")
+    }
+
     /// Notifications turned off in the Settings app: the switch follows and the Worker
     /// forgets this device.
     @MainActor
