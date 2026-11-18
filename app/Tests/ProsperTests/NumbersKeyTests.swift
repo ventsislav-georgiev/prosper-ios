@@ -308,6 +308,38 @@ final class NumbersKeyTests: XCTestCase {
         XCTAssertEqual(sets.first?.count, Shortcuts.Bar.arrowsToolbar.filter { $0.kind != .pasteText }.count)
     }
 
+    /// #1523: with Key the letter rows sit 5 pt apart, not 9, so their keys are wider than Row's at
+    /// the same width, within the same side margins and centred as before; the numpad keeps 9.
+    func testKeysLetterRowsAreCloserAndWiderThanRows() throws {
+        XCTAssertEqual(TerminalKeyboard.numbersKeyGap, 5)
+        for layout in [TerminalKeyboard.Layout.english, .bulgarian] {
+            for (width, compact) in [(402, false), (874, true)] as [(CGFloat, Bool)] {
+                let what = "\(layout) \(width)"
+                let (kb, _, _, view) = rig(layout, numbers: .row, width: width, compact: compact)
+                func top() throws -> [CGRect] {   // the top letter row, q's or я's
+                    fit(view)
+                    let y = try cap(kb, layout == .english ? "q" : "я").frame.minY
+                    return kb.subviews.compactMap { $0 as? UIButton }.filter { !$0.isHidden && $0.frame.minY == y }.map(\.frame).sorted { $0.minX < $1.minX }
+                }
+                let row = try top()
+                XCTAssertEqual(kb.letterGap, TerminalKeyboard.keyGap, what)
+                kb.settings.numbers = .key
+                let key = try top()
+                XCTAssertEqual(kb.letterGap, 5, what)
+                XCTAssertEqual(key.count, row.count, what)
+                XCTAssertGreaterThan(key[0].width, row[0].width + 3, "\(what): wider letters")
+                for (a, b) in zip(key, key.dropFirst()) { XCTAssertEqual(b.minX - a.maxX, 5, accuracy: 0.01, "\(what): a 5 pt gap") }
+                XCTAssertEqual(key.first!.minX, row.first!.minX, accuracy: 0.01, "\(what): the same left margin")
+                XCTAssertEqual(key.last!.maxX, row.last!.maxX, accuracy: 0.01, "\(what): the same right margin")
+                let shift = try cap(kb, "shift").frame, delete = try cap(kb, "delete").frame
+                XCTAssertEqual(shift.minX + delete.maxX, kb.bounds.width, accuracy: 0.01, "\(what): the shift row centred")
+                kb.press(.numbers)
+                fit(view)
+                XCTAssertEqual(try cap(kb, "2").frame.minX - cap(kb, "1").frame.maxX, TerminalKeyboard.keyGap, accuracy: 0.01, "\(what): the numpad's gap")
+            }
+        }
+    }
+
     // MARK: Numpad
 
     func testThe123KeyOpensTheNumpadWhoseDigitsTypeUncorrected() throws {
@@ -429,5 +461,117 @@ final class NumbersKeyTests: XCTestCase {
         try tap(kb, "ABC")
         try tap(kb, "я")
         XCTAssertEqual(doc.text, "5я")
+    }
+
+
+    // MARK: Fit (#1524)
+
+    /// The numpad's caps, every one inside `kb`'s bounds (and the screen's, in `space`), its
+    /// four rows one under the other and no two caps of a row overlapping.
+    private func assertNumpadFits(_ kb: TerminalKeyboard, in space: UICoordinateSpace? = nil, _ what: String, line: UInt = #line) {
+        let caps = kb.subviews.compactMap { $0 as? UIButton }.filter { !$0.isHidden }
+        XCTAssertEqual(caps.count, TerminalKeyboard.numpadRows.joined().count, what, line: line)
+        for c in caps {
+            let label = "\(what): \(c.title(for: .normal) ?? c.accessibilityLabel ?? "?") \(c.frame) in \(kb.bounds)"
+            XCTAssertTrue(kb.bounds.contains(c.frame), label, line: line)
+            if let space { XCTAssertTrue(space.bounds.contains(c.convert(c.bounds, to: space)), "\(label): off the screen", line: line) }
+        }
+        let rows = Dictionary(grouping: caps, by: \.frame.minY).sorted { $0.key < $1.key }.map { $0.value.sorted { $0.frame.minX < $1.frame.minX } }
+        XCTAssertEqual(rows.count, TerminalKeyboard.numpadRows.count, "\(what): four rows", line: line)
+        for (a, b) in zip(rows, rows.dropFirst()) {
+            XCTAssertLessThanOrEqual(a.map(\.frame.maxY).max()!, b.map(\.frame.minY).min()! + 0.001, "\(what): rows overlap", line: line)
+        }
+        for row in rows {
+            for (a, b) in zip(row, row.dropFirst()) {
+                XCTAssertLessThanOrEqual(a.frame.maxX, b.frame.minX + 0.001, "\(what): caps overlap", line: line)
+            }
+        }
+    }
+
+    /// #1524: the extension's numpad in the keyboard, at every Key Size, portrait and landscape,
+    /// Toolbar Rows One and Two, the toolbar shown or hidden on it.
+    func testTheExtensionsNumpadFitsTheKeyboard() throws {
+        for compact in [false, true] {
+            for size in KeyboardSettings.KeySize.allCases {
+                for rows in KeyboardSettings.ToolbarRows.allCases {
+                    for hides in [false, true] {
+                        let what = "\(size) \(rows) hides \(hides) \(compact ? "landscape" : "portrait")"
+                        let (kb, _, _, view) = rig(width: compact ? 874 : 402, compact: compact)
+                        kb.settings.keySize = size
+                        kb.settings.toolbarRows = rows
+                        kb.settings.numpadHidesToolbar = hides
+                        kb.press(.numbers)
+                        fit(view)
+                        assertNumpadFits(kb, what)
+                    }
+                }
+            }
+        }
+    }
+
+    /// #1524: the terminal's numpad on the screen, its keyboard in the app's own input host, which
+    /// never sizes it past its first frame (`tallest`): Hide Toolbar on the Numpad lent the shortcut
+    /// bar's height to five rows (#1501), past that, and the bottom row fell off the screen. Every Key
+    /// Size, Toolbar Rows One and Two, the bar shown or hidden, portrait and landscape; the keyboard
+    /// at its full height, the lent bar's included.
+    func testTheTerminalsNumpadFitsTheScreen() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone only")
+        guard #available(iOS 16, *) else { throw XCTSkip("requestGeometryUpdate is iOS 16") }
+        let saved = (TerminalKeyboard.hardwareKeyboardConnected, KeyboardSettings.store)
+        TerminalKeyboard.hardwareKeyboardConnected = { false }
+        KeyboardSettings.store = { [defaults] in defaults! }
+        defer { (TerminalKeyboard.hardwareKeyboardConnected, KeyboardSettings.store) = saved }
+        defaults.set(KeyboardSettings.Numbers.key.rawValue, forKey: KeyboardSettings.Key.numbers)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let vc = TerminalHostVC(conn: SessionConnection(transport: SpyTransport(), session: DchSession(name: "t", alias: nil)),
+                                handle: TermHandle())
+        window.rootViewController = vc
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let kb = try XCTUnwrap(vc.keyboardInputView as? TerminalKeyboard)
+        let screen = scene.screen.coordinateSpace
+        func spin(_ s: TimeInterval) { RunLoop.main.run(until: Date().addingTimeInterval(s)) }
+        /// Till the keyboard's frame holds still a moment (the host reloads it a turn later).
+        func settle() {
+            var last = CGRect.null, still = 0
+            for _ in 0..<60 where still < 4 {
+                spin(0.05)
+                let f = kb.convert(kb.bounds, to: screen)
+                still = f == last ? still + 1 : 0
+                last = f
+            }
+        }
+        func rotate(_ o: UIInterfaceOrientationMask) {
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: o)) { XCTFail("rotation: \($0)") }
+            spin(1.5)
+        }
+        defer { rotate(.portrait) }
+        for compact in [false, true] {
+            if compact { rotate(.landscapeRight) }
+            for size in compact ? [.normal] : KeyboardSettings.KeySize.allCases {
+                for rows in KeyboardSettings.ToolbarRows.allCases {
+                    for hides in [false, true] {
+                        let what = "\(size) \(rows) hides \(hides) \(compact ? "landscape" : "portrait")"
+                        defaults.set(size.rawValue, forKey: KeyboardSettings.Key.keySize)
+                        defaults.set(rows.rawValue, forKey: KeyboardSettings.Key.toolbarRows)
+                        defaults.set(hides, forKey: KeyboardSettings.Key.numpadHidesToolbar)
+                        vc.toggleKeyboard()
+                        settle()
+                        XCTAssertTrue(kb.numbersKey, what)
+                        kb.press(.numbers)
+                        settle()
+                        XCTAssertTrue(kb.showsNumpad, what)
+                        kb.layoutIfNeeded()
+                        XCTAssertEqual(kb.lentHeight > 0, hides, what)
+                        XCTAssertEqual(kb.frame.height, TerminalKeyboard.keysHeight(compact: compact, size: size) + kb.lentHeight
+                                       + TerminalKeyboard.bottomPadding, accuracy: 0.5, "\(what): the full height")
+                        assertNumpadFits(kb, in: screen, what)
+                        vc.toggleKeyboard()
+                        settle()
+                    }
+                }
+            }
+        }
     }
 }

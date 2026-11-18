@@ -285,7 +285,7 @@ final class KeyboardLanguagesTests: XCTestCase {
         XCTAssertEqual(shown.map { $0.accessibilityLabel ?? "" },
                        ["numbers", "Switch to Български", "next keyboard", ".", ",", "/", "space", "?", "new line"])
         for (a, b) in zip(shown, shown.dropFirst()) {
-            XCTAssertGreaterThanOrEqual(b.frame.minX - a.frame.maxX, TerminalKeyboard.keyGap - 0.001, "\(a.accessibilityLabel!) overlaps")
+            XCTAssertGreaterThanOrEqual(b.frame.minX - a.frame.maxX, kb.letterGap - 0.001, "\(a.accessibilityLabel!) overlaps")
         }
         kb.press(.numbers)
         XCTAssertFalse(kb.shownKeys.joined().contains(.language), "none on the numpad")

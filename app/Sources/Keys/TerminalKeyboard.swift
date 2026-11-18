@@ -1007,6 +1007,10 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static let rowGap: CGFloat = 13
     static let topPadding: CGFloat = 6
     static let keyGap: CGFloat = 9
+    /// #1523: Numbers: Key's letter rows sit closer, so their taller keys get wider too.
+    static let numbersKeyGap: CGFloat = 5
+    /// The letter rows' horizontal gap in this layout (`place`); the numpad keeps `keyGap`.
+    var letterGap: CGFloat { numbersKey ? Self.numbersKeyGap : Self.keyGap }
     static let sideMargin: CGFloat = 3
     static let keysHeight = keysHeight(compact: false)
     /// Rows, gaps and the top pad: the above at `size` (#583), or in a compact vertical size class (iPhone
@@ -1058,8 +1062,9 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     static let height = keysHeight + bottomPadding
     /// The frame this view starts with, which the app's input host never sizes it past:
     /// started at `height`, a Large Key size kept Normal's 276 pt and clipped its bottom
-    /// row (#583). The fitted height is still the constraint's (`fitHeight`).
-    static let tallest = keysHeight(compact: false, size: .large) + bottomPadding
+    /// row (#583). The fitted height is still the constraint's (`fitHeight`). #1524: and the
+    /// terminal's bar it may lend the numpad (`lentHeight`): five rows since #1501, 318 cut its last.
+    static let tallest = keysHeight(compact: false, size: .large) + bottomPadding + ShortcutBar.tallest
     /// ESC CR, meta-enter: Claude Code's "insert newline, don't submit". Return sends it;
     /// so does the shortcut bar's `snl` key.
     static let newlineBytes: [UInt8] = [0x1b, 0x0d]
@@ -2467,7 +2472,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             let rowArea = area.insetBy(dx: pull, dy: 0)
             // Shift's row keeps its letters as wide as the longest row's (Bulgarian's 11).
             let columns = row.first?.key == .shift ? layout.columns : 10
-            for (cap, f) in zip(row, Self.place(row.map(\.key), width: rowArea.width, columns: columns)) {
+            for (cap, f) in zip(row, Self.place(row.map(\.key), width: rowArea.width, columns: columns, gap: letterGap)) {
                 cap.frame = CGRect(x: rowArea.minX + f.x, y: y, width: f.w, height: m.row)
             }
         }
@@ -2505,8 +2510,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// stretches them to fill it. A row with space gives space the rest, `spaceFloor` at least; a row led by a
     /// special key (shift) pins it and the last key to the edges and centers the letters
     /// between; anything else is centered.
-    static func place(_ keys: [Key], width: CGFloat, columns: Int = 10) -> [(x: CGFloat, w: CGFloat)] {
-        let g = keyGap, u = (width - CGFloat(columns - 1) * g) / CGFloat(columns)
+    static func place(_ keys: [Key], width: CGFloat, columns: Int = 10, gap: CGFloat = keyGap) -> [(x: CGFloat, w: CGFloat)] {
+        let g = gap, u = (width - CGFloat(columns - 1) * g) / CGFloat(columns)
         let n = keys.prefix { if case .char = $0 { return true } else { return false } }.count
         if n >= 9, n == keys.count {
             let kw = (width - g * CGFloat(n - 1)) / CGFloat(n)

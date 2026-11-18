@@ -355,6 +355,8 @@ final class ShortcutBar: UIView {
     /// caps keep their frames, and the frame and content grow alike, so it scrolls as far.
     static let glowRoom: CGFloat = 8
     private static let spacing: CGFloat = 6     // between caps, and between the rows
+    /// Two rows' height, the most it takes (`intrinsicContentSize`): the terminal lends it to the numpad (#1524).
+    static let tallest = inset * 2 + capHeight * 2 + spacing
     var onKey: ((ShortcutKey) -> Void)?
     /// The Paste control's clip (`oneRow`).
     var onPaste: (([NSItemProvider]) -> Void)?

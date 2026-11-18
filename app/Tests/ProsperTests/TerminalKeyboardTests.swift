@@ -264,10 +264,10 @@ final class TerminalKeyboardTests: XCTestCase {
                         let keys = try XCTUnwrap(kb.shownKeys.last)
                         XCTAssertEqual(row.count, keys.count, what)
                         let rowWidth = row.last!.frame.maxX - row.first!.frame.minX
-                        let u = (rowWidth - 9 * TerminalKeyboard.keyGap) / 10
+                        let u = (rowWidth - 9 * kb.letterGap) / 10   // #1523: Key's gap with Key
                         XCTAssertGreaterThanOrEqual(space.width, TerminalKeyboard.spaceFloor * u - 0.001, what)
                         for (a, b) in zip(row, row.dropFirst()) {
-                            XCTAssertGreaterThanOrEqual(b.frame.minX - a.frame.maxX, TerminalKeyboard.keyGap - 0.001, "overlap: \(what)")
+                            XCTAssertGreaterThanOrEqual(b.frame.minX - a.frame.maxX, kb.letterGap - 0.001, "overlap: \(what)")
                         }
                         for (button, key) in zip(row, keys) where key != .space {
                             XCTAssertGreaterThanOrEqual(button.frame.width, TerminalKeyboard.minShrink * u - 0.001, "\(key) \(what)")
@@ -313,9 +313,10 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(TerminalKeyboard.height, 276)
         XCTAssertTrue((26...28).contains(TerminalKeyboard.bottomPadding))
         // Started at the tallest Key size's height: the app's input host never sizes the
-        // keyboard past its first frame (#583). The constraint still fits Normal's.
+        // keyboard past its first frame (#583), nor past the terminal's two-row bar lent to the
+        // numpad (#1524). The constraint still fits Normal's.
         XCTAssertEqual(TerminalKeyboard().frame.height, TerminalKeyboard.tallest)
-        XCTAssertEqual(TerminalKeyboard.tallest, 318)
+        XCTAssertEqual(TerminalKeyboard.tallest, 318 + 86)
     }
 
     /// Key size (#583): each step's portrait row and gap, and the heights they add up to.
