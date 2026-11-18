@@ -213,8 +213,11 @@ struct SessionRow: View {
 
     /// #1532: the minute tick redraws the age and the label; the list has no tick of its own.
     var body: some View {
-        TimelineView(.everyMinute) { ctx in content(now: ctx.date) }
+        TimelineView(.everyMinute) { ctx in content(now: Self.drawDate(tick: ctx.date)) }
     }
+
+    /// #1532: the time the row's age is drawn at: the clock, as a tick's date is its minute's start.
+    static func drawDate(tick: Date, clock: Date = Date()) -> Date { max(tick, clock) }
 
     @ViewBuilder private func content(now: Date) -> some View {
         let d = RowDetails(state: state, agents: agents, openPRs: openPRs, merged: merged, model: model, effort: effort, age: age)
@@ -233,7 +236,12 @@ struct SessionRow: View {
                     // state word, and both may wrap, so both always show.
                     Text(session.title).fontWeight(.medium).lineLimit(2)
                     if d.agents, session.agents > 0 { agentsCapsule(session.agents) }
-                    if let all = session.badgeFolds(d).first, !all.isEmpty { Self.badges(all) }
+                    // #1532: the badges' own line folds too: drawn whole, the fixed-size pills ran past the row.
+                    if session.badgeFolds(d).first?.isEmpty == false {
+                        ViewThatFits(in: .horizontal) {
+                            ForEach(session.badgeFolds(d), id: \.self) { Self.badges($0) }
+                        }
+                    }
                 } else {
                     // #1532: the badges fold (badgeFolds) while the title keeps its first 8 characters.
                     ViewThatFits(in: .horizontal) {

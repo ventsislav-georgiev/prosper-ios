@@ -228,6 +228,33 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(size(row, .large, 300).height, size(lone, .large, 300).height, "below them the chip sits by the title")
     }
 
+    /// #1532 QA: at AX-XXXL "Opus 4.7" and "xhigh" ran past the row's right edge and pushed the
+    /// state mark past its left one. Laid out at a row's width, every drawn layer stays inside it.
+    @MainActor func testBadgesFitAtTheLargestSize() {
+        let store = UserDefaults(suiteName: "SessionMetaTests.axBadges")!
+        store.removePersistentDomain(forName: "SessionMetaTests.axBadges")   // the default toggles
+        let s = DchSession(name: "a", alias: "qa1532-a-rather-long-session-name", state: "idle", agents: 2,
+                           model: "Opus 4.7", effort: "xhigh", activity: 60)
+        for w in [330.0, 300, 200] as [CGFloat] {
+            let host = UIHostingController(rootView: SessionRow(session: s).environment(\.dynamicTypeSize, .accessibility5).defaultAppStorage(store))
+            let size = host.sizeThatFits(in: CGSize(width: w, height: .greatestFiniteMagnitude))
+            XCTAssertLessThanOrEqual(size.width, w + 0.5, "\(w): the content fits the row")
+            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: w, height: size.height))
+            window.rootViewController = host
+            window.isHidden = false
+            host.view.frame = window.bounds
+            host.view.layoutIfNeeded()
+            func drawn(_ l: CALayer) -> [CGRect] {
+                (l.sublayers ?? []).flatMap { c in c.sublayers?.isEmpty == false ? drawn(c) : [c.convert(c.bounds, to: host.view.layer)] }
+            }
+            let frames = drawn(host.view.layer).filter { $0.width > 0 && $0.height > 0 }
+            XCTAssertFalse(frames.isEmpty)
+            XCTAssertGreaterThanOrEqual(frames.map(\.minX).min() ?? -1, -0.5, "\(w): the state mark starts inside the row")
+            XCTAssertLessThanOrEqual(frames.map(\.maxX).max() ?? .infinity, w + 0.5, "\(w): no pill past the right edge")
+            window.isHidden = true
+        }
+    }
+
     /// VoiceOver reads the title and state, then only what is toggled on, in the Mac's words.
     func testRowAccessibilityFollowsToggles() {
         let s = DchSession(name: "sec-1", alias: "Docs", state: "working", agents: 4, meta: full)
@@ -376,6 +403,18 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertNil(s.age(with { $0.age = false }, now: now), "Age off")
         var working = s; working.state = "working"
         XCTAssertNil(working.age(RowDetails(), now: now), "none on a working row, as on the Mac")
+    }
+
+    /// #1532 QA: the age came from TimelineView's date, the start of the minute, so 300 s ago read "4m"
+    /// for most of a minute. The row draws at the real clock: 300 s before it is "5m" at any tick.
+    func testRowAgeIsFromTheRealNow() {
+        let clock = Date(timeIntervalSince1970: 1_784_995_259)   // 59 s into a minute
+        let s = DchSession(name: "a", alias: nil, state: "idle", activity: 1_784_995_259 - 300)
+        for tick in [1_784_995_200, 1_784_995_140, 1_784_995_259] as [TimeInterval] {
+            let at = SessionRow.drawDate(tick: Date(timeIntervalSince1970: tick), clock: clock)
+            XCTAssertEqual(s.age(RowDetails(), now: at)?.short, "5m", "tick \(tick)")
+            XCTAssertEqual(s.rowAccessibility(RowDetails(), now: at), "a, Idle, active 5 minutes ago")
+        }
     }
 
     /// VoiceOver reads the new parts in the toggles' order, and only those toggled on.

@@ -262,6 +262,11 @@ final class ScreenshotTests: XCTestCase {
             SessionListView(transport: BadgeDemo(), title: demoTitle, machine: nil, store: store, account: account)
         }, settle: 2)
         try XCTUnwrap(badges.pngData()).write(to: out.appendingPathComponent("rows-\(target.name).png"), options: .atomic)
+        // The same at AX-XXXL, where the badges take their own line and fold.
+        let big = try screen(NavigationStack {
+            SessionListView(transport: BadgeDemo(), title: demoTitle, machine: nil, store: store, account: account)
+        }.environment(\.dynamicTypeSize, .accessibility5), settle: 2)
+        try XCTUnwrap(big.pngData()).write(to: out.appendingPathComponent("rows-ax-\(target.name).png"), options: .atomic)
 
         try slide("\(target.name)_1-terminal", "Your Mac's terminal, anywhere",
                   "The same session, scrollback and all.",
@@ -567,13 +572,14 @@ final class ScreenshotTests: XCTestCase {
     }
 }
 
-/// #1532: DemoTransport's rows, "api refactor" with the Mac's model, effort and a 5-minute age.
+/// #1532: DemoTransport's rows, "api refactor" with the Mac's model, effort and a 5-minute age, "claude (sample)" at xhigh.
 private final class BadgeDemo: SessionTransport {
     private let demo = DemoTransport()
     func listSessions() async throws -> [DchSession] {
         try await demo.listSessions().map { s in
-            guard s.name == "api" else { return s }
             var r = s
+            if s.name == "claude" { (r.model, r.effort) = ("Opus 4.7", "xhigh") }
+            guard s.name == "api" else { return r }
             (r.model, r.effort, r.activity) = ("Opus 4.7", "high", Int(Date().timeIntervalSince1970) / 60 * 60 - 300)   // whole minutes, as the Mac sends
             return r
         }
