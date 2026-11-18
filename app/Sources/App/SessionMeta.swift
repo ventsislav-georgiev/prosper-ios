@@ -210,6 +210,8 @@ struct SessionRow: View {
 
     /// The Mac's state mark: the state's glyph, "○" with no known state.
     static func mark(_ s: SessionStateStyle?) -> String { s?.glyph ?? "\u{25CB}" }
+    /// #1551: every mark a row can draw, for the column's width.
+    static let marks = Array(Set(([nil] + SessionStateStyle.allCases).map(mark))).sorted()
 
     /// #1532: the minute tick redraws the age and the label; the list has no tick of its own.
     var body: some View {
@@ -226,10 +228,15 @@ struct SessionRow: View {
         let lines = session.meta?.detailLines(d) ?? [SessionMeta.DetailLine()]
         let big = typeSize.isAccessibilitySize
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(verbatim: Self.mark(style))
-                .font(.subheadline.bold())
-                .foregroundStyle(style?.tint ?? Color(uiColor: .tertiaryLabel))
-                .frame(width: glyphWidth)
+            // #1551: from xxxLarge up the font outgrows glyphWidth's scale and the mark was cut, so the
+            // column is glyphWidth or the widest mark, the same in every row.
+            ZStack {
+                ForEach(Self.marks, id: \.self) { Text(verbatim: $0).hidden() }
+                Text(verbatim: Self.mark(style)).foregroundStyle(style?.tint ?? Color(uiColor: .tertiaryLabel))
+            }
+            .font(.subheadline.bold())
+            .fixedSize()
+            .frame(minWidth: glyphWidth)
             VStack(alignment: .leading, spacing: 3) {
                 if big {
                     // Accessibility sizes: nothing shares a line with the title or the

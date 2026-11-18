@@ -255,6 +255,44 @@ final class SessionMetaTests: XCTestCase {
         }
     }
 
+    /// #1551 QA: at AX-XXXL (and xxxLarge) the state mark's right side was cut flat: its column was narrower
+    /// than the glyph. Every mark draws at least its own width, and the titles still line up.
+    @MainActor func testStateMarkDrawsWholeAtEverySize() {
+        let store = UserDefaults(suiteName: "SessionMetaTests.mark")!
+        store.removePersistentDomain(forName: "SessionMetaTests.mark")
+        let states: [String?] = SessionStateStyle.allCases.map(\.rawValue) + [nil]
+        for t in [DynamicTypeSize.large, .xxxLarge, .accessibility1, .accessibility5] {
+            var titleX: Set<CGFloat> = []
+            for st in states {
+                let mark = SessionRow.mark(SessionStateStyle(st))
+                let glyph = UIHostingController(rootView: Text(verbatim: mark).font(.subheadline.bold())
+                    .environment(\.dynamicTypeSize, t)).sizeThatFits(in: CGSize(width: 1000, height: 1000)).width
+                let host = UIHostingController(rootView: SessionRow(session: DchSession(name: "a", alias: "Docs", state: st))
+                    .environment(\.dynamicTypeSize, t).defaultAppStorage(store))
+                let size = host.sizeThatFits(in: CGSize(width: 390, height: CGFloat.greatestFiniteMagnitude))
+                let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: size.height))
+                window.rootViewController = host
+                window.isHidden = false
+                host.view.frame = window.bounds
+                host.view.layoutIfNeeded()
+                func drawn(_ l: CALayer) -> [CGRect] {
+                    (l.sublayers ?? []).flatMap { c in c.sublayers?.isEmpty == false ? drawn(c) : [c.convert(c.bounds, to: host.view.layer)] }
+                }
+                let frames = drawn(host.view.layer).filter { $0.width > 0 && $0.height > 0 }.sorted { $0.minX < $1.minX }
+                let markFrame = try! XCTUnwrap(frames.first)
+                XCTAssertGreaterThanOrEqual(markFrame.width, glyph - 0.5, "\(t) \(mark): the mark is drawn whole")
+                let title = try! XCTUnwrap(frames.first { $0.minX > markFrame.minX + 0.5 })
+                XCTAssertGreaterThanOrEqual(title.minX, markFrame.maxX - 0.5, "\(t) \(mark): the title clears the mark")
+                // The column (the title's x less the 10 pt spacing) holds the mark; ✳'s ink runs past its advance at any size.
+                XCTAssertGreaterThanOrEqual(title.minX - 10, glyph - 0.5, "\(t) \(mark): the column is as wide as the mark")
+                titleX.insert((title.minX * 2).rounded() / 2)
+                window.isHidden = true
+            }
+            XCTAssertEqual(titleX.count, 1, "\(t): the titles line up across states: \(titleX)")
+            if t == .large { XCTAssertEqual(titleX, [24], "the default size keeps its 14 pt column") }
+        }
+    }
+
     /// VoiceOver reads the title and state, then only what is toggled on, in the Mac's words.
     func testRowAccessibilityFollowsToggles() {
         let s = DchSession(name: "sec-1", alias: "Docs", state: "working", agents: 4, meta: full)
