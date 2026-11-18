@@ -179,6 +179,35 @@ final class KeyboardThemeTests: XCTestCase {
 
     private static func all(_ v: UIView) -> [UIView] { [v] + v.subviews.flatMap(all) }
 
+    /// #1529: no keyboard scroll view keeps the system's scroll-edge blur; on the iOS 27 SDK
+    /// iOS 27 drew it over the toolbar's whole scrolling row.
+    func testNoKeyboardScrollViewKeepsTheScrollEdgeEffect() throws {
+        guard #available(iOS 26, *) else { throw XCTSkip("edge effects are iOS 26's") }
+        let (kb, bar, view, doc) = try appearanceRig()
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("Edges-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        bar.history = ClipboardHistory(dir: dir.appendingPathComponent("Clips"))
+        func check(_ root: UIView, _ note: String) {
+            let scrolls = Self.all(root).compactMap { $0 as? UIScrollView }
+            XCTAssertFalse(scrolls.isEmpty, note)
+            for s in scrolls {
+                XCTAssertEqual([s.topEdgeEffect, s.leftEdgeEffect, s.bottomEdgeEffect, s.rightEdgeEffect].map(\.isHidden),
+                               [true, true, true, true], "\(note): \(type(of: s))")
+            }
+        }
+        check(try XCTUnwrap(bar.toolbar), "the toolbar")
+        bar.showAppearance(true)
+        check(try XCTUnwrap(bar.appearancePanel), "the appearance panel")
+        bar.showClips(true)
+        check(try XCTUnwrap(bar.clipsPanel), "the clipboard panel")
+        bar.showClips(false)
+        kb.showEmoji(true)
+        check(try XCTUnwrap(kb.emojiPicker), "the emoji picker")
+        check(PanelFilter(placeholder: "Search", layout: .english, fields: [["a"]]), "filter mode")
+        check(AIPanel(availability: .available) { _, _ in "" }, "the rewrite panel")
+        withExtendedLifetime((view, doc)) {}
+    }
+
     /// Both settings round-trip through the App Group store; unknown or absent values and no
     /// Full Access read as the defaults.
     func testThemeAndAccentRoundTripThroughTheStore() {

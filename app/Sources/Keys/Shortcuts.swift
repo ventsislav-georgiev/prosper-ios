@@ -567,6 +567,7 @@ final class ShortcutBar: UIView {
 
         let scroll = UIScrollView()
         scroll.showsHorizontalScrollIndicator = false
+        scroll.hideEdgeEffects()
         scroll.keyboardDismissMode = .none
         scroll.alwaysBounceHorizontal = true          // always draggable, even near-fit
         scroll.contentInsetAdjustmentBehavior = .never
@@ -879,5 +880,14 @@ extension UIColor {
                   green: CGFloat((hex >> 8)  & 0xff) / 255,
                   blue:  CGFloat( hex        & 0xff) / 255,
                   alpha: 1)
+    }
+}
+
+extension UIScrollView {
+    /// #1529: no scroll-edge blur. Linked on the iOS 27 SDK, iOS 27 blurs the toolbar's
+    /// whole row with it; a keyboard has no bars for it to soften content under.
+    func hideEdgeEffects() {
+        guard #available(iOS 26, *) else { return }
+        for e in [topEdgeEffect, leftEdgeEffect, bottomEdgeEffect, rightEdgeEffect] { e.isHidden = true }
     }
 }

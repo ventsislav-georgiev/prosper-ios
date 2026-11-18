@@ -205,6 +205,7 @@ final class EmojiPicker: UIView, UICollectionViewDataSource, UICollectionViewDel
         flow.minimumInteritemSpacing = 0
         grid.backgroundColor = .clear
         grid.showsHorizontalScrollIndicator = false
+        grid.hideEdgeEffects()
         grid.register(Cell.self, forCellWithReuseIdentifier: "e")
         grid.dataSource = self
         grid.delegate = self

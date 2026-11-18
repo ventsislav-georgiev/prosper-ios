@@ -89,6 +89,7 @@ final class AppearancePanel: KeysPanel {
             let strip = Strip()
             strip.current = row.first { $0.accessibilityTraits.contains(.selected) }
             strip.showsHorizontalScrollIndicator = false
+            strip.hideEdgeEffects()
             strip.alpha = enabled ? 1 : 0.4
             let stack = UIStackView(arrangedSubviews: row)
             stack.spacing = 6
@@ -116,6 +117,7 @@ final class AppearancePanel: KeysPanel {
         note.textAlignment = .center
         content.translatesAutoresizingMaskIntoConstraints = false
         scroll.showsVerticalScrollIndicator = false
+        scroll.hideEdgeEffects()
         scroll.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(content)
         addSubview(scroll)

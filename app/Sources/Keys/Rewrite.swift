@@ -247,6 +247,7 @@ final class AIPanel: KeysPanel, UITableViewDataSource, UITableViewDelegate {
         cancelButton.addAction(UIAction { [weak self] _ in self?.cancel() }, for: .touchUpInside)
         spinner.color = Style.hint
         preview.isEditable = false
+        preview.hideEdgeEffects()
         preview.backgroundColor = Style.surface
         preview.textColor = Style.label
         preview.font = .systemFont(ofSize: 15)

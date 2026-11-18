@@ -341,6 +341,7 @@ class KeysPanel: UIView {
         header.alignment = .center
 
         table.backgroundColor = Style.surface
+        table.hideEdgeEffects()
         table.separatorColor = Style.hairline
         table.layer.cornerRadius = 14
         table.tableFooterView = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 1))   // no separator under the last row

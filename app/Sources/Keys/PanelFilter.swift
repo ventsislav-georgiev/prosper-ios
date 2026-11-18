@@ -80,6 +80,7 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         backgroundColor = Style.backdrop
         overrideUserInterfaceStyle = Style.palette.style
         showsVerticalScrollIndicator = false
+        hideEdgeEffects()
         alwaysBounceVertical = false
         delaysContentTouches = false
         accessibilityViewIsModal = true   // VoiceOver stays off the list under it
@@ -96,6 +97,7 @@ final class PanelFilter: UIScrollView, UITableViewDataSource, UITableViewDelegat
         done.addAction(UIAction { [weak self] _ in self?.onDone?() }, for: .touchUpInside)
 
         results.backgroundColor = Style.surface
+        results.hideEdgeEffects()
         results.separatorColor = Style.hairline
         results.layer.cornerRadius = 14
         results.rowHeight = Self.rowHeight
