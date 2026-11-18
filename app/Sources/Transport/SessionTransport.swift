@@ -18,6 +18,19 @@ struct DchSession: Identifiable, Hashable {
     var harness: String? = nil
     /// The Mac's cap on it, in UTF-8 bytes (DchListRow.maxHarnessBytes); a longer one is outside data and dropped.
     static let maxHarnessBytes = 3 * 8191
+    /// #1532: the Mac row's model label and effort, only where they differ from the Mac's Default, and the last
+    /// activity (epoch seconds, whole minutes); nil from an older Mac or its fork-list fallback, so nothing shows.
+    var model: String? = nil
+    var effort: String? = nil
+    var activity: Int? = nil
+    static let maxModelBytes = 128
+    static let efforts: Set<String> = ["low", "medium", "high", "xhigh", "max"]
+    /// #1532: outside text: printable ASCII up to `maxModelBytes`, trimmed; anything else, or nothing left, is nil.
+    static func model(_ v: Any?) -> String? {
+        guard let s = v as? String, s.utf8.count <= maxModelBytes, s.utf8.allSatisfy({ (0x20...0x7E).contains($0) }) else { return nil }
+        let t = s.trimmingCharacters(in: .whitespaces)
+        return t.isEmpty ? nil : t
+    }
     var id: String { name }
     var title: String { alias ?? name }
 }

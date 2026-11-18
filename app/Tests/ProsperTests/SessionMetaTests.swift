@@ -127,6 +127,7 @@ final class SessionMetaTests: XCTestCase {
     /// #1518: the Mac's Row details defaults: State, Agents, Merged and Open PRs all on.
     func testRowDetailsDefaults() {
         XCTAssertEqual(RowDetails(), RowDetails(state: true, agents: true, openPRs: true, merged: true))
+        XCTAssertEqual(RowDetails(), RowDetails(model: true, effort: true, age: true), "#1532: Model, Effort and Age on too")
     }
 
     private typealias Line = SessionMeta.DetailLine
@@ -279,5 +280,135 @@ final class SessionMetaTests: XCTestCase {
         for bad in [#"[{"name":"a","n":1e400}]"#, #"[{"name":"\ud800"}]"#, "{}", ""] {
             XCTAssertThrowsError(try ProsperTransport.decodeList(Data(bad.utf8)), bad)
         }
+    }
+
+    // MARK: - Model, effort and age (#1532)
+
+    /// golden/02-list (Mac #1519), every optional key set, then a row as an older Mac sends it.
+    private let golden = #"[{"agents":2,"alias":"API","activity":1784995200,"cwd":"/Users/me/api","effort":"xhigh","meta":{"prs":{"open":[]}},"meta_epoch":1784995100,"model":"Opus 4.7","name":"api","state":"idle"},{"name":"old","state":"idle"}]"#
+
+    private func row(_ keys: String) throws -> DchSession {
+        try XCTUnwrap(try ProsperTransport.decodeList(Data("[{\"name\":\"a\"\(keys)}]".utf8)).first)
+    }
+
+    func testListModelEffortActivityDecode() throws {
+        let rows = try ProsperTransport.decodeList(Data(golden.utf8))
+        XCTAssertEqual(rows.map(\.model), ["Opus 4.7", nil])
+        XCTAssertEqual(rows.map(\.effort), ["xhigh", nil])
+        XCTAssertEqual(rows.map(\.activity), [1_784_995_200, nil], "a missing key is nil: nothing shows")
+        // The model: printable ASCII up to 128 bytes, trimmed.
+        let long = String(repeating: "m", count: 128)
+        XCTAssertEqual(try row(#","model":"\#(long)""#).model, long, "128 bytes is the cap")
+        XCTAssertNil(try row(#","model":"\#(long)x","effort":"high""#).model, "129 bytes: dropped")
+        XCTAssertNil(try row(#","model":"\#(long)x","effort":"high""#).effort, "and its effort with it")
+        XCTAssertEqual(try row(#","model":"  Sonnet 4.5 ""#).model, "Sonnet 4.5")
+        for bad in [#""""#, #""   ""#, #""Opus\u00e9""#, #""Opus\n4""#, #""Opus\u0007""#, #""Op\u202eus""#, "7", "true", "null"] {
+            XCTAssertNil(try row(",\"model\":\(bad)").model, bad)
+        }
+        // The effort: the five words, only with a model.
+        for e in ["low", "medium", "high", "xhigh", "max"] { XCTAssertEqual(try row(#","model":"M","effort":"\#(e)""#).effort, e) }
+        for bad in [#""ultra""#, #""High""#, #""""#, "3"] { XCTAssertNil(try row(#","model":"M","effort":"# + bad).effort, bad) }
+        XCTAssertNil(try row(#","effort":"high""#).effort, "no model, no effort")
+        // The activity: a positive integer.
+        for bad in ["0", "-60", "1.5", "true", #""1784995200""#, "null", "[1]"] { XCTAssertNil(try row(",\"activity\":\(bad)").activity, bad) }
+        XCTAssertEqual(try row(#","activity":60"#).activity, 60)
+    }
+
+    /// A row whose keys vanish (an older Mac, the fork-list fallback) drops its badges and age:
+    /// it is the bare row again, never the stale one.
+    @MainActor func testVanishedKeysDropBadges() throws {
+        let store = UserDefaults(suiteName: "SessionMetaTests.vanish")!
+        store.removePersistentDomain(forName: "SessionMetaTests.vanish")
+        let now = Date(timeIntervalSince1970: 1_784_995_500)
+        let with = try row(#","state":"idle","model":"Opus 4.7","effort":"high","activity":1784995200"#)
+        let without = try row(#","state":"idle""#)
+        XCTAssertEqual(with.rowAccessibility(RowDetails(), now: now), "a, Opus 4.7, high effort, Idle, active 5 minutes ago")
+        XCTAssertEqual(without, DchSession(name: "a", alias: nil, state: "idle"))
+        XCTAssertEqual(without.badgeFolds(RowDetails()), [[]])
+        XCTAssertNil(without.age(RowDetails(), now: now))
+        XCTAssertEqual(without.rowAccessibility(RowDetails(), now: now), "a, Idle")
+        func ideal(_ s: DchSession) -> CGFloat {
+            UIHostingController(rootView: SessionRow(session: s).fixedSize().defaultAppStorage(store))
+                .sizeThatFits(in: CGSize(width: 1000, height: 1000)).width
+        }
+        XCTAssertGreaterThan(ideal(with), ideal(without), "the badges draw, then go")
+    }
+
+    /// Line 1 folds as on the Mac: both badges, the effort alone, none; a hidden model leaves the effort.
+    func testBadgeFolds() {
+        let s = DchSession(name: "a", alias: nil, model: "Opus 4.7", effort: "max")
+        typealias B = DchSession.Badge
+        XCTAssertEqual(s.badgeFolds(RowDetails()), [[B.model("Opus 4.7"), .effort("max")], [.effort("max")], []])
+        XCTAssertEqual(s.badgeFolds(with { $0.model = false }), [[B.effort("max")], []])
+        XCTAssertEqual(s.badgeFolds(with { $0.effort = false }), [[B.model("Opus 4.7")], []])
+        XCTAssertEqual(s.badgeFolds(with { $0.model = false; $0.effort = false }), [[]])
+        XCTAssertEqual(DchSession(name: "a", alias: nil, model: "M").badgeFolds(RowDetails()), [[B.model("M")], []])
+    }
+
+    /// Each fold is narrower, and a long model is cut, so the name keeps its room.
+    @MainActor func testBadgeFoldsNarrowAndModelIsCut() {
+        func width(_ b: [DchSession.Badge]) -> CGFloat {
+            UIHostingController(rootView: SessionRow.badges(b)).sizeThatFits(in: CGSize(width: 1000, height: 100)).width
+        }
+        let folds = DchSession(name: "a", alias: nil, model: "Opus 4.7", effort: "medium").badgeFolds(RowDetails())
+        XCTAssertGreaterThan(width(folds[0]), width(folds[1]))
+        XCTAssertGreaterThan(width(folds[1]), width(folds[2]))
+        XCTAssertEqual(width([.model(String(repeating: "m", count: 128))]), width([.model(String(repeating: "m", count: 17))]),
+                       "a long model is cut to 16 characters")
+        XCTAssertGreaterThan(width([.model(String(repeating: "m", count: 16))]), width([.model(String(repeating: "m", count: 15))]),
+                             "16 stay whole")
+    }
+
+    /// The Mac's age: whole units rounded down, at each boundary; "now" under a minute and for a future stamp.
+    func testAgeFormat() {
+        let cases: [(TimeInterval, String, String)] = [
+            (-30, "now", "active just now"), (.nan, "now", "active just now"), (0, "now", "active just now"), (59, "now", "active just now"),
+            (60, "1m", "active 1 minute ago"), (300, "5m", "active 5 minutes ago"), (3599, "59m", "active 59 minutes ago"),
+            (3600, "1h", "active 1 hour ago"), (86399, "23h", "active 23 hours ago"), (86400, "1d", "active 1 day ago"),
+            (365 * 86400 - 1, "364d", "active 364 days ago"), (365 * 86400, "1y", "active 1 year ago"), (1e300, "99y", "active 99 years ago")]
+        for (t, short, spoken) in cases {
+            XCTAssertEqual(DchSession.age(t).short, short, "\(t)")
+            XCTAssertEqual(DchSession.age(t).spoken, spoken, "\(t)")
+        }
+        let now = Date(timeIntervalSince1970: 7200)
+        let s = DchSession(name: "a", alias: nil, state: "idle", activity: 3600)
+        XCTAssertEqual(s.age(RowDetails(), now: now)?.short, "1h")
+        XCTAssertNil(s.age(with { $0.age = false }, now: now), "Age off")
+        var working = s; working.state = "working"
+        XCTAssertNil(working.age(RowDetails(), now: now), "none on a working row, as on the Mac")
+    }
+
+    /// VoiceOver reads the new parts in the toggles' order, and only those toggled on.
+    func testRowAccessibilityModelEffortAge() {
+        let s = DchSession(name: "a", alias: "Docs", state: "blocked", agents: 1, meta: full, model: "Sonnet 4.5", effort: "low", activity: 0)
+        let now = Date(timeIntervalSince1970: 172_800)
+        XCTAssertEqual(s.rowAccessibility(RowDetails(), now: now),
+                       "Docs, Sonnet 4.5, low effort, Needs input, 1 agent, 75 merged pull requests, 1 open pull request, active 2 days ago")
+        XCTAssertEqual(s.rowAccessibility(with { $0.model = false; $0.age = false }, now: now),
+                       "Docs, low effort, Needs input, 1 agent, 75 merged pull requests, 1 open pull request")
+        XCTAssertEqual(s.rowAccessibility(with { $0.effort = false; $0.agents = false; $0.merged = false; $0.openPRs = false }, now: now),
+                       "Docs, Sonnet 4.5, Needs input, active 2 days ago")
+    }
+
+    /// Each new toggle hides its piece: Model and Effort narrow line 1, Age takes line 2 away.
+    @MainActor func testModelEffortAgeToggles() {
+        let store = UserDefaults(suiteName: "SessionMetaTests.badgeToggles")!
+        store.removePersistentDomain(forName: "SessionMetaTests.badgeToggles")
+        defer { store.removePersistentDomain(forName: "SessionMetaTests.badgeToggles") }
+        store.set(false, forKey: RowDetails.Key.state)
+        let s = DchSession(name: "a", alias: "Docs", state: "idle", model: "Opus 4.7", effort: "high",
+                           activity: Int(Date().timeIntervalSince1970) - 600)
+        func size() -> CGSize {
+            UIHostingController(rootView: SessionRow(session: s).fixedSize().defaultAppStorage(store))
+                .sizeThatFits(in: CGSize(width: 1000, height: 1000))
+        }
+        let all = size()
+        store.set(false, forKey: RowDetails.Key.effort)
+        let modelOnly = size()
+        XCTAssertLessThan(modelOnly.width, all.width, "Effort off")
+        store.set(false, forKey: RowDetails.Key.model)
+        XCTAssertLessThan(size().width, modelOnly.width, "Model off")
+        store.set(false, forKey: RowDetails.Key.age)
+        XCTAssertLessThan(size().height, all.height, "Age off: no line 2 left")
     }
 }

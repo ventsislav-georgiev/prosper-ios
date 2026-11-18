@@ -105,11 +105,15 @@ final class ProsperTransport: SessionTransport {
             throw TransportError.protocolError("unreadable session list")
         }
         return arr.compactMap { o in
-            (o["name"] as? String).map {
-                DchSession(name: $0, alias: o["alias"] as? String, state: o["state"] as? String,
-                           agents: o["agents"] as? Int ?? 0, meta: SessionMeta(json: o["meta"]),
-                           harness: (o["harness"] as? String).flatMap { !$0.isEmpty && $0 != o["alias"] as? String && $0.utf8.count <= DchSession.maxHarnessBytes ? $0 : nil })
-            }
+            guard let name = o["name"] as? String else { return nil }
+            var r = DchSession(name: name, alias: o["alias"] as? String, state: o["state"] as? String,
+                               agents: o["agents"] as? Int ?? 0, meta: SessionMeta(json: o["meta"]),
+                               harness: (o["harness"] as? String).flatMap { !$0.isEmpty && $0 != o["alias"] as? String && $0.utf8.count <= DchSession.maxHarnessBytes ? $0 : nil })
+            // #1532: an effort only with a model; an activity only above 0 (no bools, no fractions).
+            r.model = DchSession.model(o["model"])
+            r.effort = (o["effort"] as? String).flatMap { r.model != nil && DchSession.efforts.contains($0) ? $0 : nil }
+            r.activity = SessionMeta.count(o["activity"]).flatMap { $0 > 0 ? $0 : nil }
+            return r
         }
     }
 

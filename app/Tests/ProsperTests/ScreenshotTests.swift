@@ -256,6 +256,12 @@ final class ScreenshotTests: XCTestCase {
             SessionListView(transport: DemoTransport(), title: demoTitle, machine: nil, store: store, account: account)
         }, settle: 2)
         let machines = try screen(NavigationStack { ConnectScreen(store: store) { _ in } }, settle: 1)
+        // #1532: the list with one row's model, effort and age, beside the slides (never in them: the store
+        // slide keeps DemoTransport's rows); a name no shots script copies.
+        let badges = try screen(NavigationStack {
+            SessionListView(transport: BadgeDemo(), title: demoTitle, machine: nil, store: store, account: account)
+        }, settle: 2)
+        try XCTUnwrap(badges.pngData()).write(to: out.appendingPathComponent("rows-\(target.name).png"), options: .atomic)
 
         try slide("\(target.name)_1-terminal", "Your Mac's terminal, anywhere",
                   "The same session, scrollback and all.",
@@ -559,4 +565,23 @@ final class ScreenshotTests: XCTestCase {
         XCTAssertTrue([.none, .noneSkipFirst, .noneSkipLast].contains(cg.alphaInfo), "\(file): \(cg.alphaInfo.rawValue)")
         try data.write(to: out.appendingPathComponent(file), options: .atomic)
     }
+}
+
+/// #1532: DemoTransport's rows, "api refactor" with the Mac's model, effort and a 5-minute age.
+private final class BadgeDemo: SessionTransport {
+    private let demo = DemoTransport()
+    func listSessions() async throws -> [DchSession] {
+        try await demo.listSessions().map { s in
+            guard s.name == "api" else { return s }
+            var r = s
+            (r.model, r.effort, r.activity) = ("Opus 4.7", "high", Int(Date().timeIntervalSince1970) / 60 * 60 - 300)   // whole minutes, as the Mac sends
+            return r
+        }
+    }
+    func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream { try await demo.attach(name: name, cols: cols, rows: rows) }
+    func create(name: String?, command: [String], cols: Int, rows: Int) async throws -> TerminalStream {
+        try await demo.create(name: name, command: command, cols: cols, rows: rows)
+    }
+    func kill(name: String) async throws {}
+    func rename(name: String, alias: String?) async throws {}
 }

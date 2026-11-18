@@ -114,6 +114,9 @@ struct SettingsView: View {
     @AppStorage(RowDetails.Key.agents) private var rowAgents = RowDetails().agents
     @AppStorage(RowDetails.Key.openPRs) private var rowOpenPRs = RowDetails().openPRs
     @AppStorage(RowDetails.Key.merged) private var rowMerged = RowDetails().merged
+    @AppStorage(RowDetails.Key.model) private var rowModel = RowDetails().model
+    @AppStorage(RowDetails.Key.effort) private var rowEffort = RowDetails().effort
+    @AppStorage(RowDetails.Key.age) private var rowAge = RowDetails().age
     // #614: Sync from Mac, and the copy last synced.
     @AppStorage(MacLibrary.syncKey) private var syncFromMac = true
     @State private var library = MacLibrary.sharedRoot().flatMap(MacLibrary.load)
@@ -186,16 +189,19 @@ struct SettingsView: View {
             }
 
             Section {
-                // #1518: the Mac's Row details, in its order; Model, Effort and Age when the wire has them.
+                // #1518: the Mac's Row details, in its order. #1532: Model, Effort and Age too.
+                Toggle("Model", isOn: $rowModel)
+                Toggle("Effort", isOn: $rowEffort)
                 Toggle("State", isOn: $rowState)
                 Toggle("Agents", isOn: $rowAgents)
                 Toggle("Merged", isOn: $rowMerged)
                 Toggle("Open PRs", isOn: $rowOpenPRs)
+                Toggle("Age", isOn: $rowAge)
             } header: {
                 Text("Row details")
             } footer: {
                 // #615: where Commands comes from when the ⋯ menu has none.
-                Text("Shown on each session row besides its name and state mark. Open PRs is the count and the PR chips.\n\nThe ⋯ menu above the list runs the Mac's commands, like Calculator, conversions and Lock Screen, once the Mac has Settings › Remote Terminal › Run commands from iPhone on.")
+                Text("Shown on each session row besides its name and state mark. Open PRs is the count and the PR chips. Model and Effort show only where they differ from the Mac's Default.\n\nThe ⋯ menu above the list runs the Mac's commands, like Calculator, conversions and Lock Screen, once the Mac has Settings › Remote Terminal › Run commands from iPhone on.")
             }
 
             Section {

@@ -124,9 +124,13 @@ struct RowDetails: Equatable {
         static let agents = "sessionRow.agents"
         static let openPRs = "sessionRow.openPRs"
         static let merged = "sessionRow.merged"
+        static let model = "sessionRow.model"
+        static let effort = "sessionRow.effort"
+        static let age = "sessionRow.age"
     }
 
     var state = true, agents = true, openPRs = true, merged = true
+    var model = true, effort = true, age = true   // #1532
 }
 
 /// #1518: what a session row offers by touch, the swipe and the long-press menu: the
@@ -137,14 +141,43 @@ enum SessionRowAction: Hashable {
 }
 
 extension DchSession {
-    /// What VoiceOver reads for the row: the title and state, then only the details shown,
-    /// in the Mac's words.
-    func rowAccessibility(_ d: RowDetails) -> String {
+    /// What VoiceOver reads for the row: the title, then only the details shown, in the
+    /// order of the Row details toggles. #1532: the model, "high effort", "active 5 minutes ago".
+    func rowAccessibility(_ d: RowDetails, now: Date = Date()) -> String {
+        let model = d.model ? self.model : nil
+        let effort = d.effort ? effort.map { "\($0) effort" } : nil
         let agents: String? = d.agents && self.agents > 0 ? SessionMeta.words(self.agents, "agent") : nil
         let merged: String? = d.merged ? meta?.merged.flatMap { $0 > 0 ? SessionMeta.words($0, "merged pull request") : nil } : nil
         let open = d.openPRs ? meta?.open.count ?? 0 : 0
         let prs: String? = open > 0 ? SessionMeta.words(open, "open pull request") : nil
-        return [title, SessionStateStyle(state)?.label, agents, merged, prs].compactMap { $0 }.joined(separator: ", ")
+        return [title, model, effort, SessionStateStyle(state)?.label, agents, merged, prs, age(d, now: now)?.spoken]
+            .compactMap { $0 }.joined(separator: ", ")
+    }
+
+    /// #1532: line 1's badges, as the Mac draws them: the model, then the effort.
+    enum Badge: Hashable { case model(String), effort(String) }
+
+    /// #1532: the badge variants ViewThatFits tries as line 1 narrows, the Mac's order: both,
+    /// the effort alone, none. A model hidden by its toggle leaves the effort alone, as on the Mac.
+    func badgeFolds(_ d: RowDetails) -> [[Badge]] {
+        let all = [d.model ? model.map(Badge.model) : nil, d.effort ? effort.map(Badge.effort) : nil].compactMap { $0 }
+        return all.count == 2 ? [all, [all[1]], []] : all.isEmpty ? [[]] : [all, []]
+    }
+
+    /// #1532: the age at line 2's end, the Mac's `AgentIsland.age` (now, 4m, 2h, 3d, 1y; whole units
+    /// rounded down, years capped at 99) and its spoken words. None on a working row, as on the Mac.
+    func age(_ d: RowDetails, now: Date) -> (short: String, spoken: String)? {
+        guard d.age, let activity, state != "working" else { return nil }
+        return Self.age(now.timeIntervalSince1970 - TimeInterval(activity))
+    }
+
+    static func age(_ seconds: TimeInterval) -> (short: String, spoken: String) {
+        // Also NaN and a clock that moved back (a stamp in the future).
+        guard seconds >= 60 else { return ("now", "active just now") }
+        let s = Int(min(seconds, 1e15))
+        let (n, unit): (Int, String) = s < 3600 ? (s / 60, "minute") : s < 86400 ? (s / 3600, "hour")
+            : s < 365 * 86400 ? (s / 86400, "day") : (min(s / (365 * 86400), 99), "year")
+        return ("\(n)\(unit.prefix(1))", "active \(SessionMeta.words(n, unit)) ago")
     }
 
     /// #1518: Rename always; Restart (on `.restart`) and Stop unless a verb already runs on
@@ -168,6 +201,9 @@ struct SessionRow: View {
     @AppStorage(RowDetails.Key.agents) private var agents = RowDetails().agents
     @AppStorage(RowDetails.Key.openPRs) private var openPRs = RowDetails().openPRs
     @AppStorage(RowDetails.Key.merged) private var merged = RowDetails().merged
+    @AppStorage(RowDetails.Key.model) private var model = RowDetails().model
+    @AppStorage(RowDetails.Key.effort) private var effort = RowDetails().effort
+    @AppStorage(RowDetails.Key.age) private var age = RowDetails().age
     @ScaledMetric(relativeTo: .subheadline) private var glyphWidth: CGFloat = 14
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -175,8 +211,14 @@ struct SessionRow: View {
     /// The Mac's state mark: the state's glyph, "○" with no known state.
     static func mark(_ s: SessionStateStyle?) -> String { s?.glyph ?? "\u{25CB}" }
 
+    /// #1532: the minute tick redraws the age and the label; the list has no tick of its own.
     var body: some View {
-        let d = RowDetails(state: state, agents: agents, openPRs: openPRs, merged: merged)
+        TimelineView(.everyMinute) { ctx in content(now: ctx.date) }
+    }
+
+    @ViewBuilder private func content(now: Date) -> some View {
+        let d = RowDetails(state: state, agents: agents, openPRs: openPRs, merged: merged, model: model, effort: effort, age: age)
+        let shownAge = session.age(d, now: now)
         let style = SessionStateStyle(session.state)
         let lines = session.meta?.detailLines(d) ?? [SessionMeta.DetailLine()]
         let big = typeSize.isAccessibilitySize
@@ -191,16 +233,23 @@ struct SessionRow: View {
                     // state word, and both may wrap, so both always show.
                     Text(session.title).fontWeight(.medium).lineLimit(2)
                     if d.agents, session.agents > 0 { agentsCapsule(session.agents) }
+                    if let all = session.badgeFolds(d).first, !all.isEmpty { Self.badges(all) }
                 } else {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(session.title).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
-                        if d.agents, session.agents > 0 { agentsCapsule(session.agents).layoutPriority(1) }
+                    // #1532: the badges fold (badgeFolds) while the title keeps its first 8 characters.
+                    ViewThatFits(in: .horizontal) {
+                        ForEach(session.badgeFolds(d), id: \.self) { b in
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Self.title(session.title)
+                                if d.agents, session.agents > 0 { agentsCapsule(session.agents).layoutPriority(1) }
+                                if !b.isEmpty { Self.badges(b).layoutPriority(1) }
+                            }
+                        }
                     }
                 }
                 let layout = big ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
                     : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 6))
                 // No line 2 when every detail on it is off or empty.
-                if (d.state && style != nil) || lines != [SessionMeta.DetailLine()] { layout {
+                if (d.state && style != nil) || lines != [SessionMeta.DetailLine()] || shownAge != nil { layout {
                     if d.state, let style {
                         Text(style.label).foregroundStyle(style == .blocked ? style.tint : .secondary)
                             .lineLimit(big ? 2 : 1).layoutPriority(1)
@@ -208,13 +257,18 @@ struct SessionRow: View {
                     ViewThatFits(in: .horizontal) {
                         ForEach(lines, id: \.self) { Self.detailLine($0) }
                     }
+                    if let age = shownAge {
+                        if !big { Spacer(minLength: 0) }
+                        Text(verbatim: age.short).font(.caption2.monospaced()).foregroundStyle(.secondary)
+                            .lineLimit(1).fixedSize().layoutPriority(1)
+                    }
                 }
                 .font(.footnote) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(session.rowAccessibility(d))
+        .accessibilityLabel(session.rowAccessibility(d, now: now))
         .accessibilityActions {
             ForEach(session.rowActions(ops: [], busy: true), id: \.self) { a in
                 if case let .openPR(chip, url) = a { Button("Open \(chip)") { openURL(url) } }
@@ -243,15 +297,48 @@ struct SessionRow: View {
     }
 
     /// #1530: the one chip material, as before #1518: a soft filled capsule, monospaced
-    /// caption, no stroke. PR chips tint the text amber.
-    private static func chip(_ s: String, amber: Bool = false) -> some View {
+    /// caption, no stroke. PR chips tint the text amber. #1532: an effort chip swaps the wash
+    /// (and `primary` the text).
+    private static func chip(_ s: String, amber: Bool = false, primary: Bool = false,
+                             wash: Color = Color.primary.opacity(0.1)) -> some View {
         Text(verbatim: s)
             .font(.caption2.monospaced().weight(.medium))
-            .foregroundStyle(amber ? AnyShapeStyle(SessionStateStyle.blocked.tint) : AnyShapeStyle(.secondary))
+            .foregroundStyle(amber ? AnyShapeStyle(SessionStateStyle.blocked.tint) : primary ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
             .lineLimit(1)
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(Color.primary.opacity(0.1), in: Capsule())
+            .background(wash, in: Capsule())
+    }
+
+    /// #1532: the title, whose ideal width is its first 8 characters (all of a shorter one), so a
+    /// badge fold fits only while that much of the name still shows; drawn, it takes all the room left.
+    private static func title(_ t: String) -> some View {
+        ZStack(alignment: .leading) {
+            Text(verbatim: t.count > 8 ? t.prefix(8) + "\u{2026}" : t).fontWeight(.medium).lineLimit(1).hidden()
+            Text(verbatim: t).fontWeight(.medium).lineLimit(1).truncationMode(.middle).frame(idealWidth: 0, alignment: .leading)
+        }
+    }
+
+    /// #1532: the model (neutral, cut in the middle past 16 characters, as the Mac cuts it) then the effort, washed by level as on the
+    /// Mac: low to high blue at rising strength, xhigh and max magenta (the Mac's opacities plus the
+    /// 0.04 the neutral chip has over the Mac's).
+    static func badges(_ b: [DchSession.Badge]) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            ForEach(b, id: \.self) { badge in
+                switch badge {
+                case .model(let m): chip(m.count > 16 ? m.prefix(8) + "\u{2026}" + m.suffix(7) : m).fixedSize()
+                case .effort(let e):
+                    let (tint, k): (Color, Double) = switch e {
+                    case "low": (.blue, 0.10)
+                    case "medium": (.blue, 0.16)
+                    case "high": (.blue, 0.28)
+                    case "xhigh": (Color(uiColor: .magenta), 0.22)
+                    default: (Color(uiColor: .magenta), 0.36)
+                    }
+                    chip(e, primary: e != "low", wash: tint.opacity(k)).fixedSize()
+                }
+            }
+        }
     }
 
     private func agentsCapsule(_ n: Int) -> some View {
