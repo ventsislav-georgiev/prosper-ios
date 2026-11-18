@@ -255,6 +255,30 @@ final class SessionMetaTests: XCTestCase {
         }
     }
 
+    /// #1575: at a normal size the model and effort pills end at the row's right edge, where the age ends on line 2.
+    @MainActor func testBadgesAlignWithTheAge() {
+        let store = UserDefaults(suiteName: "SessionMetaTests.alignBadges")!
+        store.removePersistentDomain(forName: "SessionMetaTests.alignBadges")
+        let s = DchSession(name: "a", alias: "Docs", state: "idle", model: "Opus 4.7", effort: "high", activity: 60)
+        let host = UIHostingController(rootView: SessionRow(session: s).environment(\.dynamicTypeSize, .large).defaultAppStorage(store))
+        let size = host.sizeThatFits(in: CGSize(width: 390, height: CGFloat.greatestFiniteMagnitude))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: size.height))
+        window.rootViewController = host
+        window.isHidden = false
+        host.view.frame = window.bounds
+        host.view.layoutIfNeeded()
+        func drawn(_ l: CALayer) -> [CGRect] {
+            (l.sublayers ?? []).flatMap { c in c.sublayers?.isEmpty == false ? drawn(c) : [c.convert(c.bounds, to: host.view.layer)] }
+        }
+        let frames = drawn(host.view.layer).filter { $0.width > 0 && $0.height > 0 }
+        let mid = (frames.map(\.midY).min()! + frames.map(\.midY).max()!) / 2   // between line 1 and line 2
+        let pills = try! XCTUnwrap(frames.filter { $0.midY < mid }.map(\.maxX).max())
+        let age = try! XCTUnwrap(frames.filter { $0.midY > mid }.map(\.maxX).max())
+        XCTAssertEqual(age, 390, accuracy: 1, "the age ends at the row's right edge")
+        XCTAssertEqual(pills, age, accuracy: 1, "the pills end where the age ends")
+        window.isHidden = true
+    }
+
     /// #1551 QA: at AX-XXXL (and xxxLarge) the state mark's right side was cut flat: its column was narrower
     /// than the glyph. Every mark draws at least its own width, and the titles still line up.
     @MainActor func testStateMarkDrawsWholeAtEverySize() {

@@ -256,7 +256,8 @@ struct SessionRow: View {
                             HStack(alignment: .firstTextBaseline, spacing: 6) {
                                 Self.title(session.title)
                                 if d.agents, session.agents > 0 { Self.agentsCapsule(session.agents).layoutPriority(1) }
-                                if !b.isEmpty { Self.badges(b).layoutPriority(1) }
+                                // #1575: the pills sit at the trailing edge, over the age on line 2; the Spacer's ideal width is its minLength, so the folds still measure as before.
+                                if !b.isEmpty { Spacer(minLength: 0); Self.badges(b).layoutPriority(1) }
                             }
                         }
                     }
