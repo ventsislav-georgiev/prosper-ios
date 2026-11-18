@@ -14,6 +14,10 @@ struct DchSession: Identifiable, Hashable {
     /// 0 when there are none, or the Mac's dch is too old to say.
     var agents: Int = 0
     var meta: SessionMeta? = nil     // PRs and tasks; nil draws the row as before
+    /// #1502: the session's own title, sent only when it differs from the alias; nil from an older Mac. Searched by the Sidekicks split, never shown.
+    var harness: String? = nil
+    /// The Mac's cap on it, in UTF-8 bytes (DchListRow.maxHarnessBytes); a longer one is outside data and dropped.
+    static let maxHarnessBytes = 3 * 8191
     var id: String { name }
     var title: String { alias ?? name }
 }

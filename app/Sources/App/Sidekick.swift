@@ -11,12 +11,29 @@ extension DchSession {
     /// matched as literal text, still ignoring case. An empty pattern means no split. Order
     /// is kept in both halves.
     static func split(_ list: [DchSession], pattern: String) -> (primary: [DchSession], sidekicks: [DchSession]) {
-        let p = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !p.isEmpty else { return (list, []) }
-        let hits = sidekickFind(p, in: list.flatMap { [$0.name, $0.alias ?? ""] }).hits
-        let tagged = zip(list, list.indices.map { hits[2 * $0] || hits[2 * $0 + 1] })
-        return (tagged.filter { !$0.1 }.map(\.0), tagged.filter(\.1).map(\.0))
+        splitNoted(list, pattern: pattern).split
     }
+
+    /// #1502: split, and whether a session is a sidekick by its title alone (R1220-2), from one search.
+    static func splitNoted(_ list: [DchSession], pattern: String) -> (split: (primary: [DchSession], sidekicks: [DchSession]), titleOnly: Bool) {
+        let p = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return ((list, []), false) }
+        let hits = found(list, p).hits
+        let tagged = zip(list, hits.map { $0.name || $0.title })
+        return ((tagged.filter { !$0.1 }.map(\.0), tagged.filter(\.1).map(\.0)), hits.contains { !$0.name && $0.title })
+    }
+
+    /// What split searches for one session; `true` marks the title (sidekickFind).
+    private static func texts(_ s: DchSession) -> [(text: String, title: Bool)] { [(s.name, false), (s.alias ?? "", false), (s.harness ?? "", true)] }
+
+    /// #1502: per session, whether its name or alias matched and whether its title did.
+    private static func found(_ list: [DchSession], _ p: String) -> (how: SidekickMatch, hits: [(name: Bool, title: Bool)]) {
+        let r = sidekickFind(p, in: list.flatMap(texts))
+        return (r.how, list.indices.map { (r.hits[3 * $0] || r.hits[3 * $0 + 1], r.hits[3 * $0 + 2]) })
+    }
+
+    /// R1220-2: the Sidekicks footer when splitNoted says titleOnly (the Mac's sidekickCaption line).
+    static let titleOnlyNote = "Some sessions are here by their title, which Prosper does not show"
 
     /// How a non-empty pattern is matched. Every case but `.regex` matches it as text.
     enum SidekickMatch: Equatable {
@@ -36,7 +53,7 @@ extension DchSession {
     /// last listed sessions' names and titles, so a pattern too slow on them says so first.
     static func sidekickCaption(_ pattern: String, names: [String]) -> String? {
         let p = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
-        return p.isEmpty ? nil : sidekickFind(p, in: names).how.caption
+        return p.isEmpty ? nil : sidekickFind(p, in: names.map { ($0, false) }).how.caption
     }
 
     /// The list re-splits on main on every render, and an ICU regex can backtrack for
@@ -48,17 +65,20 @@ extension DchSession {
     static var sidekickDeadline: UInt64 = 10_000_000
     static var sidekickSlowCall: UInt64 = 1_000_000
     static var sidekickSlowTotal: UInt64 = 50_000_000
+    /// #1502: this thread's CPU clock, a var so a test can count reads instead (the Mac's sidekickCPU).
+    static var sidekickCPU: () -> UInt64 = { clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) }
 
     /// Compiled once per trimmed pattern, under `sidekickLock`.
     /// ponytail: grows by one entry per distinct pattern typed; a few hundred tiny ones per run.
     private static let sidekickLock = NSLock()
-    private static var sidekickCache: [String: (re: NSRegularExpression?, how: SidekickMatch, spent: UInt64)] = [:]
+    private static var sidekickCache: [String: (re: NSRegularExpression?, how: SidekickMatch, spent: UInt64, titleSpent: UInt64)] = [:]
 
     /// Which of `texts` the trimmed, non-empty `p` finds, and how it was matched.
-    private static func sidekickFind(_ p: String, in texts: [String]) -> (how: SidekickMatch, hits: [Bool]) {
-        let cpu = { clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) }
+    private static func sidekickFind(_ p: String, in texts: [(text: String, title: Bool)]) -> (how: SidekickMatch, hits: [Bool]) {
+        let cpu = sidekickCPU
         let entry = sidekickLock.withLock { sidekickCache[p] }
         var (re, how) = (entry?.re, entry?.how ?? .invalid)
+        var titleSpentSoFar = entry?.titleSpent ?? 0
         if entry == nil {
             // Off the lock: two first callers may both probe, and the first to store wins.
             re = sidekickRegex(p)
@@ -73,39 +93,63 @@ extension DchSession {
                 }
             }
             (re, how) = sidekickLock.withLock {
-                if sidekickCache[p] == nil { sidekickCache[p] = (re, how, 0) }
+                if sidekickCache[p] == nil { sidekickCache[p] = (re, how, 0, 0) }
+                titleSpentSoFar = sidekickCache[p]!.titleSpent
                 return (sidekickCache[p]!.re, sidekickCache[p]!.how)
             }
         }
-        var hits: [Bool] = []
+        let titlesAsText = titleSpentSoFar > sidekickSlowTotal
+        var hits = [Bool](repeating: false, count: texts.count)
         if let re, how == .regex {
             let start = cpu()
             var worst: UInt64 = 0
-            for t in texts where how == .regex {
-                var hit = false
-                let t0 = cpu()
+            // One search; nil when it ran past the call's deadline.
+            func find(_ t: String) -> Bool? {
+                var hit: Bool? = false
                 // .reportProgress: ICU calls back inside a backtracking search, so the deadline
                 // ends one catastrophic search. A zero-width match (\b, ^) is no hit, or it
                 // would take every name.
                 re.enumerateMatches(in: t, options: .reportProgress, range: NSRange(t.startIndex..., in: t)) { r, _, stop in
                     if let r, r.range.length > 0 { hit = true; stop.pointee = true }
-                    else if cpu() - start > sidekickDeadline { how = .slow; stop.pointee = true }
+                    else if cpu() - start > sidekickDeadline { hit = nil; stop.pointee = true }
                 }
-                hits.append(hit)
+                return hit
+            }
+            let names = texts.indices.filter { !texts[$0].title }
+            for i in names where how == .regex {
+                let t0 = cpu()
+                if let hit = find(texts[i].text) { hits[i] = hit } else { how = .slow }
                 worst = max(worst, cpu() - t0)
             }
-            let spent = cpu() - start
+            let spent = cpu() - start   // names and aliases only
+            // #1502 (R1210-a): titles after, shortest first, in what is left of the deadline; one past it is no hit
+            // (nor the titles after it) and never flips the pattern. Their own tally ends only their regex search.
+            let titles = texts.indices.filter { texts[$0].title && !texts[$0].text.isEmpty }.sorted { texts[$0].text.utf8.count < texts[$1].text.utf8.count }
+            var (titleWorst, titleSpent, late): (UInt64, UInt64, Bool) = (0, 0, false)
+            if titlesAsText {
+                for i in titles { hits[i] = texts[i].text.range(of: p, options: .caseInsensitive) != nil }
+            } else if how == .regex, !titles.isEmpty {
+                let t1 = cpu()
+                for i in titles {
+                    let t0 = cpu()
+                    guard let hit = find(texts[i].text) else { late = true; break }
+                    hits[i] = hit
+                    titleWorst = max(titleWorst, cpu() - t0)
+                }
+                titleSpent = cpu() - t1
+            }
             how = sidekickLock.withLock {
                 guard var e = sidekickCache[p], e.how == .regex else { return sidekickCache[p]?.how ?? how }
                 // Per 16 texts, so a cheap pattern over 100 sessions never counts; one name
                 // over the whole budget still counts, however many cheap names dilute it.
-                if worst > sidekickSlowCall || spent / UInt64(max(1, texts.count / 16)) > sidekickSlowCall { e.spent += spent }
+                if worst > sidekickSlowCall || spent / UInt64(max(1, names.count / 16)) > sidekickSlowCall { e.spent += spent }
+                if late || titleWorst > sidekickSlowCall || titleSpent / UInt64(max(1, titles.count / 16)) > sidekickSlowCall { e.titleSpent += titleSpent }
                 if how == .slow || e.spent > sidekickSlowTotal { e.how = .slow }
                 sidekickCache[p] = e
                 return e.how
             }
         }
-        if how != .regex { hits = texts.map { $0.range(of: p, options: .caseInsensitive) != nil } }
+        if how != .regex { hits = texts.map { $0.text.range(of: p, options: .caseInsensitive) != nil } }
         return (how, hits)
     }
 

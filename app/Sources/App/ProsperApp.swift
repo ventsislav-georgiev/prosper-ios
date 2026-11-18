@@ -460,7 +460,7 @@ struct SessionListView: View {
             if let line = running[""] {
                 HStack(spacing: 10) { ProgressView(); Text(line).foregroundStyle(.secondary) }
             }
-            let split = DchSession.split(DchSession.ordered(sessions), pattern: sidekickPattern)
+            let (split, titleOnly) = DchSession.splitNoted(DchSession.ordered(sessions), pattern: sidekickPattern)
             if split.sidekicks.isEmpty {
                 ForEach(split.primary) { s in row(s) }
             } else {
@@ -470,6 +470,9 @@ struct SessionListView: View {
                     ForEach(shows ? split.sidekicks : split.primary) { s in row(s) }
                 } header: {
                     tabPicker(split, shows: shows)
+                } footer: {
+                    // R1220-2: a session here by its title alone says so.
+                    if shows, titleOnly { Text(DchSession.titleOnlyNote) }
                 }
             }
         }

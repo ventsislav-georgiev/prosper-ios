@@ -192,6 +192,98 @@ final class SidekickSplitTests: XCTestCase {
         XCTAssertEqual(DchSession.sidekickRegex("-QA")?.options.contains(.caseInsensitive), true)
     }
 
+    // #1502: the title ("harness" on the wire).
+
+    private func h(_ name: String, alias: String? = nil, harness: String?) -> DchSession {
+        DchSession(name: name, alias: alias, harness: harness)
+    }
+
+    func testDecodeHarness() throws {
+        let long = String(repeating: "x", count: DchSession.maxHarnessBytes + 1)
+        let json = """
+        [{"name":"a","alias":"A","harness":"fix-qa"},{"name":"b"},{"name":"c","alias":"C","harness":"C"},
+         {"name":"d","harness":""},{"name":"e","harness":"\(long)"}]
+        """
+        let l = try ProsperTransport.decodeList(Data(json.utf8))
+        XCTAssertEqual(l.map(\.harness), ["fix-qa", nil, nil, nil, nil], "older Macs omit it; equal, empty and over-cap are dropped")
+        XCTAssertEqual(l[0].title, "A", "the display is unchanged")
+    }
+
+    func testTitleOnlyMatchLandsInSidekicks() {
+        let r = DchSession.split([h("web", alias: "Site", harness: "fix-qa-run"), h("api", harness: nil)], pattern: "-qa")
+        XCTAssertEqual(names(r.sidekicks), ["web"])
+        XCTAssertEqual(names(r.primary), ["api"])
+    }
+
+    func testNameAndAliasStillMatchAndTitleNotDoubleCounted() {
+        let r = DchSession.split([h("a-qa", harness: "x-qa"), h("b", alias: "b-qa", harness: "b-qa"), h("c", harness: "none")], pattern: "-qa")
+        XCTAssertEqual(names(r.sidekicks), ["a-qa", "b"], "one row each, in order")
+        XCTAssertEqual(names(r.primary), ["c"])
+        // A title equal to the alias is dropped on decode, so only one text carries it.
+        let l = try? ProsperTransport.decodeList(Data(#"[{"name":"b","alias":"b-qa","harness":"b-qa"}]"#.utf8))
+        XCTAssertNil(l?.first?.harness)
+    }
+
+    func testTitleOnlyFlagComesWithTheSplit() {
+        let titled = h("web", alias: "Site", harness: "fix-qa")
+        let named = h("x-qa", harness: "other-qa")
+        let r = DchSession.splitNoted([titled, h("p", harness: "none")], pattern: "-qa")
+        XCTAssertTrue(r.titleOnly)
+        XCTAssertEqual(names(r.split.sidekicks), ["web"])
+        XCTAssertFalse(DchSession.splitNoted([named, h("p", harness: "none")], pattern: "-qa").titleOnly, "the name matched too")
+        XCTAssertFalse(DchSession.splitNoted([titled], pattern: " ").titleOnly)
+        XCTAssertNil(DchSession.sidekickCaption("-qa", names: ["web"]), "Settings' caption is unchanged")
+    }
+
+    // #1502: the titles' timing guard, on a counted clock (the Mac's R1210-a tests). Each pattern is used by one test only.
+
+    /// The thresholds and the clock, restored by the caller's defer.
+    private func savingClock() -> () -> Void {
+        let restore = savingBounds(), cpu = DchSession.sidekickCPU
+        return { restore(); DchSession.sidekickCPU = cpu }
+    }
+
+    /// Each read advances `tick` ns, so a call's cost is its count of reads (the Mac's countingCPU).
+    private func countingCPU(tick: UInt64) -> () -> UInt64 {
+        var now: UInt64 = 0
+        return { now += tick; return now }
+    }
+
+    /// A title past the deadline is no hit, nor is any title after it in that call; the pattern stays a regex.
+    /// 1 ns a read, 400 reads: the names and the 2-byte title take a few each, the 600 x's backtrack
+    /// x+y from each start (a progress read per start, at least), so the deadline lands in them.
+    func testLateTitleIsNoHitAndNeverFlipsThePattern() {
+        let restore = savingClock(); defer { restore() }
+        DchSession.sidekickDeadline = 400
+        DchSession.sidekickSlowCall = .max
+        DchSession.sidekickSlowTotal = .max
+        DchSession.sidekickCPU = countingCPU(tick: 1)
+        let p = "[x]+y"
+        let list = [s("xxy"), h("b", harness: "xy"), h("c", harness: String(repeating: "x", count: 600)),
+                    h("d", harness: String(repeating: "x", count: 700) + "y")]
+        for _ in 0..<2 {
+            let r = DchSession.split(list, pattern: p)
+            XCTAssertEqual(names(r.sidekicks), ["xxy", "b"], "the name by regex and the early title; d's title comes after the late one")
+        }
+        XCTAssertNil(DchSession.sidekickCaption(p, names: []), "never flipped to text")
+    }
+
+    /// Names and aliases are tallied as before titles: a title's cost never flips them. The titles' own
+    /// tally, once past sidekickSlowTotal, makes the next call match titles as text; names stay a regex.
+    /// 1 ns a read: the 8 name texts are a few reads each (under 200 per 16), the 600 x's far over it.
+    func testTitlesHaveTheirOwnTallyThenMatchAsText() {
+        let restore = savingClock(); defer { restore() }
+        DchSession.sidekickDeadline = .max
+        DchSession.sidekickSlowCall = 200
+        DchSession.sidekickSlowTotal = 0
+        DchSession.sidekickCPU = countingCPU(tick: 1)
+        let p = "x+y"
+        let list = [s("xxy"), h("b", harness: "xxy"), h("c", harness: "q-x+y-q"), h("d", harness: String(repeating: "x", count: 600))]
+        XCTAssertEqual(names(DchSession.split(list, pattern: p).sidekicks), ["xxy", "b"], "first call: all a regex")
+        XCTAssertEqual(names(DchSession.split(list, pattern: p).sidekicks), ["xxy", "c"], "titles as text, the name still a regex")
+        XCTAssertNil(DchSession.sidekickCaption(p, names: []), "the pattern itself never flipped")
+    }
+
     // The matcher's bounds and fallbacks. The cache is process-wide, so each pattern here is
     // used by this one test only.
 
@@ -233,7 +325,7 @@ final class SidekickSplitTests: XCTestCase {
     /// A pattern always under the deadline still flips once its slow calls add up.
     /// Deterministic: the deadline is out of reach and the thresholds are set outright.
     func testSlowCallTallyFlipsToText() {
-        defer { savingBounds()() }
+        let restore = savingBounds(); defer { restore() }
         let list = (0..<200).map { s("build-\($0)-tally") }   // 400 searches, far over a µs of CPU
         DchSession.sidekickDeadline = .max
         DchSession.sidekickSlowCall = .max   // no call counts toward the tally, so even a zero total holds
@@ -258,7 +350,7 @@ final class SidekickSplitTests: XCTestCase {
     /// The slow-call bar scales with the texts searched, so many sessions under a cheap
     /// pattern never flip it.
     func testManySessionsCheapPatternStaysRegex() {
-        defer { savingBounds()() }
+        let restore = savingBounds(); defer { restore() }
         let list = (0..<1600).map { s("s\($0)-many", alias: $0 % 2 == 0 ? "a\($0)-reviewer" : nil) }
         DchSession.sidekickDeadline = .max
         DchSession.sidekickSlowCall = 300_000
@@ -269,7 +361,7 @@ final class SidekickSplitTests: XCTestCase {
 
     /// The other side: one pathological name among 1600 cheap sessions still counts the call.
     func testOneSlowNameAmongManyStillFlips() {
-        defer { savingBounds()() }
+        let restore = savingBounds(); defer { restore() }
         let slow = String(repeating: "x", count: 16)
         // As a regex it takes "xxy"; as text, only the name holding the pattern.
         let list = (0..<1600).map { s("s\($0)-few") } + [s(slow), s("xxy"), s("z(x+x+)+yZ")]

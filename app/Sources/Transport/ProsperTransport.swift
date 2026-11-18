@@ -107,7 +107,8 @@ final class ProsperTransport: SessionTransport {
         return arr.compactMap { o in
             (o["name"] as? String).map {
                 DchSession(name: $0, alias: o["alias"] as? String, state: o["state"] as? String,
-                           agents: o["agents"] as? Int ?? 0, meta: SessionMeta(json: o["meta"]))
+                           agents: o["agents"] as? Int ?? 0, meta: SessionMeta(json: o["meta"]),
+                           harness: (o["harness"] as? String).flatMap { !$0.isEmpty && $0 != o["alias"] as? String && $0.utf8.count <= DchSession.maxHarnessBytes ? $0 : nil })
             }
         }
     }
