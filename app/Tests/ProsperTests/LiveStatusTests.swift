@@ -330,8 +330,9 @@ final class LiveStatusTests: XCTestCase {
     }
 
     @MainActor
-    private func liveStatus(_ gate: Gate, on: Bool = true, notifications: Bool = true) -> LiveStatus {
-        let d = UserDefaults(suiteName: "LiveStatusTests-\(UUID())")!
+    private func liveStatus(_ gate: Gate, on: Bool = true, notifications: Bool = true,
+                            defaults: UserDefaults? = nil, live: Set<String> = []) -> LiveStatus {
+        let d = defaults ?? UserDefaults(suiteName: "LiveStatusTests-\(UUID())")!
         d.set(on, forKey: LiveStatus.enabledKey)
         let ls = LiveStatus(defaults: d, client: {
             var c = PushTokens(base: URL(string: "https://worker.test")!, session: "b", deviceId: "dev-12345678", env: "sandbox")
@@ -341,7 +342,68 @@ final class LiveStatusTests: XCTestCase {
         }, notificationsAllowed: { notifications }, requestAuthorization: { true })
         ls.modeNow = { .live }
         ls.modeDebounce = .milliseconds(10)
+        ls.liveActivities = { live }
         return ls
+    }
+
+    private func suite() -> UserDefaults { UserDefaults(suiteName: "LiveStatusTests-\(UUID())")! }
+
+    /// #1504: a card dismissed while the app was killed: the next cold launch reads the stored
+    /// token, DELETEs it once and stores an empty cache; a second check sends nothing more.
+    @MainActor
+    func testColdLaunchDeletesADismissedCardOnce() async {
+        let d = suite(), gate = Gate()
+        await liveStatus(gate, defaults: d, live: ["act-1"]).post(.laUpdate, token: tok, activityId: "act-1", macId: "mac-a")
+        let ls = liveStatus(gate, defaults: d)
+        XCTAssertEqual(ls.cache.entries.count, 1, "read back at init")
+        await ls.launch()?.value
+        XCTAssertEqual(gate.methods, ["POST", "DELETE"], "launch alone sends it")
+        XCTAssertTrue(ls.cache.entries.isEmpty)
+        XCTAssertTrue(liveStatus(gate, defaults: d).cache.entries.isEmpty, "the stored cache is empty too")
+        await ls.dropStale()
+        await ls.foreground()
+        XCTAssertEqual(gate.methods, ["POST", "DELETE"], "a second check sends nothing")
+    }
+
+    /// #1504: a stored card still up is kept and sends nothing at launch.
+    @MainActor
+    func testColdLaunchKeepsACardStillUp() async {
+        let d = suite(), gate = Gate()
+        await liveStatus(gate, defaults: d).post(.laUpdate, token: tok, activityId: "act-1", macId: "mac-a")
+        let ls = liveStatus(gate, defaults: d, live: ["act-1"])
+        await ls.launch()?.value
+        XCTAssertEqual(gate.methods, ["POST"])
+        XCTAssertEqual(liveStatus(gate, defaults: d).cache.entries.values.compactMap(\.activityId), ["act-1"])
+    }
+
+    /// #1504: unreadable stored data is an empty cache, never a crash.
+    @MainActor
+    func testCorruptStoredCacheLoadsEmpty() {
+        let d = suite(), gate = Gate()
+        for bad in [Data("not json".utf8), Data(#"[{"kind":"nope","token":"x"}]"#.utf8), Data(#"{"a":1}"#.utf8)] {
+            d.set(bad, forKey: LiveStatus.cacheKey)
+            XCTAssertTrue(liveStatus(gate, defaults: d).cache.entries.isEmpty)
+        }
+        d.set("a string", forKey: LiveStatus.cacheKey)
+        XCTAssertTrue(liveStatus(gate, defaults: d).cache.entries.isEmpty)
+    }
+
+    /// #1504: the la_update entries survive a relaunch as they were; alert and la_start aren't stored.
+    @MainActor
+    func testCacheRoundTripsThroughDefaults() async {
+        let d = suite(), gate = Gate()
+        let ls = liveStatus(gate, defaults: d)
+        await ls.post(.alert, token: tok)
+        await ls.post(.laStart, token: tok)
+        await ls.post(.laUpdate, token: tok, activityId: "act-1", macId: "mac-a")
+        await ls.post(.laUpdate, token: tok, activityId: "act-2", macId: "mac-b")
+        let rotated = String(repeating: "11", count: 16)
+        await ls.post(.laUpdate, token: rotated, activityId: "act-2", macId: "mac-b")
+        await ls.ended("act-1")
+        XCTAssertEqual(Array(liveStatus(gate, defaults: d).cache.entries.values),
+                       [.init(kind: .laUpdate, token: rotated, activityId: "act-2", macId: "mac-b")])
+        await ls.turnOff()
+        XCTAssertTrue(liveStatus(gate, defaults: d).cache.entries.isEmpty, "cleared with the switch")
     }
 
     @MainActor

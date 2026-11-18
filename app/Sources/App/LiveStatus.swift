@@ -23,7 +23,7 @@ enum PushEnv {
     #endif
 }
 
-enum PushKind: String {
+enum PushKind: String, Codable {
     case alert                         // the APNs device token
     case laStart = "la_start"          // Live Activity push-to-start (iOS 17.2+)
     case laUpdate = "la_update"        // one activity's update token
@@ -120,7 +120,7 @@ struct PushTokens {
 /// launch would drop off.
 /// Keyed, so one foreground posts each key once.
 struct PushTokenCache {
-    struct Entry: Equatable {
+    struct Entry: Equatable, Codable {
         let kind: PushKind
         let token: String
         var activityId: String? = nil
@@ -128,6 +128,19 @@ struct PushTokenCache {
     }
 
     private(set) var entries: [String: Entry] = [:]
+
+    init() {}
+
+    /// #1504: the la_update entries a cold launch reads back, so a card dismissed while the
+    /// app was killed still gets its DELETE; unreadable data is an empty cache.
+    init(stored: Data?) {
+        for e in stored.flatMap({ try? JSONDecoder().decode([Entry].self, from: $0) }) ?? [] where e.kind == .laUpdate {
+            remember(e)
+        }
+    }
+
+    /// #1504: only the la_update tokens: the alert and la_start ones come back on every launch.
+    var stored: Data? { try? JSONEncoder().encode(entries.values.filter { $0.kind == .laUpdate }) }
 
     mutating func remember(_ e: Entry) { entries["\(e.kind.rawValue)/\(e.activityId ?? "")"] = e }
     mutating func forget(activityId: String) { entries["\(PushKind.laUpdate.rawValue)/\(activityId)"] = nil }
@@ -232,6 +245,7 @@ final class LiveStatus: ObservableObject {
 
     static let enabledKey = "liveStatus.enabled"
     private static let askedKey = "liveStatus.asked"
+    static let cacheKey = "liveStatus.cache"
 
     private let defaults: UserDefaults
     /// The "Live status and alerts" switch.
@@ -251,7 +265,9 @@ final class LiveStatus: ObservableObject {
 
     private var observers: [Task<Void, Never>] = []
     private var tracked: Set<String> = []
-    private(set) var cache = PushTokenCache()
+    private(set) var cache: PushTokenCache {
+        didSet { defaults.set(cache.stored, forKey: Self.cacheKey) }   // #1504: post, end, rotation, clear
+    }
     private var reposting = false
     /// The last repost that all went up (#764): a foreground within `repostEvery` of it sends
     /// nothing. iOS calls "active" after every Control Center pull and Face ID sheet too.
@@ -267,6 +283,16 @@ final class LiveStatus: ObservableObject {
     /// Settable for tests.
     var modeNow: () -> UpdateMode = { .effective }
     var modeDebounce: Duration = .seconds(2)
+    /// #1504: the cards still up, nil where ActivityKit can't tell. Settable for tests.
+    var liveActivities: () -> Set<String>? = {
+        #if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
+        if #available(iOS 16.2, *) {
+            return Set(Activity<ProsperSessionsAttributes>.activities
+                .filter { $0.activityState == .active || $0.activityState == .stale }.map(\.id))
+        }
+        #endif
+        return nil
+    }
     /// #1078: re-apply each running card's own content (stale date kept), so it redraws and
     /// reads the new Mac name; nothing server-facing changes. Settable for tests.
     var redrawCards: () -> Void = {
@@ -298,6 +324,7 @@ final class LiveStatus: ObservableObject {
         self.defaults = defaults
         enabled = defaults.bool(forKey: Self.enabledKey)
         asked = defaults.bool(forKey: Self.askedKey)
+        cache = PushTokenCache(stored: defaults.data(forKey: Self.cacheKey))
         signedIn = client
         self.notificationsAllowed = notificationsAllowed
         self.requestAuthorization = requestAuthorization
@@ -323,15 +350,7 @@ final class LiveStatus: ObservableObject {
         if #available(iOS 16.1, *) { activitiesAllowed = ActivityAuthorizationInfo().areActivitiesEnabled }
         #endif
         guard await notificationsAllowed() else { return await turnOff() }
-        // The Worker rotates cards: it ends one and push-starts the next. A re-posted dead
-        // card's token would make it think the phone still holds that card.
-        #if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
-        if #available(iOS 16.2, *) {
-            let live = Set(Activity<ProsperSessionsAttributes>.activities
-                .filter { $0.activityState == .active || $0.activityState == .stale }.map(\.id))
-            for id in cache.stale(live: live) { await ended(id) }
-        }
-        #endif
+        await dropStale()
         // A failed one goes again at the next foreground: only a full repost counts.
         if let at = repostedAt, now().timeIntervalSince(at) < Self.repostEvery, client.mode == sentMode { return }
         if await cache.repost(client) { repostedAt = now(); sentMode = client.mode }
@@ -353,11 +372,27 @@ final class LiveStatus: ObservableObject {
         }
     }
 
-    /// From the app delegate at launch, and after Turn On.
-    func launch() {
-        guard enabled, Keychain.load() != nil else { return }
+    /// The Worker rotates cards: it ends one and push-starts the next. A re-posted dead
+    /// card's token would make it think the phone still holds that card.
+    /// #1504: also at launch and on each token wake. All are forgotten before any DELETE, so a
+    /// second run under way finds nothing and sends nothing twice.
+    func dropStale() async {
+        guard enabled, let live = liveActivities() else { return }
+        let gone = cache.stale(live: live)
+        for id in gone { tracked.remove(id); cache.forget(activityId: id) }
+        guard let client = client() else { return }
+        for id in gone { await client.delete(.laUpdate, activityId: id) }
+    }
+
+    /// From the app delegate at launch, and after Turn On. The returned stale check is for tests.
+    @discardableResult
+    func launch() -> Task<Void, Never>? {
+        guard enabled else { return nil }
+        let check = Task { await dropStale() }   // #1504: a card dismissed while the app was killed
+        guard Keychain.load() != nil else { return check }
         UIApplication.shared.registerForRemoteNotifications()
         observeActivities()
+        return check
     }
 
     /// Ask for permission and, if given, start handing the Worker tokens.
@@ -438,6 +473,7 @@ final class LiveStatus: ObservableObject {
             observers.append(Task {
                 for await token in Activity<ProsperSessionsAttributes>.pushToStartTokenUpdates {
                     await post(.laStart, token: token.hex)
+                    await dropStale()   // #1504: a push-to-start wake
                 }
             })
         }
@@ -460,6 +496,7 @@ final class LiveStatus: ObservableObject {
         observers.append(Task {
             for await token in activity.pushTokenUpdates {
                 await post(.laUpdate, token: token.hex, activityId: id, macId: mac)
+                await dropStale()   // #1504: a token-rotation wake
             }
         })
         observers.append(Task {
