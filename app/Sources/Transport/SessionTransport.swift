@@ -108,7 +108,7 @@ protocol SessionTransport: AnyObject {
     /// #590: bring a recorded session back (`nil` = every one dch can take). Returns the
     /// names it runs under: a live name comes back as a free `<name>-N`. #668: `noMessage`
     /// relaunches without typing the resume message (dch 1.27.0, `.reviveNoMessage`).
-    func revive(name: String?, noMessage: Bool) async throws -> [String]
+    func revive(name: String?, noMessage: Bool) async throws -> (names: [String], message: String?)
     /// #590: restart live sessions' agents (`nil` = all). Every name must be live, or none runs.
     func restart(names: [String]?) async throws -> [String]
     /// #590: stop live sessions; dch records them, so `revive` can bring them back.
@@ -154,7 +154,7 @@ protocol SessionTransport: AnyObject {
 /// `ops`, so no control calls these.
 extension SessionTransport {
     func history() async throws -> [DchHistoryRow] { throw TransportError.server("Not supported here.") }
-    func revive(name: String?, noMessage: Bool) async throws -> [String] { throw TransportError.server("Not supported here.") }
+    func revive(name: String?, noMessage: Bool) async throws -> (names: [String], message: String?) { throw TransportError.server("Not supported here.") }
     func restart(names: [String]?) async throws -> [String] { throw TransportError.server("Not supported here.") }
     func stop(names: [String]) async throws -> [String] { throw TransportError.server("Not supported here.") }
     func library(etag: String?) async throws -> LibraryReply { throw TransportError.server("Not supported here.") }

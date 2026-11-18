@@ -64,15 +64,40 @@ final class SessionVerbTests: XCTestCase {
         let (one, got1, l1) = try await fakeMac(0x14, #"{"names":["docs-2"]}"#)
         defer { l1.cancel() }
         let revived = try await one.revive(name: "docs")
-        XCTAssertEqual(revived, ["docs-2"], "a live name comes back under its free -N")
+        XCTAssertEqual(revived.names, ["docs-2"], "a live name comes back under its free -N")
         XCTAssertEqual(sent(got1).0, 0x0c)
         XCTAssertEqual(sent(got1).1, ["name": "docs"])
 
         let (all, got2, l2) = try await fakeMac(0x14, #"{"names":[]}"#)
         defer { l2.cancel() }
         let none = try await all.revive(name: nil)
-        XCTAssertEqual(none, [], "nothing to take is an ok with no names")
+        XCTAssertEqual(none.names, [], "nothing to take is an ok with no names")
         XCTAssertEqual(sent(got2).1, ["all": true])
+    }
+
+    /// #925: an ok's "message" is a note; empty or absent is none.
+    func testReviveOkMessage() async throws {
+        let with = try ProsperTransport.decodeRevive(Data(#"{"names":["docs"],"message":"prompt on screen"}"#.utf8))
+        XCTAssertEqual(with.names, ["docs"]); XCTAssertEqual(with.message, "prompt on screen")
+        let bare = try ProsperTransport.decodeRevive(Data(#"{"names":["docs"]}"#.utf8))
+        XCTAssertNil(bare.message)
+        let empty = try ProsperTransport.decodeRevive(Data(#"{"names":[],"message":""}"#.utf8))
+        XCTAssertNil(empty.message, "an empty message is none")
+    }
+
+    /// #925: the note reaches the sheet's note path and is not an error.
+    func testResumeNoteReachesSheet() async throws {
+        let (t, _, l) = try await fakeMac(0x14, #"{"names":["docs"],"message":"2 refused"}"#)
+        defer { l.cancel() }
+        var notes: [String] = []
+        let failed = await HistorySheet.resume(nil, on: t, note: { notes.append($0) })
+        XCTAssertNil(failed)
+        XCTAssertEqual(notes, ["2 refused"])
+        let (t2, _, l2) = try await fakeMac(0x14, #"{"names":["docs"]}"#)
+        defer { l2.cancel() }
+        notes = []
+        _ = await HistorySheet.resume("docs", on: t2, note: { notes.append($0) })
+        XCTAssertEqual(notes, [])
     }
 
     func testRestartNamesAndAll() async throws {

@@ -1145,6 +1145,7 @@ struct HistorySheet: View {
     // revive still runs and the list still re-lists); lift into SessionListView if it matters.
     @State private var running: Set<String> = []
     @State private var failed: (title: String, message: String)?
+    @State private var note: String?               // #925: the Mac's note on an ok Resume; not an error
     @State private var confirmClear = false
     @State private var clearing = false
     @Environment(\.dismiss) private var dismiss
@@ -1153,6 +1154,7 @@ struct HistorySheet: View {
     var body: some View {
         NavigationStack {
             List {
+                if let note { Text(note).foregroundStyle(.secondary) }
                 if let error {
                     Text(error).foregroundStyle(.secondary)
                 } else if let rows, rows.isEmpty {
@@ -1266,9 +1268,10 @@ struct HistorySheet: View {
     private func resume(_ name: String?, noMessage: Bool = false) {
         let key = name ?? ""
         running.insert(key)
+        note = nil
         let t = transport
         Task {
-            if let f = await Self.resume(name, noMessage: noMessage, on: t) { failed = f }
+            if let f = await Self.resume(name, noMessage: noMessage, on: t, note: { note = $0 }) { failed = f }
             running.remove(key)
             await reload()
             await changed()
@@ -1278,9 +1281,15 @@ struct HistorySheet: View {
     /// One revive: a record's `{"name"}`, or `{"all":true}` for nil. nil when it went
     /// through, else its alert ("Resume failed" for a name, "Resume interrupted" for all).
     /// #668: `noMessage` adds `"no_message":true`; no deadline, the Mac waits up to 5 min.
-    static func resume(_ name: String?, noMessage: Bool = false, on t: SessionTransport) async -> (title: String, message: String)? {
+    static func resume(_ name: String?, noMessage: Bool = false, on t: SessionTransport,
+                       note: (String) -> Void = { _ in }) async -> (title: String, message: String)? {
         let verb: SessionVerb = noMessage ? .reviveNoMessage : .revive
-        return await SessionListView.attempt(verb.failTitle(all: name == nil), on: t) { try await $0.revive(name: name, noMessage: noMessage) }
+        return await SessionListView.attempt(verb.failTitle(all: name == nil), on: t) {
+            let r = try await $0.revive(name: name, noMessage: noMessage)
+               // #925
+            if let m = r.message { note(m) }   // #925
+            return r.names
+        }
     }
 
     /// #634: one swipe; its error goes up through the alert, then the history reloads.

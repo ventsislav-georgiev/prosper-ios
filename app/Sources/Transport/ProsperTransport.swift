@@ -130,10 +130,11 @@ final class ProsperTransport: SessionTransport {
     }
 
     /// #668: "no_message" goes only as true; without it the frame is the plain revive's.
-    func revive(name: String?, noMessage: Bool = false) async throws -> [String] {
+    /// #925: an ok may carry a "message" (a note, not an error); empty counts as none.
+    func revive(name: String?, noMessage: Bool = false) async throws -> (names: [String], message: String?) {
         var o: [String: Any] = name.map { ["name": $0] } ?? ["all": true]
         if noMessage { o["no_message"] = true }
-        return try Self.decodeNames(try await verb(F.revive, json(o)))
+        return try Self.decodeRevive(try await verb(F.revive, json(o)))
     }
 
     func restart(names: [String]?) async throws -> [String] {
@@ -505,6 +506,11 @@ final class ProsperTransport: SessionTransport {
         guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
               let names = o["names"] as? [String] else { throw TransportError.protocolError("unreadable reply") }
         return names
+    }
+
+    static func decodeRevive(_ payload: Data) throws -> (names: [String], message: String?) {
+        let note = ((try? JSONSerialization.jsonObject(with: payload)) as? [String: Any])?["message"] as? String
+        return (try decodeNames(payload), note?.isEmpty == false ? note : nil)
     }
 
     /// #827: error 0x13 as thrown: with a "code" (dch serve's gate) a refusal, else the Mac's own error.
