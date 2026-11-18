@@ -423,16 +423,28 @@ struct SessionListView: View {
         List {
             // Machine row → back to the picker to switch/manage connections.
             Button { onChangeMachine() } label: {
-                HStack {
-                    Image(systemName: "desktopcomputer")
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(title).font(.headline)
-                        if let os = liveMachine?.osLine { Text(os).font(.caption).foregroundStyle(.secondary) }
-                    }
-                    WakeBadge(wake: liveMachine?.cachedWake)
-                    Spacer()
-                    Text("Change").font(.caption).foregroundStyle(.secondary)
+                // #1527: at accessibility sizes stack the name over "Change" so neither breaks mid-word.
+                let names = VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.headline)
+                    if let os = liveMachine?.osLine { Text(os).font(.caption).foregroundStyle(.secondary) }
+                }
+                let change = HStack {
+                    Text("Change").font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
                     Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                }
+                if typeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack { Image(systemName: "desktopcomputer"); names; WakeBadge(wake: liveMachine?.cachedWake) }
+                        change
+                    }
+                } else {
+                    HStack {
+                        Image(systemName: "desktopcomputer")
+                        names
+                        WakeBadge(wake: liveMachine?.cachedWake)
+                        Spacer()
+                        change
+                    }
                 }
             }
             .foregroundStyle(.primary)
