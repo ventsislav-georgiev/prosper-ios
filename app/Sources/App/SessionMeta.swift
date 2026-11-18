@@ -25,18 +25,13 @@ struct SessionMeta: Hashable {
             return num.map { "\(short)#\($0)" } ?? short
         }
 
-        /// "prosper#12 — title" for the long-press menu, the title isolated (FSI…PDI) so
-        /// its direction can't spill into the label. A blank title leaves just the chip.
-        var menuLabel: String {
-            title.trimmingCharacters(in: .whitespaces).isEmpty ? chip : "\(chip) — \u{2068}\(title)\u{2069}"
-        }
     }
 
     var open: [PR] = []
     var merged: Int?
 
     static let maxChips = 3
-    static let maxRepo = 18, phoneRepo = 12    // the Mac's cut, then the old iOS one
+    static let maxRepo = 18    // the Mac's cut
 
     /// nil when `json` is not an object or leaves nothing to draw. A field of the wrong
     /// type or a negative count is dropped on its own; it never costs the row.
@@ -52,7 +47,7 @@ struct SessionMeta: Hashable {
                           title: Self.plain(e["title"] as? String ?? ""))
             }.prefix(50))
         }
-        if open.isEmpty && mergedLabel == nil { return nil }
+        if open.isEmpty && (merged ?? 0) == 0 { return nil }
     }
 
     init(open: [PR] = [], merged: Int? = nil) {
@@ -89,82 +84,83 @@ struct SessionMeta: Hashable {
     /// Every count drawn: "99999+" above 99999, so a runaway number can't squeeze the row.
     static func count(_ n: Int) -> String { n > 99_999 ? "99999+" : "\(n)" }
 
-    var mergedLabel: String? { merged.flatMap { $0 > 0 ? "\(Self.count($0)) merged" : nil } }
 
-    /// The chip for the PRs left over: "+2 pending PRs", "+1 pending PR".
-    static func moreLabel(_ n: Int) -> String { "+\(n) pending PR\(n == 1 ? "" : "s")" }
+    /// #1518: what VoiceOver reads for a count, the Mac's words: "1 merged pull request",
+    /// "75 merged pull requests"; "99999+" above 99999, as drawn.
+    static func words(_ n: Int, _ noun: String) -> String { "\(count(n)) \(noun)\(n == 1 ? "" : "s")" }
 
-    /// One way to draw the PR line: chips, the pending chip, the merged count.
-    struct PRLine: Hashable {
-        var chips: [String], more: String?, merged: String?
+    /// #1518: line 2 after the state word, as the Mac's sidebar row draws it: the merged
+    /// count, the open-PR count, then PR chips and a "+N" for the rest.
+    struct DetailLine: Hashable {
+        var merged: Int?, open: Int?, chips: [String] = [], more: Int?
     }
 
-    /// The PR lines ViewThatFits tries, the first that fits wins: 3, 2, 1 chips, each
-    /// with full labels then repos cut to 18, beside "+N pending PRs", then beside a
-    /// bare "+N", then repos cut to 12 (a chip shown beats the long wording); last no
-    /// chips, "+N pending PRs" then a bare "+N". Empty draws no PR line.
-    func prLines(_ d: RowDetails) -> [PRLine] {
-        let merged = d.merged ? mergedLabel : nil
-        guard d.openPRs, !open.isEmpty else { return merged.map { [PRLine(chips: [], more: nil, merged: $0)] } ?? [] }
-        var lines: [PRLine] = []
-        for k in stride(from: min(open.count, Self.maxChips), through: 0, by: -1) {
-            let n = open.count - k
-            let long: String? = n == 0 ? nil : Self.moreLabel(n), short: String? = n == 0 ? nil : "+\(n)"
-            let tries: [(maxRepo: Int?, more: String?)] = k == 0 ? [(maxRepo: nil, more: long), (maxRepo: nil, more: short)]
-                : n == 0 ? [(maxRepo: nil, more: nil), (maxRepo: Self.maxRepo, more: nil), (maxRepo: Self.phoneRepo, more: nil)]
-                : [(maxRepo: nil, more: long), (maxRepo: Self.maxRepo, more: long), (maxRepo: nil, more: short),
-                   (maxRepo: Self.maxRepo, more: short), (maxRepo: Self.phoneRepo, more: short)]
-            for t in tries {
-                let line = PRLine(chips: open.prefix(k).map { $0.chip(maxRepo: t.maxRepo) }, more: t.more, merged: merged)
-                if !lines.contains(line) { lines.append(line) }
-            }
+    /// #1518: the line-2 variants ViewThatFits tries, widest first, folding in the Mac's
+    /// order: 3, 2, 1 chips (repos cut to 18), then the open-count group alone, then the
+    /// merged count, then nothing. The state word is outside them, so it never folds.
+    func detailLines(_ d: RowDetails) -> [DetailLine] {
+        let merged = d.merged ? merged.flatMap { $0 > 0 ? $0 : nil } : nil
+        let open = d.openPRs && !open.isEmpty ? open : []
+        var lines = stride(from: min(open.count, Self.maxChips), through: 1, by: -1).map { k in
+            DetailLine(merged: merged, open: open.count, chips: open.prefix(k).map { $0.chip(maxRepo: Self.maxRepo) },
+                       more: open.count > k ? open.count - k : nil)
         }
+        for l in [DetailLine(merged: merged, open: open.isEmpty ? nil : open.count), DetailLine(merged: merged), DetailLine()]
+        where lines.last != l { lines.append(l) }
         return lines
-    }
-
-    /// The PR line's long-press menu: only with open PRs to list, not for a lone merged count.
-    func hasMenu(_ d: RowDetails) -> Bool { d.openPRs && !open.isEmpty }
-
-    /// "open pull requests a#1, b#2, c#3 and 2 more"; nil with no open PRs.
-    var prAccessibility: String? {
-        guard !open.isEmpty else { return nil }
-        let more = open.count - Self.maxChips
-        return "open pull requests " + open.prefix(Self.maxChips).map(\.chip).joined(separator: ", ")
-            + (more > 0 ? " and \(more) more" : "")
     }
 }
 
-/// Which details a session row draws besides its title and state, set in
-/// Settings › Session list and kept per device. Labels and defaults match the Mac's
-/// Agent Island.
+/// Which details a session row draws besides its title, set in Settings › Row details and
+/// kept per device. Labels and defaults match the Mac's Row details. #1518: State hides the
+/// state word only; the mark stays, as on the Mac.
 struct RowDetails: Equatable {
     enum Key {
+        static let state = "sessionRow.state"
         static let agents = "sessionRow.agents"
         static let openPRs = "sessionRow.openPRs"
         static let merged = "sessionRow.merged"
     }
 
-    var agents = true, openPRs = true, merged = true
+    var state = true, agents = true, openPRs = true, merged = true
+}
+
+/// #1518: what a session row offers by touch, the swipe and the long-press menu: the
+/// actions the old inline pencil, restart and stop buttons ran, and each open PR to open.
+enum SessionRowAction: Hashable {
+    case rename, restart, stop
+    case openPR(chip: String, url: URL)
 }
 
 extension DchSession {
-    /// What VoiceOver reads for the row: the title and state, then only the details shown.
+    /// What VoiceOver reads for the row: the title and state, then only the details shown,
+    /// in the Mac's words.
     func rowAccessibility(_ d: RowDetails) -> String {
-        let n = agents
-        let agents: String? = d.agents && n > 0 ? (n == 1 ? "1 agent" : "\(n) agents") : nil
-        let prs: String? = d.openPRs ? meta?.prAccessibility : nil
-        let merged: String? = d.merged ? meta?.mergedLabel : nil
-        return [title, SessionStateStyle(state)?.label, agents, prs, merged].compactMap { $0 }.joined(separator: ", ")
+        let agents: String? = d.agents && self.agents > 0 ? SessionMeta.words(self.agents, "agent") : nil
+        let merged: String? = d.merged ? meta?.merged.flatMap { $0 > 0 ? SessionMeta.words($0, "merged pull request") : nil } : nil
+        let open = d.openPRs ? meta?.open.count ?? 0 : 0
+        let prs: String? = open > 0 ? SessionMeta.words(open, "open pull request") : nil
+        return [title, SessionStateStyle(state)?.label, agents, merged, prs].compactMap { $0 }.joined(separator: ", ")
+    }
+
+    /// #1518: Rename always; Restart (on `.restart`) and Stop unless a verb already runs on
+    /// it; then "Open repo#12" for each open PR with a link.
+    func rowActions(ops: Set<SessionVerb>, busy: Bool) -> [SessionRowAction] {
+        var a: [SessionRowAction] = [.rename]
+        if !busy { a += (ops.contains(.restart) ? [.restart] : []) + [.stop] }
+        return a + (meta?.open ?? []).compactMap { pr in pr.url.map { .openPR(chip: pr.chip, url: $0) } }
     }
 }
 
 #if !KEYBOARD
-/// A session row as the Mac's Agent Island draws it: a state glyph, then line 1 the
-/// title and "+N agents", line 2 the state, line 3 the PR chips and "N merged". Nothing
-/// animates. The chips are inert, so a tap anywhere opens the session: a Link's 44 pt hit
-/// band covered the lines above. A long press on the PR line lists the PRs.
+/// #1518: a session row as the Mac's sidebar draws it, for a narrow touch screen: the
+/// state mark, then line 1 the title and the "🤖 N" capsule, line 2 the state word, the
+/// merged and open counts and the PR chips, folding (`detailLines`) before the title or
+/// the state word lose room. Nothing animates and the chips are inert: a tap anywhere
+/// opens the session; actions live in the list's swipe and long-press menu.
 struct SessionRow: View {
     let session: DchSession
+    @AppStorage(RowDetails.Key.state) private var state = RowDetails().state
     @AppStorage(RowDetails.Key.agents) private var agents = RowDetails().agents
     @AppStorage(RowDetails.Key.openPRs) private var openPRs = RowDetails().openPRs
     @AppStorage(RowDetails.Key.merged) private var merged = RowDetails().merged
@@ -172,91 +168,92 @@ struct SessionRow: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.dynamicTypeSize) private var typeSize
 
+    /// The Mac's state mark: the state's glyph, "○" with no known state.
+    static func mark(_ s: SessionStateStyle?) -> String { s?.glyph ?? "\u{25CB}" }
+
     var body: some View {
-        let d = RowDetails(agents: agents, openPRs: openPRs, merged: merged)
+        let d = RowDetails(state: state, agents: agents, openPRs: openPRs, merged: merged)
         let style = SessionStateStyle(session.state)
-        let lines: [SessionMeta.PRLine] = session.meta?.prLines(d) ?? []
-        let agentsChip: String? = d.agents ? SessionStateStyle.agents(session.agents) : nil
+        let lines = session.meta?.detailLines(d) ?? [SessionMeta.DetailLine()]
         let big = typeSize.isAccessibilitySize
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            // Unknown state from a newer server: an empty column, rather than a guess.
-            Text(verbatim: style?.glyph ?? " ")
+            Text(verbatim: Self.mark(style))
                 .font(.subheadline.bold())
-                .foregroundStyle(style?.tint ?? Color.clear)
+                .foregroundStyle(style?.tint ?? Color(uiColor: .tertiaryLabel))
                 .frame(width: glyphWidth)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 if big {
                     // Accessibility sizes: nothing shares a line with the title or the
                     // state word, and both may wrap, so both always show.
                     Text(session.title).fontWeight(.medium).lineLimit(2)
-                    if let agentsChip { chip(agentsChip) }
+                    if d.agents, session.agents > 0 { agentsCapsule(session.agents) }
                 } else {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(session.title).fontWeight(.medium).lineLimit(1)
-                        if let agentsChip { chip(agentsChip).layoutPriority(1) }
+                        Text(session.title).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
+                        if d.agents, session.agents > 0 { agentsCapsule(session.agents).layoutPriority(1) }
                     }
                 }
-                if let style {
-                    Text(style.label).foregroundStyle(style.tint).font(.footnote).lineLimit(big ? 2 : 1)
-                }
-                if !lines.isEmpty {
+                let layout = big ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                    : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 6))
+                // No line 2 when every detail on it is off or empty.
+                if (d.state && style != nil) || lines != [SessionMeta.DetailLine()] { layout {
+                    if d.state, let style {
+                        Text(style.label).foregroundStyle(style == .blocked ? style.tint : .secondary)
+                            .lineLimit(big ? 2 : 1).layoutPriority(1)
+                    }
                     ViewThatFits(in: .horizontal) {
-                        ForEach(lines, id: \.self) { prLine($0) }
+                        ForEach(lines, id: \.self) { Self.detailLine($0) }
                     }
-                    .contextMenu { if let meta = session.meta, meta.hasMenu(d) { menu(meta, d) } }
                 }
+                .font(.footnote) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(session.rowAccessibility(d))
         .accessibilityActions {
-            if d.openPRs {
-                ForEach(Array((session.meta?.open ?? []).enumerated()), id: \.offset) { _, pr in
-                    if let url = pr.url { Button("Open \(pr.chip)") { openURL(url) } }
-                }
+            ForEach(session.rowActions(ops: [], busy: true), id: \.self) { a in
+                if case let .openPR(chip, url) = a { Button("Open \(chip)") { openURL(url) } }
             }
         }
     }
 
-    /// Lists the PRs to open; with Open PRs off the line has no chips and no menu.
-    @ViewBuilder private func menu(_ meta: SessionMeta, _ d: RowDetails) -> some View {
-        ForEach(Array(meta.open.enumerated()), id: \.offset) { _, pr in
-            let label = Text(verbatim: pr.menuLabel)
-            if let url = pr.url { Link(destination: url) { label } } else { Button {} label: { label }.disabled(true) }
-        }
-        if d.merged, let merged = meta.mergedLabel { Button {} label: { Text(verbatim: merged) }.disabled(true) }
-    }
-
-    /// At accessibility sizes "N merged" goes under the chips instead of beside them.
-    private func prLine(_ line: SessionMeta.PRLine) -> some View {
-        let big = typeSize.isAccessibilitySize
-        let layout = big ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
-            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 0))
-        return layout {
-            if !line.chips.isEmpty || line.more != nil {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    ForEach(Array(line.chips.enumerated()), id: \.offset) { _, c in chip(c) }
-                    if let more = line.more { chip(more) }
-                }
-            }
-            if let merged = line.merged {
-                if !big { Spacer(minLength: 8) }
-                Text(verbatim: merged).font(.caption2.monospaced()).foregroundStyle(.secondary)
-            }
+    /// One line-2 variant: the counts, then the amber chips and "+N"; never cut.
+    static func detailLine(_ l: SessionMeta.DetailLine) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            if let n = l.merged { count("arrow.triangle.merge", n).foregroundStyle(.secondary) }
+            if let n = l.open { count("arrow.triangle.pull", n).foregroundStyle(.blue) }
+            ForEach(Array(l.chips.enumerated()), id: \.offset) { _, c in prChip(c) }
+            if let more = l.more { prChip("+\(more)") }
         }
         .lineLimit(1)
+        .fixedSize()
     }
 
-    /// The agents capsule; the PR chips share it.
-    private func chip(_ s: String) -> some View {
+    private static func count(_ symbol: String, _ n: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 2) {
+            Image(systemName: symbol).imageScale(.small)
+            Text(verbatim: SessionMeta.count(n)).monospacedDigit()
+        }
+    }
+
+    /// The Mac's PR chip: "Needs input" amber on a 14% wash of it.
+    private static func prChip(_ s: String) -> some View {
         Text(verbatim: s)
             .font(.caption2.monospaced().weight(.medium))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .padding(.horizontal, 5)
+            .foregroundStyle(SessionStateStyle.blocked.tint)
+            .padding(.horizontal, 4)
             .padding(.vertical, 1)
-            .background(Color.primary.opacity(0.1), in: Capsule())
+            .background(SessionStateStyle.blocked.tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
+    }
+
+    /// The Mac's sub-agent count: "🤖 N" in an outlined capsule.
+    private func agentsCapsule(_ n: Int) -> some View {
+        Text(verbatim: "\u{1F916} \(SessionMeta.count(n))")
+            .font(.footnote.monospacedDigit())
+            .lineLimit(1)
+            .padding(.horizontal, 4)
+            .overlay(Capsule().stroke(Color.primary, lineWidth: 1))
     }
 }
 #endif

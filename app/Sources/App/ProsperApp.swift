@@ -583,43 +583,60 @@ struct SessionListView: View {
         } message: { Text("Opens a fresh dch session on \(title).") }
     }
 
-    /// At accessibility sizes the buttons go under the row, so the name and state keep
-    /// the width.
+    /// #1518: the row's actions by touch, the swipe and the long-press menu, in place of the
+    /// inline buttons; a running verb's progress stays beside the row (under it at
+    /// accessibility sizes, so the name and state keep the width).
     @ViewBuilder private func row(_ s: DchSession) -> some View {
+        let actions = s.rowActions(ops: ops, busy: running[s.name] != nil)
         let label = SessionRow(session: s)
             .contentShape(Rectangle())
             .onTapGesture { open = s }
             .accessibilityAction { open = s }
-        let buttons = HStack(spacing: 16) {
-            Button { renaming = s; renameText = s.alias ?? "" } label: {
-                Image(systemName: "pencil")
-            }.buttonStyle(.borderless)
-            if let text = running[s.name] {
-                // #590: its verb runs; the row still opens, and every other row is free.
-                HStack(spacing: 6) { ProgressView(); Text(text).font(.caption).foregroundStyle(.secondary) }
+        // #590: its verb runs; the row still opens, and every other row is free.
+        let progress = running[s.name].map { text in
+            HStack(spacing: 6) { ProgressView(); Text(text).font(.caption).foregroundStyle(.secondary) }
+        }
+        Group {
+            if typeSize.isAccessibilitySize {
+                VStack(alignment: .trailing, spacing: 8) { label; progress }
             } else {
-                if ops.contains(.restart) {
-                    Button {
-                        run(SessionVerb.restart.failTitle(all: false), "Restarting…", [s.name]) { try await $0.restart(names: [s.name]) }
-                    } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                    }.buttonStyle(.borderless).accessibilityLabel("Restart agent")
-                }
-                // #590: the Mac's Stop runs unasked (dch records it, so it can be revived);
-                // an older Mac has only kill, which can't be undone, so that one asks.
-                Button(role: .destructive) {
-                    if ops.contains(.stop) {
-                        run(SessionVerb.stop.failTitle(all: false), "Stopping…", [s.name]) { try await $0.stop(names: [s.name]) }
-                    } else { killing = s }
-                } label: {
-                    Image(systemName: "xmark.circle")
-                }.buttonStyle(.borderless).foregroundStyle(.red).accessibilityLabel("Stop")
+                HStack(spacing: 16) { label; progress }
             }
         }
-        if typeSize.isAccessibilitySize {
-            VStack(alignment: .trailing, spacing: 8) { label; buttons }
-        } else {
-            HStack(spacing: 16) { label; buttons }
+        .swipeActions(allowsFullSwipe: false) {
+            // The first is the outermost: Stop at the edge, as the menu's last verb.
+            ForEach(actions.reversed(), id: \.self) { a in
+                if case .openPR = a {} else { action(a, s, swipe: true) }
+            }
+        }
+        .contextMenu {
+            ForEach(actions, id: \.self) { a in action(a, s, swipe: false) }
+        }
+    }
+
+    /// One row action, as the old inline buttons ran it. A swipe's Stop is red but not
+    /// `.destructive`: that role animates the row out before the session has gone.
+    @ViewBuilder private func action(_ a: SessionRowAction, _ s: DchSession, swipe: Bool) -> some View {
+        switch a {
+        case .rename:
+            Button { renaming = s; renameText = s.alias ?? "" } label: { Label("Rename", systemImage: "pencil") }
+                .tint(.gray)
+        case .restart:
+            Button {
+                run(SessionVerb.restart.failTitle(all: false), "Restarting…", [s.name]) { try await $0.restart(names: [s.name]) }
+            } label: { Label("Restart agent", systemImage: "arrow.triangle.2.circlepath") }
+                .tint(.blue)
+        case .stop:
+            // #590: the Mac's Stop runs unasked (dch records it, so it can be revived);
+            // an older Mac has only kill, which can't be undone, so that one asks.
+            Button(role: swipe ? nil : .destructive) {
+                if ops.contains(.stop) {
+                    run(SessionVerb.stop.failTitle(all: false), "Stopping…", [s.name]) { try await $0.stop(names: [s.name]) }
+                } else { killing = s }
+            } label: { Label("Stop", systemImage: "xmark.circle") }
+                .tint(.red)
+        case let .openPR(chip, url):
+            Link(destination: url) { Label("Open \(chip)", systemImage: "arrow.up.right.square") }
         }
     }
 

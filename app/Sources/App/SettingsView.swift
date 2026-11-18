@@ -110,6 +110,7 @@ struct SettingsView: View {
     private var sidekickNames: [String] { SessionsSnapshot.read()?.rows.flatMap { [$0.name, $0.title] } ?? [] }
     @AppStorage(UpdateMode.key) private var updateMode = UpdateMode.live   // #764
     // Session list rows (`RowDetails`), on this device only.
+    @AppStorage(RowDetails.Key.state) private var rowState = RowDetails().state
     @AppStorage(RowDetails.Key.agents) private var rowAgents = RowDetails().agents
     @AppStorage(RowDetails.Key.openPRs) private var rowOpenPRs = RowDetails().openPRs
     @AppStorage(RowDetails.Key.merged) private var rowMerged = RowDetails().merged
@@ -185,14 +186,16 @@ struct SettingsView: View {
             }
 
             Section {
+                // #1518: the Mac's Row details, in its order; Model, Effort and Age when the wire has them.
+                Toggle("State", isOn: $rowState)
                 Toggle("Agents", isOn: $rowAgents)
-                Toggle("Open PRs", isOn: $rowOpenPRs)
                 Toggle("Merged", isOn: $rowMerged)
+                Toggle("Open PRs", isOn: $rowOpenPRs)
             } header: {
-                Text("Session list")
+                Text("Row details")
             } footer: {
                 // #615: where Commands comes from when the ⋯ menu has none.
-                Text("Row details each session shows. Its title and state always show.\n\nThe ⋯ menu above the list runs the Mac's commands, like Calculator, conversions and Lock Screen, once the Mac has Settings › Remote Terminal › Run commands from iPhone on.")
+                Text("Shown on each session row besides its name and state mark. Open PRs is the count and the PR chips.\n\nThe ⋯ menu above the list runs the Mac's commands, like Calculator, conversions and Lock Screen, once the Mac has Settings › Remote Terminal › Run commands from iPhone on.")
             }
 
             Section {
