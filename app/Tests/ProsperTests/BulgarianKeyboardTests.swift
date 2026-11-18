@@ -198,7 +198,7 @@ final class BulgarianKeyboardTests: XCTestCase {
                 }
             }
             let ya = try XCTUnwrap(caps["я"]).frame.width, ze = try XCTUnwrap(caps["з"]).frame.width
-            XCTAssertEqual(ze, ya, accuracy: 0.001, "at \(width)")
+            XCTAssertGreaterThan(ze, ya, "the third row's letters take shift and delete's freed width (#1614) at \(width)")
             XCTAssertGreaterThanOrEqual(ya, 24, "still a finger wide at \(width)")
             let english = try XCTUnwrap(laidOut(TerminalKeyboard(), width: width)["space"]).frame
             XCTAssertEqual(try XCTUnwrap(caps["БГ"]).frame, english, "the bottom row as English's at \(width)")

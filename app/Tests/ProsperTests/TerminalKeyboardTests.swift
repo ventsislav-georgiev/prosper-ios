@@ -242,6 +242,22 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(short[0].x, 393 - (short[1].x + short[1].w), accuracy: 0.001)
     }
 
+    /// #1614: shift and delete are 1.25 units, so z..m come out wider than q..p; Bulgarian's third row is no narrower than before.
+    func testShiftAndDeleteAreNarrowAndTheLettersWider() {
+        let g = TerminalKeyboard.keyGap
+        let u = (393 - 9 * g) / 10
+        let top = TerminalKeyboard.place(TerminalKeyboard.rows[1], width: 393)
+        let third = TerminalKeyboard.place(TerminalKeyboard.rows[3], width: 393)
+        XCTAssertEqual(third.count, 9)
+        XCTAssertEqual(third.first!.w, 1.25 * u, accuracy: 0.001)
+        XCTAssertEqual(third.last!.w, 1.25 * u, accuracy: 0.001)
+        XCTAssertEqual(third.last!.x + third.last!.w, 393, accuracy: 0.001)
+        for s in third[1...7] { XCTAssertGreaterThan(s.w, top[0].w + 0.5, "z..m wider than q..p") }
+        let bg = TerminalKeyboard.place(TerminalKeyboard.bulgarianRows[3], width: 393, columns: 11)
+        XCTAssertGreaterThanOrEqual(bg[1].w, (393 - 10 * g) / 11 - 0.001, "Bulgarian letters do not shrink")
+        XCTAssertEqual(bg.last!.x + bg.last!.w, 393, accuracy: 0.001)
+    }
+
     /// A crowded bottom row (123, the language key, the globe) keeps space `spaceFloor` letter
     /// units wide: the keys beside it shrink, all by one factor, never past `minShrink`;
     /// nothing overlaps, and a touch on a shrunk key's center lands on it (#643).

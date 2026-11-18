@@ -2522,8 +2522,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// Horizontal slots for one row, in a row `width` wide. A letter is one unit
     /// (`columns` units and their gaps fill the width). A row of nine or more characters
     /// stretches them to fill it. A row with space gives space the rest, `spaceFloor` at least; a row led by a
-    /// special key (shift) pins it and the last key to the edges and centers the letters
-    /// between; anything else is centered.
+    /// special key (shift) pins it and the last key to the edges and stretches the letters
+    /// between to fill (#1614); anything else is centered.
     static func place(_ keys: [Key], width: CGFloat, columns: Int = 10, gap: CGFloat = keyGap) -> [(x: CGFloat, w: CGFloat)] {
         let g = gap, u = (width - CGFloat(columns - 1) * g) / CGFloat(columns)
         let n = keys.prefix { if case .char = $0 { return true } else { return false } }.count
@@ -2535,6 +2535,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             switch k {
             case .char, .globe, .emoji, .language: return u   // the language key as narrow as the globe: space keeps its room (#638)
             case .ret: return 2.25 * u
+            case .shift, .backspace: return 1.25 * u   // #1614: the letters between take the freed width
             default: return 1.5 * u
             }
         }
@@ -2553,11 +2554,17 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         let edged: Bool
         if keys.count >= 2, case .char = keys[0] { edged = false } else { edged = keys.count >= 2 }
         let middle = edged ? Array(keys.dropFirst().dropLast()) : keys
-        let span = middle.map(w).reduce(0, +) + g * CGFloat(max(0, middle.count - 1))
+        // #1614: between the edge keys the letters share what is left, so the row fills the width.
+        var mw: (Key) -> CGFloat = w
+        if edged, let first = keys.first, let last = keys.last, !middle.isEmpty {
+            let kw = (width - w(first) - w(last) - g * CGFloat(keys.count - 1)) / CGFloat(middle.count)
+            mw = { _ in kw }
+        }
+        let span = middle.map(mw).reduce(0, +) + g * CGFloat(max(0, middle.count - 1))
         var x = (width - span) / 2
         let mids: [(x: CGFloat, w: CGFloat)] = middle.map { k in
-            defer { x += w(k) + g }
-            return (x, w(k))
+            defer { x += mw(k) + g }
+            return (x, mw(k))
         }
         guard edged, let first = keys.first, let last = keys.last else { return mids }
         return [(0, w(first))] + mids + [(width - w(last), w(last))]
