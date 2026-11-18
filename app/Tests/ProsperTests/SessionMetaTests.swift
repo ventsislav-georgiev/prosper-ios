@@ -145,8 +145,22 @@ final class SessionMetaTests: XCTestCase {
             Line(),
         ])
         XCTAssertEqual(SessionMeta(open: [pr("o/a", 1)]).detailLines(RowDetails()),
-                       [Line(open: 1, chips: ["a#1"]), Line(open: 1), Line()], "no +N when every PR has a chip")
+                       [Line(open: 1, chips: ["#1"]), Line(open: 1), Line()], "no +N when every PR has a chip")
         XCTAssertEqual(SessionMeta(merged: 4).detailLines(RowDetails()), [Line(merged: 4), Line()])
+    }
+
+    /// #1530: chips read "#N" when all open PRs share a repo, "repo#N" across several; the
+    /// menu label, row action and VoiceOver text keep "repo#N" either way.
+    func testChipRepoOnlyAcrossRepos() {
+        let one = SessionMeta(open: [pr("o/a", 1), pr("o/a", 2)])
+        XCTAssertEqual(one.detailLines(RowDetails()).first?.chips, ["#1", "#2"])
+        let two = SessionMeta(open: [pr("o/a", 1), pr("o/b", 2)])
+        XCTAssertEqual(two.detailLines(RowDetails()).first?.chips, ["a#1", "b#2"])
+        let u = URL(string: "https://github.com/o/a/pull/1")!
+        let m = SessionMeta(open: [.init(url: u, repo: "o/a", num: 1, title: ""), pr("o/a", 2)])
+        let sess = DchSession(name: "x", alias: nil, meta: m)
+        XCTAssertEqual(sess.rowActions(ops: [], busy: true), [.rename, .openPR(chip: "a#1", url: u)], "menu and VoiceOver action keep the repo")
+        XCTAssertEqual(sess.rowAccessibility(RowDetails()), "x, 2 open pull requests")
     }
 
     /// #1518: a count shows only above 0; a hidden detail drops out of every fold.
@@ -154,7 +168,7 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(SessionMeta(open: [], merged: 0).detailLines(RowDetails()), [Line()], "zero merged: no group")
         XCTAssertEqual(full.detailLines(with { $0.openPRs = false }), [Line(merged: 75), Line()])
         XCTAssertEqual(full.detailLines(with { $0.merged = false }),
-                       [Line(open: 1, chips: ["repo#12"]), Line(open: 1), Line()])
+                       [Line(open: 1, chips: ["#12"]), Line(open: 1), Line()])
         XCTAssertEqual(full.detailLines(with { $0.openPRs = false; $0.merged = false }), [Line()])
     }
 
@@ -239,7 +253,8 @@ final class SessionMetaTests: XCTestCase {
         let two = height(row)
         XCTAssertGreaterThan(two, height(bare), "two lines with details, one without")
         store.set(false, forKey: RowDetails.Key.state)
-        XCTAssertEqual(height(row), two, "the counts keep line 2")
+        // #1530: caption chips are a point shorter than the footnote state word.
+        XCTAssertGreaterThan(height(row), height(bare), "the counts keep line 2")
         for k in [RowDetails.Key.openPRs, RowDetails.Key.merged] { store.set(false, forKey: k) }
         XCTAssertEqual(height(row), height(bare), "all off: the title alone")
         func ideal() -> CGFloat {

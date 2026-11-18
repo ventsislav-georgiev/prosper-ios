@@ -19,7 +19,9 @@ struct SessionMeta: Hashable {
 
         /// The chip with a repo name past `maxRepo` characters cut to fit, "…" last;
         /// nil keeps it whole.
-        func chip(maxRepo: Int?) -> String {
+        /// #1530: `bare` drops the repo when there is a number: "#12".
+        func chip(maxRepo: Int?, bare: Bool = false) -> String {
+            if bare, let n = num { return "#\(n)" }
             let name = repo.split(separator: "/").last.map(String.init) ?? repo
             let short = maxRepo.map { name.count > $0 ? String(name.prefix($0 - 1)) + "…" : name } ?? name
             return num.map { "\(short)#\($0)" } ?? short
@@ -101,8 +103,10 @@ struct SessionMeta: Hashable {
     func detailLines(_ d: RowDetails) -> [DetailLine] {
         let merged = d.merged ? merged.flatMap { $0 > 0 ? $0 : nil } : nil
         let open = d.openPRs && !open.isEmpty ? open : []
+        // #1530: "#N" when every open PR is in one repo, "repo#N" across several.
+        let bare = Set(open.map(\.repo)).count == 1
         var lines = stride(from: min(open.count, Self.maxChips), through: 1, by: -1).map { k in
-            DetailLine(merged: merged, open: open.count, chips: open.prefix(k).map { $0.chip(maxRepo: Self.maxRepo) },
+            DetailLine(merged: merged, open: open.count, chips: open.prefix(k).map { $0.chip(maxRepo: Self.maxRepo, bare: bare) },
                        more: open.count > k ? open.count - k : nil)
         }
         for l in [DetailLine(merged: merged, open: open.isEmpty ? nil : open.count), DetailLine(merged: merged), DetailLine()]
@@ -218,13 +222,13 @@ struct SessionRow: View {
         }
     }
 
-    /// One line-2 variant: the counts, then the amber chips and "+N"; never cut.
+    /// One line-2 variant: the counts as plain text, then the soft chips and "+N"; never cut.
     static func detailLine(_ l: SessionMeta.DetailLine) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             if let n = l.merged { count("arrow.triangle.merge", n).foregroundStyle(.secondary) }
             if let n = l.open { count("arrow.triangle.pull", n).foregroundStyle(.blue) }
-            ForEach(Array(l.chips.enumerated()), id: \.offset) { _, c in prChip(c) }
-            if let more = l.more { prChip("+\(more)") }
+            ForEach(Array(l.chips.enumerated()), id: \.offset) { _, c in chip(c, amber: true) }
+            if let more = l.more { chip("+\(more)", amber: true) }
         }
         .lineLimit(1)
         .fixedSize()
@@ -233,27 +237,25 @@ struct SessionRow: View {
     private static func count(_ symbol: String, _ n: Int) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 2) {
             Image(systemName: symbol).imageScale(.small)
-            Text(verbatim: SessionMeta.count(n)).monospacedDigit()
+            Text(verbatim: SessionMeta.count(n))
         }
+        .font(.caption2.monospaced())
     }
 
-    /// The Mac's PR chip: "Needs input" amber on a 14% wash of it.
-    private static func prChip(_ s: String) -> some View {
+    /// #1530: the one chip material, as before #1518: a soft filled capsule, monospaced
+    /// caption, no stroke. PR chips tint the text amber.
+    private static func chip(_ s: String, amber: Bool = false) -> some View {
         Text(verbatim: s)
             .font(.caption2.monospaced().weight(.medium))
-            .foregroundStyle(SessionStateStyle.blocked.tint)
-            .padding(.horizontal, 4)
+            .foregroundStyle(amber ? AnyShapeStyle(SessionStateStyle.blocked.tint) : AnyShapeStyle(.secondary))
+            .lineLimit(1)
+            .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(SessionStateStyle.blocked.tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 3))
+            .background(Color.primary.opacity(0.1), in: Capsule())
     }
 
-    /// The Mac's sub-agent count: "🤖 N" in an outlined capsule.
     private func agentsCapsule(_ n: Int) -> some View {
-        Text(verbatim: "\u{1F916} \(SessionMeta.count(n))")
-            .font(.footnote.monospacedDigit())
-            .lineLimit(1)
-            .padding(.horizontal, 4)
-            .overlay(Capsule().stroke(Color.primary, lineWidth: 1))
+        Self.chip("\u{1F916} \(SessionMeta.count(n))")
     }
 }
 #endif
