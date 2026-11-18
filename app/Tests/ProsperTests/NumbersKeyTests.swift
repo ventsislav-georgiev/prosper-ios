@@ -358,10 +358,50 @@ final class NumbersKeyTests: XCTestCase {
         try tap(kb, "space")
         try tap(kb, "1")
         XCTAssertEqual(doc.text, "teh,7 1", "the digits and the space as typed")
-        let one = try cap(kb, "1")
-        XCTAssertEqual(one.subviews.compactMap { $0 === one.titleLabel ? nil : ($0 as? UILabel)?.text ?? nil }.filter { !$0.isEmpty }, [],
-                       "no hold symbols on the numpad")
-        XCTAssertNil(kb.previewText, "nor previews")
+        XCTAssertNil(kb.previewText, "no previews on a tap")
+    }
+
+    /// #1525: the numpad's hold is the digit row's, in both languages; a tap is still the digit.
+    func testHoldingANumpadDigitTypesTheDigitRowsSymbol() throws {
+        for layout in TerminalKeyboard.Layout.allCases {
+            let (kb, _, doc, _) = rig(layout)
+            try tap(kb, "123")
+            for d in "1234567890" {
+                let f = try cap(kb, String(d)).frame, at = CGPoint(x: f.midX, y: f.midY)
+                kb.track(.began, id: 1, at: at)
+                kb.fireHold()
+                kb.track(.ended, id: 1, at: at)
+                XCTAssertEqual(doc.text.last.map(String.init), layout.holdSymbol[String(d)], "\(layout) \(d)")
+                try tap(kb, String(d))
+                XCTAssertEqual(doc.text.last, d, "\(layout): a tap is the digit")
+            }
+            XCTAssertEqual(doc.text, "!1@2#3$4%5^6&7*8(9)0")
+            let hints = try cap(kb, "5").subviews.compactMap { ($0 as? UILabel)?.text }
+            XCTAssertTrue(hints.contains("%"), "\(layout): the corner hint")
+            let before = doc.text
+            let f = try cap(kb, ",").frame
+            kb.track(.began, id: 1, at: CGPoint(x: f.midX, y: f.midY))
+            kb.fireHold()
+            kb.track(.ended, id: 1, at: CGPoint(x: f.midX, y: f.midY))
+            XCTAssertEqual(doc.text, before + ",", "the numpad's symbols have no hold")
+        }
+    }
+
+    /// #1525: with Numbers: Key every digit-row hold symbol is a numpad hold or a letter hold.
+    func testEveryDigitRowHoldIsReachableInKeyMode() {
+        for layout in TerminalKeyboard.Layout.allCases {
+            let digits = (1...10).map { String($0 % 10) }
+            let digitRow = Set(digits.compactMap { layout.holdSymbol[$0] })
+            XCTAssertEqual(digitRow, Set("!@#$%^&*()".map(String.init)))
+            let numpad = Set(TerminalKeyboard.numpadRows.joined().compactMap { k -> String? in
+                if case .char(let c) = k, c.first?.isNumber == true { return layout.holdSymbol[c] } else { return nil }
+            })
+            let letters = Set(layout.rows[1...3].joined().compactMap { k -> String? in
+                if case .char(let c) = k { return layout.holdSymbol[c] } else { return nil }
+            })
+            XCTAssertTrue(digitRow.isSubset(of: numpad.union(letters)), "\(layout)")
+            XCTAssertTrue(Set(["!", "%", "^"]).isSubset(of: numpad), "\(layout): only the numpad has these")
+        }
     }
 
     func testABCGoesBackToTheLetters() throws {

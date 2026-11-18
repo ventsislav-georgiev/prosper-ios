@@ -2119,7 +2119,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         } else {
             cap.activate = { [weak self] in self?.press(key) }
         }
-        if !showsNumpad, case .char(let c) = key, let symbol = layout.holdSymbol[c] {
+        if case .char(let c) = key, let symbol = activeHolds[c] {
             cap.hint.text = symbol
             cap.hint.font = Style.hintFont
             cap.hint.textColor = Style.hint
@@ -2306,6 +2306,12 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if let cap, !showsNumpad, settings.characterPreview || symbol != nil { showPreview(cap, symbol) } else { hidePreview() }
     }
 
+    /// The holds in force: the layout's, and on the numpad (#1525) only the digits', as on the
+    /// digit row, so Numbers: Key keeps ! % ^ and the rest. Its other keys type as they are.
+    private var activeHolds: [String: String] {
+        showsNumpad ? layout.holdSymbol.filter { $0.key.first?.isNumber == true } : layout.holdSymbol
+    }
+
     /// `c` as shift types it: a letter uppercased, anything else as is.
     private func shifted(_ c: String) -> String {
         c.first?.isLetter == true && shift.uppercase ? c.uppercased() : c
@@ -2405,7 +2411,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             refreshPressed()
             return
         }
-        guard tracker.hold(h.id, over: nearest(at: aimed(h.at)), symbols: showsNumpad ? [:] : layout.holdSymbol) else { return }
+        guard tracker.hold(h.id, over: nearest(at: aimed(h.at)), symbols: activeHolds) else { return }
         haptics.impactOccurred()
         haptics.prepare()
         refreshPressed()
