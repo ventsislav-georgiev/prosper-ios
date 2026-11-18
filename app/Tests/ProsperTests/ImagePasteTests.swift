@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 import SwiftTerm
@@ -1755,5 +1756,57 @@ final class ImagePasteTests: XCTestCase {
         mark = spy.sent.count
         _ = (tv as NSObject).perform(replace, with: try last(3), with: "xyw")
         XCTAssertEqual(Array(spy.sent[mark...].joined()), [0x7f, 0x7f, 0x7f] + Array("xyw".utf8))
+    }
+
+    /// #1533: on the real screen, an image-only Paste to a host without image paste sends
+    /// nothing and draws the notice in the status line; sticky, a key typed after it leaves it
+    /// up. A private pasteboard: never the general one.
+    func testImageOnlyPasteOnAHostWithoutImagePasteDrawsTheNotice() throws {
+        let transport = SpyTransport()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 700)
+        let host = UIHostingController(rootView: NavigationStack {
+            TerminalScreen(transport: transport, session: DchSession(name: "t"), pastesImages: false)
+        })
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        func spin(_ s: TimeInterval) { RunLoop.main.run(until: Date().addingTimeInterval(s)) }
+        spin(0.5)
+        transport.stream.emit("$ ")
+        spin(0.2)
+        func find(_ vc: UIViewController) -> TerminalHostVC? {
+            vc as? TerminalHostVC ?? vc.children.lazy.compactMap(find).first
+        }
+        let vc = try XCTUnwrap(find(host), "no host VC under the navigation stack")
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        pb.items = [[UTType.png.identifier: png]]
+        defer { pb.items = [] }
+        vc.pasteboard = pb
+        let (bar, _) = try barAndTerminal(vc)
+        // The status line's band: under the terminal's top edge, clear of the caret at its left.
+        let top = vc.view.convert(vc.view.bounds, to: window).minY
+        let band = CGRect(x: 60, y: top + 10, width: window.bounds.width - 120, height: 24)
+        let before = pixels(window, band)
+
+        bar.onKey?(try catalogKey("paste"))
+        spin(0.3)
+        XCTAssertEqual(transport.stream.clipboards, [], "the image went to a host that drops it")
+        XCTAssertEqual(transport.stream.sent, [], "a lone ctrl-V went out")
+        XCTAssertNotEqual(pixels(window, band), before, "no notice drawn")
+
+        bar.onKey?(try catalogKey("tab"))
+        spin(0.3)
+        XCTAssertEqual(transport.stream.sent, [[0x09]])
+        XCTAssertNotEqual(pixels(window, band), before, "typing took the sticky notice down")
+    }
+
+    /// The window as drawn, `rect` only.
+    private func pixels(_ w: UIWindow, _ rect: CGRect) -> Data {
+        let img = UIGraphicsImageRenderer(bounds: rect).image { _ in
+            w.drawHierarchy(in: w.bounds, afterScreenUpdates: true)
+        }
+        return img.pngData() ?? Data()
     }
 }
