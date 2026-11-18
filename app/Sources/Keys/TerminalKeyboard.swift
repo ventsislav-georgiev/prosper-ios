@@ -2571,7 +2571,8 @@ extension TerminalKeyboard {
     /// cap it stays r (#969). A centered hit, an empty prefix or no
     /// neighbor known or likely enough keeps `nearest`, so only an already ambiguous touch
     /// ever moves. A digit, symbol, space or return moves only at its edge, mid-word
-    /// (`edged`). A hold isn't corrected at all (`fireHold`). Lowercase in and out; `press`
+    /// (`edged`). A low touch on the row above space may be space (`slipsToSpace`). A hold
+    /// isn't corrected at all (`fireHold`). Lowercase in and out; `press`
     /// applies shift.
     ///
     /// The center is checked first, so `known` (and the screen it may read) is asked only
@@ -2594,7 +2595,10 @@ extension TerminalKeyboard {
         let candidates = keys
             .filter { $0.0 != nearest && letter($0.0) != nil && distance(point, $0.1) <= reach }
             .sorted { distance(point, $0.1) < distance(point, $1.1) }
-        guard known(prefix + c) else { return candidates.first { known(prefix + letter($0.0)!) }?.0 ?? nearest }
+        guard known(prefix + c) else {
+            if let k = candidates.first(where: { known(prefix + letter($0.0)!) }) { return k.0 }
+            return slipsToSpace(frame: frame, at: point, keys: keys, prefix: prefix, complete: complete) ? .space : nearest
+        }
         // #969: odds move only a touch in the gap; one on the cap, however near its edge, is that key.
         if frame.contains(point) { return nearest }
         let sigma = frame.width / 4
@@ -2604,6 +2608,22 @@ extension TerminalKeyboard {
         }
         let mine = score((nearest, frame))
         return candidates.filter { score($0) > mine }.max { score($0) < score($1) }?.0 ?? nearest
+    }
+
+    /// #1609: a touch low on a letter of the row just above space (or in the gap
+    /// under it), over space, after a `complete` word that neither it nor a neighbor in reach
+    /// continues: a thumb that meant space. "our" and a low b is "our ", not "ourb"; "lo" and
+    /// a low v stays "lov". One letter isn't a word here: "a" and "i" go on with all of them.
+    ///
+    /// ponytail: the bottom sixth of the key, tuned on the typo harness: a sixth kept every
+    /// slip it fixed but two, and typed no letter meant as space (a quarter did, 6 pt up).
+    private static func slipsToSpace(frame: CGRect, at point: CGPoint, keys: [(Key, CGRect)],
+                                     prefix: String, complete: (String) -> Bool) -> Bool {
+        guard let space = keys.first(where: { $0.0 == .space })?.1, point.y > frame.maxY - frame.height / 6,
+              (space.minX...space.maxX).contains(point.x), frame.maxY <= space.minY,
+              !keys.contains(where: { letter($0.0) != nil && $0.1.minY >= frame.maxY && $0.1.maxY <= space.minY })
+        else { return false }
+        return prefix.count > 1 && complete(prefix)
     }
 
     /// The letter `k` types, or nil.

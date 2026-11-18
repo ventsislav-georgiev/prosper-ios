@@ -204,7 +204,57 @@ final class TouchCorrectionTests: XCTestCase {
         XCTAssertEqual(type("proble", thenTap: CGPoint(x: m.midX, y: f["new line"]!.midY), on: kb3), "\n", "well inside")
     }
 
+    /// #1609: after a whole word, a touch low on a letter of the row above space, over space,
+    /// or in the gap under it, is space when no word goes on with that letter.
+    func testALowLetterAfterAWholeWordIsSpace() {
+        let (_, f) = laidOut()
+        let b = f["b"]!, space = f["space"]!
+        let our = { (s: String) in s == "our" }
+        XCTAssertLessThan(b.minX + 6, space.maxX, "precondition: b's left side is over space")
+        for p in [CGPoint(x: b.minX + 6, y: b.maxY - 1), CGPoint(x: b.minX + 6, y: (b.maxY + space.minY) / 2)] {
+            XCTAssertEqual(K.corrected(.char("b"), at: p, keys: allKeys(f), prefix: "our", known: knowing("our", "out"),
+                                       complete: our), .space, "\(p)")
+        }
+    }
+
+    /// #1609: the letter stays when it's centered, continues a word, isn't on that row, or
+    /// the word so far isn't one.
+    func testALowLetterThatIsMeantStays() {
+        let (_, f) = laidOut()
+        let b = f["b"]!, v = f["v"]!, e = f["e"]!, space = f["space"]!
+        let low = { (r: CGRect) in CGPoint(x: r.minX + 6, y: r.maxY - 1) }
+        XCTAssertEqual(K.corrected(.char("b"), at: CGPoint(x: b.midX, y: b.midY), keys: allKeys(f), prefix: "our",
+                                   known: knowing("our"), complete: { $0 == "our" }), .char("b"), "centered")
+        XCTAssertEqual(K.corrected(.char("b"), at: CGPoint(x: b.minX + 6, y: b.maxY - 9), keys: allKeys(f), prefix: "our",
+                                   known: knowing("our"), complete: { $0 == "our" }), .char("b"), "above the bottom sixth")
+        XCTAssertEqual(K.corrected(.char("b"), at: low(b), keys: allKeys(f), prefix: "w", known: knowing("we"),
+                                   complete: { _ in true }), .char("b"), "one letter")
+        XCTAssertEqual(K.corrected(.char("b"), at: low(b), keys: allKeys(f), prefix: "we", known: knowing("web"),
+                                   complete: { $0 == "we" }), .char("b"), "web")
+        XCTAssertEqual(K.corrected(.char("v"), at: low(v), keys: allKeys(f), prefix: "lo", known: knowing("love"),
+                                   complete: { $0 == "lo" }), .char("v"), "love")
+        XCTAssertEqual(K.corrected(.char("e"), at: low(e), keys: allKeys(f), prefix: "th", known: knowing("the"),
+                                   complete: { $0 == "th" }), .char("e"), "not the row above space")
+        XCTAssertEqual(K.corrected(.char("b"), at: low(b), keys: allKeys(f), prefix: "ou", known: knowing("our"),
+                                   complete: { _ in false }), .char("b"), "not a whole word")
+        XCTAssertGreaterThan(b.maxX - 2, space.maxX, "precondition: b's right side is past space")
+        XCTAssertEqual(K.corrected(.char("b"), at: CGPoint(x: b.maxX - 2, y: b.maxY - 1), keys: allKeys(f), prefix: "our",
+                                   known: knowing("our"), complete: { $0 == "our" }), .char("b"), "not over space")
+    }
+
     // MARK: Through the real keyboard
+
+    /// #1609, the operator's "ourbre": the real dictionary, a tap at b's bottom edge after "our".
+    func testRealDictionaryOurAndALowBIsSpace() {
+        let (kb, f) = laidOut()
+        let b = f["b"]!
+        XCTAssertFalse(K.dictionaryKnows("ourb"), "precondition")
+        XCTAssertEqual(type("our", thenTap: CGPoint(x: b.minX + 6, y: b.maxY - 1), on: kb), " ")
+        let (kb2, _) = laidOut()
+        XCTAssertEqual(type("our", thenTap: CGPoint(x: b.midX, y: b.midY), on: kb2), "b", "centered")
+        let (kb3, _) = laidOut()
+        XCTAssertEqual(type("we", thenTap: CGPoint(x: b.minX + 6, y: b.maxY - 1), on: kb3), "b", "web")
+    }
 
     /// The real dictionary's odds: "th" and a touch in the gap just left of r types e; one
     /// 0.48 of a key off r's center, on its cap, types r (#969), as "c" and one off i's
