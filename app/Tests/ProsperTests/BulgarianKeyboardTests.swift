@@ -146,7 +146,7 @@ final class BulgarianKeyboardTests: XCTestCase {
         for c in ["ш", "щ", "ч"] { XCTAssertNil(bg.holdSymbol[c], c) }
         let letters = Set(bg.letterRows.joined().map(String.init))
         XCTAssertEqual(Set(bg.holdSymbol.keys).subtracting("0123456789".map(String.init)),
-                       letters.subtracting(["ш", "щ", "ч"]), "only keys on the keyboard")
+                       letters.subtracting(["ш", "щ", "ч"]).union(["."]), "only keys on the keyboard")
         let taps = bg.rows.joined().compactMap { k -> String? in if case .char(let c) = k { return c } else { return nil } }
         let symbols = Set((0x21...0x7E).map { String(UnicodeScalar(UInt8($0))) }).filter { !$0.first!.isLetter && !$0.first!.isNumber }
         XCTAssertEqual(symbols.count, 32)
@@ -188,7 +188,7 @@ final class BulgarianKeyboardTests: XCTestCase {
             let caps = laidOut(kb, width: width)
             let rows = Dictionary(grouping: kb.subviews.compactMap { $0 as? UIButton }, by: \.frame.minY)
                 .sorted { $0.key < $1.key }.map { $0.value.sorted { $0.frame.minX < $1.frame.minX } }
-            XCTAssertEqual(rows.map(\.count), [10, 11, 11, 10, 7], "at \(width)")
+            XCTAssertEqual(rows.map(\.count), [10, 11, 11, 10, 6], "at \(width)")
             for row in rows {
                 XCTAssertGreaterThanOrEqual(row.first!.frame.minX, 0)
                 XCTAssertLessThanOrEqual(row.last!.frame.maxX, width)

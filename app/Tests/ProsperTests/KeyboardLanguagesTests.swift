@@ -279,11 +279,11 @@ final class KeyboardLanguagesTests: XCTestCase {
         kb.showsGlobe = true
         kb.allowsNumbersKey = true
         kb.settings.numbers = .key
-        let row: [TerminalKeyboard.Key] = [.numbers, .language, .globe, .char("."), .char(","), .char("/"), .space, .char("?"), .ret]
+        let row: [TerminalKeyboard.Key] = [.numbers, .language, .globe, .char("."), .char(","), .char("/"), .space, .ret]
         XCTAssertEqual(kb.shownKeys.last, row)
         let shown = caps(kb).filter { $0.frame.midY == languageKey(kb)?.frame.midY }.sorted { $0.frame.minX < $1.frame.minX }
         XCTAssertEqual(shown.map { $0.accessibilityLabel ?? "" },
-                       ["numbers", "Switch to Български", "next keyboard", ".", ",", "/", "space", "?", "new line"])
+                       ["numbers", "Switch to Български", "next keyboard", ".", ",", "/", "space", "new line"])
         for (a, b) in zip(shown, shown.dropFirst()) {
             XCTAssertGreaterThanOrEqual(b.frame.minX - a.frame.maxX, kb.letterGap - 0.001, "\(a.accessibilityLabel!) overlaps")
         }

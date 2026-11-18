@@ -41,7 +41,8 @@ final class TerminalKeyboardTests: XCTestCase {
     func testHoldSymbolCoversEveryLetterAndDigit() {
         let hinted = Set(chars(Array(TerminalKeyboard.rows.joined())).filter { $0.first!.isLetter || $0.first!.isNumber })
         XCTAssertEqual(hinted.count, 36)
-        XCTAssertEqual(Set(TerminalKeyboard.holdSymbol.keys), hinted)
+        XCTAssertEqual(Set(TerminalKeyboard.holdSymbol.keys), hinted.union(["."]), "#1608: and the period")
+        XCTAssertEqual(TerminalKeyboard.holdSymbol["."], "?")
         XCTAssertEqual(TerminalKeyboard.holdSymbol["q"], "`")
         XCTAssertEqual(TerminalKeyboard.holdSymbol["w"], "\\")
         XCTAssertEqual(TerminalKeyboard.holdSymbol["1"], "!")
@@ -96,7 +97,7 @@ final class TerminalKeyboardTests: XCTestCase {
         for d in "1234567890" { XCTAssertEqual(caps[String(d)]?.backgroundColor, special, "\(d)") }
         XCTAssertEqual(caps["delete"]?.backgroundColor, special)
         XCTAssertEqual(caps["new line"]?.backgroundColor, TerminalKeyboard.Style.accent)
-        for k in ["a", "m", ".", ",", "?", "space"] { XCTAssertEqual(caps[k]?.backgroundColor, plain, k) }
+        for k in ["a", "m", ".", ",", "space"] { XCTAssertEqual(caps[k]?.backgroundColor, plain, k) }
         XCTAssertEqual(try XCTUnwrap(caps["5"]).title(for: .normal), "5")
         XCTAssertEqual(try XCTUnwrap(caps["5"]).titleColor(for: .normal), TerminalKeyboard.Style.label)
     }
@@ -122,7 +123,7 @@ final class TerminalKeyboardTests: XCTestCase {
                 XCTAssertLessThanOrEqual(hint.font.pointSize, 11)
             }
             XCTAssertEqual(caps["q"]?.title(for: .normal), "Q", "keyed lowercase, shown shifted")
-            for k in [".", ",", "/", "?"] {
+            for k in [",", "/"] {
                 let cap = try XCTUnwrap(caps[k], k)
                 XCTAssertTrue(cap.subviews.compactMap { $0 as? UILabel }.allSatisfy { $0 === cap.titleLabel || ($0.text ?? "").isEmpty },
                               "\(k) has no hint")
@@ -560,7 +561,7 @@ final class TerminalKeyboardTests: XCTestCase {
         XCTAssertEqual(t.ended(1), [.press(.char("s"))])
         XCTAssertFalse(t.hold(1, over: .char("s")), "a hold after the lift does nothing")
         // Keys with no symbol don't convert.
-        for key in [TerminalKeyboard.Key.char("."), .space, .ret] {
+        for key in [TerminalKeyboard.Key.char(","), .space, .ret] {
             _ = t.began(2, key)
             XCTAssertFalse(t.hold(2, over: key), "\(key)")
             XCTAssertEqual(t.ended(2), [.press(key)])
@@ -590,6 +591,32 @@ final class TerminalKeyboardTests: XCTestCase {
         _ = t.began(5, .char("a"), at: CGPoint(x: 20, y: 70))
         XCTAssertTrue(t.hold(5, over: .char("a")))
         XCTAssertEqual(t.cancelled(5, at: CGPoint(x: 20, y: 30)), [])
+    }
+
+    /// #1608: ? is hidden from the bottom row by default, so space is wider, and a hold on
+    /// the period types it, with the corner hint and VoiceOver's action like a letter's.
+    func testQuestionMarkIsAHoldOnThePeriodAndHiddenByDefault() throws {
+        var (kb, caps) = laidOut()
+        XCTAssertNil(caps["?"], "hidden by default")
+        let narrow = TerminalKeyboard()
+        narrow.settings.bottomHidden = ""
+        narrow.frame = kb.frame
+        narrow.layoutIfNeeded()
+        let withAsk = try XCTUnwrap(narrow.subviews.compactMap { $0 as? UIButton }.first { $0.accessibilityLabel == "space" })
+        XCTAssertGreaterThan(try XCTUnwrap(caps["space"]).frame.width, withAsk.frame.width, "space takes ?'s room")
+        let spy = SpyInput()
+        kb.target = spy
+        let dot = try XCTUnwrap(caps["."])
+        XCTAssertTrue(dot.subviews.compactMap { $0 as? UILabel }.contains { $0.text == "?" }, "the corner hint")
+        XCTAssertEqual(dot.accessibilityCustomActions?.map(\.name), ["?"], "VoiceOver")
+        let f = dot.frame, p = CGPoint(x: f.midX, y: f.midY)
+        kb.track(.began, id: 1, at: p)
+        kb.track(.ended, id: 1, at: p)
+        XCTAssertEqual(spy.calls, ["."], "a tap")
+        kb.track(.began, id: 2, at: p)
+        kb.fireHold()
+        kb.track(.ended, id: 2, at: p)
+        XCTAssertEqual(spy.calls, [".", "?"], "a hold")
     }
 
     /// Through the view: the real timer converts after `holdDelay`, the bubble shows the
@@ -941,8 +968,9 @@ final class TerminalKeyboardTests: XCTestCase {
         kb.track(.began, id: 7, at: try at(","))
         XCTAssertEqual(kb.previewText, ",")
         kb.track(.ended, id: 7, at: try at(","))
-        kb.track(.began, id: 8, at: try at("?"))
-        kb.track(.ended, id: 8, at: try at("?"))
+        kb.track(.began, id: 8, at: try at("."))   // #1608: ? is a hold on .
+        kb.fireHold()
+        kb.track(.ended, id: 8, at: try at("."))
         kb.track(.began, id: 10, at: try at("/"))
         kb.track(.ended, id: 10, at: try at("/"))
         XCTAssertEqual(spy.calls.suffix(3), [",", "?", "/"])
@@ -1041,7 +1069,7 @@ final class TerminalKeyboardTests: XCTestCase {
     func testCapsCarryAccessibility() throws {
         let kb = TerminalKeyboard()
         let caps = kb.subviews.compactMap { $0 as? UIButton }
-        XCTAssertEqual(caps.count, TerminalKeyboard.rows.joined().count)
+        XCTAssertEqual(caps.count, TerminalKeyboard.rows.joined().count - 1, "? is hidden by default")
         for cap in caps {
             XCTAssertFalse(cap.accessibilityLabel?.isEmpty ?? true)
             XCTAssertTrue(cap.accessibilityTraits.contains(.keyboardKey))

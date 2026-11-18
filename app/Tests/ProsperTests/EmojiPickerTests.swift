@@ -69,9 +69,9 @@ final class EmojiPickerTests: XCTestCase {
     /// shows it, at the end; hiding it works like the other keys.
     func testEmojiKeyIsAKeyBesideSpace() {
         var s = KeyboardSettings()
-        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .char("/"), .space, .char("?"), .emoji, .ret])
+        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .char("/"), .space, .emoji, .ret], "#1608: ? is hidden by default")
         s.bottomOrder = ".,? /"
-        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .char("?"), .space, .char("/"), .emoji, .ret],
+        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .space, .char("/"), .emoji, .ret],
                        "a stored order gets it appended")
         s.bottomHidden = "?"
         XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .space, .char("/"), .emoji, .ret],
@@ -83,7 +83,7 @@ final class EmojiPickerTests: XCTestCase {
         XCTAssertEqual(s.bottomRow.first, .emoji, "dragged first")
         defaults.set("/ ?.,", forKey: KeyboardSettings.Key.bottomOrder)
         XCTAssertEqual(KeyboardSettings(defaults).bottomRow,
-                       [.char("/"), .space, .char("?"), .char("."), .char(","), .emoji, .ret], "read back")
+                       [.char("/"), .space, .char("."), .char(","), .emoji, .ret], "read back, ? hidden by default")
     }
 
     /// The extension's keyboard has no emoji key, globe or not, though the setting keeps
@@ -108,7 +108,7 @@ final class EmojiPickerTests: XCTestCase {
         let kb = TerminalKeyboard()
         let caps = laidOut(kb)
         let key = try XCTUnwrap(caps["emoji"])
-        XCTAssertEqual(key.frame.width, try XCTUnwrap(caps["?"]).frame.width, accuracy: 0.001, "one unit")
+        XCTAssertEqual(key.frame.width, try XCTUnwrap(caps["."]).frame.width, accuracy: 0.001, "one unit")
         XCTAssertNil(kb.emojiPicker, "built on first use")
         try tap(kb, key)
         kb.layoutIfNeeded()

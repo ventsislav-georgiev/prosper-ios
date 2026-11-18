@@ -116,7 +116,7 @@ final class NumbersKeyTests: XCTestCase {
 
     func testRowKeepsTheDigitRowAndABareKeyboardAlwaysDoes() {
         let (kb, bar, _, _) = rig(numbers: .row)
-        XCTAssertEqual(kb.shownKeys.map(chars), ["1234567890", "qwertyuiop", "asdfghjkl", "|zxcvbnm|", ".,/|?|"])
+        XCTAssertEqual(kb.shownKeys.map(chars), ["1234567890", "qwertyuiop", "asdfghjkl", "|zxcvbnm|", ".,/||"])
         XCTAssertFalse(kb.shownKeys.joined().contains(.numbers))
         XCTAssertEqual(kb.toolbarRowHeight, 0, "One by default")
         bar.showsToolbar = true
@@ -143,7 +143,7 @@ final class NumbersKeyTests: XCTestCase {
             XCTAssertEqual(fit(view), rowTotal, accuracy: 1, "\(size): #1501 the same keyboard height")
             XCTAssertEqual(bar.frame.height, rowBar, accuracy: 0.5, "\(size): #1501 the bar as with Row")
             XCTAssertEqual(kb.frame.height, rowKeys, accuracy: 0.5, "\(size): #1501 the keys' height kept")
-            XCTAssertEqual(kb.shownKeys.map(chars), ["qwertyuiop", "asdfghjkl", "|zxcvbnm|", "|.,/|?|"])
+            XCTAssertEqual(kb.shownKeys.map(chars), ["qwertyuiop", "asdfghjkl", "|zxcvbnm|", "|.,/||"])
             XCTAssertEqual(kb.shownKeys.last?.first, .numbers, "123 leads the bottom row, as on iOS")
             XCTAssertEqual(try cap(kb, "123").frame.minY, try cap(kb, "space").frame.minY)
         }
@@ -487,6 +487,21 @@ final class NumbersKeyTests: XCTestCase {
         XCTAssertEqual(app.shownKeys.first.map(chars), "1234567890")
     }
 
+    /// #1608: the period's hold (?) is the letters'; the numpad's own period has none.
+    func testNumpadPeriodHasNoHold() throws {
+        let (kb, _, doc, view) = rig(numbers: .key)
+        try tap(kb, "123")
+        fit(view)
+        let dot = try cap(kb, ".")
+        XCTAssertTrue(dot.subviews.compactMap { $0 as? UILabel }.allSatisfy { $0 === dot.titleLabel || ($0.text ?? "").isEmpty })
+        XCTAssertNil(dot.accessibilityCustomActions)
+        let f = dot.frame, p = CGPoint(x: f.midX, y: f.midY)
+        kb.track(.began, id: 5, at: p)
+        kb.fireHold()
+        kb.track(.ended, id: 5, at: p)
+        XCTAssertEqual(doc.text, ".", "no hold on the numpad")
+    }
+
     func testBulgarianHasTheKeyTooAndTheSameNumpad() throws {
         let (kb, _, doc, view) = rig(.bulgarian, numbers: .row)
         _ = fit(view)
@@ -494,7 +509,7 @@ final class NumbersKeyTests: XCTestCase {
         kb.settings.numbers = .key
         fit(view)
         XCTAssertEqual(kb.frame.height, keys, accuracy: 0.5, "#1501: the keys' height kept")
-        XCTAssertEqual(kb.shownKeys.map(chars), ["явертъуиопю", "асдфгхйклшщ", "|зьцжбнмч|", "|.,/|?|"])
+        XCTAssertEqual(kb.shownKeys.map(chars), ["явертъуиопю", "асдфгхйклшщ", "|зьцжбнмч|", "|.,/||"])
         try tap(kb, "123")
         XCTAssertEqual(kb.shownKeys, TerminalKeyboard.numpadRows)
         try tap(kb, "5")

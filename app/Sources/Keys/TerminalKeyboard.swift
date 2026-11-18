@@ -83,7 +83,7 @@ struct KeyboardSettings: Equatable {
     /// The keys beside space, space itself as " ", in the bottom row's order (`bottomRow`).
     var bottomOrder = KeyboardSettings.bottomKeys
     /// Those of them that don't show; space always does, and takes their room (`place`).
-    var bottomHidden = ""
+    var bottomHidden = "?"   // #1608: a hold on "." instead; a stored value, even "", wins (`init`)
     static let bottomKeys = ".,/ ?" + String(emojiKey)
     /// The emoji key's stand-in in `bottomOrder` and `bottomHidden` (#515). An order or a
     /// hidden set stored before it existed lacks it, so it shows, last before return (`order`).
@@ -1103,6 +1103,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         "q": "`", "w": "\\", "e": "~", "r": "|", "t": "[", "y": "]", "u": "<", "i": ">", "o": "{", "p": "}",
         "a": "@", "s": "#", "d": "&", "f": "*", "g": "-", "h": "+", "j": "=", "k": "(", "l": ")",
         "z": "_", "x": "$", "c": "\"", "v": "'", "b": ":", "n": ";", "m": "/",
+        ".": "?",   // #1608: the hidden ? lives here
     ]
 
     /// The numpad (Numbers: Key, #625), in every key row's place: 1–9 and 0 between . and ,
@@ -1137,6 +1138,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         "ю": ">",
         "а": "@", "с": "#", "д": "&", "ф": "*", "г": "-", "х": "+", "й": "=", "к": "(", "л": ")",
         "з": "_", "ь": "$", "ц": "\"", "ж": "'", "б": ":", "н": ";", "м": "/",
+        ".": "?",
     ]
 
     /// A keyboard's letters and their dictionary: Bulgarian for the Bulgarian extension

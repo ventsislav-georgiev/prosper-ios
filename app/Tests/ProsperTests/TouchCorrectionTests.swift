@@ -19,6 +19,7 @@ final class TouchCorrectionTests: XCTestCase {
 
     private func laidOut(width: CGFloat = 402) -> (K, [String: CGRect]) {
         let kb = K()
+        kb.settings.bottomHidden = ""   // #1608: these pin the ?, hidden by default
         kb.frame = CGRect(x: 0, y: 0, width: width, height: K.height)
         kb.layoutIfNeeded()
         var frames: [String: CGRect] = [:]

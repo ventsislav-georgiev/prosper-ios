@@ -391,6 +391,7 @@ final class KeyboardExtensionTests: XCTestCase {
             let kb = TerminalKeyboard()
             kb.showsGlobe = true
             kb.offersEmoji = false
+            kb.settings.bottomHidden = ""   // #1608: the widest row
             let caps = laidOut(kb, width: width)
             let globe = try XCTUnwrap(caps["next keyboard"], "at \(width)")
             XCTAssertTrue(globe.isUserInteractionEnabled, "it takes its own touches")
@@ -710,15 +711,26 @@ final class KeyboardExtensionTests: XCTestCase {
     /// dropped, missing ones at the end, space never hidden, return last.
     func testBottomRowFromTheSetting() {
         var s = KeyboardSettings()
-        XCTAssertEqual(s.bottomRow, TerminalKeyboard.rows.last!, "the default")
+        XCTAssertEqual(s.bottomRow, TerminalKeyboard.rows.last!.filter { $0 != .char("?") }, "the default, #1608: ? hidden")
         s.bottomOrder = ".,? /"
-        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .char("?"), .space, .char("/"), .emoji, .ret], "/ and ? swapped")
+        XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .space, .char("/"), .emoji, .ret], "/ and ? swapped, ? hidden")
         s.bottomHidden = "?/ "
         XCTAssertEqual(s.bottomRow, [.char("."), .char(","), .space, .emoji, .ret], "space stays")
         s.bottomOrder = "x??"
         s.bottomHidden = ""
         XCTAssertEqual(s.bottomRow, [.char("?"), .char("."), .char(","), .char("/"), .space, .emoji, .ret])
         XCTAssertEqual(KeyboardSettings.order(""), Array(KeyboardSettings.bottomKeys))
+    }
+
+    /// #1608: only a user who never wrote the hidden set gets the new default; a stored one,
+    /// even empty, wins.
+    func testStoredHiddenKeysWinOverTheNewDefault() throws {
+        let suite = "KeyboardSettings.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertFalse(KeyboardSettings(defaults).bottomRow.contains(.char("?")), "never written: hidden")
+        defaults.set("", forKey: KeyboardSettings.Key.bottomHidden)
+        XCTAssertTrue(KeyboardSettings(defaults).bottomRow.contains(.char("?")), "stored empty: shown")
     }
 
     func testBottomRowReadsWhatTheAppWrote() throws {
@@ -738,6 +750,7 @@ final class KeyboardExtensionTests: XCTestCase {
                 let kb = TerminalKeyboard(layout: layout)
                 kb.showsGlobe = globe
                 kb.offersEmoji = false
+                kb.settings.bottomHidden = ""   // #1608: ? is hidden by default
                 let wide = try XCTUnwrap(laidOut(kb)["space"]).frame
                 var s = KeyboardSettings()
                 s.bottomOrder = "?/ .,"
@@ -758,6 +771,7 @@ final class KeyboardExtensionTests: XCTestCase {
                     XCTAssertEqual(space.width - wide.width, room, accuracy: 0.001, "two keys' room, gaps included")
                 }
                 kb.settings = KeyboardSettings()
+                kb.settings.bottomHidden = ""
                 XCTAssertEqual(laidOut(kb)["space"]?.frame, wide, "back to the default")
             }
         }
@@ -1076,6 +1090,7 @@ final class KeyboardExtensionTests: XCTestCase {
         kb.offersEmoji = false
         kb.showsGlobe = true
         kb.settings = KeyboardSettings()
+        kb.settings.bottomHidden = ""   // #1608: ? is hidden by default
         let spy = SpyInput()
         kb.target = spy
         let caps = laidOut(kb)
