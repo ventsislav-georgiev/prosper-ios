@@ -146,7 +146,7 @@ final class BulgarianKeyboardTests: XCTestCase {
         for c in ["ш", "щ", "ч"] { XCTAssertNil(bg.holdSymbol[c], c) }
         let letters = Set(bg.letterRows.joined().map(String.init))
         XCTAssertEqual(Set(bg.holdSymbol.keys).subtracting("0123456789".map(String.init)),
-                       letters.subtracting(["ш", "щ", "ч"]).union(["."]), "only keys on the keyboard")
+                       letters.subtracting(["ш", "щ", "ч"]).union([".", ","]), "only keys on the keyboard")
         let taps = bg.rows.joined().compactMap { k -> String? in if case .char(let c) = k { return c } else { return nil } }
         let symbols = Set((0x21...0x7E).map { String(UnicodeScalar(UInt8($0))) }).filter { !$0.first!.isLetter && !$0.first!.isNumber }
         XCTAssertEqual(symbols.count, 32)

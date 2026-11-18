@@ -41,7 +41,7 @@ final class TerminalKeyboardTests: XCTestCase {
     func testHoldSymbolCoversEveryLetterAndDigit() {
         let hinted = Set(chars(Array(TerminalKeyboard.rows.joined())).filter { $0.first!.isLetter || $0.first!.isNumber })
         XCTAssertEqual(hinted.count, 36)
-        XCTAssertEqual(Set(TerminalKeyboard.holdSymbol.keys), hinted.union(["."]), "#1608: and the period")
+        XCTAssertEqual(Set(TerminalKeyboard.holdSymbol.keys), hinted.union([".", ","]), "#1608, #1613: and the period and comma")
         XCTAssertEqual(TerminalKeyboard.holdSymbol["."], "?")
         XCTAssertEqual(TerminalKeyboard.holdSymbol["q"], "`")
         XCTAssertEqual(TerminalKeyboard.holdSymbol["w"], "\\")
@@ -123,7 +123,7 @@ final class TerminalKeyboardTests: XCTestCase {
                 XCTAssertLessThanOrEqual(hint.font.pointSize, 11)
             }
             XCTAssertEqual(caps["q"]?.title(for: .normal), "Q", "keyed lowercase, shown shifted")
-            for k in [",", "/"] {
+            for k in ["/"] {
                 let cap = try XCTUnwrap(caps[k], k)
                 XCTAssertTrue(cap.subviews.compactMap { $0 as? UILabel }.allSatisfy { $0 === cap.titleLabel || ($0.text ?? "").isEmpty },
                               "\(k) has no hint")
@@ -565,8 +565,8 @@ final class TerminalKeyboardTests: XCTestCase {
         _ = t.began(1, .char("s"))
         XCTAssertEqual(t.ended(1), [.press(.char("s"))])
         XCTAssertFalse(t.hold(1, over: .char("s")), "a hold after the lift does nothing")
-        // Keys with no symbol don't convert.
-        for key in [TerminalKeyboard.Key.char(","), .space, .ret] {
+        // Keys with no symbol don't convert (#1613: the comma holds now).
+        for key in [TerminalKeyboard.Key.char("/"), .space, .ret] {
             _ = t.began(2, key)
             XCTAssertFalse(t.hold(2, over: key), "\(key)")
             XCTAssertEqual(t.ended(2), [.press(key)])
@@ -622,6 +622,26 @@ final class TerminalKeyboardTests: XCTestCase {
         kb.fireHold()
         kb.track(.ended, id: 2, at: p)
         XCTAssertEqual(spy.calls, [".", "?"], "a hold")
+    }
+
+    /// #1613: a hold on the comma types !, with the corner hint and VoiceOver's action; a tap
+    /// types the comma, and the numpad's comma has no hold.
+    func testExclamationMarkIsAHoldOnTheComma() throws {
+        let (kb, caps) = laidOut()
+        let spy = SpyInput()
+        kb.target = spy
+        let comma = try XCTUnwrap(caps[","])
+        XCTAssertTrue(comma.subviews.compactMap { $0 as? UILabel }.contains { $0.text == "!" }, "the corner hint")
+        XCTAssertEqual(comma.accessibilityCustomActions?.map(\.name), ["!"], "VoiceOver")
+        let f = comma.frame, p = CGPoint(x: f.midX, y: f.midY)
+        kb.track(.began, id: 1, at: p)
+        kb.track(.ended, id: 1, at: p)
+        XCTAssertEqual(spy.calls, [","], "a tap")
+        kb.track(.began, id: 2, at: p)
+        kb.fireHold()
+        kb.track(.ended, id: 2, at: p)
+        XCTAssertEqual(spy.calls, [",", "!"], "a hold")
+        XCTAssertEqual(TerminalKeyboard.bulgarianHoldSymbol[","], "!")
     }
 
     /// Through the view: the real timer converts after `holdDelay`, the bubble shows the

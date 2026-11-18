@@ -1108,6 +1108,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         "a": "@", "s": "#", "d": "&", "f": "*", "g": "-", "h": "+", "j": "=", "k": "(", "l": ")",
         "z": "_", "x": "$", "c": "\"", "v": "'", "b": ":", "n": ";", "m": "/",
         ".": "?",   // #1608: the hidden ? lives here
+        ",": "!",   // #1613
     ]
 
     /// The numpad (Numbers: Key, #625), in every key row's place: 1–9 and 0 between . and ,
@@ -1143,6 +1144,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         "а": "@", "с": "#", "д": "&", "ф": "*", "г": "-", "х": "+", "й": "=", "к": "(", "л": ")",
         "з": "_", "ь": "$", "ц": "\"", "ж": "'", "б": ":", "н": ";", "м": "/",
         ".": "?",
+        ",": "!",   // #1613
     ]
 
     /// A keyboard's letters and their dictionary: Bulgarian for the Bulgarian extension
