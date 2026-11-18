@@ -1797,7 +1797,8 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertNotEqual(pixels(window, band), before, "no notice drawn")
 
         bar.onKey?(try catalogKey("tab"))
-        spin(0.3)
+        // A loaded full suite can take past 0.3 s to send the tab.
+        for _ in 0..<50 where transport.stream.sent.isEmpty { spin(0.1) }
         XCTAssertEqual(transport.stream.sent, [[0x09]])
         XCTAssertNotEqual(pixels(window, band), before, "typing took the sticky notice down")
     }
