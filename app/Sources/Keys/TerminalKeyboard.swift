@@ -2628,11 +2628,12 @@ extension TerminalKeyboard {
     /// continues: a thumb that meant space. "our" and a low b is "our ", not "ourb"; "lo" and
     /// a low v stays "lov". One letter isn't a word here: "a" and "i" go on with all of them.
     ///
-    /// ponytail: the bottom sixth of the key, tuned on the typo harness: a sixth kept every
-    /// slip it fixed but two, and typed no letter meant as space (a quarter did, 6 pt up).
+    /// ponytail: the bottom sixth of the drawn cap where the thumb landed (about 6 pt), tuned on the typo
+    /// harness: a tenth to a quarter scored the same there, each costing one rushed letter.
     private static func slipsToSpace(frame: CGRect, at point: CGPoint, keys: [(Key, CGRect)],
                                      prefix: String, complete: (String) -> Bool) -> Bool {
-        guard let space = keys.first(where: { $0.0 == .space })?.1, point.y > frame.maxY - frame.height / 6,
+        // The cap's bottom where the thumb landed: `point` is aimed (`tapLift` up, always so here).
+        guard let space = keys.first(where: { $0.0 == .space })?.1, point.y + tapLift > frame.maxY - frame.height / 6,
               (space.minX...space.maxX).contains(point.x), frame.maxY <= space.minY,
               !keys.contains(where: { letter($0.0) != nil && $0.1.minY >= frame.maxY && $0.1.maxY <= space.minY })
         else { return false }

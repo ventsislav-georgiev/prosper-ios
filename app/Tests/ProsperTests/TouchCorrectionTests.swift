@@ -225,8 +225,9 @@ final class TouchCorrectionTests: XCTestCase {
         let low = { (r: CGRect) in CGPoint(x: r.minX + 6, y: r.maxY - 1) }
         XCTAssertEqual(K.corrected(.char("b"), at: CGPoint(x: b.midX, y: b.midY), keys: allKeys(f), prefix: "our",
                                    known: knowing("our"), complete: { $0 == "our" }), .char("b"), "centered")
-        XCTAssertEqual(K.corrected(.char("b"), at: CGPoint(x: b.minX + 6, y: b.maxY - 9), keys: allKeys(f), prefix: "our",
-                                   known: knowing("our"), complete: { $0 == "our" }), .char("b"), "above the bottom sixth")
+        // `corrected` gets the aimed point: the touch `tapLift` up. 1 pt above the zone on the drawn cap.
+        XCTAssertEqual(K.corrected(.char("b"), at: CGPoint(x: b.minX + 6, y: b.maxY - b.height / 6 - 1 - K.tapLift), keys: allKeys(f),
+                                   prefix: "our", known: knowing("our"), complete: { $0 == "our" }), .char("b"), "above the bottom sixth")
         XCTAssertEqual(K.corrected(.char("b"), at: low(b), keys: allKeys(f), prefix: "w", known: knowing("we"),
                                    complete: { _ in true }), .char("b"), "one letter")
         XCTAssertEqual(K.corrected(.char("b"), at: low(b), keys: allKeys(f), prefix: "we", known: knowing("web"),
@@ -250,6 +251,13 @@ final class TouchCorrectionTests: XCTestCase {
         let b = f["b"]!
         XCTAssertFalse(K.dictionaryKnows("ourb"), "precondition")
         XCTAssertEqual(type("our", thenTap: CGPoint(x: b.minX + 6, y: b.maxY - 1), on: kb), " ")
+        // The zone is on the drawn cap where the thumb lands, not on the point it aims at (`tapLift` up).
+        for up: CGFloat in [2, 5] {
+            let (kb, _) = laidOut()
+            XCTAssertEqual(type("our", thenTap: CGPoint(x: b.minX + 6, y: b.maxY - up), on: kb), " ", "\(up) pt above b's edge")
+        }
+        let (above, _) = laidOut()
+        XCTAssertEqual(type("our", thenTap: CGPoint(x: b.minX + 6, y: b.maxY - b.height / 6 - 1), on: above), "b", "above the zone")
         let (kb2, _) = laidOut()
         XCTAssertEqual(type("our", thenTap: CGPoint(x: b.midX, y: b.midY), on: kb2), "b", "centered")
         let (kb3, _) = laidOut()
