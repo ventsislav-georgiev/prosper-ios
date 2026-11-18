@@ -2,7 +2,7 @@ import SwiftUI
 
 /// #1547: the sub-agents robot, drawn in Apple's SF line style (replaces the U+1F916 emoji; the Mac draws the same one):
 /// a rounded head, an antenna with a ball, two eyes, two ears; stroke 0.09 of the side, round caps and joins. It takes the
-/// surrounding foregroundStyle as an SF Symbol does. Its side is 1.15 of the caption2 font size, scaled by Dynamic Type.
+/// surrounding foregroundStyle as an SF Symbol does. Its side is 1.15 of the caption2 font size at default, then follows caption2's line height.
 enum RobotGeometry {
     /// The line parts (head, stem, ears) and the filled parts (antenna ball, eyes) in `r`, top-left origin.
     static func paths(in r: CGRect) -> (line: Path, fill: Path) {
@@ -33,11 +33,38 @@ enum RobotGeometry {
 }
 
 struct RobotGlyph: View {
-    /// caption2's default size (11 pt), grown with Dynamic Type relative to that style.
-    @ScaledMetric(relativeTo: .caption2) private var fontSize: CGFloat = 11
+    @Environment(\.dynamicTypeSize) private var size
+
+    /// #1554: sized from caption2's line height plus the chip's padding (the pill's height), not its point size: the line grows more slowly at
+    /// accessibility sizes, so the point size made the glyph fill 87% of the pill there instead of 78%. Same side at .large.
+    private var side: CGFloat {
+        func line(_ t: DynamicTypeSize) -> CGFloat {
+            #if canImport(UIKit)
+            let cat: UIContentSizeCategory
+            switch t {
+            case .xSmall: cat = .extraSmall
+            case .small: cat = .small
+            case .medium: cat = .medium
+            case .large: cat = .large
+            case .xLarge: cat = .extraLarge
+            case .xxLarge: cat = .extraExtraLarge
+            case .xxxLarge: cat = .extraExtraExtraLarge
+            case .accessibility1: cat = .accessibilityMedium
+            case .accessibility2: cat = .accessibilityLarge
+            case .accessibility3: cat = .accessibilityExtraLarge
+            case .accessibility4: cat = .accessibilityExtraExtraLarge
+            case .accessibility5: cat = .accessibilityExtraExtraExtraLarge
+            @unknown default: cat = .large
+            }
+            return UIFont.preferredFont(forTextStyle: .caption2, compatibleWith: UITraitCollection(preferredContentSizeCategory: cat)).lineHeight + 2   // + the chip's 2 pt of vertical padding, which does not scale
+            #else
+            return 1
+            #endif
+        }
+        return 11 * RobotGeometry.sideFactor * line(size) / line(.large)
+    }
 
     var body: some View {
-        let side = fontSize * RobotGeometry.sideFactor
         Canvas { ctx, canvas in
             let p = RobotGeometry.paths(in: CGRect(origin: .zero, size: canvas))
             let style = StrokeStyle(lineWidth: canvas.width * RobotGeometry.strokeFraction, lineCap: .round, lineJoin: .round)

@@ -516,4 +516,15 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(side(.large), 11 * RobotGeometry.sideFactor, accuracy: 0.5)
         XCTAssertGreaterThan(side(.accessibility5), side(.large) * 1.5)
     }
+
+    /// #1554: the glyph keeps its share of the chip's height at accessibility sizes.
+    @MainActor func testRobotGlyphKeepsProportionOfChip() {
+        func ratio(_ t: DynamicTypeSize) -> CGFloat {
+            let big = CGSize(width: 2000, height: 2000)
+            let g = UIHostingController(rootView: RobotGlyph().environment(\.dynamicTypeSize, t)).sizeThatFits(in: big).height
+            let c = UIHostingController(rootView: SessionRow.agentsCapsule(2).environment(\.dynamicTypeSize, t)).sizeThatFits(in: big).height
+            return g / c
+        }
+        XCTAssertEqual(ratio(.accessibility5), ratio(.large), accuracy: 0.03)
+    }
 }
