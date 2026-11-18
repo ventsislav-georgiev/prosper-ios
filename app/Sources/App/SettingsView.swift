@@ -264,7 +264,7 @@ struct SettingsView: View {
                 Toggle("Character Preview", isOn: $characterPreview)
                 NavigationLink("Keys Beside Space") { BottomRowSettings() }
                 Picker("Key Size", selection: $keySize) {
-                    ForEach(KeyboardSettings.KeySize.allCases, id: \.self) { Text($0.rawValue.capitalized) }
+                    ForEach(KeyboardSettings.KeySize.allCases, id: \.self) { Text($0.title) }
                 }
                 // #625; the terminal's too since #692; four taller rows in the five's height (#1501).
                 Picker("Numbers", selection: $numbers) {

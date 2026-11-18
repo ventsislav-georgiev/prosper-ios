@@ -706,7 +706,7 @@ final class KeyboardThemeTests: XCTestCase {
         XCTAssertFalse(panel.note.isHidden)
         XCTAssertEqual(panel.note.text, "Turn on Full Access to change the look here")
         let all = panel.keys + panel.toolbar + panel.accents + panel.sizes + panel.numbers + panel.numpad
-        XCTAssertEqual(all.count, 24 + 25 + 6 + 3 + 2 + 2)
+        XCTAssertEqual(all.count, 24 + 25 + 6 + 4 + 2 + 2)
         XCTAssertFalse(all.contains { $0.isEnabled })
         for b in all { XCTAssertTrue(b.accessibilityTraits.contains(.notEnabled), "\(b.accessibilityLabel!): VoiceOver says dimmed (#649)") }
         try tap(panel.keys, "Light")
@@ -746,7 +746,7 @@ final class KeyboardThemeTests: XCTestCase {
         bar.showAppearance(true)
         fit()
         var panel = try XCTUnwrap(bar.appearancePanel)
-        XCTAssertEqual(panel.sizes.map(\.accessibilityLabel), ["Normal", "Medium", "Large"])
+        XCTAssertEqual(panel.sizes.map(\.accessibilityLabel), ["Normal", "Medium", "Large", "Extra Large"])
         XCTAssertEqual(panel.numbers.map(\.accessibilityLabel), ["Row", "Key"])
         XCTAssertEqual(panel.numpad.map(\.accessibilityLabel), ["Off", "On"])
         XCTAssertEqual(selected(panel.sizes) + selected(panel.numbers) + selected(panel.numpad), ["Normal", "Row", "Off"])

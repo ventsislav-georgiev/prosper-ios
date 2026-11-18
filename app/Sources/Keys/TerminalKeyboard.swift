@@ -115,13 +115,17 @@ struct KeyboardSettings: Equatable {
     /// Portrait rows' height and gap (`TerminalKeyboard.metrics`, #583); landscape keeps its own.
     var keySize = KeySize.normal
     enum KeySize: String, CaseIterable {
-        case normal, medium, large
+        case normal, medium, large, extraLarge
+        /// The picker's label (#1610): `rawValue.capitalized` would read "Extralarge".
+        var title: String { self == .extraLarge ? "Extra Large" : rawValue.capitalized }
+        static var tallest: KeySize { allCases.max(by: { $0.row.height < $1.row.height })! }
         /// Row height and gap. Every key grows taller only: space keeps its width (`place`).
         var row: (height: CGFloat, gap: CGFloat) {
             switch self {
             case .normal: return (TerminalKeyboard.rowHeight, TerminalKeyboard.rowGap)
             case .medium: return (42, 15)
             case .large: return (44, 16)
+            case .extraLarge: return (48, 17)   // #1610
             }
         }
     }
@@ -1064,7 +1068,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     /// started at `height`, a Large Key size kept Normal's 276 pt and clipped its bottom
     /// row (#583). The fitted height is still the constraint's (`fitHeight`). #1524: and the
     /// terminal's bar it may lend the numpad (`lentHeight`): five rows since #1501, 318 cut its last.
-    static let tallest = keysHeight(compact: false, size: .large) + bottomPadding + ShortcutBar.tallest
+    static let tallest = keysHeight(compact: false, size: KeyboardSettings.KeySize.tallest) + bottomPadding + ShortcutBar.tallest
     /// ESC CR, meta-enter: Claude Code's "insert newline, don't submit". Return sends it;
     /// so does the shortcut bar's `snl` key.
     static let newlineBytes: [UInt8] = [0x1b, 0x0d]

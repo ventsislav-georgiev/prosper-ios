@@ -46,7 +46,7 @@ final class AppearancePanel: KeysPanel {
             }
         }
         sizes = KeyboardSettings.KeySize.allCases.map { size in
-            swatch(size.rawValue.capitalized, nil, on: size == settings.keySize) { $0.keySize = size }
+            swatch(size.title, nil, on: size == settings.keySize) { $0.keySize = size }
         }
         numbers = KeyboardSettings.Numbers.allCases.map { n in
             swatch(n.rawValue.capitalized, nil, on: n == settings.numbers) { $0.numbers = n }

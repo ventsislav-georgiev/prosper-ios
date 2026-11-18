@@ -317,14 +317,14 @@ final class TerminalKeyboardTests: XCTestCase {
         // keyboard past its first frame (#583), nor past the terminal's two-row bar lent to the
         // numpad (#1524). The constraint still fits Normal's.
         XCTAssertEqual(TerminalKeyboard().frame.height, TerminalKeyboard.tallest)
-        XCTAssertEqual(TerminalKeyboard.tallest, 318 + 86)
+        XCTAssertEqual(TerminalKeyboard.tallest, 342 + 86)
     }
 
     /// Key size (#583): each step's portrait row and gap, and the heights they add up to.
     /// Normal is today's, so the static heights stay Normal's.
     func testKeySizesMapToTheirMetrics() {
         let expected: [(KeyboardSettings.KeySize, CGFloat, CGFloat, CGFloat)] =
-            [(.normal, 38, 13, 248), (.medium, 42, 15, 276), (.large, 44, 16, 290)]
+            [(.normal, 38, 13, 248), (.medium, 42, 15, 276), (.large, 44, 16, 290), (.extraLarge, 48, 17, 314)]
         for (size, row, gap, keys) in expected {
             let m = TerminalKeyboard.metrics(compact: false, size: size)
             XCTAssertEqual(m.row, row, "\(size)")
@@ -333,7 +333,12 @@ final class TerminalKeyboardTests: XCTestCase {
             XCTAssertEqual(TerminalKeyboard.keysHeight(compact: false, size: size), keys, "\(size)")
         }
         XCTAssertEqual(TerminalKeyboard.keysHeight, TerminalKeyboard.keysHeight(compact: false, size: .normal))
-        XCTAssertEqual(KeyboardSettings.KeySize.allCases, [.normal, .medium, .large])
+        XCTAssertEqual(KeyboardSettings.KeySize.allCases, [.normal, .medium, .large, .extraLarge])
+        XCTAssertEqual(KeyboardSettings.KeySize.allCases.map(\.title), ["Normal", "Medium", "Large", "Extra Large"], "the picker lists four")
+        XCTAssertGreaterThan(KeyboardSettings.KeySize.extraLarge.row.height, KeyboardSettings.KeySize.large.row.height)
+        XCTAssertGreaterThan(TerminalKeyboard.keysHeight(compact: false, size: .extraLarge), TerminalKeyboard.keysHeight(compact: false, size: .large))
+        XCTAssertEqual(KeyboardSettings.KeySize.tallest, .extraLarge)
+        XCTAssertEqual(TerminalKeyboard.tallest, TerminalKeyboard.keysHeight(compact: false, size: .extraLarge) + TerminalKeyboard.bottomPadding + ShortcutBar.tallest)
     }
 
     /// Every step lays out in the app's keyboard: its height follows, five rows a row and a
