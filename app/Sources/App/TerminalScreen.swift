@@ -181,7 +181,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     }
     /// Where a tapped link goes: the default browser. Tests swap it so nothing leaves.
     var openURL: (URL) -> Void = { UIApplication.shared.open($0) }
-    /// Where Copy puts the selection. Tests swap in a private named one: reading the
+    /// Where Copy puts the selection and Paste reads (#1521). Tests swap in a private named one: reading the
     /// general one back can raise the paste-permission prompt.
     var pasteboard = UIPasteboard.general
     /// Every width the terminal had (#1016): rows a TUI drew before a rotation keep that
@@ -620,16 +620,14 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
                       !self.tv.isFirstResponder else { return }
                 _ = self.tv.becomeFirstResponder()
             }
-        case .pasteText:
-            if let s = UIPasteboard.general.string, !s.isEmpty { sendText(s) }
+        case .pasteText, .pasteImage:
+            paste()
         case .insertText:
             let accepts = conn.$state.map(Self.acceptsInput).eraseToAnyPublisher()
             let vc = InsertTextVC(accepts: accepts, onRetry: { [weak self] in self?.conn.retry() }) {
                 [weak self] text, send in self?.sendText(text, thenEnter: send)
             }
             present(UINavigationController(rootViewController: vc), animated: true)
-        case .pasteImage:
-            pasteImage(then: key.bytes)
         case .bytes:
             sendModified(key.bytes, fromBar: true)
         case .redraw:
@@ -866,6 +864,21 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     }
     private var pasteBracketed: Bool { fedHostBytes ? tv.getTerminal().bracketedPasteMode : true }
 
+    /// #1521: the one Paste key. Text wins when the clipboard has both (a web page's copy): the
+    /// as a Mac terminal's ⌘V does. Asked of the types first, so an empty clipboard reads
+    /// nothing and raises no paste prompt.
+    static func pasteChoice(hasStrings: Bool, hasImages: Bool) -> ShortcutKey.Kind? {
+        hasStrings ? .pasteText : hasImages ? .pasteImage : nil
+    }
+
+    func paste() {
+        switch Self.pasteChoice(hasStrings: pasteboard.hasStrings, hasImages: pasteboard.hasImages) {
+        case .pasteText: if let s = pasteboard.string, !s.isEmpty { sendText(s) }
+        case .pasteImage: pasteImage(then: [0x16])
+        default: break
+        }
+    }
+
     /// Push the copied image to the remote machine's clipboard, then send the paste
     /// keystroke (ctrl-V) that makes the TUI read it. Claude Code's image paste looks
     /// at the clipboard of the machine it runs on, so the keystroke alone only ever
@@ -889,7 +902,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// (`the clipboard as «class PNGf»`), so anything else is converted here rather
     /// than shipped in a form the far end can't use.
     func copiedImagePNG() -> Data? {
-        let pb = UIPasteboard.general
+        let pb = pasteboard
         // `hasImages` answers from the type list alone — no paste prompt, and nothing
         // read — so a bar press with text on the clipboard stays silent.
         guard pb.hasImages else { return nil }

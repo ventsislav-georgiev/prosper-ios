@@ -198,7 +198,7 @@ final class RemoteHostTests: XCTestCase {
         XCTAssertTrue(SessionWatch.wanted(ops, .live), "watch is core")
     }
 
-    /// No 0x0a to a host without paste_image: not from a share, not from the paste img key's path.
+    /// No 0x0a to a host without paste_image: not from a share, not from the Paste key's image path.
     /// Share › image: neither the 0x0a nor its ctrl-V; the text still goes.
     func testNoImagePasteFrameWithoutTheOp() async throws {
         let transport = SpyTransport()
@@ -216,7 +216,7 @@ final class RemoteHostTests: XCTestCase {
         XCTAssertEqual(transport.stream.sent, [Array("\u{1b}[200~hi\u{1b}[201~".utf8)], "the text alone, no ctrl-V")
     }
 
-    /// The paste img key: neither the 0x0a nor a lone ctrl-V, and the pasteboard is never read.
+    /// The Paste key with an image: neither the 0x0a nor a lone ctrl-V, and the pasteboard is never read.
     func testPasteImageKeySendsNothingWithoutTheOp() async throws {
         let transport = SpyTransport()
         let conn = SessionConnection(transport: transport, session: DchSession(name: "t"), pastesImages: false)

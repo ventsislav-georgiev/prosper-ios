@@ -6,7 +6,8 @@ import UIKit
 final class ShortcutCapTests: XCTestCase {
 
     private func key(_ id: String) throws -> ShortcutKey {
-        try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == id }, "no \(id) in the catalog")
+        if id == oldPasteImg.id { return oldPasteImg }   // #1521: gone from the catalog, still in saved bars
+        return try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == id }, "no \(id) in the catalog")
     }
 
     // MARK: what the caps say
@@ -42,9 +43,41 @@ final class ShortcutCapTests: XCTestCase {
     /// Every default resolves to a real catalog entry, and ids are unique — a typo here
     /// silently drops a key off the bar.
     func testDefaultsResolveAndIdsAreUnique() {
-        XCTAssertEqual(Shortcuts.defaults.map(\.id), ["paste", "pasteImg", "up", "down", "tab", "right", "home", "insert",
+        XCTAssertEqual(Shortcuts.defaults.map(\.id), ["paste", "tab", "up", "down", "left", "right", "home", "menu",
                                                        "esc", "ctrl", "wordBack", "wordNext", "pgup", "pgdn", "end", "enter"])
         XCTAssertEqual(Set(Shortcuts.catalog.map(\.id)).count, Shortcuts.catalog.count)
+    }
+
+    /// #1521: one Paste key; paste img is offered nowhere, nor in either bar's default.
+    func testNoPasteImageKeyOffered() {
+        for bar in [Shortcuts.Bar.terminal, .toolbar] {
+            XCTAssertFalse((bar.catalog + bar.defaults).contains { $0.id == "pasteImg" || $0.kind == .pasteImage }, "\(bar)")
+        }
+    }
+
+    /// #1521: a saved bar's paste img, in place: Paste with no paste in the bar, else ← with no ←,
+    /// else dropped. The old default, never customised, loads today's; so does the operator's bar
+    /// (the old one with ⌘ in slot 8).
+    func testSavedPasteImageMigrates() throws {
+        defer { clearSavedShortcuts() }
+        let cases: [([String], [String])] = [
+            (["esc", "pasteImg", "enter"], ["esc", "paste", "enter"]),
+            (["paste", "pasteImg", "up", "enter"], ["paste", "left", "up", "enter"]),
+            (["pasteImg", "esc", "paste", "enter"], ["left", "esc", "paste", "enter"]),
+            (["paste", "pasteImg", "left", "enter"], ["paste", "left", "enter"]),
+            (["paste", "pasteImg", "up", "down", "tab", "right", "home", "menu",
+              "esc", "ctrl", "wordBack", "wordNext", "pgup", "pgdn", "end", "enter"], Shortcuts.defaults.map(\.id)),
+            (["paste", "pasteImg", "up", "down", "tab", "right", "home", "redraw",
+              "esc", "ctrl", "wordBack", "wordNext", "pgup", "pgdn", "end", "enter"],
+             ["paste", "left", "up", "down", "tab", "right", "home", "redraw",
+              "esc", "ctrl", "wordBack", "wordNext", "pgup", "pgdn", "end", "enter"]),
+            (["paste", "pasteImg", "up", "down", "tab", "right", "home", "insert",
+              "esc", "ctrl", "wordBack", "wordNext", "pgup", "pgdn", "end", "enter"], Shortcuts.defaults.map(\.id)),
+        ]
+        for (saved, want) in cases {
+            Shortcuts.save(try saved.map(key))
+            XCTAssertEqual(Shortcuts.load().map(\.id), want, "\(saved)")
+        }
     }
 
     /// VoiceOver reads the key's label, not the SF Symbol name of an icon cap.
@@ -663,13 +696,11 @@ final class ShortcutCapTests: XCTestCase {
         }
     }
 
-    func testPasteImageGlyphIsPortrait() throws {
-        let name = try XCTUnwrap(try key("pasteImg").systemImage)
-        let cfg = UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
-        let img = try XCTUnwrap(UIImage(systemName: name, withConfiguration: cfg))
-        XCTAssertGreaterThan(img.size.height, img.size.width, "\(name) is not portrait")
-    }
 }
+
+/// The paste img key as an older build saved it (#1521).
+let oldPasteImg = ShortcutKey(id: "pasteImg", label: "paste img", kind: .pasteImage, bytes: [0x16],
+                              systemImage: "person.crop.artframe")
 
 /// Back to the default bar: clears the group AND `.standard`, since `Shortcuts.shared()`
 /// copies an older `.standard` bar into a group that has none.

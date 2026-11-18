@@ -143,7 +143,7 @@ final class ShareTests: XCTestCase {
 
     // MARK: - Image
 
-    /// The paste img key's path: the Mac's clipboard, then ^V; any text after, as its paste.
+    /// The Paste key's image path: the Mac's clipboard, then ^V; any text after, as its paste.
     func testImageGoesToTheClipboardThenCtrlVThenTheText() {
         let png = Data([0x89, 0x50, 0x4e, 0x47])
         XCTAssertEqual(item(text: "see", image: png).outbound,

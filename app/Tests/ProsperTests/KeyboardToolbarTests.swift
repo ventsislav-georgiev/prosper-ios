@@ -41,7 +41,8 @@ final class KeyboardToolbarTests: XCTestCase {
     }
 
     private func key(_ id: String) throws -> ShortcutKey {
-        try XCTUnwrap(Shortcuts.catalog.first { $0.id == id })
+        if id == oldPasteImg.id { return oldPasteImg }   // #1521: gone from the catalog, still in saved bars
+        return try XCTUnwrap(Shortcuts.catalog.first { $0.id == id })
     }
 
     private static func caps(_ v: UIView) -> [KeyCapButton] {
@@ -55,14 +56,14 @@ final class KeyboardToolbarTests: XCTestCase {
             ("shift", nil), ("ctlc", nil), ("ctld", nil), ("ctlr", nil),
             ("up", .line(-1)), ("down", .line(1)), ("left", .caret(-1)), ("right", .caret(1)),
             ("home", .lineEdge(-1)), ("end", .lineEdge(1)), ("pgup", nil), ("pgdn", nil),
-            ("slash", .key(.char("/"))), ("pipe", .key(.char("|"))), ("paste", .paste), ("pasteImg", nil),
+            ("slash", .key(.char("/"))), ("pipe", .key(.char("|"))), ("paste", .paste),
             ("insert", nil), ("snl", .key(.ret)), ("enter", .key(.ret)), ("redraw", nil),
         ]
         XCTAssertEqual(Shortcuts.catalog.map(\.id), want.map(\.0), "a new catalog key needs a mapping here")
         for (id, action) in want { XCTAssertEqual(Shortcuts.hostKey(id), action, id) }
         let (_, bar, _) = rig()
         XCTAssertEqual(Self.caps(try XCTUnwrap(bar.toolbar)).compactMap(\.accessibilityLabel),
-                       ["↑", "↓", "tab", "→", "home", "previous word", "next word", "end", "send"], "the hidden ones aren't caps, nor Paste without Full Access")
+                       ["tab", "↑", "↓", "←", "→", "home", "previous word", "next word", "end", "send"], "the hidden ones aren't caps, nor Paste without Full Access")
     }
 
     /// The keys in the field: sideways and to the line's ends through the caret walk, ↑
@@ -602,7 +603,7 @@ final class KeyboardToolbarTests: XCTestCase {
 
         let custom = try suiteStore(".customLists")
         Shortcuts.save(try oldBar.dropLast().map(key), to: custom)
-        XCTAssertEqual(Shortcuts.load(custom).map(\.id), oldBar, "one key off: kept, send back")
+        XCTAssertEqual(Shortcuts.load(custom).map(\.id), oldBar.filter { $0 != "pasteImg" }, "one key off: kept, send back; paste img dropped (#1521)")
         Shortcuts.save(try oldToolbar.reversed().map(key), to: custom, key: Shortcuts.Bar.toolbar.storageKey)
         XCTAssertEqual(Shortcuts.Bar.toolbar.load(custom).map(\.id), oldToolbar.reversed())
 

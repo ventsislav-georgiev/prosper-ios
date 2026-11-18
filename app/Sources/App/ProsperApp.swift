@@ -1354,7 +1354,7 @@ final class MockTransport: SessionTransport {
 }
 
 extension ShareItem {
-    /// What the terminal's own keys send for it: the image as the paste img key does (the
+    /// What the terminal's own keys send for it: the image as the Paste key sends one (the
     /// Mac's clipboard, then ^V), then the text as ONE bracketed paste, never a Return.
     /// Bracketed regardless: a fresh terminal hasn't heard the host's 2004 yet (`sendText`).
     var outbound: [Outbound] {

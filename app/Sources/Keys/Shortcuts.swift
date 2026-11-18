@@ -4,7 +4,8 @@ import UniformTypeIdentifiers
 /// One key on the shortcut bar above the keyboard. `bytes` are sent verbatim to the
 /// remote pty; `.ctrl`, `.alt` and `.shift` are sticky modifiers (tap: the next key,
 /// double tap: locked) for typed letters and the bar's own keys;
-/// `.pasteText` injects the iOS clipboard string; `.insertText` opens a compose
+/// `.pasteText` pastes the iOS clipboard, its text or its image (#1521; `.pasteImage`, the
+/// old paste img key's, is kept so a bar saved with it still decodes); `.insertText` opens a compose
 /// sheet whose text is sent as one paste; `.redraw` jiggles the pty size so the
 /// remote TUI repaints.
 struct ShortcutKey: Codable, Hashable, Identifiable {
@@ -47,11 +48,8 @@ enum Shortcuts {
         ShortcutKey(id: "pgdn",    label: "pgdn",  kind: .bytes, bytes: [0x1b, 0x5b, 0x36, 0x7e]),
         ShortcutKey(id: "slash",   label: "/",     kind: .bytes, bytes: [0x2f]),
         ShortcutKey(id: "pipe",    label: "|",     kind: .bytes, bytes: [0x7c]),
+        // #1521: text or the copied image, whichever the clipboard holds (`TerminalHostVC.paste`).
         ShortcutKey(id: "paste",   label: "paste", kind: .pasteText, systemImage: "doc.on.clipboard"),
-        // Ships the copied image to the remote machine's clipboard, then sends
-        // ctrl-V — which is what Claude Code reads. Sending ctrl-V alone only worked
-        // when Universal Clipboard happened to have carried the image over.
-        ShortcutKey(id: "pasteImg", label: "paste img", kind: .pasteImage, bytes: [0x16], systemImage: "person.crop.artframe"),
         // Compose locally, send once: the sheet (`InsertTextVC`) hands the whole text
         // to the pty as one bracketed paste — no per-keystroke round-trip.
         ShortcutKey(id: "insert",  label: "insert", kind: .insertText, systemImage: "text.cursor"),
@@ -110,7 +108,7 @@ enum Shortcuts {
     /// terminal's text is a shell's. Added in the editor, as the clipboard.
     static let rewrite = ShortcutKey(id: "rewrite", label: "rewrite", kind: .bytes, systemImage: "wand.and.stars")
     /// The system keyboard toggle's menu (#691), in the terminal: `TerminalHostVC.showMenu`.
-    /// Added in the editor, as the clipboard.
+    /// In the default bar since #1521.
     static let menu = ShortcutKey(id: "menu", label: "menu", kind: .bytes, systemImage: "command")
 
     /// The terminal bar's own keys with no bytes, which `TerminalHostVC.handleKey` acts on by
@@ -130,10 +128,10 @@ enum Shortcuts {
     /// The send key: every terminal bar has it, and the editor can't remove it there.
     static let sendID = "enter"
 
-    /// Two rows of eight on a phone, columns paired: paste/esc, paste img/ctrl, ↑/previous
-    /// word, ↓/next word, tab/pgup, →/pgdn, home/end, insert/send. The word keys are `hostOnly`,
+    /// Two rows of eight on a phone, columns paired: paste/esc, tab/ctrl, ↑/previous
+    /// word, ↓/next word, ←/pgup, →/pgdn, home/end, menu/send. The word keys are `hostOnly`,
     /// so the ids resolve from all the terminal bar offers.
-    static let defaultIDs = ["paste", "pasteImg", "up", "down", "tab", "right", "home", "insert",
+    static let defaultIDs = ["paste", "tab", "up", "down", "left", "right", "home", "menu",
                              "esc", "ctrl", "wordBack", "wordNext", "pgup", "pgdn", "end", "enter"]
     static var defaults: [ShortcutKey] {
         defaultIDs.compactMap { id in Bar.terminal.catalog.first { $0.id == id } }
@@ -142,7 +140,12 @@ enum Shortcuts {
     /// Past default bars, newest first: before the word keys (#690), and before ctrl/alt/shift
     /// were sticky and enter became send. A saved bar that is exactly one was never
     /// customised, so it loads as today's default.
+    /// #1521: kept as saved, `pasteImg` and all, to match stored bars.
     static let previousDefaultIDs = [
+        ["paste", "pasteImg", "up", "down", "tab", "right", "home", "insert",
+         "esc", "ctrl", "wordBack", "wordNext", "pgup", "pgdn", "end", "enter"],
+        ["paste", "pasteImg", "up", "down", "tab", "right", "home", "menu",
+         "esc", "ctrl", "wordBack", "wordNext", "pgup", "pgdn", "end", "enter"],
         ["paste", "pasteImg", "up", "down", "tab", "shift", "home", "insert",
          "esc", "ctrl", "left", "right", "pgup", "pgdn", "end", "enter"],
         ["paste", "pasteImg", "up", "down", "stab", "snl", "enter",
@@ -166,8 +169,9 @@ enum Shortcuts {
 
     /// The saved bar from `store`; nil (the extension without Full Access) is the default set.
     static func load(_ store: UserDefaults? = shared()) -> [ShortcutKey] {
-        guard let keys = decode(store?.string(forKey: storageKey)), !keys.isEmpty else { return defaults }
-        if previousDefaultIDs.contains(keys.map(\.id)) { return defaults }
+        guard let saved = decode(store?.string(forKey: storageKey)), !saved.isEmpty else { return defaults }
+        if previousDefaultIDs.contains(saved.map(\.id)) { return defaults }
+        let keys = withoutImagePaste(saved)
         // Keep the user's SET and ORDER, but take each key's definition from the
         // catalog: a saved bar from an older build otherwise pins the old bytes/kind
         // forever (an image-paste key stuck on plain ctrl-V, say). A bar without the
@@ -177,6 +181,20 @@ enum Shortcuts {
             loaded.append(send)
         }
         return loaded
+    }
+
+    /// #1521: the old paste img key, in its place: paste where the bar has none, else ←
+    /// where it has none, else gone.
+    static func withoutImagePaste(_ keys: [ShortcutKey]) -> [ShortcutKey] {
+        guard let i = keys.firstIndex(where: { $0.id == "pasteImg" }) else { return keys }
+        var out = keys
+        let has = Set(keys.map(\.id))
+        if let id = ["paste", "left"].first(where: { !has.contains($0) }), let key = catalog.first(where: { $0.id == id }) {
+            out[i] = key
+        } else {
+            out.remove(at: i)
+        }
+        return out.filter { $0.id != "pasteImg" }
     }
 
     static func save(_ keys: [ShortcutKey], to store: UserDefaults = shared(), key: String = storageKey) {

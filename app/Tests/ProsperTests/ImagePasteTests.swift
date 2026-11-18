@@ -38,9 +38,12 @@ final class ImagePasteTests: XCTestCase {
     }
 
     private func makeVC(live: Bool = true) async throws -> (TerminalHostVC, SpyStream) {
+        try await makeVC(live: live, conn: { SessionConnection(transport: $0, session: DchSession(name: "t", alias: nil)) })
+    }
+
+    private func makeVC(live: Bool = true, conn make: (SpyTransport) -> SessionConnection) async throws -> (TerminalHostVC, SpyStream) {
         let transport = SpyTransport()
-        let conn = SessionConnection(transport: transport,
-                                     session: DchSession(name: "t", alias: nil))
+        let conn = make(transport)
         let vc = TerminalHostVC(conn: conn, handle: TermHandle())
         vc.view.frame = CGRect(x: 0, y: 0, width: 390, height: 700)
         vc.view.layoutIfNeeded()
@@ -804,7 +807,7 @@ final class ImagePasteTests: XCTestCase {
         let (bar, tv) = try barAndTerminal(vc)
         let key = try XCTUnwrap(Shortcuts.Bar.terminal.catalog.first { $0.id == Shortcuts.menu.id })
         XCTAssertNotNil(UIImage(systemName: try XCTUnwrap(key.systemImage)))
-        XCTAssertFalse(Shortcuts.defaults.contains(key), "added in the editor")
+        XCTAssertTrue(Shortcuts.defaults.contains(key), "in the default since #1521")
         func titles() throws -> [String] { try XCTUnwrap(vc.menuPanel).items.map(\.title) }
         func pick(_ title: String) throws {
             if vc.menuPanel == nil { bar.onKey?(key) }
@@ -1007,18 +1010,21 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertFalse(spy.sent.joined().contains(0x0d) || spy.sent.joined().contains(0x0a), "never a return")
     }
 
-    /// paste and paste img never take the modifiers and never spend them.
+    /// Paste, of text or of an image, never takes the modifiers and never spends them.
     func testPasteKeysDontSpendModifiers() async throws {
         let (vc, spy) = try await makeVC()
+        let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+        vc.pasteboard = pb
         let (bar, tv) = try barAndTerminal(vc)
         bar.onKey?(try catalogKey("ctrl"))
         bar.onKey?(try catalogKey("alt"))
 
-        UIPasteboard.general.string = "x"
+        pb.string = "x"
         bar.onKey?(try catalogKey("paste"))
         XCTAssertEqual(spy.sent.last, [0x78], "the paste was modified")
-        UIPasteboard.general.items = []
-        bar.onKey?(try catalogKey("pasteImg"))
+        pb.items = []
+        pb.setData(png, forPasteboardType: UTType.png.identifier)
+        bar.onKey?(try catalogKey("paste"))
         XCTAssertEqual(spy.sent.last, [0x16], "the image paste keystroke was modified")
         XCTAssertEqual(bar.modes[.ctrl], .once, "a paste key spent ctrl")
         XCTAssertEqual(bar.modes[.alt], .once, "a paste key spent alt")
@@ -1276,8 +1282,8 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertEqual(spy.sent.last, Array("a [201~ b".utf8), "marks sent after the host showed no 2004")
     }
 
-    /// A bar saved by an older build pinned `pasteImg` to plain ctrl-V forever, so the
-    /// fix would never reach anyone who had touched their shortcuts.
+    /// A bar saved by an older build pinned `pasteImg` to plain ctrl-V forever; since #1521 the
+    /// key is gone, and a bar with it and no paste gets Paste in its place.
     func testSavedBarPicksUpNewKeyDefinitions() {
         let stale = ShortcutKey(id: "pasteImg", label: "paste img", kind: .bytes,
                                 bytes: [0x16], systemImage: "photo")
@@ -1285,9 +1291,59 @@ final class ImagePasteTests: XCTestCase {
 
         let loaded = Shortcuts.load()
 
-        XCTAssertEqual(loaded.map(\.id), ["pasteImg", "esc", "enter"],
+        XCTAssertEqual(loaded.map(\.id), ["paste", "esc", "enter"],
                        "the user's set and order must survive, the send key added at the end")
-        XCTAssertEqual(loaded.first?.kind, .pasteImage, "stale kind kept the image paste broken")
+        XCTAssertEqual(loaded.first?.kind, .pasteText, "the catalog's Paste, not the stale key")
+    }
+
+    /// #1521: one Paste key. Text when there is any (a web page's copy carries both), the image
+    /// when it is all there is, nothing when the clipboard is empty.
+    func testPasteChoiceByClipboardTypes() {
+        XCTAssertEqual(TerminalHostVC.pasteChoice(hasStrings: true, hasImages: false), .pasteText)
+        XCTAssertEqual(TerminalHostVC.pasteChoice(hasStrings: false, hasImages: true), .pasteImage)
+        XCTAssertEqual(TerminalHostVC.pasteChoice(hasStrings: true, hasImages: true), .pasteText)
+        XCTAssertNil(TerminalHostVC.pasteChoice(hasStrings: false, hasImages: false))
+    }
+
+    /// #1521: the Paste key on each clipboard, to a host that takes images and to one that
+    /// doesn't (its image paste refused, as the old paste img key's). A private pasteboard:
+    /// never the general one.
+    func testOnePasteKeyPastesTextOrImage() async throws {
+        for host in [true, false] {
+            for clip in ["text", "image", "both", "empty"] {
+                var conn: SessionConnection?
+                let (vc, spy) = try await makeVC(conn: {
+                    conn = SessionConnection(transport: $0, session: DchSession(name: "t"), pastesImages: host)
+                    return conn!
+                })
+                let pb = try XCTUnwrap(UIPasteboard(name: .init("prosper.test.\(UUID())"), create: true))
+                var item: [String: Any] = [:]
+                if clip == "text" || clip == "both" { item[UTType.utf8PlainText.identifier] = "hi" }
+                if clip == "image" || clip == "both" { item[UTType.png.identifier] = png }
+                pb.items = item.isEmpty ? [] : [item]
+                vc.pasteboard = pb
+                let (bar, _) = try barAndTerminal(vc)
+                bar.onKey?(try catalogKey("paste"))
+                try await Task.sleep(nanoseconds: 50_000_000)
+                let label = "\(clip), host takes images: \(host)"
+                switch clip {
+                case "image" where host:
+                    XCTAssertEqual(spy.clipboards, [png], label)
+                    XCTAssertEqual(spy.sent, [[0x16]], label)
+                case "image":
+                    XCTAssertEqual(spy.clipboards, [], label)
+                    XCTAssertEqual(spy.sent, [], label)
+                    XCTAssertEqual(conn?.notice, SessionConnection.noImagePaste, label)
+                case "empty":
+                    XCTAssertEqual(spy.clipboards, [], label)
+                    XCTAssertEqual(spy.sent, [], label)
+                default:
+                    XCTAssertEqual(spy.clipboards, [], label)
+                    XCTAssertEqual(spy.sent, [Array("hi".utf8)], label)
+                }
+                pb.items = []
+            }
+        }
     }
 
     // MARK: long-press copies the block under the finger as one line (#458)
