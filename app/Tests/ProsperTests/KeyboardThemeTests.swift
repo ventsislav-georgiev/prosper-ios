@@ -816,11 +816,23 @@ final class KeyboardThemeTests: XCTestCase {
         withExtendedLifetime((doc, view)) {}
     }
 
+    func testStoredVioletResolvesToRoyalPurple() {
+        defaults.set("violet", forKey: KeyboardSettings.Key.theme)
+        defaults.set("violet", forKey: KeyboardSettings.Key.toolbarTheme)
+        XCTAssertEqual(Theme(rawValue: "violet"), .royal)
+        XCTAssertEqual(KeyboardSettings.current().theme, .royal)
+        XCTAssertEqual(KeyboardSettings.current().toolbarTheme, .royal)
+        XCTAssertEqual(Theme.royal.title, "Royal Purple")
+        let m = Theme.mac[.royal]!
+        XCTAssertFalse(m.light)
+        XCTAssertEqual(m.hex, [0xA87BFF, 0xC7A8FF, 0xE8B84A, 0xFF5CB8, 0x5FF2A8, 0x1A0F2E, 0x0F081C, 0x140B24, 0x26173F, 0x33205A, 0xF3EEFF, 0xA99BC9])
+    }
+
     /// VoiceOver: every swatch a button named for its theme or accent, the current one
     /// selected. Each row starts with the current one in view, and a pick's redraw keeps the
     /// rows where they were.
     func testEachSwatchIsANamedButtonAndTheCurrentOneIsInView() throws {
-        defaults.set("violet", forKey: KeyboardSettings.Key.theme)   // the Keys row's last
+        defaults.set("royal", forKey: KeyboardSettings.Key.theme)   // the Keys row's last
         defaults.set("teal", forKey: KeyboardSettings.Key.toolbarTheme)
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 500))
         window.isHidden = false
@@ -838,7 +850,7 @@ final class KeyboardThemeTests: XCTestCase {
             XCTAssertTrue(b.accessibilityTraits.contains(.button), "\(b.accessibilityLabel!)")
             XCTAssertFalse(b.accessibilityTraits.contains(.notEnabled), "\(b.accessibilityLabel!): on with Full Access")
         }
-        XCTAssertEqual(selected(panel.keys), ["Violet"])
+        XCTAssertEqual(selected(panel.keys), ["Royal Purple"])
         XCTAssertEqual(selected(panel.toolbar), ["Teal"])
         func strip(_ b: UIButton) throws -> UIScrollView { try XCTUnwrap(b.superview?.superview as? UIScrollView) }
         for row in [panel.keys, panel.toolbar] {

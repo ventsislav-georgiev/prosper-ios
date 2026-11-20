@@ -140,7 +140,12 @@ struct KeyboardSettings: Equatable {
     enum Theme: String, CaseIterable {
         case dark, light, black, neon, amber, blossom, contrastDark = "contrast-dark", contrastLight = "contrast-light",
              crimson, daylight, ember, emerald, fern, gold, graphite, indigo, lavender, lime, mint, rose,
-             silver, solar, teal, violet
+             silver, solar, teal, royal
+        /// The one place a stored value becomes a theme: Violet, gone, is Royal Purple.
+        init?(rawValue: String) {
+            guard let t = Self.allCases.first(where: { $0.rawValue == (rawValue == "violet" ? "royal" : rawValue) }) else { return nil }
+            self = t
+        }
         var title: String {
             switch self {
             case .dark: return "Dark"
@@ -175,7 +180,7 @@ struct KeyboardSettings: Equatable {
             .silver: ("Silver", true, [0x434E60, 0x637288, 0x657186, 0xA92839, 0x1C6949, 0xF1F2F4, 0xE5E7EB, 0xECEDF0, 0xFFFFFF, 0xF4F5F6, 0x141F34, 0x525E72]),
             .solar: ("Solar", true, [0x9E5F00, 0xD18605, 0x0D6687, 0xAC115E, 0x306F11, 0xF8F4EC, 0xF3ECDD, 0xF6F0E6, 0xFFFFFF, 0xF8F6F1, 0x342814, 0x726652]),
             .teal: ("Teal", false, [0x09E1B6, 0x67F9E0, 0xFBAF2D, 0xFB4BA3, 0x58EEA8, 0x0A1A19, 0x050C0C, 0x081313, 0x152928, 0x1E3937, 0xEBF9F8, 0x8FB7B5]),
-            .violet: ("Violet", false, [0xC266FF, 0xDDA3FF, 0x41F1B6, 0xFF52C5, 0x5FF2A8, 0x130B1A, 0x09050C, 0x0E0813, 0x201629, 0x2C1E38, 0xF3EBF9, 0xA68FB7]),
+            .royal: ("Royal Purple", false, [0xA87BFF, 0xC7A8FF, 0xE8B84A, 0xFF5CB8, 0x5FF2A8, 0x1A0F2E, 0x0F081C, 0x140B24, 0x26173F, 0x33205A, 0xF3EEFF, 0xA99BC9]),
         ]
     }
     /// What lights up (#626): return, the toolbar's send and lit modifiers, the panels'

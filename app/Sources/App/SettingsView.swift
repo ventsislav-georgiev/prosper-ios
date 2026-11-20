@@ -257,7 +257,7 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.navigationLink)
                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }   // at the row's edge, not the swatch's (#655)
-                Picker("Toolbar Theme", selection: $toolbarTheme) {
+                Picker("Toolbar Theme", selection: Binding { KeyboardSettings.Theme(rawValue: toolbarTheme)?.rawValue ?? "" } set: { toolbarTheme = $0 }) {   // a stored Violet shows as Royal Purple (#1802)
                     Text("Match Keys").tag("")
                     ForEach(KeyboardSettings.Theme.allCases, id: \.self) { ThemeLabel(theme: $0, accent: accent).tag($0.rawValue) }
                 }
