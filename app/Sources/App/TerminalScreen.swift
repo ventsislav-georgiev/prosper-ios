@@ -271,14 +271,14 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     }
     private var stateSub: AnyCancellable?
 
-    /// macOS Terminal.app's vibrant 16-color ANSI palette (SwiftTerm's default is
-    /// muted). 8-bit values widened to 16-bit (×257 maps 255→65535).
-    static let ansiPalette: [SwiftTerm.Color] = [
-        (0, 0, 0), (194, 54, 33), (37, 188, 36), (173, 173, 39),
-        (73, 46, 225), (211, 56, 211), (51, 187, 200), (203, 204, 205),
-        (129, 131, 131), (252, 57, 31), (49, 231, 34), (234, 236, 35),
-        (88, 51, 255), (249, 53, 248), (20, 240, 240), (233, 235, 235),
-    ].map { SwiftTerm.Color(red: UInt16($0.0) * 257, green: UInt16($0.1) * 257, blue: UInt16($0.2) * 257) }
+    /// The Mac's "Prosper" dark palette (#1754). The phone terminal is always dark.
+    /// sRGB: SwiftTerm.Color has no colour space, so no Display P3. 8-bit widened to 16-bit (x257).
+    static let ansiHex: [UInt32] = [
+        0x000000, 0xff453a, 0x32d74b, 0xffd60a, 0x0a84ff, 0xff4fd8, 0x40d8ff, 0xe6e6e6,
+        0x767676, 0xff6961, 0x5af78e, 0xfff066, 0x5ca8ff, 0xff77ff, 0x70f0ff, 0xffffff,
+    ]
+    static let ansiPalette: [SwiftTerm.Color] = ansiHex
+        .map { SwiftTerm.Color(red: UInt16($0 >> 16 & 255) * 257, green: UInt16($0 >> 8 & 255) * 257, blue: UInt16($0 & 255) * 257) }
 
     init(conn: SessionConnection, handle: TermHandle) {
         self.conn = conn
@@ -299,7 +299,8 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         tv.rowsChanged = { [weak self] in self?.fitBar() }   // Hide Toolbar on the Numpad (#692)
         tv.backgroundColor = .black
         tv.nativeBackgroundColor = .black
-        tv.installColors(TerminalHostVC.ansiPalette)   // vibrant 16-color ANSI (matches macOS Terminal)
+        tv.nativeForegroundColor = .white
+        tv.installColors(TerminalHostVC.ansiPalette)   // the Mac's Prosper palette (#1754)
         tv.contentInsetAdjustmentBehavior = .never
         // Default .scaleToFill stretches the cached layer on bounds change instead
         // of redrawing — that's the "frozen old frame" after a keyboard resize.

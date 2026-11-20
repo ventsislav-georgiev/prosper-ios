@@ -10,6 +10,12 @@ final class WordSelectionTests: XCTestCase {
 
     private func cells(_ s: String) -> [Character?] { s.map { $0 } }
 
+    func testTerminalPaletteIsTheMacProsperDark() {
+        let want = "000000 ff453a 32d74b ffd60a 0a84ff ff4fd8 40d8ff e6e6e6 767676 ff6961 5af78e fff066 5ca8ff ff77ff 70f0ff ffffff"
+        let got = TerminalHostVC.ansiPalette.map { String(format: "%02x%02x%02x", $0.red / 257, $0.green / 257, $0.blue / 257) }
+        XCTAssertEqual(got.joined(separator: " "), want)
+    }
+
     func testAWordIsLettersDigitsUnderscoreDash() {
         let row = cells("ls my_file-2 now")
         XCTAssertEqual(TerminalMath.wordRange(row, at: 3), 3..<12)
