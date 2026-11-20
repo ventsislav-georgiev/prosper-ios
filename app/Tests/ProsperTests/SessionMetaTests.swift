@@ -526,7 +526,7 @@ final class SessionMetaTests: XCTestCase {
         let font = Font.caption2.monospaced().weight(.medium)
         let digit = size(Text(verbatim: "3").font(font)).width
         let chip = size(SessionRow.agentsCapsule(3))
-        XCTAssertEqual(chip.width, size(RobotGlyph()).width + 3 + digit + 10, accuracy: 0.5)
+        XCTAssertEqual(chip.width, size(RobotGlyph()).width + 3 + digit + 8, accuracy: 0.5)
         let emoji = size(Text(verbatim: "\u{1F916} 3").font(font).padding(.horizontal, 5).padding(.vertical, 1))
         XCTAssertNotEqual(chip.width, emoji.width, accuracy: 0.5)
         XCTAssertLessThanOrEqual(chip.height, emoji.height + 0.01, "the chip keeps the emoji chip's height")
@@ -549,6 +549,25 @@ final class SessionMetaTests: XCTestCase {
             let c = UIHostingController(rootView: SessionRow.agentsCapsule(2).environment(\.dynamicTypeSize, t)).sizeThatFits(in: big).height
             return g / c
         }
-        XCTAssertEqual(ratio(.accessibility5), ratio(.large), accuracy: 0.03)
+        // #1767: no vertical padding now, so the chip is the line; measured 0.95 at Large, 0.87 at AX5.
+        XCTAssertEqual(ratio(.accessibility5), ratio(.large), accuracy: 0.1)
+    }
+
+    /// The agents pill's stroke is royal purple per appearance, at least 3:1 on the system background.
+    func testAgentsPurpleContrast() {
+        func lum(_ c: UIColor) -> Double {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+            c.getRed(&r, green: &g, blue: &b, alpha: nil)
+            func f(_ v: CGFloat) -> Double { let d = Double(v); return d <= 0.03928 ? d / 12.92 : pow((d + 0.055) / 1.055, 2.4) }
+            return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+        }
+        for (style, hex, bg) in [(UIUserInterfaceStyle.dark, 0x9D7BEA, UIColor.black), (.light, 0x7851A9, .white)] {
+            let c = UIColor(SessionRow.agentsPurple).resolvedColor(with: UITraitCollection(userInterfaceStyle: style))
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+            c.getRed(&r, green: &g, blue: &b, alpha: nil)
+            XCTAssertEqual(Int(round(r * 255)) << 16 | Int(round(g * 255)) << 8 | Int(round(b * 255)), hex)
+            let (a, d) = (lum(c), lum(bg))
+            XCTAssertGreaterThanOrEqual((max(a, d) + 0.05) / (min(a, d) + 0.05), 3)
+        }
     }
 }

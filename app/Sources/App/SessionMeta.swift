@@ -357,6 +357,8 @@ struct SessionRow: View {
         }
     }
 
+    static let agentsPurple = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0x9D/255, green: 0x7B/255, blue: 0xEA/255, alpha: 1) : UIColor(red: 0x78/255, green: 0x51/255, blue: 0xA9/255, alpha: 1) })
+
     static func agentsCapsule(_ n: Int) -> some View {
         HStack(spacing: 3) {   // #1547: the drawn robot (not the emoji), centred with the count
             RobotGlyph()
@@ -365,9 +367,8 @@ struct SessionRow: View {
         .font(.caption2.monospaced().weight(.medium))
         .foregroundStyle(.secondary)
         .lineLimit(1)
-        .padding(.horizontal, 5)
-        .padding(.vertical, 1)
-        .background(Color.primary.opacity(0.1), in: Capsule())
+        .padding(.horizontal, 4)
+        .overlay(Capsule().strokeBorder(agentsPurple, lineWidth: 1))
     }
 }
 #endif
