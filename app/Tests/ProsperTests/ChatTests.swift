@@ -108,6 +108,7 @@ final class ChatTests: XCTestCase {
         chat.send("hi")
         try await waitUntil("the reply") { chat.turns.last?.end == .done }
         XCTAssertEqual(chat.turns.last?.reply, "**Hello**, world")
+        try await waitUntil("the title") { chat.model != nil }   // #1771: the model loads on its own request; under load it lands after the reply
         XCTAssertEqual(chat.model?.name, "Local Model 7B", "the title")
     }
 
