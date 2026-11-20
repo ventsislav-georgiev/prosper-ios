@@ -526,7 +526,7 @@ final class SessionMetaTests: XCTestCase {
         let font = Font.caption2.monospaced().weight(.medium)
         let digit = size(Text(verbatim: "3").font(font)).width
         let chip = size(SessionRow.agentsCapsule(3))
-        XCTAssertEqual(chip.width, size(RobotGlyph()).width + 3 + digit + 8, accuracy: 0.5)
+        XCTAssertEqual(chip.width, size(RobotGlyph()).width + 3 + digit, accuracy: 0.5)
         let emoji = size(Text(verbatim: "\u{1F916} 3").font(font).padding(.horizontal, 5).padding(.vertical, 1))
         XCTAssertNotEqual(chip.width, emoji.width, accuracy: 0.5)
         XCTAssertLessThanOrEqual(chip.height, emoji.height + 0.01, "the chip keeps the emoji chip's height")
@@ -553,7 +553,7 @@ final class SessionMetaTests: XCTestCase {
         XCTAssertEqual(ratio(.accessibility5), ratio(.large), accuracy: 0.1)
     }
 
-    /// The agents pill's stroke is royal purple per appearance, at least 3:1 on the system background.
+    /// The agents glyph and count are royal purple per appearance, at least 3:1 on the system background.
     func testAgentsPurpleContrast() {
         func lum(_ c: UIColor) -> Double {
             var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0

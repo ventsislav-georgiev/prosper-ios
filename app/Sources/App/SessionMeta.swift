@@ -365,10 +365,8 @@ struct SessionRow: View {
             Text(verbatim: SessionMeta.count(n))
         }
         .font(.caption2.monospaced().weight(.medium))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(agentsPurple)   // #1767 r2: glyph and count in purple, nothing around them (as the open-PR count in blue)
         .lineLimit(1)
-        .padding(.horizontal, 4)
-        .overlay(Capsule().strokeBorder(agentsPurple, lineWidth: 1))
     }
 }
 #endif
