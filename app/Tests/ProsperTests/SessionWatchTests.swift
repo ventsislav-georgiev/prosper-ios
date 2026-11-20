@@ -110,6 +110,28 @@ final class SessionWatchTests: XCTestCase {
         XCTAssertEqual(SidekickSync.local().pattern, " -mac ", "the older one is not taken")
     }
 
+    /// #1769: `groups` wins over `sidekick` and is stored; without it (an older Mac), the sidekick as before.
+    func testTheGroupsFrameWinsAndIsStored() async throws {
+        let mac = try await WatchMac { _, c in
+            send(c, 0x11, Self.listA)
+            send(c, 0x14, #"{"sidekick":{"pattern":"-qa","updated":1},"groups":{"groups":[{"id":"g7","name":"Reviewers","pattern":"-rev"}],"updated":1}}"#)
+        }
+        defer { mac.listener.cancel() }
+        let task = run(try await mac.transport(), Box([]))
+        try await waitUntil("stored") { defaults.data(forKey: SidekickSync.groupsKey) != nil }
+        XCTAssertEqual(DchSession.groups(defaults.data(forKey: SidekickSync.groupsKey), sidekick: "-qa"),
+                       [SessionGroup(id: "g7", name: "Reviewers", pattern: "-rev")])
+        XCTAssertEqual(SidekickSync.local().updated, 0, "the sidekick is ignored")
+        task.cancel()
+        _ = await task.value
+
+        XCTAssertEqual(ProsperTransport.decodeWatchOk(Data(#"{"groups":{"groups":[],"updated":0}}"#.utf8)), .groups([]))
+        XCTAssertEqual(ProsperTransport.decodeWatchOk(Data(#"{"sidekick":{"pattern":"-qa","updated":5}}"#.utf8)),
+                       .sidekick(SidekickValue(pattern: "-qa", updated: 5)), "no groups: the sidekick")
+        XCTAssertEqual(ProsperTransport.decodeWatchOk(Data(#"{"sidekick":{"pattern":"-qa","updated":5},"groups":7}"#.utf8)),
+                       .sidekick(SidekickValue(pattern: "-qa", updated: 5)), "unreadable groups: the sidekick")
+    }
+
     /// In Real-time a Mac listing "watch" sends its pattern on the stream: connect sends no 0x2d.
     /// Battery saver, or no stream, keeps it.
     func testTheStreamReplacesTheConnectSync() async throws {

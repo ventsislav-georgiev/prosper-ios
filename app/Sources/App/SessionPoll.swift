@@ -147,6 +147,7 @@ enum SessionWatch {
                     switch e {
                     case .list(let list): apply(list)
                     case .sidekick(let v): SidekickSync.pushed(v)
+                    case .groups(let g): SidekickSync.adopt(g)   // #1769
                     case .heartbeat: break
                     }
                 }

@@ -106,6 +106,7 @@ struct SettingsView: View {
     @ObservedObject private var dictation = DictationService.shared
     @AppStorage(AgentCommand.key) private var agentCommand = ""
     @AppStorage(DchSession.sidekickKey) private var sidekickPattern = DchSession.sidekickDefault
+    @AppStorage(SidekickSync.groupsKey) private var groupsData: Data?   // #1769
     /// #761: the last listed sessions, so the caption can say a pattern is too slow on them.
     private var sidekickNames: [String] { SessionsSnapshot.read()?.rows.flatMap { [$0.name, $0.title] } ?? [] }
     @AppStorage(UpdateMode.key) private var updateMode = UpdateMode.live   // #764
@@ -213,6 +214,18 @@ struct SettingsView: View {
                 Text("Real-time checks the host every 5 to 30 seconds while the session list is open, more often while it changes. Battery saver checks every 15 seconds to 2 minutes. Low Power Mode uses Battery saver while it's on.")
             }
 
+            if let groups = groupsData.flatMap({ try? JSONDecoder().decode([SessionGroup].self, from: $0) }) {
+                // #1769: the Mac's groups, edited only there.
+                Section {
+                    ForEach(groups, id: \.id) { g in
+                        LabeledContent(g.name, value: g.pattern).font(.system(.body, design: .monospaced))
+                    }
+                } header: {
+                    Text("Groups")
+                } footer: {
+                    Text("Sessions go under the first group whose pattern matches their name or alias, each group a tab in the session list. Edited on your Mac.")
+                }
+            } else {
             Section {
                 // #761: an edit goes through SidekickSync, which stamps it; an adopted Mac value doesn't.
                 TextField("Sidekick pattern", text: Binding { sidekickPattern } set: { SidekickSync.edit($0) })
@@ -226,6 +239,7 @@ struct SettingsView: View {
                 Text("Sidekicks")
             } footer: {
                 Text("Sessions whose name or alias matches this regular expression, ignoring case, go under a Sidekicks tab in the session list. Empty shows every session together. Kept the same on your Mac.")
+            }
             }
 
             // Apple's Settings › General › Keyboard, in its order, for what Prosper's has.

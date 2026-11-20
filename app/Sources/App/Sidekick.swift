@@ -23,6 +23,27 @@ extension DchSession {
         return ((tagged.filter { !$0.1 }.map(\.0), tagged.filter(\.1).map(\.0)), hits.contains { !$0.name && $0.title })
     }
 
+    /// #1769: one section per group with sessions, in the groups' order; each session in the first
+    /// group that matches it (as `split`), the rest in `primary`. `titleOnly` as in `splitNoted`.
+    typealias Section = (group: SessionGroup, sessions: [DchSession], titleOnly: Bool)
+    static func grouped(_ list: [DchSession], _ groups: [SessionGroup]) -> (primary: [DchSession], sections: [Section]) {
+        var rest = list
+        var sections: [Section] = []
+        for g in groups {
+            let (split, titleOnly) = splitNoted(rest, pattern: g.pattern)
+            rest = split.primary
+            if !split.sidekicks.isEmpty { sections.append((g, split.sidekicks, titleOnly)) }
+        }
+        return (rest, sections)
+    }
+
+    /// #1769: the Mac's groups as last stored (`SidekickSync.groupsKey`), else one Sidekicks group on the
+    /// phone's sidekick pattern, as before groups.
+    static func groups(_ stored: Data?, sidekick: String) -> [SessionGroup] {
+        stored.flatMap { try? JSONDecoder().decode([SessionGroup].self, from: $0) }
+            ?? [SessionGroup(id: "sidekicks", name: "Sidekicks", pattern: sidekick)]
+    }
+
     /// What split searches for one session; `true` marks the title (sidekickFind).
     private static func texts(_ s: DchSession) -> [(text: String, title: Bool)] { [(s.name, false), (s.alias ?? "", false), (s.harness ?? "", true)] }
 
@@ -166,9 +187,12 @@ extension DchSession {
 /// both ends, a tie keeps the Mac's. Synced on connect, on coming to the front, when Settings
 /// opens and a second after the last keystroke in its field; never on list polls. Only with a
 /// Mac that lists "sidekick". A failure is only logged; the next trigger tries again.
+/// #1769: a Mac that lists "groups" gets a 0x2f read on the same triggers instead, and never a 0x2d.
 @MainActor
 enum SidekickSync {
     static let updatedKey = "sidekickPatternUpdated"
+    /// #1769: the Mac's last groups, JSON; none while the Mac lacks "groups" (the sidekick split shows).
+    static let groupsKey = "sessionGroups"
     /// The Mac's cap on a pattern it adopts, in UTF-8 bytes.
     static let maxBytes = 512
     /// Settable for tests.
@@ -217,7 +241,13 @@ enum SidekickSync {
         defaults.set(v.updated, forKey: updatedKey)
     }
 
+    /// #1769: the Mac's groups, as they are: it alone edits them.
+    static func adopt(_ groups: [SessionGroup]) {
+        defaults.set(try? JSONEncoder().encode(groups), forKey: groupsKey)
+    }
+
     static func sync(over t: SessionTransport) async throws {
+        if grouped { return adopt(try await t.groupsSync()) }   // an error keeps the last groups
         let mine = local()
         let winner = try await t.sidekickSync(mine)
         // An edit typed meanwhile is newer than both; its own sync carries it.
@@ -236,13 +266,16 @@ enum SidekickSync {
     /// #775: one that lists "watch" pushes its pattern on the stream, so in Real-time connect
     /// and foreground send none; an edit still does.
     static func offer(_ ops: Set<SessionVerb>, over t: SessionTransport) {
-        mac = ops.contains(.sidekick) ? t : nil
+        grouped = ops.contains(.groups)
+        if !grouped { defaults.removeObject(forKey: groupsKey) }
+        mac = grouped || ops.contains(.sidekick) ? t : nil
         watched = ops.contains(.watch)
         _ = foreground
         if !streamed { kick() }
     }
 
     private(set) static var watched = false
+    private(set) static var grouped = false
     private static var streamed: Bool { watched && UpdateMode.effective == .live }
 
     private static let foreground: NSObjectProtocol = NotificationCenter.default.addObserver(
@@ -266,7 +299,7 @@ enum SidekickSync {
                 again = false
                 guard let mac else { break }
                 do { try await sync(over: mac) } catch {
-                    log.error("sidekick sync: \(error.localizedDescription, privacy: .public)")
+                    log.error("\(grouped ? "groups" : "sidekick", privacy: .public) sync: \(error.localizedDescription, privacy: .public)")
                 }
             } while again
             running = false

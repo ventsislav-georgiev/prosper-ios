@@ -143,6 +143,8 @@ protocol SessionTransport: AnyObject {
     func putPhoneSnippets(_ body: Data) async throws -> (count: Int, hash: String)
     /// #761: this side's sidekick pattern out, the Mac's winner of the two back.
     func sidekickSync(_ mine: SidekickValue) async throws -> SidekickValue
+    /// #1769: the Mac's session groups, read only; the phone never writes them.
+    func groupsSync() async throws -> [SessionGroup]
     /// #775: the Mac's 0x2e watch stream, on a connection of its own, as `device`. Finishes when
     /// the Mac closes it cleanly; throws `.server` on its error 0x13 (`.refused` with a code, #827),
     /// anything else when it died.
@@ -177,6 +179,7 @@ extension SessionTransport {
     func runCommand(id: String, argument: String?) async throws -> CommandResult { throw TransportError.server("Not supported here.") }
     func putPhoneSnippets(_ body: Data) async throws -> (count: Int, hash: String) { throw TransportError.server("Not supported here.") }
     func sidekickSync(_ mine: SidekickValue) async throws -> SidekickValue { throw TransportError.server("Not supported here.") }
+    func groupsSync() async throws -> [SessionGroup] { throw TransportError.server("Not supported here.") }
     func watch(device: String?) -> AsyncThrowingStream<WatchEvent, Error> {
         AsyncThrowingStream { $0.finish(throwing: TransportError.server("Not supported here.")) }
     }
@@ -194,6 +197,7 @@ enum SessionVerb: String {
     case clipboardMaxSide = "clipboard_max_side"   // #712: clipboardItem's "max_side"; only together with clipboard
     case snippetsPut = "snippets_put"   // #730: putPhoneSnippets 0x2c, the phone's own snippets to the Mac
     case sidekick      // #761: sidekickSync 0x2d; an older Mac never answers it
+    case groups        // #1769: groupsSync 0x2f and `groups` on the watch stream; without it, sidekick as before
     case watch         // #775: the 0x2e list stream; only while the Mac's Agent Island lists its sessions
     // #779: base frames a Prosper host serves unlisted; another host only when it lists them.
     case create        // 0x02
@@ -221,11 +225,19 @@ struct SidekickValue: Equatable {
     var updated: Int64
 }
 
+/// #1769: one of the Mac's session groups; their order is the match order.
+struct SessionGroup: Equatable, Codable {
+    var id: String
+    var name: String
+    var pattern: String
+}
+
 /// #775: one frame of the 0x2e watch stream: the list (0x11), the Mac's sidekick pattern
-/// (ok `{"sidekick"}`), or its 25 s heartbeat (ok `{}`).
+/// (ok `{"sidekick"}`), its groups (ok `{"groups"}`, which win, #1769), or its 25 s heartbeat (ok `{}`).
 enum WatchEvent: Equatable {
     case list([DchSession])
     case sidekick(SidekickValue)
+    case groups([SessionGroup])
     case heartbeat
 }
 

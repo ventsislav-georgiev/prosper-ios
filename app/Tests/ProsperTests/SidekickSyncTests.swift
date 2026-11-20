@@ -124,6 +124,31 @@ final class SidekickSyncTests: XCTestCase {
         XCTAssertEqual(mac.sent.count, 1, "a Mac without it replaced the one with it")
     }
 
+    /// #1769: a Mac listing "groups" gets a 0x2f read and never a 0x2d; its groups are stored. One
+    /// without it gets 0x2d as before, and the stored groups go (the Sidekicks split shows).
+    func testGroupsReadOnlyWithTheVerb() async throws {
+        XCTAssertEqual(SessionVerb.offered(["sidekick", "groups"]), [.sidekick, .groups])
+        let g = [SessionGroup(id: "sidekicks", name: "Sidekicks", pattern: "-qa"), SessionGroup(id: "g7", name: "Reviewers", pattern: "-rev")]
+        let mac = MacFake()
+        mac.groups = .success(g)
+        SidekickSync.offer(SessionVerb.offered(["sidekick", "groups"]), over: mac)
+        try await waitUntil("read on connect") { !SidekickSync.running && mac.groupReads == 1 }
+        XCTAssertEqual(mac.sent, [], "no 0x2d")
+        XCTAssertEqual(DchSession.groups(defaults.data(forKey: SidekickSync.groupsKey), sidekick: "-x"), g)
+
+        // An error keeps the last groups.
+        mac.groups = .failure(TransportError.server("groups unavailable"))
+        do { try await SidekickSync.sync(over: mac); XCTFail("the error throws") } catch {
+            XCTAssertEqual(error.localizedDescription, "groups unavailable")
+        }
+        XCTAssertEqual(DchSession.groups(defaults.data(forKey: SidekickSync.groupsKey), sidekick: "-x"), g)
+
+        SidekickSync.offer([.sidekick], over: mac)
+        try await waitUntil("0x2d on an older Mac") { !SidekickSync.running && mac.sent.count == 1 }
+        XCTAssertEqual(mac.groupReads, 2)
+        XCTAssertNil(defaults.data(forKey: SidekickSync.groupsKey), "the sidekick fallback")
+    }
+
     /// Typing syncs once, after the last keystroke.
     func testEditsSyncOnceTypingPauses() async throws {
         SidekickSync.debounce = 0.2
@@ -184,6 +209,30 @@ final class SidekickSyncTests: XCTestCase {
         XCTAssertThrowsError(try ProsperTransport.decodeSidekick(Data(#"{"updated":1}"#.utf8)))
     }
 
+    /// #1769: 0x2f with `{}`; the ok reply in order, malformed groups dropped, at most 8; error 0x13's message.
+    func testTheGroupsWireIsFrame0x2f() async throws {
+        let reply = Box<(UInt8, String)?>((0x14, #"{"groups":[{"id":"sidekicks","name":"Sidekicks","pattern":"-qa"},{"id":"g7f3a2c","name":"Reviewers","pattern":"-(rev|review)$","x":1}],"updated":1763654400000}"#))
+        let (t, requests, l) = try await loopbackMac(reply)
+        defer { l.cancel() }
+        let groups = try await t.groupsSync()
+        XCTAssertEqual(groups, [SessionGroup(id: "sidekicks", name: "Sidekicks", pattern: "-qa"),
+                                SessionGroup(id: "g7f3a2c", name: "Reviewers", pattern: "-(rev|review)$")])
+        XCTAssertEqual(requests.v.first?.0, 0x2f)
+        XCTAssertEqual(requests.v.first.flatMap { (try? JSONSerialization.jsonObject(with: $0.1)) as? NSDictionary }, [:])
+
+        reply.v = (0x13, #"{"message":"groups unavailable"}"#)
+        do { _ = try await t.groupsSync(); XCTFail("the error frame throws") } catch {
+            XCTAssertEqual(error.localizedDescription, "groups unavailable")
+        }
+
+        let bad = #"{"groups":[{"id":"a b","name":"x","pattern":""},{"id":"ok","name":"","pattern":""},{"id":"ok","name":"\#(String(repeating: "n", count: 33))","pattern":""},{"id":"ok","name":"x","pattern":"\#(String(repeating: "p", count: 513))"},{"id":"ok","name":"x"},7,{"id":"keep","name":"Keep","pattern":""}],"updated":0}"#
+        XCTAssertEqual(try ProsperTransport.decodeGroups(Data(bad.utf8)), [SessionGroup(id: "keep", name: "Keep", pattern: "")])
+        let nine = (0..<9).map { #"{"id":"g\#($0)","name":"G","pattern":"x"}"# }.joined(separator: ",")
+        XCTAssertEqual(try ProsperTransport.decodeGroups(Data(#"{"groups":[\#(nine)]}"#.utf8)).count, 8)
+        XCTAssertEqual(try ProsperTransport.decodeGroups(Data(#"{"groups":[],"updated":0}"#.utf8)), [])
+        XCTAssertThrowsError(try ProsperTransport.decodeGroups(Data(#"{"updated":0}"#.utf8)))
+    }
+
     /// A Mac that takes the frame and says nothing: the read gives up at the deadline and
     /// the phone keeps its own value.
     func testASilentMacTimesOutAndThePhoneKeepsItsValue() async throws {
@@ -207,6 +256,8 @@ private final class MacFake: SessionTransport {
     var value: SidekickValue
     var sent: [SidekickValue] = []
     var during: (@MainActor () -> Void)?
+    var groups: Result<[SessionGroup], Error> = .success([])   // #1769
+    var groupReads = 0
     init(_ value: SidekickValue = SidekickValue(pattern: "-qa", updated: 0)) { self.value = value }
 
     func sidekickSync(_ mine: SidekickValue) async throws -> SidekickValue {
@@ -215,6 +266,7 @@ private final class MacFake: SessionTransport {
         if mine.updated > value.updated { value = mine }
         return value
     }
+    func groupsSync() async throws -> [SessionGroup] { groupReads += 1; return try groups.get() }
     func listSessions() async throws -> [DchSession] { [] }
     func attach(name: String, cols: Int, rows: Int) async throws -> TerminalStream { throw TransportError.notConnected }
     func create(name: String?, command: [String], cols: Int, rows: Int) async throws -> TerminalStream {

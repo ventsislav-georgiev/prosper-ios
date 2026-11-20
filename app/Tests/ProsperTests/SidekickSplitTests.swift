@@ -52,34 +52,50 @@ final class SidekickSplitTests: XCTestCase {
         XCTAssertEqual(names(r.sidekicks), ["z-qa", "a-qa"])
     }
 
+    private let sidekicks = DchSession.groups(nil, sidekick: "-qa")
+
     func testAllSidekicksShowsSidekicks() {
-        let r = DchSession.split([s("a-qa"), s("b-qa")], pattern: "-qa")
-        XCTAssertTrue(DchSession.showsSidekicks(r, tab: false))
-        XCTAssertTrue(DchSession.showsSidekicks(r, tab: true))
+        let r = DchSession.grouped([s("a-qa"), s("b-qa")], sidekicks)
+        XCTAssertEqual(DchSession.shown(r, tab: nil), 0)
+        XCTAssertEqual(DchSession.shown(r, tab: "sidekicks"), 0)
     }
 
     func testChosenTabShowsWhenBothHaveSessions() {
-        let r = DchSession.split([s("a"), s("a-qa")], pattern: "-qa")
-        XCTAssertFalse(DchSession.showsSidekicks(r, tab: false))
-        XCTAssertTrue(DchSession.showsSidekicks(r, tab: true))
+        let r = DchSession.grouped([s("a"), s("a-qa")], sidekicks)
+        XCTAssertNil(DchSession.shown(r, tab: nil))
+        XCTAssertEqual(DchSession.shown(r, tab: "sidekicks"), 0)
     }
 
     func testNoSidekicksShowsPrimary() {
-        let r = DchSession.split([s("a"), s("b")], pattern: "-qa")
-        XCTAssertFalse(DchSession.showsSidekicks(r, tab: false))
-        XCTAssertFalse(DchSession.showsSidekicks(r, tab: true))
-        XCTAssertFalse(DchSession.showsSidekicks(DchSession.split([], pattern: "-qa"), tab: true))
+        let r = DchSession.grouped([s("a"), s("b")], sidekicks)
+        XCTAssertTrue(r.sections.isEmpty)
+        XCTAssertNil(DchSession.shown(r, tab: "sidekicks"))
+        XCTAssertNil(DchSession.shown(DchSession.grouped([], sidekicks), tab: "sidekicks"))
     }
 
-    // #967: an empty segment can't be chosen, so tapping "Sessions (0)" never writes the tab.
+    // #1769: the Mac's groups, one section each in its order; the first match wins, an empty
+    // pattern or an empty group draws nothing, the rest stay in Sessions.
 
-    func testEmptySegmentNotChoosable() {
-        let all = DchSession.split([s("a-qa"), s("b-qa")], pattern: "-qa")
-        XCTAssertFalse(DchSession.choosable(all, tab: false))
-        XCTAssertTrue(DchSession.choosable(all, tab: true))
-        let both = DchSession.split([s("a"), s("a-qa")], pattern: "-qa")
-        XCTAssertTrue(DchSession.choosable(both, tab: false))
-        XCTAssertTrue(DchSession.choosable(both, tab: true))
+    func testGroupsFirstMatchWinsInOrderAndEmptyOnesHide() {
+        let groups = [SessionGroup(id: "sidekicks", name: "Sidekicks", pattern: "-qa"),
+                      SessionGroup(id: "none", name: "None", pattern: " "),
+                      SessionGroup(id: "rev", name: "Reviewers", pattern: "-(rev|review)$|-qa"),
+                      SessionGroup(id: "lit", name: "Literal", pattern: "*["),
+                      SessionGroup(id: "idle", name: "Idle", pattern: "-idle$")]
+        let r = DchSession.grouped([s("x-review"), s("a-qa"), s("main"), s("b*[c"), s("c-rev")], groups)
+        XCTAssertEqual(r.sections.map(\.group.name), ["Sidekicks", "Reviewers", "Literal"], "list order, empty groups hidden")
+        XCTAssertEqual(r.sections.map { names($0.sessions) }, [["a-qa"], ["x-review", "c-rev"], ["b*[c"]], "first match wins")
+        XCTAssertEqual(names(r.primary), ["main"])
+        XCTAssertEqual(DchSession.shown(r, tab: "rev"), 1)
+        XCTAssertNil(DchSession.shown(r, tab: "idle"), "a group with no sessions: Sessions")
+        XCTAssertTrue(DchSession.grouped([s("a-qa")], []).sections.isEmpty, "an empty list: no split")
+    }
+
+    func testStoredGroupsWinOverTheSidekickPattern() throws {
+        let g = [SessionGroup(id: "g1", name: "Reviewers", pattern: "-rev")]
+        XCTAssertEqual(DchSession.groups(try JSONEncoder().encode(g), sidekick: "-qa"), g)
+        XCTAssertEqual(DchSession.groups(try JSONEncoder().encode([SessionGroup]()), sidekick: "-qa"), [])
+        XCTAssertEqual(DchSession.groups(nil, sidekick: "-x"), [SessionGroup(id: "sidekicks", name: "Sidekicks", pattern: "-x")])
     }
 
     // #1054: the empty segment is disabled on the control itself, so it draws dimmed and reads dimmed.
@@ -87,7 +103,7 @@ final class SidekickSplitTests: XCTestCase {
     @MainActor func testEmptySegmentDisabledOnControl() {
         let all = DchSession.split([s("a-qa")], pattern: "-qa")
         let picker = SegmentPicker(titles: ["Sessions (0)", "Sidekicks (1)"],
-                                   enabled: [false, true].map { DchSession.choosable(all, tab: $0) },
+                                   enabled: [!all.primary.isEmpty, !all.sidekicks.isEmpty],
                                    selection: .constant(1))
         let c = UISegmentedControl()
         picker.update(c)
@@ -140,15 +156,16 @@ final class SidekickSplitTests: XCTestCase {
 
     func testTabPerMachine() {
         var stored = ""
-        stored = DchSession.sidekickTab(stored, machine: "A", set: true)
-        XCTAssertTrue(DchSession.sidekickTab(stored, machine: "A"))
-        XCTAssertFalse(DchSession.sidekickTab(stored, machine: "B"))
-        stored = DchSession.sidekickTab(stored, machine: "B", set: true)
-        stored = DchSession.sidekickTab(stored, machine: "A", set: false)
-        XCTAssertFalse(DchSession.sidekickTab(stored, machine: "A"))
-        XCTAssertTrue(DchSession.sidekickTab(stored, machine: "B"))
-        XCTAssertEqual(DchSession.sidekickTab(stored, machine: "B", set: true), stored)   // no duplicate
-        XCTAssertEqual(DchSession.sidekickTab(stored, machine: "B", set: false), "")
+        stored = DchSession.tab(stored, machine: "A", set: "sidekicks")
+        XCTAssertEqual(DchSession.tab(stored, machine: "A"), "sidekicks")
+        XCTAssertNil(DchSession.tab(stored, machine: "B"))
+        stored = DchSession.tab(stored, machine: "B", set: "g7")
+        stored = DchSession.tab(stored, machine: "A", set: nil)
+        XCTAssertNil(DchSession.tab(stored, machine: "A"))
+        XCTAssertEqual(DchSession.tab(stored, machine: "B"), "g7")
+        XCTAssertEqual(DchSession.tab(stored, machine: "B", set: "g7"), stored)   // no duplicate
+        XCTAssertEqual(DchSession.tab(stored, machine: "B", set: nil), "")
+        XCTAssertEqual(DchSession.tab("A,B=g7", machine: "A"), "sidekicks", "a bare id, stored before #1769")
     }
 
     // #761: the pattern is a case-insensitive ICU regex, searched, in the name and the alias.

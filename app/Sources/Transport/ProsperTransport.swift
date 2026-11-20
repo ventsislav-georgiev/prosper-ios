@@ -46,6 +46,7 @@ final class ProsperTransport: SessionTransport {
         static let putPhoneSnippets: UInt8 = 0x2c   // #730: the phone's own snippets to the Mac
         static let sidekickSync: UInt8 = 0x2d   // #761
         static let watch: UInt8 = 0x2e   // #775
+        static let groupsSync: UInt8 = 0x2f   // #1769
         // #621: clipboard history sync.
         static let clipboardList: UInt8 = 0x15, clipboardItem: UInt8 = 0x16
         static let addClipboardHistory: UInt8 = 0x22, clipboardUpload: UInt8 = 0x23
@@ -452,6 +453,26 @@ final class ProsperTransport: SessionTransport {
         return SidekickValue(pattern: pattern, updated: n.int64Value)
     }
 
+    /// #1769: `{}` out; ok `{"groups":[{id,name,pattern}],"updated"}` back, error 0x13 throws.
+    func groupsSync() async throws -> [SessionGroup] {
+        let frame = try await oneShot(send: F.groupsSync, payload: json([:]), deadline: sidekickDeadline)
+        return try Self.decodeGroups(try Self.expect(frame, F.ok))
+    }
+
+    /// Leniently: a malformed group, or one past the Mac's limits, is dropped; no `groups` array throws.
+    static func decodeGroups(_ payload: Data) throws -> [SessionGroup] {
+        guard let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any],
+              let list = o["groups"] as? [Any] else { throw TransportError.protocolError("unreadable groups reply") }
+        let groups: [SessionGroup] = list.compactMap {
+            guard let g = $0 as? [String: Any], let id = g["id"] as? String, let name = g["name"] as? String,
+                  let pattern = g["pattern"] as? String,
+                  (1...64).contains(id.utf8.count), id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }),
+                  (1...32).contains(name.utf8.count), pattern.utf8.count <= 512 else { return nil }
+            return SessionGroup(id: id, name: name, pattern: pattern)
+        }
+        return Array(groups.prefix(8))
+    }
+
     // MARK: - Watch stream (#775)
 
     /// 0x2e `{"device_id"}` (`{}` without one: the Mac takes the tailnet address), then each frame
@@ -497,6 +518,9 @@ final class ProsperTransport: SessionTransport {
 
     static func decodeWatchOk(_ payload: Data) -> WatchEvent {
         let o = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any]
+        // #1769: groups win over the sidekick; an older Mac sends none.
+        if let g = o?["groups"] as? [String: Any], let d = try? JSONSerialization.data(withJSONObject: g),
+           let groups = try? decodeGroups(d) { return .groups(groups) }
         guard let s = o?["sidekick"] as? [String: Any], let d = try? JSONSerialization.data(withJSONObject: s),
               let v = try? decodeSidekick(d) else { return .heartbeat }
         return .sidekick(v)

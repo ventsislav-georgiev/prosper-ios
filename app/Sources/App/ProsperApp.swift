@@ -381,10 +381,14 @@ struct SessionListView: View {
     @State private var showingHistory = false      // #589: the ⋯ menu's History sheet
     @State private var showingChat = false         // #646: the ⋯ menu's Chat sheet
     @State private var showingCommands = false     // #615: the ⋯ menu's Commands sheet
-    // The Sidekicks segment is chosen. Scene storage, so the list an alert or Live Activity
-    // rebuilds (a new `.id`) comes back on the same tab. #967: per Mac, as the ids on Sidekicks.
+    // The chosen group's segment. Scene storage, so the list an alert or Live Activity
+    // rebuilds (a new `.id`) comes back on the same tab. #967: per Mac (`DchSession.tab`).
     @SceneStorage("sessions.sidekickTabs") private var sidekickTabs = ""
     @AppStorage(DchSession.sidekickKey) private var sidekickPattern = DchSession.sidekickDefault
+    @AppStorage(SidekickSync.groupsKey) private var groupsData: Data?   // #1769
+    private var grouped: (primary: [DchSession], sections: [DchSession.Section]) {
+        DchSession.grouped(DchSession.ordered(sessions), DchSession.groups(groupsData, sidekick: sidekickPattern))
+    }
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -392,18 +396,20 @@ struct SessionListView: View {
     // prop is a stale value-type copy captured at navigation time).
     /// #967: this Mac's chosen tab; the demo list keys as "demo".
     private var tabKey: String { machine?.id.uuidString ?? "demo" }
-    private var sidekickTab: Bool {
-        get { DchSession.sidekickTab(sidekickTabs, machine: tabKey) }
-        nonmutating set { sidekickTabs = DchSession.sidekickTab(sidekickTabs, machine: tabKey, set: newValue) }
+    /// The chosen group's id; nil is Sessions.
+    private var chosenTab: String? {
+        get { DchSession.tab(sidekickTabs, machine: tabKey) }
+        nonmutating set { sidekickTabs = DchSession.tab(sidekickTabs, machine: tabKey, set: newValue) }
     }
 
-    /// #967: an empty segment is dimmed and can't be chosen, so it never writes the tab.
-    /// #1054: UIKit's, since the segmented Picker draws a `.disabled` segment enabled.
-    private func tabPicker(_ split: (primary: [DchSession], sidekicks: [DchSession]), shows: Bool) -> some View {
-        SegmentPicker(titles: ["Sessions (\(split.primary.count))", "Sidekicks (\(split.sidekicks.count))"],
-                      enabled: [DchSession.choosable(split, tab: false), DchSession.choosable(split, tab: true)],
-                      selection: Binding(get: { shows ? 1 : 0 }, set: { i in
-            if DchSession.choosable(split, tab: i == 1) { sidekickTab = i == 1 }
+    /// #967: an empty Sessions segment is dimmed and can't be chosen, so it never writes the tab;
+    /// a group has a segment only with sessions (#1769). #1054: UIKit's, since the segmented Picker
+    /// draws a `.disabled` segment enabled.
+    private func tabPicker(_ g: (primary: [DchSession], sections: [DchSession.Section]), shows: Int?) -> some View {
+        SegmentPicker(titles: ["Sessions (\(g.primary.count))"] + g.sections.map { "\($0.group.name) (\($0.sessions.count))" },
+                      enabled: [!g.primary.isEmpty] + g.sections.map { _ in true },
+                      selection: Binding(get: { shows.map { $0 + 1 } ?? 0 }, set: { i in
+            if i > 0 { chosenTab = g.sections[i - 1].group.id } else if !g.primary.isEmpty { chosenTab = nil }
         })).header
     }
 
@@ -472,25 +478,25 @@ struct SessionListView: View {
             if let line = running[""] {
                 HStack(spacing: 10) { ProgressView(); Text(line).foregroundStyle(.secondary) }
             }
-            let (split, titleOnly) = DchSession.splitNoted(DchSession.ordered(sessions), pattern: sidekickPattern)
-            if split.sidekicks.isEmpty {
-                ForEach(split.primary) { s in row(s) }
+            let g = grouped
+            if g.sections.isEmpty {
+                ForEach(g.primary) { s in row(s) }
             } else {
                 // Own section, picker as its header: the machine card above stays in one piece.
-                let shows = DchSession.showsSidekicks(split, tab: sidekickTab)
+                let shows = DchSession.shown(g, tab: chosenTab)
                 Section {
-                    ForEach(shows ? split.sidekicks : split.primary) { s in row(s) }
+                    ForEach(shows.map { g.sections[$0].sessions } ?? g.primary) { s in row(s) }
                 } header: {
-                    tabPicker(split, shows: shows)
+                    tabPicker(g, shows: shows)
                 } footer: {
                     // R1220-2: a session here by its title alone says so.
-                    if shows, titleOnly { Text(DchSession.titleOnlyNote) }
+                    if let i = shows, g.sections[i].titleOnly { Text(DchSession.titleOnlyNote) }
                 }
             }
         }
-        // The last sidekick gone (or the split turned off): back to Sessions for good.
-        .onChange(of: DchSession.split(sessions, pattern: sidekickPattern).sidekicks.isEmpty) { empty in
-            if empty { sidekickTab = false }
+        // The chosen group's last session gone (or the group removed): back to Sessions for good.
+        .onChange(of: grouped.sections.contains { $0.group.id == chosenTab }) { has in
+            if !has { chosenTab = nil }
         }
         .navigationTitle("Sessions")
         .toolbar {
@@ -687,8 +693,8 @@ struct SessionListView: View {
 
     /// #590: the visible tab, for Stop all: its name and its sessions.
     private var shownTab: (name: String, sessions: [DchSession]) {
-        let split = DchSession.split(sessions, pattern: sidekickPattern)
-        return DchSession.showsSidekicks(split, tab: sidekickTab) ? ("Sidekicks", split.sidekicks) : ("Sessions", split.primary)
+        let g = grouped
+        return DchSession.shown(g, tab: chosenTab).map { (g.sections[$0].group.name, g.sections[$0].sessions) } ?? ("Sessions", g.primary)
     }
 
     /// #590: run a verb, `rows` showing `text` until its one reply lands (minutes, for a
@@ -1020,25 +1026,25 @@ extension DchSession {
 
     // `split` and its matcher: Sidekick.swift (#761).
 
-    /// Whether the Sidekicks list shows: never without sidekicks, always when they are all
-    /// there is (an empty Sessions tab reads as a Mac with no sessions), else the chosen tab.
-    static func showsSidekicks(_ split: (primary: [DchSession], sidekicks: [DchSession]), tab: Bool) -> Bool {
-        !split.sidekicks.isEmpty && (tab || split.primary.isEmpty)
+    /// The section shown, nil for Sessions: the chosen group's while it has sessions; the first
+    /// group's when they are all there is (an empty Sessions tab reads as a Mac with no sessions).
+    static func shown(_ g: (primary: [DchSession], sections: [Section]), tab: String?) -> Int? {
+        g.sections.firstIndex { $0.group.id == tab } ?? (g.primary.isEmpty && !g.sections.isEmpty ? 0 : nil)
     }
 
-    /// #967: a segment with no sessions can't be chosen.
-    static func choosable(_ split: (primary: [DchSession], sidekicks: [DchSession]), tab: Bool) -> Bool {
-        !(tab ? split.sidekicks : split.primary).isEmpty
+    /// #967: the chosen group per Mac, nil for Sessions. `stored` is comma-separated
+    /// "machine=group id", or a bare "machine" for the Sidekicks group (as before #1769).
+    static func tab(_ stored: String, machine: String) -> String? {
+        for e in stored.split(separator: ",") {
+            let p = e.split(separator: "=", maxSplits: 1)
+            if p.first == Substring(machine) { return p.count > 1 ? String(p[1]) : "sidekicks" }
+        }
+        return nil
     }
 
-    /// #967: the Sidekicks tab is chosen per Mac; `stored` is the comma-separated ids on it.
-    static func sidekickTab(_ stored: String, machine: String) -> Bool {
-        stored.split(separator: ",").contains { $0 == machine }
-    }
-
-    static func sidekickTab(_ stored: String, machine: String, set on: Bool) -> String {
-        var ids = stored.split(separator: ",").map(String.init).filter { $0 != machine }
-        if on { ids.append(machine) }
+    static func tab(_ stored: String, machine: String, set id: String?) -> String {
+        var ids = stored.split(separator: ",").map(String.init).filter { $0.split(separator: "=", maxSplits: 1).first != Substring(machine) }
+        if let id { ids.append("\(machine)=\(id)") }
         return ids.joined(separator: ",")
     }
 }
@@ -1072,6 +1078,7 @@ extension SessionVerb {
         case .clipboardMaxSide: "Clipboard sync"   // #712: never shown, as clipboard's
         case .snippetsPut: "Snippet sync"   // #730: never shown, a push failure is only logged
         case .sidekick: "Sidekick sync"   // #761: never shown, a sync failure is only logged
+        case .groups: "Groups sync"   // #1769: never shown, as sidekick's
         case .watch: "Session list"   // #775: never shown, a refused stream falls back to the poll
         case .create: "New session"   // #779: never shown, the + hides instead
         case .pasteImage: "Image paste"   // #779: never shown, the terminal says it in its status line
