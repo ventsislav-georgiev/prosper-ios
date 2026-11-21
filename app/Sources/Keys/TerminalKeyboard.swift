@@ -1272,6 +1272,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
     var lentHeight: CGFloat = 0 { didSet { if lentHeight != oldValue { fitHeight(); setNeedsLayout() } } }
     /// The rows changed what the bar should take: Numbers, the numpad, Key Size, the size class.
     var rowsChanged: (() -> Void)?
+    /// After every layout: a new height from the host included. Nil in the extension.
+    var laidOut: (() -> Void)?
     /// The palettes the caps were built with (`build`), the toolbar's second, and the bar's
     /// redraw for a new one (#626).
     private var drawn: [Style.Palette] = []
@@ -1305,13 +1307,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             push.subtype = on ? .fromRight : .fromLeft
             push.duration = Self.numpadSwap
             push.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            // The outgoing page is drawn at its old, taller size: clipped, it can't reach over the
-            // returning bar above the shrunken keyboard (#1830).
-            clipsToBounds = true
-            CATransaction.begin()
-            CATransaction.setCompletionBlock { [weak self] in self?.clipsToBounds = false }
             layer.add(push, forKey: "numpad")
-            CATransaction.commit()
         }
         build()
         fitHeight()
@@ -2491,6 +2487,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        defer { laidOut?() }
         let area = keysArea.layoutFrame.insetBy(dx: Self.sideMargin, dy: 0)
         let m = Self.metrics(compact: compact, size: settings.keySize, rows: numbersKey ? 4 : 5)   // #1501
         tracker.floor = bounds.maxY + KeyTouchTracker.lineStep   // #965: past a drag's second line down

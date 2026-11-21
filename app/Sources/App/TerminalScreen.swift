@@ -1263,6 +1263,10 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         // The taller keys have landed in the bar's place: only now may the bar hide (#1837).
         if let bar = shortcutBar, !bar.isHidden, (keyboardInputView as? TerminalKeyboard)?.lentHeight ?? 0 > 0,
            view.convert(end, from: nil).minY <= bar.frame.minY + 0.5 { bar.isHidden = true }
+        // Back from the numpad: the bar shows once the shorter keys have left its place, never
+        // under the taller ones still there: they are see-through between their caps (#1830).
+        if let bar = shortcutBar, bar.isHidden, (keyboardInputView as? TerminalKeyboard)?.lentHeight == 0,
+           view.convert(end, from: nil).minY >= bar.frame.maxY - 0.5 { bar.isHidden = false }
         applyKeyboard(end, notification: n)
     }
 
@@ -1286,8 +1290,12 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// the hidden bar's height it was lent (`fitBar`): the bar's place, the terminal's bottom.
     private func keyboardOverlap(_ end: CGRect) -> CGFloat {
         let safeBottomY = view.bounds.maxY - view.safeAreaInsets.bottom
-        let lent = shortcutBar?.isHidden == true ? (keyboardInputView as? TerminalKeyboard)?.lentHeight ?? 0 : 0
-        return max(0, safeBottomY - view.convert(end, from: nil).minY - lent)
+        let top = view.convert(end, from: nil).minY
+        // Lent while the bar hides and the taller keys still reach into its place: on the swap
+        // back too, before their shorter frame comes (#1830).
+        let lent = shortcutBar.map { $0.isHidden && ((keyboardInputView as? TerminalKeyboard)?.lentHeight ?? 0 > 0
+            || top < $0.frame.maxY - 0.5) ? $0.bounds.height : 0 } ?? 0
+        return max(0, safeBottomY - top - lent)
     }
 
     /// Hide Toolbar on the Numpad, as the extension's (`SuggestionBar.fitRows`, #692): the bar
@@ -1297,12 +1305,15 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         guard let bar = shortcutBar else { return }
         let kb = keyboardInputView as? TerminalKeyboard
         let hides = kb?.showsNumpad == true && kb?.settings.numpadHidesToolbar == true
-        let lending = hides && kb?.lentHeight == 0
+        let lent = kb?.lentHeight ?? 0
         kb?.lentHeight = hides ? bar.bounds.height : 0
-        // The bar hides once the taller keys' frame reaches its place (`kbChange`), never before:
-        // a hide racing the reload showed the rows under it a frame (#1828, #1837).
-        if !hides || kbOverlap == 0 { bar.isHidden = hides }
-        else if lending, tv.isFirstResponder { tv.reloadInputViews() }
+        // The bar hides once the taller keys' frame reaches its place, and shows once the shorter
+        // keys' have left it (`kbChange`), never before: either racing the reload showed the
+        // rows under the bar, or the bar under the keys, for frames (#1828, #1837, #1830).
+        let keysLeft = kb.map { $0.window != nil && $0.convert($0.bounds, to: view).minY >= bar.frame.maxY - 0.5 } ?? true
+        if kbOverlap == 0 || !hides && (!bar.isHidden || keysLeft) {
+            bar.isHidden = hides
+        } else if (hides ? lent == 0 : lent > 0), tv.isFirstResponder { tv.reloadInputViews() }
     }
 
     /// In the app the host sits in SwiftUI, which gives this view its new frame and safe
@@ -1323,10 +1334,11 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     }
 
     @objc private func kbHide(_ n: Notification) {
+        kbOverlap = 0   // first: the bar back at once, not after a frame (#1830)
         (keyboardInputView as? TerminalKeyboard)?.showNumpad(false, animated: false)   // the letters next time, the bar back (#692)
+        shortcutBar?.isHidden = false   // and if the numpad left just before
         kbConstraint.constant = 0
         handle.keyboardShown = false
-        kbOverlap = 0
         animateKeyboard(n, offset: 0)
     }
 
@@ -2031,6 +2043,7 @@ private final class DchTerminalView: TerminalView {
         kb.sendBytes = { [weak self] in self?.send($0) }   // through the host's send, like any key
         kb.restyled = { [weak self] in self?.restyled?() }
         kb.rowsChanged = { [weak self] in self?.rowsChanged?() }
+        kb.laidOut = { [weak self] in self?.rowsChanged?() }   // the bar back the frame the keys shrink (#1830)
         kb.allowsNumbersKey = true   // Numbers: Key here too (#692): four taller rows (#1501), the bar as it is
         kb.screenWords = { [weak self] in self.map { TerminalKeyboard.screenWords(in: $0.getTerminal()) } ?? [] }
         kb.moveCaret = { [weak self] in   // the space-bar trackpad: arrow keys, like the bar's

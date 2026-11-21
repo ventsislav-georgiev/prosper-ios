@@ -752,9 +752,10 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertEqual(numpad.size, letters.size, "the grid keeps its size")
         XCTAssertEqual(numpad.lift, letters.lift, accuracy: 0.5, "the content doesn't jump")
         kb.press(.numbers)   // ABC
-        XCTAssertFalse(bar.isHidden)
+        XCTAssertTrue(bar.isHidden, "not before the shorter keys' frame (#1830)")
         XCTAssertEqual(kb.lentHeight, 0)
         let back = frame()
+        XCTAssertFalse(bar.isHidden)
         XCTAssertEqual(back.top, letters.top, accuracy: 0.5)
         XCTAssertEqual(back.lift, letters.lift, accuracy: 0.5)
 

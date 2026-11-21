@@ -704,7 +704,7 @@ final class NumbersKeyTests: XCTestCase {
                         barBottom: bar.isHidden ? nil : bar.frame.maxY)
         }
         /// Every look for `s` seconds, layout flushed each time as the next frame would.
-        func watch(_ s: TimeInterval) -> [Look] {
+        func watch(_ s: TimeInterval, swapBack: Bool = false) -> [Look] {
             var looks: [Look] = []
             let end = Date().addingTimeInterval(s)
             while Date() < end {
@@ -712,9 +712,14 @@ final class NumbersKeyTests: XCTestCase {
                 vc.view.layoutIfNeeded()
                 looks.append(look())
                 // The bar's strip shows the bar or the keys, never the rows under it.
-                if bar.isHidden, let pl = kb.layer.presentation(), let wl = kb.window?.layer.presentation() {
+                if let pl = kb.layer.presentation(), let wl = kb.window?.layer.presentation() {
                     let top = window.convert(pl.convert(pl.bounds, to: wl), from: kb.window).minY
-                    XCTAssertLessThanOrEqual(top, bar.frame.minY + 0.5, "the bar hid before the keys reached its place")
+                    if bar.isHidden {
+                        XCTAssertLessThanOrEqual(top, bar.frame.minY + 0.5, "the bar hid before the keys reached its place")
+                    } else if swapBack {
+                        // Nor the bar under the keys: they are see-through between their caps (#1830).
+                        XCTAssertGreaterThanOrEqual(top, bar.frame.maxY - 0.5, "the bar showed under the keys")
+                    }
                 }
             }
             return looks
@@ -736,13 +741,13 @@ final class NumbersKeyTests: XCTestCase {
                 if let b = l.barBottom { XCTAssertEqual(b, still.barBottom ?? 0, accuracy: 0.5, "hides \(hides): the bar left the keys") }
             }
             kb.showNumpad(false)
-            // The outgoing numpad slides out at its old height: with the bar back it must be clipped (#1830).
             XCTAssertNotNil(kb.layer.animation(forKey: kCATransition), "hides \(hides): no slide")
-            XCTAssertTrue(kb.clipsToBounds, "hides \(hides): the outgoing numpad draws over the bar")
-            for l in watch(1) {
-                XCTAssertEqual(l, still, "hides \(hides): the letters moved the terminal")
+            for l in watch(1, swapBack: true) {
+                var bare = l
+                bare.barBottom = l.barBottom ?? still.barBottom   // hidden while the taller keys leave (#1830)
+                XCTAssertEqual(bare, still, "hides \(hides): the letters moved the terminal")
             }
-            XCTAssertFalse(kb.clipsToBounds, "hides \(hides): clipping left on")
+            XCTAssertEqual(look(), still, "hides \(hides): the bar back")
             vc.toggleKeyboard()
             _ = watch(1)
         }
