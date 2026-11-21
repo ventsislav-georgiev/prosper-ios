@@ -562,6 +562,14 @@ final class NumbersKeyTests: XCTestCase {
             XCTAssertEqual(kb.layer.animation(forKey: kCATransition) != nil, slides, "slides \(slides)")
         }
         XCTAssertTrue(KeyboardSettings().numpadSlides, "on by default")
+        // With Hide Toolbar on the Numpad, the slide back would draw the returning bar through the keys (#1830).
+        for hides in [false, true] {
+            let (kb, _, _, _) = rig()
+            kb.settings.numpadHidesToolbar = hides
+            kb.showNumpad(true, animated: false)
+            kb.showNumpad(false)
+            XCTAssertEqual(kb.layer.animation(forKey: kCATransition) != nil, !hides, "hides \(hides): the slide back")
+        }
     }
 
     // MARK: Fit (#1524)
@@ -741,7 +749,7 @@ final class NumbersKeyTests: XCTestCase {
                 if let b = l.barBottom { XCTAssertEqual(b, still.barBottom ?? 0, accuracy: 0.5, "hides \(hides): the bar left the keys") }
             }
             kb.showNumpad(false)
-            XCTAssertNotNil(kb.layer.animation(forKey: kCATransition), "hides \(hides): no slide")
+            XCTAssertEqual(kb.layer.animation(forKey: kCATransition) != nil, !hides, "hides \(hides): the slide back only with the bar kept (#1830)")
             for l in watch(1, swapBack: true) {
                 var bare = l
                 bare.barBottom = l.barBottom ?? still.barBottom   // hidden while the taller keys leave (#1830)

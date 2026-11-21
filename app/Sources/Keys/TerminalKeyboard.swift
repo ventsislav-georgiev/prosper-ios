@@ -1301,7 +1301,8 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if on, showsEmoji { showEmoji(false) }   // never both (#629)
         stopRepeat(); stopHold(); tracker.reset()
         showsNumpad = on
-        if animated, settings.numpadSlides, window != nil, !UIAccessibility.isReduceMotionEnabled {
+        // Back to the letters at once while the bar returns: a slide drew it through the keys (#1830).
+        if animated, settings.numpadSlides, on || !settings.numpadHidesToolbar, window != nil, !UIAccessibility.isReduceMotionEnabled {
             let push = CATransition()
             push.type = .push
             push.subtype = on ? .fromRight : .fromLeft
