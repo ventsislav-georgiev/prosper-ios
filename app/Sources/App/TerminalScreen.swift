@@ -1294,8 +1294,12 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         guard let bar = shortcutBar else { return }
         let kb = keyboardInputView as? TerminalKeyboard
         let hides = kb?.showsNumpad == true && kb?.settings.numpadHidesToolbar == true
+        let hiding = hides && !bar.isHidden
         bar.isHidden = hides
         kb?.lentHeight = hides ? bar.bounds.height : 0
+        // The taller keys now, in the frame the bar goes: `fitHeight`'s deferred reload let one
+        // frame show the rows under the bar (#1828).
+        if hiding, tv.isFirstResponder { tv.reloadInputViews() }
     }
 
     /// In the app the host sits in SwiftUI, which gives this view its new frame and safe

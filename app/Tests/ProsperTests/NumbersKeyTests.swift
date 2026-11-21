@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import SwiftTerm
 @testable import Prosper
 
 /// Numbers: Key (#625): the system keyboard's digit row as a 123 key that swaps the letters
@@ -671,6 +672,75 @@ final class NumbersKeyTests: XCTestCase {
                     }
                 }
             }
+        }
+    }
+
+    /// #1828: swapping the letters for the numpad and back leaves the terminal as it is, its
+    /// grid, its lift and the bar on the keyboard, Hide Toolbar on or off: the bar's height
+    /// lent to the keys keeps their sum. Sampled through the swap on the host's real keyboard,
+    /// whose taller frame comes a reload later than the bar hides.
+    func testTheNumpadSwapLeavesTheTerminalStill() throws {
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone, "iPhone only")
+        let saved = (TerminalKeyboard.hardwareKeyboardConnected, KeyboardSettings.store)
+        TerminalKeyboard.hardwareKeyboardConnected = { false }
+        KeyboardSettings.store = { [defaults] in defaults! }
+        defer { (TerminalKeyboard.hardwareKeyboardConnected, KeyboardSettings.store) = saved }
+        defaults.set(KeyboardSettings.Numbers.key.rawValue, forKey: KeyboardSettings.Key.numbers)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.first as? UIWindowScene)
+        let window = UIWindow(windowScene: scene)
+        let vc = TerminalHostVC(conn: SessionConnection(transport: SpyTransport(), session: DchSession(name: "t", alias: nil)),
+                                handle: TermHandle())
+        window.rootViewController = vc
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let kb = try XCTUnwrap(vc.keyboardInputView as? TerminalKeyboard)
+        let tv = try XCTUnwrap(vc.view.subviews.lazy.compactMap { $0 as? TerminalView }.first)
+        let bar = try XCTUnwrap(vc.view.subviews.first { $0 is ShortcutBar })
+        vc.feed(ArraySlice(Array((1...200).map { "line \($0)" }.joined(separator: "\r\n").utf8)))   // lifted
+        struct Look: Equatable { var frame: CGRect, lift: CGFloat, cols: Int, rows: Int, barBottom: CGFloat? }
+        func look() -> Look {
+            let t = tv.getTerminal()
+            return Look(frame: tv.frame, lift: tv.transform.ty, cols: t.cols, rows: t.rows,
+                        barBottom: bar.isHidden ? nil : bar.frame.maxY)
+        }
+        /// Every look for `s` seconds, layout flushed each time as the next frame would.
+        func watch(_ s: TimeInterval) -> [Look] {
+            var looks: [Look] = []
+            let end = Date().addingTimeInterval(s)
+            while Date() < end {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.002))
+                vc.view.layoutIfNeeded()
+                looks.append(look())
+                // The bar's strip shows the bar or the keys, never the rows under it.
+                if bar.isHidden, let pl = kb.layer.presentation(), let wl = kb.window?.layer.presentation() {
+                    let top = window.convert(pl.convert(pl.bounds, to: wl), from: kb.window).minY
+                    XCTAssertLessThanOrEqual(top, bar.frame.minY + 0.5, "the bar hid before the keys reached its place")
+                }
+            }
+            return looks
+        }
+        for hides in [false, true] {
+            defaults.set(hides, forKey: KeyboardSettings.Key.numpadHidesToolbar)
+            vc.toggleKeyboard()
+            _ = watch(1.5)
+            let still = look()
+            XCTAssertLessThan(still.lift, 0, "hides \(hides): the terminal is lifted")
+            kb.press(.numbers)
+            let numpad = watch(1)
+            XCTAssertTrue(kb.showsNumpad)
+            XCTAssertEqual(kb.lentHeight > 0, hides)
+            for l in numpad {
+                var bare = l
+                bare.barBottom = still.barBottom
+                XCTAssertEqual(bare, still, "hides \(hides): the numpad moved the terminal")
+                if let b = l.barBottom { XCTAssertEqual(b, still.barBottom ?? 0, accuracy: 0.5, "hides \(hides): the bar left the keys") }
+            }
+            kb.showNumpad(false)
+            for l in watch(1) {
+                XCTAssertEqual(l, still, "hides \(hides): the letters moved the terminal")
+            }
+            vc.toggleKeyboard()
+            _ = watch(1)
         }
     }
 }
