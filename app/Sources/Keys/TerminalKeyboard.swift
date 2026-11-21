@@ -1305,7 +1305,13 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
             push.subtype = on ? .fromRight : .fromLeft
             push.duration = Self.numpadSwap
             push.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            // The outgoing page is drawn at its old, taller size: clipped, it can't reach over the
+            // returning bar above the shrunken keyboard (#1830).
+            clipsToBounds = true
+            CATransaction.begin()
+            CATransaction.setCompletionBlock { [weak self] in self?.clipsToBounds = false }
             layer.add(push, forKey: "numpad")
+            CATransaction.commit()
         }
         build()
         fitHeight()

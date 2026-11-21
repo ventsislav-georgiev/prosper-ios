@@ -736,9 +736,13 @@ final class NumbersKeyTests: XCTestCase {
                 if let b = l.barBottom { XCTAssertEqual(b, still.barBottom ?? 0, accuracy: 0.5, "hides \(hides): the bar left the keys") }
             }
             kb.showNumpad(false)
+            // The outgoing numpad slides out at its old height: with the bar back it must be clipped (#1830).
+            XCTAssertNotNil(kb.layer.animation(forKey: kCATransition), "hides \(hides): no slide")
+            XCTAssertTrue(kb.clipsToBounds, "hides \(hides): the outgoing numpad draws over the bar")
             for l in watch(1) {
                 XCTAssertEqual(l, still, "hides \(hides): the letters moved the terminal")
             }
+            XCTAssertFalse(kb.clipsToBounds, "hides \(hides): clipping left on")
             vc.toggleKeyboard()
             _ = watch(1)
         }
