@@ -59,6 +59,7 @@ struct KeyboardSettings: Equatable {
         static let languages = "keyboard.languages"
         static let numbers = "keyboard.numbers"
         static let numpadHidesToolbar = "keyboard.numpadHidesToolbar"
+        static let numpadSlides = "keyboard.numpadSlides"
         static let toolbarRows = "keyboard.toolbarRows"
         static let theme = "keyboard.theme"
         static let toolbarTheme = "keyboard.toolbarTheme"
@@ -109,6 +110,8 @@ struct KeyboardSettings: Equatable {
     enum ToolbarRows: String, CaseIterable { case one, two }
     /// The numpad takes the bar's height too while it shows (#625): 123's, or the menu's (#650).
     var numpadHidesToolbar = false
+    /// Whether the numpad slides in (#1827); off swaps it at once.
+    var numpadSlides = true
     /// Clean Up Dictation (#612): at Done, the on-device model tidies what was dictated
     /// (`SuggestionBar.cleanUp`). Off by default; iOS 26, Full Access.
     var cleansDictation = false
@@ -205,6 +208,7 @@ struct KeyboardSettings: Equatable {
         read(Key.characterPreview, &characterPreview)
         read(Key.saveCopies, &saveCopies)
         read(Key.numpadHidesToolbar, &numpadHidesToolbar)
+        read(Key.numpadSlides, &numpadSlides)
         read(Key.cleansDictation, &cleansDictation)
         numbers = defaults?.string(forKey: Key.numbers).flatMap(Numbers.init) ?? numbers
         toolbarRows = defaults?.string(forKey: Key.toolbarRows).flatMap(ToolbarRows.init) ?? toolbarRows
@@ -288,6 +292,7 @@ struct KeyboardSettings: Equatable {
         if numbers != old.numbers { store.set(numbers.rawValue, forKey: Key.numbers) }
         if toolbarRows != old.toolbarRows { store.set(toolbarRows.rawValue, forKey: Key.toolbarRows) }
         if numpadHidesToolbar != old.numpadHidesToolbar { store.set(numpadHidesToolbar, forKey: Key.numpadHidesToolbar) }
+        if numpadSlides != old.numpadSlides { store.set(numpadSlides, forKey: Key.numpadSlides) }
     }
 
     /// The shared values. Without Full Access an extension can't reach the group: defaults.
@@ -1116,14 +1121,15 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         ",": "!",   // #1613
     ]
 
-    /// The numpad (Numbers: Key, #625), in every key row's place: 1–9 and 0 between . and ,
-    /// as on a calculator, two columns of the symbols numbers come with, then delete, return,
-    /// space and ABC back to the letters. No holds, previews or autocorrect on it (`press`).
+    /// The numpad (Numbers: Key, #625), in every key row's place: 1–9 and 0 as on a calculator
+    /// (0 under 8), two columns of the symbols numbers come with, then return, space and ABC
+    /// back to the letters. ABC is bottom-left where 123 is, delete the third row's last key
+    /// where the letters' delete is (#1827). No holds, previews or autocorrect on it (`press`).
     static let numpadRows: [[Key]] = [
-        chars("123-/") + [.backspace],
-        chars("456:;") + [.ret],
-        chars("789()") + [.space],
-        chars(".0,@\"") + [.numbers],
+        chars("123-/") + [.space],
+        chars("456:;") + [.char("\"")],
+        chars("789()") + [.backspace],
+        [.numbers] + chars("0.,@") + [.ret],   // ABC, delete and return where the letters have them (#1827)
     ]
     /// The numpad's column widths, in shares of the row: digits and the last column wider than
     /// the symbols, every numpad key wider than a letter key (`layoutSubviews`).
@@ -1293,7 +1299,7 @@ final class TerminalKeyboard: UIInputView, UIInputViewAudioFeedback {
         if on, showsEmoji { showEmoji(false) }   // never both (#629)
         stopRepeat(); stopHold(); tracker.reset()
         showsNumpad = on
-        if animated, window != nil, !UIAccessibility.isReduceMotionEnabled {
+        if animated, settings.numpadSlides, window != nil, !UIAccessibility.isReduceMotionEnabled {
             let push = CATransition()
             push.type = .push
             push.subtype = on ? .fromRight : .fromLeft

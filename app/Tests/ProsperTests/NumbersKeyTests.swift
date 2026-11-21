@@ -519,6 +519,50 @@ final class NumbersKeyTests: XCTestCase {
     }
 
 
+    // MARK: Thumb spots (#1827)
+
+    /// The 123 and delete caps' frames now, in `kb`'s own coordinates.
+    private func spots(_ kb: TerminalKeyboard) throws -> (key: CGRect, del: CGRect) {
+        kb.layoutIfNeeded()
+        return (try cap(kb, "123").frame, try cap(kb, "delete").frame)
+    }
+
+    /// The letters' 123 and delete, then the numpad's ABC and delete: ABC's cap holds 123's centre, delete's
+    /// holds delete's centre (in `kb.bounds` coordinates). With the bar lent (Hide Toolbar) the numpad's rows are
+    /// taller, so only the column has to match. Returns the measured centres for the log.
+    @discardableResult
+    private func assertNumpadKeepsThumbSpots(_ kb: TerminalKeyboard, _ what: String, lentBar: Bool = false, open: () -> Void,
+                                             line: UInt = #line) throws -> String {
+        let letters = try spots(kb)
+        open()
+        let abc = try cap(kb, "ABC").frame, del = try cap(kb, "delete").frame
+        XCTAssertTrue(abc.minX...abc.maxX ~= letters.key.midX && (lentBar || abc.contains(CGPoint(x: letters.key.midX, y: letters.key.midY))), "\(what): ABC \(abc) over 123 \(letters.key)", line: line)
+        XCTAssertTrue(del.minX...del.maxX ~= letters.del.midX && (lentBar || del.contains(CGPoint(x: letters.del.midX, y: letters.del.midY))), "\(what): delete \(del) over delete \(letters.del)", line: line)
+        return "\(what): 123 (\(letters.key.midX),\(letters.key.midY)) in ABC (\(abc.midX),\(abc.midY)); del (\(letters.del.midX),\(letters.del.midY)) in del (\(del.midX),\(del.midY))"
+    }
+
+    func testTheNumpadsABCAndDeleteSitWhere123AndDeleteDo() throws {
+        for compact in [false, true] {
+            let (kb, _, _, view) = rig(width: compact ? 874 : 402, compact: compact)
+            let what = compact ? "landscape" : "portrait"
+            try print("1827 extension", assertNumpadKeepsThumbSpots(kb, what) { kb.press(.numbers); fit(view) })
+            XCTAssertEqual(TerminalKeyboard.numpadRows[3].first, .numbers)
+            XCTAssertEqual(TerminalKeyboard.numpadRows[2].last, .backspace)
+            XCTAssertEqual(TerminalKeyboard.numpadRows[3].last, .ret)   // return bottom-right, as on the letters
+        }
+    }
+
+    func testNumpadSlidesOnlyWhenTheSettingIsOn() throws {
+        for slides in [true, false] {
+            let (kb, _, _, _) = rig()
+            kb.settings.numpadSlides = slides
+            kb.showNumpad(true)
+            // a CATransition is kept under kCATransition, whatever key it was added with
+            XCTAssertEqual(kb.layer.animation(forKey: kCATransition) != nil, slides, "slides \(slides)")
+        }
+        XCTAssertTrue(KeyboardSettings().numpadSlides, "on by default")
+    }
+
     // MARK: Fit (#1524)
 
     /// The numpad's caps, every one inside `kb`'s bounds (and the screen's, in `space`), its
@@ -614,8 +658,8 @@ final class NumbersKeyTests: XCTestCase {
                         vc.toggleKeyboard()
                         settle()
                         XCTAssertTrue(kb.numbersKey, what)
-                        kb.press(.numbers)
-                        settle()
+                        kb.layoutIfNeeded()
+                        try print("1827 terminal", assertNumpadKeepsThumbSpots(kb, what, lentBar: hides) { kb.press(.numbers); settle() })
                         XCTAssertTrue(kb.showsNumpad, what)
                         kb.layoutIfNeeded()
                         XCTAssertEqual(kb.lentHeight > 0, hides, what)

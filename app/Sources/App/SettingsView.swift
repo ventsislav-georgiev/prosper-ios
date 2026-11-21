@@ -85,6 +85,8 @@ struct SettingsView: View {
     private var toolbarRows = KeyboardSettings().toolbarRows
     @AppStorage(KeyboardSettings.Key.numpadHidesToolbar, store: KeyboardSettings.store())
     private var numpadHidesToolbar = KeyboardSettings().numpadHidesToolbar
+    @AppStorage(KeyboardSettings.Key.numpadSlides, store: KeyboardSettings.store())
+    private var numpadSlides = KeyboardSettings().numpadSlides
     @AppStorage(KeyboardSettings.Key.saveCopies, store: KeyboardSettings.store())
     private var saveCopies = KeyboardSettings().saveCopies
     @AppStorage(KeyboardSettings.Key.cleansDictation, store: KeyboardSettings.store())   // #612
@@ -288,10 +290,11 @@ struct SettingsView: View {
                     ForEach(KeyboardSettings.ToolbarRows.allCases, id: \.self) { Text($0.rawValue.capitalized) }
                 }
                 Toggle("Hide Toolbar on the Numpad", isOn: $numpadHidesToolbar)   // Row too, by the hold menu's Numbers (#652)
+                Toggle("Numpad Slide In", isOn: $numpadSlides)   // #1827
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("Without Full Access, Auto-Capitalization is off, Key Size is Normal and the rest on. The terminal's keyboard follows them too, from the next time it shows, but Auto-Capitalization, Auto-Correction and Predictive Text, which would change what you type into the shell. Key Size makes the rows taller in portrait. Numbers: Key swaps the digit row for a 123 key that opens a numpad, the other rows growing taller to keep the keyboard's height. In other apps, with Numbers: Row or Key alike, Toolbar Rows: Two gives the toolbar a second row, the keyboard a row taller; One keeps a single bar row. The terminal's Shortcut Keys keep their own rows. With Numbers: Row, hold the toolbar toggle and pick Numbers for the numpad. The themes and Accent apply to both keyboards: the Toolbar Theme to the toolbar's keys, the Keys Theme to the rest. The accent lights return, send and the toolbar's held keys in Dark, Light and True Black.")
+                Text("Without Full Access, Auto-Capitalization is off, Key Size is Normal and the rest on. The terminal's keyboard follows them too, from the next time it shows, but Auto-Capitalization, Auto-Correction and Predictive Text, which would change what you type into the shell. Key Size makes the rows taller in portrait. Numbers: Key swaps the digit row for a 123 key that opens a numpad, the other rows growing taller to keep the keyboard's height. In other apps, with Numbers: Row or Key alike, Toolbar Rows: Two gives the toolbar a second row, the keyboard a row taller; One keeps a single bar row. Numpad Slide In off swaps the numpad in at once. The terminal's Shortcut Keys keep their own rows. With Numbers: Row, hold the toolbar toggle and pick Numbers for the numpad. The themes and Accent apply to both keyboards: the Toolbar Theme to the toolbar's keys, the Keys Theme to the rest. The accent lights return, send and the toolbar's held keys in Dark, Light and True Black.")
             }
 
             // The Prosper keyboard's languages (#624), the terminal's too (#692).
