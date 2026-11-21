@@ -1260,6 +1260,9 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         Logger(subsystem: "eu.illegible.prosper", category: "keyboard").debug(
             "\(n.name.rawValue, privacy: .public) end \(NSCoder.string(for: end), privacy: .public) view \(NSCoder.string(for: self.view.frame), privacy: .public) safe \(self.view.safeAreaInsets.bottom, privacy: .public)")
         kbFrame = end
+        // The taller keys have landed in the bar's place: only now may the bar hide (#1837).
+        if let bar = shortcutBar, !bar.isHidden, (keyboardInputView as? TerminalKeyboard)?.lentHeight ?? 0 > 0,
+           view.convert(end, from: nil).minY <= bar.frame.minY + 0.5 { bar.isHidden = true }
         applyKeyboard(end, notification: n)
     }
 
@@ -1283,7 +1286,7 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
     /// the hidden bar's height it was lent (`fitBar`): the bar's place, the terminal's bottom.
     private func keyboardOverlap(_ end: CGRect) -> CGFloat {
         let safeBottomY = view.bounds.maxY - view.safeAreaInsets.bottom
-        let lent = (keyboardInputView as? TerminalKeyboard)?.lentHeight ?? 0
+        let lent = shortcutBar?.isHidden == true ? (keyboardInputView as? TerminalKeyboard)?.lentHeight ?? 0 : 0
         return max(0, safeBottomY - view.convert(end, from: nil).minY - lent)
     }
 
@@ -1294,12 +1297,12 @@ final class TerminalHostVC: UIViewController, TerminalViewDelegate, UIGestureRec
         guard let bar = shortcutBar else { return }
         let kb = keyboardInputView as? TerminalKeyboard
         let hides = kb?.showsNumpad == true && kb?.settings.numpadHidesToolbar == true
-        let hiding = hides && !bar.isHidden
-        bar.isHidden = hides
+        let lending = hides && kb?.lentHeight == 0
         kb?.lentHeight = hides ? bar.bounds.height : 0
-        // The taller keys now, in the frame the bar goes: `fitHeight`'s deferred reload let one
-        // frame show the rows under the bar (#1828).
-        if hiding, tv.isFirstResponder { tv.reloadInputViews() }
+        // The bar hides once the taller keys' frame reaches its place (`kbChange`), never before:
+        // a hide racing the reload showed the rows under it a frame (#1828, #1837).
+        if !hides || kbOverlap == 0 { bar.isHidden = hides }
+        else if lending, tv.isFirstResponder { tv.reloadInputViews() }
     }
 
     /// In the app the host sits in SwiftUI, which gives this view its new frame and safe

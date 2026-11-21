@@ -744,9 +744,10 @@ final class ImagePasteTests: XCTestCase {
 
         kb.showNumpad(true, animated: false)   // the menu's Numbers, with Row
         XCTAssertTrue(kb.showsNumpad)
-        XCTAssertTrue(bar.isHidden)
+        XCTAssertFalse(bar.isHidden, "not before the taller keys' frame (#1837)")
         XCTAssertEqual(kb.lentHeight, bar.bounds.height)
         let numpad = frame()
+        XCTAssertTrue(bar.isHidden)
         XCTAssertEqual(numpad.top, letters.top, accuracy: 0.5, "the hidden bar's place: the keyboard's top, as before")
         XCTAssertEqual(numpad.size, letters.size, "the grid keeps its size")
         XCTAssertEqual(numpad.lift, letters.lift, accuracy: 0.5, "the content doesn't jump")
@@ -758,6 +759,7 @@ final class ImagePasteTests: XCTestCase {
         XCTAssertEqual(back.lift, letters.lift, accuracy: 0.5)
 
         kb.showNumpad(true, animated: false)
+        _ = frame()
         XCTAssertTrue(bar.isHidden)
         NotificationCenter.default.post(name: UIResponder.keyboardWillHideNotification, object: nil)
         XCTAssertFalse(kb.showsNumpad, "the letters the next time up")
